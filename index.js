@@ -1,13 +1,10 @@
 import http from "http";
 
 const PORT = process.env.PORT || 3000;
-
-// Ustaw w Railway:
-// API_KEY = długi_losowy_klucz
-// (opcjonalnie) ADMIN_TELEGRAM_USER_ID = TwojTelegramUserId (np. "123456789")
 const API_KEY = (process.env.API_KEY || "").trim();
-const ADMIN_TELEGRAM_USER_ID = (process.env.ADMIN_TELEGRAM_USER_ID || "").trim();
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 
+// ---------- helpers ----------
 function sendJson(res, statusCode, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(statusCode, {
@@ -20,64 +17,88 @@ function sendJson(res, statusCode, obj) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
-    req.on("data", (chunk) => (data += chunk));
+    req.on("data", (c) => (data += c));
     req.on("end", () => resolve(data));
     req.on("error", reject);
   });
 }
 
-function getHeader(req, name) {
+function header(req, name) {
   const v = req.headers[name.toLowerCase()];
   return Array.isArray(v) ? v[0] : v;
 }
 
 function authOk(req) {
-  // Jeśli nie ustawisz API_KEY w env, to endpoint będzie otwarty.
-  // Ale zalecam ustawić API_KEY od razu.
-  if (!API_KEY) return true;
-
-  const provided = String(getHeader(req, "x-api-key") || "").trim();
-  return provided && provided === API_KEY;
+  if (!API_KEY) return true; // dev fallback
+  return String(header(req, "x-api-key") || "").trim() === API_KEY;
 }
 
+// ---------- OpenAI ----------
+async function askLLM(userText) {
+  if (!OPENAI_API_KEY) {
+    return "❌ Brak klucza OPENAI_API_KEY w Railway.";
+  }
+
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Jesteś pomocnym asystentem do obsługi firmy. Odpowiadasz krótko, konkretnie i po polsku.",
+        },
+        { role: "user", content: userText },
+      ],
+      temperature: 0.3,
+    }),
+  });
+
+  if (!resp.ok) {
+    const t = await resp.text();
+    return `❌ Błąd AI: ${resp.status} ${t}`;
+  }
+
+  const json = await resp.json();
+  return json.choices?.[0]?.message?.content || "❌ Brak odpowiedzi AI.";
+}
+
+// ---------- server ----------
 const server = http.createServer(async (req, res) => {
-  // GET /health
+  // health
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, 200, { ok: true });
   }
 
-  // POST /telegram/inbox  (wywołuje to n8n)
+  // telegram inbox
   if (req.method === "POST" && req.url === "/telegram/inbox") {
-    // 1) API key auth
     if (!authOk(req)) {
       return sendJson(res, 401, { error: "Unauthorized" });
     }
 
-    // 2) JSON body
-    const raw = await readBody(req);
     let body;
     try {
-      body = raw ? JSON.parse(raw) : {};
+      body = JSON.parse(await readBody(req));
     } catch {
       return sendJson(res, 400, { error: "Invalid JSON" });
     }
 
-    const text = String(body.text ?? "").trim();
-    const telegramUserId = String(body.telegramUserId ?? "").trim();
+    const text = String(body.text || "").trim();
+    const telegramUserId = String(body.telegramUserId || "").trim();
 
-    if (!telegramUserId) return sendJson(res, 400, { error: "telegramUserId required" });
-    if (!text) return sendJson(res, 400, { error: "text required" });
-
-    // 3) (opcjonalnie) allowlist – tylko Ty możesz używać
-    if (ADMIN_TELEGRAM_USER_ID && telegramUserId !== ADMIN_TELEGRAM_USER_ID) {
-      return sendJson(res, 403, { error: "Forbidden" });
+    if (!telegramUserId || !text) {
+      return sendJson(res, 400, { error: "telegramUserId and text required" });
     }
 
-    // 4) odpowiedź (na razie echo)
-    return sendJson(res, 200, { replyText: `✅ Działa. Napisałeś: ${text}` });
+    const reply = await askLLM(text);
+    return sendJson(res, 200, { replyText: reply });
   }
 
-  // default
   res.writeHead(404);
   res.end("Not found");
 });
