@@ -379,6 +379,86 @@ app.get("/api/stats", async (req, res) => {
   res.json({ contractors, openDeals, openConsignments, unreadEmails, pendingMailing });
 });
 
+// ============ NIP VERIFICATION ============
+function gusRequest(action, bodyXml, sid = "") {
+  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:ns="http://CIS/BIR/PUBL/2014/07"><soap:Header><ns:sid>${sid}</ns:sid></soap:Header><soap:Body>${bodyXml}</soap:Body></soap:Envelope>`;
+  return fetch("https://wyszukiwarkaregon.stat.gov.pl/wsBIR/UslugaBIRzewnPubl.svc", {
+    method: "POST",
+    headers: { "Content-Type": "application/soap+xml;charset=UTF-8", SOAPAction: action },
+    body: envelope,
+  }).then((r) => r.text());
+}
+
+function xmlVal(xml, tag) {
+  const m = xml.match(new RegExp(`<(?:[^:>]+:)?${tag}[^>]*>([\\s\\S]*?)</(?:[^:>]+:)?${tag}>`, "i"));
+  return m ? m[1].trim() : null;
+}
+
+app.post("/api/contractors/verify-nip", async (req, res) => {
+  try {
+    let { nip } = req.body;
+    if (!nip) return res.status(400).json({ error: "nip required" });
+    nip = nip.trim().replace(/[\s\-]/g, "").toUpperCase();
+
+    const isPolish = /^(PL)?\d{10}$/.test(nip);
+
+    if (isPolish) {
+      const nipNum = nip.startsWith("PL") ? nip.slice(2) : nip;
+
+      // Login
+      const loginResp = await gusRequest(
+        "http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/Zaloguj",
+        `<ns:Zaloguj><ns:pKluczUzytkownika>b8c4c38926bb4ffd9b7a</ns:pKluczUzytkownika></ns:Zaloguj>`
+      );
+      const sid = xmlVal(loginResp, "ZalogujResult");
+      if (!sid) return res.status(502).json({ error: "GUS login failed" });
+
+      // Search by NIP
+      const searchResp = await gusRequest(
+        "http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/DaneSzukajPodmioty",
+        `<ns:DaneSzukajPodmioty><ns:pParametryWyszukiwania><dat:Nip xmlns:dat="http://CIS/BIR/PUBL/2014/07/DataContract">${nipNum}</dat:Nip></ns:pParametryWyszukiwania></ns:DaneSzukajPodmioty>`,
+        sid
+      );
+
+      const raw = xmlVal(searchResp, "DaneSzukajPodmiotyResult");
+      if (!raw || raw.trim() === "") return res.status(404).json({ error: "Company not found in GUS" });
+
+      const inner = raw.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const name = xmlVal(inner, "Nazwa");
+      const regon = xmlVal(inner, "Regon");
+      const street = xmlVal(inner, "Ulica");
+      const building = xmlVal(inner, "NrNieruchomosci");
+      const apartment = xmlVal(inner, "NrLokalu");
+      const city = xmlVal(inner, "Miejscowosc");
+      const postal = xmlVal(inner, "KodPocztowy");
+      const statusNip = xmlVal(inner, "StatusNip");
+      const type = xmlVal(inner, "Typ");
+
+      const addressParts = [street, [building, apartment].filter(Boolean).join("/"), postal, city].filter(Boolean);
+
+      return res.json({ source: "GUS", nip: nipNum, name, regon, address: addressParts.join(", "), city, postalCode: postal, statusNip, type });
+    } else {
+      // European VAT — VIES
+      if (!/^[A-Z]{2}/.test(nip)) return res.status(400).json({ error: "Invalid NIP format" });
+      const countryCode = nip.slice(0, 2);
+      const vatNumber = nip.slice(2);
+
+      const viesRes = await fetch("https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ countryCode, vatNumber }),
+      });
+
+      if (!viesRes.ok) return res.status(502).json({ error: "VIES API error", status: viesRes.status });
+      const data = await viesRes.json();
+
+      return res.json({ source: "VIES", nip, countryCode, vatNumber, valid: data.isValid, name: data.name, address: data.address, requestDate: data.requestDate });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ START ============
 app.listen(PORT, () => {
   console.log(`Core API running on port ${PORT}`);
