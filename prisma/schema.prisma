@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ KONTRAHENCI (CRM) ============
+
+model Contractor {
+  id        String   @id @default(uuid())
+  type      String   @default("BUSINESS") // BUSINESS | PERSON
+  name      String
+  nip       String?  @unique
+  phone     String?
+  email     String?
+  country   String?
+  city      String?
+  address   String?
+  notes     String?
+  extras    Json     @default("{}")
+  tags      String[] @default([])
+  source    String?  // mailing, scraping, manual, referral
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deals        Deal[]
+  consignments Consignment[]
+  emails       Email[]
+
+  @@index([country])
+  @@index([tags])
+}
+
+// ============ PIPELINE (STATUSY KLIENTÓW) ============
+
+model Deal {
+  id           String   @id @default(uuid())
+  contractorId String
+  contractor   Contractor @relation(fields: [contractorId], references: [id])
+  
+  status       String   @default("LEAD")
+  // LEAD → CONVERSATION → OFFER_SENT → SAMPLES_SENT → INVOICE_SENT → PAID → CLIENT → LOST
+  
+  language     String?  // fr, de, es, pt, en
+  campaign     String?  // "francja surf", "niemcy apteki"
+  value        Float?   // wartość deala
+  currency     String   @default("EUR")
+  notes        String?
+  
+  nextAction     String?   // "follow up", "send samples", "wait for payment"
+  nextActionDate DateTime?
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  activities   Activity[]
+
+  @@index([status])
+  @@index([campaign])
+  @@index([contractorId])
+}
+
+model Activity {
+  id     String @id @default(uuid())
+  dealId String
+  deal   Deal   @relation(fields: [dealId], references: [id])
+  
+  type   String // EMAIL_SENT, EMAIL_RECEIVED, NOTE, STATUS_CHANGE, OFFER, SAMPLES, INVOICE, PAYMENT, CALL
+  note   String?
+  data   Json   @default("{}")
+  actor  String @default("system") // user, ai, system, mailing
+  
+  createdAt DateTime @default(now())
+
+  @@index([dealId])
+  @@index([type])
+}
+
+// ============ INBOX (MAILE) ============
+
+model Email {
+  id           String  @id @default(uuid())
+  contractorId String?
+  contractor   Contractor? @relation(fields: [contractorId], references: [id])
+  
+  direction    String  // INBOUND | OUTBOUND
+  inbox        String  // info, niko, delivery, etc.
+  fromEmail    String
+  fromName     String?
+  toEmail      String
+  subject      String?
+  bodyPreview  String?
+  bodyFull     String?
+  messageId    String? @unique
+  inReplyTo    String? // threading
+  
+  isRead       Boolean @default(false)
+  isSpam       Boolean @default(false)
+  tags         String[] @default([])
+  
+  createdAt    DateTime @default(now())
+
+  @@index([contractorId])
+  @@index([inbox])
+  @@index([isRead])
+  @@index([direction])
+}
+
+// ============ KOMIS ============
+
+model Consignment {
+  id           String   @id @default(uuid())
+  contractorId String
+  contractor   Contractor @relation(fields: [contractorId], references: [id])
+  
+  status       String   @default("OPEN") // OPEN | SETTLED
+  notes        String?
+  
+  createdAt    DateTime @default(now())
+  settledAt    DateTime?
+  
+  items        ConsignmentItem[]
+
+  @@index([contractorId])
+  @@index([status])
+}
+
+model ConsignmentItem {
+  id             String @id @default(uuid())
+  consignmentId  String
+  consignment    Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
+  
+  name           String
+  unitPrice      Float
+  qtyReceived    Int    @default(0)
+  
+  createdAt      DateTime @default(now())
+  
+  returns        ConsignmentReturn[]
+
+  @@unique([consignmentId, name])
+}
+
+model ConsignmentReturn {
+  id        String @id @default(uuid())
+  itemId    String
+  item      ConsignmentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  
+  qty       Int
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([itemId])
+}
+
+// ============ MAILING ============
+
+model MailingContact {
+  id         String  @id @default(uuid())
+  email      String
+  name       String?
+  website    String?
+  phone      String?
+  region     String?
+  country    String?
+  campaign   String? // "francja surf"
+  
+  status     String  @default("PENDING") // PENDING | SENT | REPLIED | BOUNCED | UNSUBSCRIBED | CLIENT
+  sentAt     DateTime?
+  sentFrom   String?  // info@, niko@, etc.
+  sentVariant Int?    // which template variant
+  
+  source     String?  // apify, scraping, manual
+  extras     Json    @default("{}")
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([email, campaign])
+  @@index([campaign])
+  @@index([status])
+  @@index([country])
+}
+
+// ============ CONFIG ============
+
+model Config {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ============ MEMORY (AGENT) ============
+
+model Memory {
+  id        String   @id @default(uuid())
+  role      String   // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ============ AUDIT LOG ============
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actor      String   // user, ai, system, n8n
+  action     String
+  entityType String
+  entityId   String?
+  payload    Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
