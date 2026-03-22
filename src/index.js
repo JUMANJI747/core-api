@@ -380,9 +380,11 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ NIP VERIFICATION ============
+const GUS_URL = "https://wyszukiwarkaregon.stat.gov.pl/wsBIR/UslugaBIRzewnPubl.svc";
+
 function gusRequest(action, bodyXml, sid = "") {
-  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:ns="http://CIS/BIR/PUBL/2014/07"><soap:Header><ns:sid>${sid}</ns:sid></soap:Header><soap:Body>${bodyXml}</soap:Body></soap:Envelope>`;
-  return fetch("https://wyszukiwarkaregon.stat.gov.pl/wsBIR/UslugaBIRzewnPubl.svc", {
+  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:ns="http://CIS/BIR/PUBL/2014/07" xmlns:wsa="http://www.w3.org/2005/08/addressing"><soap:Header><ns:sid>${sid}</ns:sid><wsa:To>${GUS_URL}</wsa:To><wsa:Action>${action}</wsa:Action></soap:Header><soap:Body>${bodyXml}</soap:Body></soap:Envelope>`;
+  return fetch(GUS_URL, {
     method: "POST",
     headers: { "Content-Type": "application/soap+xml;charset=UTF-8", SOAPAction: action },
     body: envelope,
