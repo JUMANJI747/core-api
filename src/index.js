@@ -396,14 +396,26 @@ function xmlVal(xml, tag) {
 
 app.post("/api/contractors/verify-nip", async (req, res) => {
   try {
-    let { nip } = req.body;
+    let { nip, country } = req.body;
     if (!nip) return res.status(400).json({ error: "nip required" });
     nip = nip.trim().replace(/[\s\-]/g, "").toUpperCase();
+    if (country) country = country.trim().toUpperCase();
 
-    const isPolish = /^(PL)?\d{10}$/.test(nip);
+    const hasPrefix = /^[A-Z]{2}/.test(nip);
+    if (!hasPrefix) {
+      if (country) {
+        nip = country + nip;
+      } else if (/^\d{10}$/.test(nip)) {
+        nip = "PL" + nip;
+      } else {
+        return res.status(400).json({ error: "Cannot determine country for NIP. Provide country (e.g. 'ES') or use a NIP with country prefix (e.g. 'ESB12345678')." });
+      }
+    }
+
+    const isPolish = /^PL\d{10}$/.test(nip);
 
     if (isPolish) {
-      const nipNum = nip.startsWith("PL") ? nip.slice(2) : nip;
+      const nipNum = nip.slice(2);
 
       // Login
       const loginResp = await gusRequest(
@@ -439,7 +451,6 @@ app.post("/api/contractors/verify-nip", async (req, res) => {
       return res.json({ source: "GUS", nip: nipNum, name, regon, address: addressParts.join(", "), city, postalCode: postal, statusNip, type });
     } else {
       // European VAT — VIES
-      if (!/^[A-Z]{2}/.test(nip)) return res.status(400).json({ error: "Invalid NIP format" });
       const countryCode = nip.slice(0, 2);
       const vatNumber = nip.slice(2);
 
