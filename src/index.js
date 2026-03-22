@@ -380,22 +380,6 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ NIP VERIFICATION ============
-const GUS_URL = "https://wyszukiwarkaregon.stat.gov.pl/wsBIR/UslugaBIRzewnPubl.svc";
-
-function gusRequest(action, bodyXml, sid = "") {
-  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:ns="http://CIS/BIR/PUBL/2014/07" xmlns:wsa="http://www.w3.org/2005/08/addressing"><soap:Header><ns:sid>${sid}</ns:sid><wsa:To>${GUS_URL}</wsa:To><wsa:Action>${action}</wsa:Action></soap:Header><soap:Body>${bodyXml}</soap:Body></soap:Envelope>`;
-  return fetch(GUS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/soap+xml;charset=UTF-8", SOAPAction: action },
-    body: envelope,
-  }).then((r) => r.text());
-}
-
-function xmlVal(xml, tag) {
-  const m = xml.match(new RegExp(`<(?:[^:>]+:)?${tag}[^>]*>([\\s\\S]*?)</(?:[^:>]+:)?${tag}>`, "i"));
-  return m ? m[1].trim() : null;
-}
-
 app.post("/api/contractors/verify-nip", async (req, res) => {
   try {
     let { nip, country } = req.body;
@@ -418,39 +402,17 @@ app.post("/api/contractors/verify-nip", async (req, res) => {
 
     if (isPolish) {
       const nipNum = nip.slice(2);
+      const today = new Date().toISOString().slice(0, 10);
 
-      // Login
-      const loginResp = await gusRequest(
-        "http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/Zaloguj",
-        `<ns:Zaloguj><ns:pKluczUzytkownika>b8c4c38926bb4ffd9b7a</ns:pKluczUzytkownika></ns:Zaloguj>`
-      );
-      const sid = xmlVal(loginResp, "ZalogujResult");
-      if (!sid) return res.status(502).json({ error: "GUS login failed" });
+      const mfRes = await fetch(`https://wl-api.mf.gov.pl/api/search/nip/${nipNum}?date=${today}`);
+      if (mfRes.status === 404) return res.status(404).json({ error: "Company not found" });
+      if (!mfRes.ok) return res.status(502).json({ error: "MF API error", status: mfRes.status });
 
-      // Search by NIP
-      const searchResp = await gusRequest(
-        "http://CIS/BIR/PUBL/2014/07/IUslugaBIRzewnPubl/DaneSzukajPodmioty",
-        `<ns:DaneSzukajPodmioty><ns:pParametryWyszukiwania><dat:Nip xmlns:dat="http://CIS/BIR/PUBL/2014/07/DataContract">${nipNum}</dat:Nip></ns:pParametryWyszukiwania></ns:DaneSzukajPodmioty>`,
-        sid
-      );
+      const mfData = await mfRes.json();
+      const s = mfData?.result?.subject;
+      if (!s) return res.status(404).json({ error: "Company not found" });
 
-      const raw = xmlVal(searchResp, "DaneSzukajPodmiotyResult");
-      if (!raw || raw.trim() === "") return res.status(404).json({ error: "Company not found in GUS" });
-
-      const inner = raw.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-      const name = xmlVal(inner, "Nazwa");
-      const regon = xmlVal(inner, "Regon");
-      const street = xmlVal(inner, "Ulica");
-      const building = xmlVal(inner, "NrNieruchomosci");
-      const apartment = xmlVal(inner, "NrLokalu");
-      const city = xmlVal(inner, "Miejscowosc");
-      const postal = xmlVal(inner, "KodPocztowy");
-      const statusNip = xmlVal(inner, "StatusNip");
-      const type = xmlVal(inner, "Typ");
-
-      const addressParts = [street, [building, apartment].filter(Boolean).join("/"), postal, city].filter(Boolean);
-
-      return res.json({ source: "GUS", nip: nipNum, name, regon, address: addressParts.join(", "), city, postalCode: postal, statusNip, type });
+      return res.json({ source: "MF", nip: nipNum, name: s.name, regon: s.regon, krs: s.krs, address: s.workingAddress, statusVat: s.statusVat });
     } else {
       // European VAT — VIES
       const countryCode = nip.slice(0, 2);
