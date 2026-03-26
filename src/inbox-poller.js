@@ -116,8 +116,14 @@ function fetchMailsFromUid(imap, sinceUid) {
         ? [['UID', `${sinceUid + 1}:*`]]
         : [['UID', '1:*']];
 
+      const uidRange = sinceUid > 0 ? `${sinceUid + 1}:*` : '1:*';
+      console.log(`[inbox-poller] search UID range: ${uidRange}`);
+
       imap.search(searchCriteria, (searchErr, uids) => {
         if (searchErr) return reject(searchErr);
+
+        console.log(`[inbox-poller] search UID range: ${uidRange}, found ${uids ? uids.length : 0} results${uids && uids.length ? ', UIDs: ' + uids.join(',') : ''}`);
+
         if (!uids || uids.length === 0) return resolve([]);
 
         // Filter to only UIDs actually greater than sinceUid
@@ -307,6 +313,7 @@ async function processAccount(account) {
     // Get last UID
     const state = await prisma.imapState.findUnique({ where: { inbox } });
     const lastUid = state ? state.lastUid : 0;
+    console.log(`[inbox-poller] ${inbox}: lastUid=${lastUid}`);
 
     // Connect and fetch
     imap = await connectImap(account);
