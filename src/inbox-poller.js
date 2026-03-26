@@ -133,6 +133,7 @@ function fetchMailsFromUid(imap, sinceUid) {
         console.log(`[inbox-poller] fetching UIDs: ${filteredUids.join(',')}`);
 
         const mails = [];
+        const messagePromises = [];
         const fetch = imap.fetch(filteredUids, {
           bodies: '',
           struct: true,
@@ -152,53 +153,57 @@ function fetchMailsFromUid(imap, sinceUid) {
             stream.on('data', chunk => rawBuffer.push(chunk));
           });
 
-          msg.once('end', async () => {
-            console.log(`[inbox-poller] fetch: on end uid=${uid} seqno=${seqno} bufferSize=${rawBuffer.reduce((s, c) => s + c.length, 0)}`);
-            try {
-              const raw = Buffer.concat(rawBuffer);
-              const parsed = await simpleParser(raw);
+          const msgPromise = new Promise(resolveMsg => {
+            msg.once('end', async () => {
+              console.log(`[inbox-poller] fetch: on end uid=${uid} seqno=${seqno} bufferSize=${rawBuffer.reduce((s, c) => s + c.length, 0)}`);
+              try {
+                const raw = Buffer.concat(rawBuffer);
+                const parsed = await simpleParser(raw);
 
-              const fromAddr = parsed.from && parsed.from.value && parsed.from.value[0];
-              const fromEmail = fromAddr ? (fromAddr.address || '').toLowerCase() : '';
-              const fromName = fromAddr ? (fromAddr.name || '') : '';
+                const fromAddr = parsed.from && parsed.from.value && parsed.from.value[0];
+                const fromEmail = fromAddr ? (fromAddr.address || '').toLowerCase() : '';
+                const fromName = fromAddr ? (fromAddr.name || '') : '';
 
-              const toAddr = parsed.to && parsed.to.value && parsed.to.value[0];
-              const toEmail = toAddr ? (toAddr.address || '').toLowerCase() : '';
+                const toAddr = parsed.to && parsed.to.value && parsed.to.value[0];
+                const toEmail = toAddr ? (toAddr.address || '').toLowerCase() : '';
 
-              let bodyText = '';
-              if (parsed.text) {
-                bodyText = parsed.text;
-              } else if (parsed.html) {
-                bodyText = stripHtml(parsed.html);
+                let bodyText = '';
+                if (parsed.text) {
+                  bodyText = parsed.text;
+                } else if (parsed.html) {
+                  bodyText = stripHtml(parsed.html);
+                }
+
+                const attachments = (parsed.attachments || []).map(a => ({
+                  filename: a.filename || 'attachment',
+                  contentType: a.contentType || 'application/octet-stream',
+                  size: a.size || 0,
+                }));
+
+                const autoSubmitted = parsed.headers && parsed.headers.get
+                  ? (parsed.headers.get('auto-submitted') || '')
+                  : '';
+
+                mails.push({
+                  uid,
+                  fromEmail,
+                  fromName,
+                  toEmail,
+                  subject: parsed.subject || '',
+                  bodyText,
+                  messageId: parsed.messageId || null,
+                  inReplyTo: parsed.inReplyTo || null,
+                  attachments,
+                  autoSubmitted,
+                  date: parsed.date || null,
+                });
+              } catch (parseErr) {
+                console.error('[inbox-poller] Parse error for msg', seqno, parseErr.message);
               }
-
-              const attachments = (parsed.attachments || []).map(a => ({
-                filename: a.filename || 'attachment',
-                contentType: a.contentType || 'application/octet-stream',
-                size: a.size || 0,
-              }));
-
-              const autoSubmitted = parsed.headers && parsed.headers.get
-                ? (parsed.headers.get('auto-submitted') || '')
-                : '';
-
-              mails.push({
-                uid,
-                fromEmail,
-                fromName,
-                toEmail,
-                subject: parsed.subject || '',
-                bodyText,
-                messageId: parsed.messageId || null,
-                inReplyTo: parsed.inReplyTo || null,
-                attachments,
-                autoSubmitted,
-                date: parsed.date || null,
-              });
-            } catch (parseErr) {
-              console.error('[inbox-poller] Parse error for msg', seqno, parseErr.message);
-            }
+              resolveMsg();
+            });
           });
+          messagePromises.push(msgPromise);
         });
 
         fetch.once('error', err => {
@@ -206,8 +211,10 @@ function fetchMailsFromUid(imap, sinceUid) {
           reject(err);
         });
         fetch.once('end', () => {
-          console.log(`[inbox-poller] fetch: done, collected ${mails.length} mail(s)`);
-          resolve(mails);
+          Promise.all(messagePromises).then(() => {
+            console.log(`[inbox-poller] fetch: done, collected ${mails.length} mail(s)`);
+            resolve(mails);
+          }).catch(reject);
         });
       });
     });
