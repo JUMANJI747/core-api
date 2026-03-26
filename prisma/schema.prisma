@@ -204,6 +204,14 @@ model Memory {
   @@index([createdAt])
 }
 
+// ============ IMAP STATE ============
+
+model ImapState {
+  inbox     String   @id
+  lastUid   Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
 // ============ AUDIT LOG ============
 
 model AuditLog {

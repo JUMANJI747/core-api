@@ -438,3 +438,6 @@ app.post("/api/contractors/verify-nip", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Core API running on port ${PORT}`);
 });
+
+// ============ INBOX POLLER ============
+require('./inbox-poller');
