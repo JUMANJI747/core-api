@@ -130,6 +130,8 @@ function fetchMailsFromUid(imap, sinceUid) {
         const filteredUids = uids.filter(uid => uid > sinceUid);
         if (filteredUids.length === 0) return resolve([]);
 
+        console.log(`[inbox-poller] fetching UIDs: ${filteredUids.join(',')}`);
+
         const mails = [];
         const fetch = imap.fetch(filteredUids, {
           bodies: '',
@@ -137,6 +139,7 @@ function fetchMailsFromUid(imap, sinceUid) {
         });
 
         fetch.on('message', (msg, seqno) => {
+          console.log(`[inbox-poller] fetch: on message seqno=${seqno}`);
           let uid = null;
           let rawBuffer = [];
 
@@ -145,10 +148,12 @@ function fetchMailsFromUid(imap, sinceUid) {
           });
 
           msg.on('body', stream => {
+            console.log(`[inbox-poller] fetch: on body uid=${uid} seqno=${seqno}`);
             stream.on('data', chunk => rawBuffer.push(chunk));
           });
 
           msg.once('end', async () => {
+            console.log(`[inbox-poller] fetch: on end uid=${uid} seqno=${seqno} bufferSize=${rawBuffer.reduce((s, c) => s + c.length, 0)}`);
             try {
               const raw = Buffer.concat(rawBuffer);
               const parsed = await simpleParser(raw);
@@ -196,8 +201,14 @@ function fetchMailsFromUid(imap, sinceUid) {
           });
         });
 
-        fetch.once('error', reject);
-        fetch.once('end', () => resolve(mails));
+        fetch.once('error', err => {
+          console.error(`[inbox-poller] fetch error:`, err.message);
+          reject(err);
+        });
+        fetch.once('end', () => {
+          console.log(`[inbox-poller] fetch: done, collected ${mails.length} mail(s)`);
+          resolve(mails);
+        });
       });
     });
   });
