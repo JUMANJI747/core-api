@@ -103,6 +103,21 @@ function connectImap(account) {
   });
 }
 
+function getHighestUid(imap) {
+  return new Promise((resolve, reject) => {
+    imap.openBox('INBOX', true, (err, box) => {
+      if (err) return reject(err);
+      if (box.messages.total === 0) return resolve(0);
+
+      imap.search([['UID', '1:*']], (searchErr, uids) => {
+        if (searchErr) return reject(searchErr);
+        if (!uids || uids.length === 0) return resolve(0);
+        resolve(Math.max(...uids));
+      });
+    });
+  });
+}
+
 function fetchMailsFromUid(imap, sinceUid) {
   return new Promise((resolve, reject) => {
     imap.openBox('INBOX', true, (err, box) => {
@@ -307,8 +322,24 @@ async function processAccount(account) {
     const state = await prisma.imapState.findUnique({ where: { inbox } });
     const lastUid = state ? state.lastUid : 0;
 
-    // Connect and fetch
+    // Connect
     imap = await connectImap(account);
+
+    // First run: just save current highest UID, skip all existing emails
+    if (lastUid === 0) {
+      const highestUid = await getHighestUid(imap);
+      imap.end();
+      imap = null;
+      console.log(`[inbox-poller] First run, saving current UID position (${highestUid}), skipping old emails`);
+      await prisma.imapState.upsert({
+        where: { inbox },
+        update: { lastUid: highestUid },
+        create: { inbox, lastUid: highestUid },
+      });
+      return;
+    }
+
+    // Fetch new mails since lastUid
     const mails = await fetchMailsFromUid(imap, lastUid);
     imap.end();
     imap = null;
