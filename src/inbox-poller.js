@@ -338,7 +338,7 @@ async function processAccount(account) {
         if (mail.uid > maxUid) maxUid = mail.uid;
 
         // Date filter: skip mails older than 8 minutes
-        const AGE_LIMIT_MS = 8 * 60 * 1000;
+        const AGE_LIMIT_MS = 30 * 60 * 1000;
         const mailDate = mail.date ? new Date(mail.date).getTime() : 0;
         if (mailDate && Date.now() - mailDate > AGE_LIMIT_MS) {
           console.log(`[inbox-poller] skipping old mail uid=${mail.uid} date=${mail.date}`);
