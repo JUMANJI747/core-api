@@ -411,7 +411,7 @@ async function processAccount(account) {
           if (contractor) contractorId = contractor.id;
         }
 
-        await prisma.email.create({
+        const savedEmail = await prisma.email.create({
           data: {
             direction: 'INBOUND',
             inbox,
@@ -427,6 +427,40 @@ async function processAccount(account) {
             contractorId,
           },
         });
+
+        // Auto-create contractor if not found
+        if (!contractorId && mail.fromEmail) {
+          const FREE_DOMAINS = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com'];
+          const domain = mail.fromEmail.split('@')[1] || '';
+          const skipCreate = FREE_DOMAINS.includes(domain.toLowerCase()) && !mail.fromName;
+
+          if (!skipCreate) {
+            const name = mail.fromName || mail.fromEmail.split('@')[0];
+            const newContractor = await prisma.contractor.create({
+              data: {
+                name,
+                email: mail.fromEmail,
+                type: 'BUSINESS',
+                ...(country && country !== 'UNKNOWN' ? { country } : {}),
+                source: 'email',
+                tags: ['auto-created'],
+              },
+            });
+            contractorId = newContractor.id;
+            console.log(`[inbox-poller] auto-created contractor: ${name} <${mail.fromEmail}>`);
+          }
+        } else if (contractorId) {
+          const contractor = await prisma.contractor.findFirst({ where: { id: contractorId } });
+          console.log(`[inbox-poller] linked to existing contractor: ${contractor?.name}`);
+        }
+
+        // Link email to contractor
+        if (contractorId) {
+          await prisma.email.update({
+            where: { id: savedEmail.id },
+            data: { contractorId },
+          });
+        }
 
         // Telegram notification — only CLIENT_REPLY and COURIER_ALERT
         if ((category === 'CLIENT_REPLY' || category === 'COURIER_ALERT') && tgToken && tgChat) {
