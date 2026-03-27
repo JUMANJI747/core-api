@@ -267,10 +267,11 @@ app.get("/api/emails", async (req, res) => {
   if (fromEmail) where.fromEmail = { contains: fromEmail, mode: "insensitive" };
   if (contractorId) where.contractorId = contractorId;
   if (search) {
+    const searchTerm = search.includes('@') ? search.split('@')[0] : search;
     where.OR = [
-      { fromEmail: { contains: search, mode: "insensitive" } },
-      { fromName: { contains: search, mode: "insensitive" } },
-      { subject: { contains: search, mode: "insensitive" } },
+      { fromEmail: { contains: searchTerm, mode: "insensitive" } },
+      { fromName: { contains: searchTerm, mode: "insensitive" } },
+      { subject: { contains: searchTerm, mode: "insensitive" } },
     ];
   }
   const take = Math.min(parseInt(limit) || 20, 100);
