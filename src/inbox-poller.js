@@ -68,6 +68,7 @@ function stripHtml(html) {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -163,11 +164,23 @@ function fetchMailsFromUid(imap, sinceUid) {
                 const toEmail = toAddr ? (toAddr.address || '').toLowerCase() : '';
 
                 let bodyText = '';
-                if (parsed.text) {
+                let bodySource = 'empty';
+                if (parsed.text && parsed.text.trim()) {
                   bodyText = parsed.text;
-                } else if (parsed.html) {
+                  bodySource = 'text';
+                } else if (parsed.textAsHtml && parsed.textAsHtml.trim()) {
+                  bodyText = stripHtml(parsed.textAsHtml);
+                  bodySource = 'textAsHtml';
+                } else if (parsed.html && parsed.html.trim()) {
                   bodyText = stripHtml(parsed.html);
+                  bodySource = 'html';
+                } else if (parsed.body && parsed.body.trim()) {
+                  bodyText = parsed.body;
+                  bodySource = 'body';
+                } else {
+                  bodyText = '[Brak treści]';
                 }
+                console.log(`[inbox-poller] body source: ${bodySource}`);
 
                 const attachments = (parsed.attachments || []).map(a => ({
                   filename: a.filename || 'attachment',
