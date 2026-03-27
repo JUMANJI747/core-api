@@ -274,7 +274,7 @@ Return JSON:
   "country": "ISO 3166-1 alpha-2 or best guess",
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
-  "summary_pl": "1-3 sentence summary in Polish"
+  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków."
 }
 
 Rules:
