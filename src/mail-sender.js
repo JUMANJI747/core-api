@@ -46,6 +46,8 @@ function findAccount(fromEmail) {
   }) || null;
   if (account) {
     console.log(`[mail-sender] found account for ${fromEmail}`);
+    console.log('[mail-sender] account keys:', Object.keys(account));
+    console.log('[mail-sender] account has pass:', !!account.pass, 'passLength:', (account.pass || '').length);
   } else {
     const available = accounts.map(a => a.user).join(', ');
     console.log(`[mail-sender] no account found for ${fromEmail}, available: ${available}`);
