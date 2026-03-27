@@ -259,12 +259,22 @@ app.post("/api/emails", async (req, res) => {
 });
 
 app.get("/api/emails", async (req, res) => {
-  const { inbox, direction, isRead, limit } = req.query;
+  const { inbox, direction, isRead, limit, fromEmail, search, contractorId } = req.query;
   const where = {};
   if (inbox) where.inbox = inbox;
   if (direction) where.direction = direction;
   if (isRead !== undefined) where.isRead = isRead === "true";
-  const emails = await prisma.email.findMany({ where, include: { contractor: true }, take: parseInt(limit) || 20, orderBy: { createdAt: "desc" } });
+  if (fromEmail) where.fromEmail = { contains: fromEmail, mode: "insensitive" };
+  if (contractorId) where.contractorId = contractorId;
+  if (search) {
+    where.OR = [
+      { fromEmail: { contains: search, mode: "insensitive" } },
+      { fromName: { contains: search, mode: "insensitive" } },
+      { subject: { contains: search, mode: "insensitive" } },
+    ];
+  }
+  const take = Math.min(parseInt(limit) || 20, 100);
+  const emails = await prisma.email.findMany({ where, include: { contractor: true }, take, orderBy: { createdAt: "desc" } });
   res.json(emails);
 });
 
