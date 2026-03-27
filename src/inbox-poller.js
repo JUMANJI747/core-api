@@ -130,8 +130,6 @@ function fetchMailsFromUid(imap, sinceUid) {
         const filteredUids = uids.filter(uid => uid > sinceUid);
         if (filteredUids.length === 0) return resolve([]);
 
-        console.log(`[inbox-poller] fetching UIDs: ${filteredUids.join(',')}`);
-
         const mails = [];
         const messagePromises = [];
         const fetch = imap.fetch(filteredUids, {
@@ -140,7 +138,6 @@ function fetchMailsFromUid(imap, sinceUid) {
         });
 
         fetch.on('message', (msg, seqno) => {
-          console.log(`[inbox-poller] fetch: on message seqno=${seqno}`);
           let uid = null;
           let rawBuffer = [];
 
@@ -149,13 +146,11 @@ function fetchMailsFromUid(imap, sinceUid) {
           });
 
           msg.on('body', stream => {
-            console.log(`[inbox-poller] fetch: on body uid=${uid} seqno=${seqno}`);
             stream.on('data', chunk => rawBuffer.push(chunk));
           });
 
           const msgPromise = new Promise(resolveMsg => {
             msg.once('end', async () => {
-              console.log(`[inbox-poller] fetch: on end uid=${uid} seqno=${seqno} bufferSize=${rawBuffer.reduce((s, c) => s + c.length, 0)}`);
               try {
                 const raw = Buffer.concat(rawBuffer);
                 const parsed = await simpleParser(raw);
