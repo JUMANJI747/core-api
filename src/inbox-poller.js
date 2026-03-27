@@ -34,10 +34,22 @@ const BLOCKED_SUBJECT_KEYWORDS = [
 ];
 
 const BLOCKED_DOMAINS = [
-  'dpd.', 'dhl.', 'ups.', 'gls.', 'fedex.', 'inpost.', 'pocztapolska.',
-  'tnt.', 'hermes.', 'correos.', 'chronopost.', 'colissimo.', 'laposte.',
   'amazon.', 'ebay.', 'allegro.', 'mailchimp.', 'sendgrid.', 'brevo.', 'hubspot.',
 ];
+
+const NEWSLETTER_BODY_KEYWORDS = [
+  'rezygnuj z subskrypcji', 'unsubscribe', 'wypisz się', 'désabonner',
+  'darse de baja', 'abmelden', 'manage your subscription', 'email preferences', 'opt out',
+];
+
+// Returns reason string if newsletter, null if ok
+function newsletterFilter(mail) {
+  if (mail.listUnsubscribe) return 'list-unsubscribe header';
+  const tail = (mail.bodyText || '').toLowerCase().slice(-500);
+  const kw = NEWSLETTER_BODY_KEYWORDS.find(k => tail.includes(k));
+  if (kw) return 'unsubscribe link';
+  return null;
+}
 
 function hardFilter(mail) {
   const fromEmail = (mail.fromEmail || '').toLowerCase();
@@ -165,18 +177,12 @@ function fetchMailsFromUid(imap, sinceUid) {
 
                 let bodyText = '';
                 let bodySource = 'empty';
-                if (parsed.text && parsed.text.trim()) {
+                if (parsed.text && parsed.text.trim().length > 5) {
                   bodyText = parsed.text;
                   bodySource = 'text';
-                } else if (parsed.textAsHtml && parsed.textAsHtml.trim()) {
-                  bodyText = stripHtml(parsed.textAsHtml);
-                  bodySource = 'textAsHtml';
                 } else if (parsed.html && parsed.html.trim()) {
                   bodyText = stripHtml(parsed.html);
                   bodySource = 'html';
-                } else if (parsed.body && parsed.body.trim()) {
-                  bodyText = parsed.body;
-                  bodySource = 'body';
                 } else {
                   bodyText = '[Brak treści]';
                 }
@@ -192,6 +198,10 @@ function fetchMailsFromUid(imap, sinceUid) {
                   ? (parsed.headers.get('auto-submitted') || '')
                   : '';
 
+                const listUnsubscribe = parsed.headers && parsed.headers.get
+                  ? (parsed.headers.get('list-unsubscribe') || '')
+                  : '';
+
                 mails.push({
                   uid,
                   fromEmail,
@@ -203,6 +213,7 @@ function fetchMailsFromUid(imap, sinceUid) {
                   inReplyTo: parsed.inReplyTo || null,
                   attachments,
                   autoSubmitted,
+                  listUnsubscribe,
                   date: parsed.date || null,
                 });
               } catch (parseErr) {
@@ -381,6 +392,13 @@ async function processAccount(account) {
         // Hard filter
         if (!hardFilter(mail)) {
           console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
+          continue;
+        }
+
+        // Newsletter filter
+        const newsletterReason = newsletterFilter(mail);
+        if (newsletterReason) {
+          console.log(`[inbox-poller] filtered (newsletter) uid=${mail.uid} from=${mail.fromEmail} reason=${newsletterReason}`);
           continue;
         }
 
