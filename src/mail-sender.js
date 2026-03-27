@@ -60,7 +60,10 @@ function extractInbox(email) {
 // ============ SEND MAIL ============
 
 async function sendMail({ from, to, subject, body, replyTo }) {
+  console.log('[mail-sender] IMAP_ACCOUNTS parsed:', JSON.stringify(getAccounts().map(a => ({ inbox: a.inbox, user: a.user, hasPass: !!a.pass }))));
+  console.log('[mail-sender] looking for FROM:', from);
   const account = findAccount(from);
+  console.log('[mail-sender] findAccount result:', account ? { user: account.user, inbox: account.inbox } : null);
   if (!account) {
     const available = getAccounts().map(a => a.user).join(', ');
     throw new Error(`Unknown sender address, available: ${available}`);
