@@ -1,5 +1,6 @@
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
+const { sendMail, findAccount, extractInbox, getAccounts } = require("./mail-sender");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -282,6 +283,88 @@ app.get("/api/emails", async (req, res) => {
 app.patch("/api/emails/:id/read", async (req, res) => {
   const email = await prisma.email.update({ where: { id: req.params.id }, data: { isRead: true } });
   res.json(email);
+});
+
+// ============ SEND EMAIL (HITL) ============
+
+app.post("/api/send-email", async (req, res) => {
+  try {
+    const { from, to, subject, body, replyTo, draft = true } = req.body;
+    if (!from || !to || !subject || !body) {
+      return res.status(400).json({ error: "from, to, subject, body are required" });
+    }
+
+    const account = findAccount(from);
+    if (!account) {
+      const available = getAccounts().map(a => a.user).join(", ");
+      return res.status(400).json({ error: `Unknown sender address, available: ${available}` });
+    }
+
+    if (draft) {
+      // Save as DRAFT — no SMTP
+      let contractorId = null;
+      const contractor = await prisma.contractor.findFirst({
+        where: { email: { contains: to, mode: "insensitive" } },
+      });
+      if (contractor) contractorId = contractor.id;
+
+      const saved = await prisma.email.create({
+        data: {
+          direction: "DRAFT",
+          inbox: extractInbox(from),
+          fromEmail: from,
+          toEmail: to,
+          subject: subject || null,
+          bodyPreview: (body || "").slice(0, 300),
+          bodyFull: (body || "").slice(0, 2000),
+          ...(replyTo ? { inReplyTo: replyTo } : {}),
+          contractorId,
+        },
+      });
+
+      return res.json({
+        ok: true,
+        draft: true,
+        emailId: saved.id,
+        preview: { from, to, subject, body },
+      });
+    }
+
+    // Send immediately
+    const saved = await sendMail({ from, to, subject, body, replyTo });
+    return res.json({ ok: true, sent: true, emailId: saved.id });
+  } catch (e) {
+    const status = e.message.startsWith("Rate limit") ? 429 : 500;
+    res.status(status).json({ error: e.message });
+  }
+});
+
+app.post("/api/send-email/:id/confirm", async (req, res) => {
+  try {
+    const email = await prisma.email.findUnique({ where: { id: req.params.id } });
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    if (email.direction !== "DRAFT") return res.status(400).json({ error: "Not a draft" });
+
+    await sendMail({
+      from: email.fromEmail,
+      to: email.toEmail,
+      subject: email.subject || "",
+      body: email.bodyFull || "",
+      replyTo: email.inReplyTo || undefined,
+    });
+
+    await prisma.email.update({ where: { id: email.id }, data: { direction: "OUTBOUND" } });
+
+    return res.json({
+      ok: true,
+      sent: true,
+      emailId: email.id,
+      message: `Sent from ${email.fromEmail} to ${email.toEmail}`,
+    });
+  } catch (e) {
+    const status = e.message.startsWith("Rate limit") ? 429 : 500;
+    res.status(status).json({ error: e.message });
+  }
 });
 
 // ============ MAILING CONTACTS ============
