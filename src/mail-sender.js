@@ -39,7 +39,18 @@ function getAccounts() {
 
 function findAccount(fromEmail) {
   const accounts = getAccounts();
-  return accounts.find(a => (a.user || '').toLowerCase() === fromEmail.toLowerCase()) || null;
+  const from = fromEmail.toLowerCase();
+  const account = accounts.find(a => {
+    const user = (a.user || '').toLowerCase();
+    return user === from || from.includes(user) || user.includes(from);
+  }) || null;
+  if (account) {
+    console.log(`[mail-sender] found account for ${fromEmail}`);
+  } else {
+    const available = accounts.map(a => a.user).join(', ');
+    console.log(`[mail-sender] no account found for ${fromEmail}, available: ${available}`);
+  }
+  return account;
 }
 
 function extractInbox(email) {

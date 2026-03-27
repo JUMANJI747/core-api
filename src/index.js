@@ -367,7 +367,7 @@ app.post("/api/send-email/confirm", async (req, res) => {
 
     await prisma.email.update({ where: { id: email.id }, data: { direction: "OUTBOUND" } });
 
-    return res.json({ ok: true, sent: true, emailId: email.id, from: email.fromEmail, to: email.toEmail, subject: email.subject });
+    return res.json({ ok: true, sent: true, emailId: email.id, from: email.fromEmail, to: email.toEmail, subject: email.subject, message: `Mail wysłany z ${email.fromEmail} do ${email.toEmail}, temat: ${email.subject}` });
   } catch (e) {
     const status = e.message.startsWith("Rate limit") ? 429 : 500;
     res.status(status).json({ error: e.message });
