@@ -269,7 +269,7 @@ Return JSON:
   "country": "ISO 3166-1 alpha-2 or best guess",
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
-  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków."
+  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie."
 }
 
 Rules:
@@ -432,12 +432,6 @@ async function processAccount(account) {
         if ((category === 'CLIENT_REPLY' || category === 'COURIER_ALERT') && tgToken && tgChat) {
           const prefix = category === 'COURIER_ALERT' ? '[ALERT]' : '[MAIL]';
           let msg = `${prefix} ${inbox}@ / Kraj: ${country} | ${language}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}`;
-
-          // Add full translation if body is short enough
-          const bodyForTg = (mail.bodyText || '').trim();
-          if (bodyForTg.length > 0 && bodyForTg.length < 3000) {
-            msg += `\n\n---\n${bodyForTg.slice(0, 2000)}`;
-          }
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
