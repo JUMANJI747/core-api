@@ -339,6 +339,41 @@ app.post("/api/send-email", async (req, res) => {
   }
 });
 
+app.get("/api/send-email/drafts", async (req, res) => {
+  const drafts = await prisma.email.findMany({
+    where: { direction: "DRAFT" },
+    select: { id: true, fromEmail: true, toEmail: true, subject: true, bodyPreview: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+  res.json(drafts);
+});
+
+app.post("/api/send-email/confirm", async (req, res) => {
+  try {
+    const { emailId } = req.body;
+    if (!emailId) return res.status(400).json({ error: "emailId is required" });
+    const email = await prisma.email.findUnique({ where: { id: emailId } });
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    if (email.direction !== "DRAFT") return res.status(400).json({ error: "Not a draft" });
+
+    await sendMail({
+      from: email.fromEmail,
+      to: email.toEmail,
+      subject: email.subject || "",
+      body: email.bodyFull || "",
+      replyTo: email.inReplyTo || undefined,
+    });
+
+    await prisma.email.update({ where: { id: email.id }, data: { direction: "OUTBOUND" } });
+
+    return res.json({ ok: true, sent: true, emailId: email.id, from: email.fromEmail, to: email.toEmail, subject: email.subject });
+  } catch (e) {
+    const status = e.message.startsWith("Rate limit") ? 429 : 500;
+    res.status(status).json({ error: e.message });
+  }
+});
+
 app.post("/api/send-email/:id/confirm", async (req, res) => {
   try {
     const email = await prisma.email.findUnique({ where: { id: req.params.id } });
