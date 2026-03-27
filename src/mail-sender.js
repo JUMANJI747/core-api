@@ -71,13 +71,15 @@ async function sendMail({ from, to, subject, body, replyTo }) {
 
   checkRateLimit();
 
+  console.log('[mail-sender] SMTP config:', { host: SMTP_HOST, port: SMTP_PORT, user: account.user, hasPass: !!account.pass, passLength: (account.pass || '').length });
+
   const transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: true, // SSL/TLS on 465
     auth: {
       user: account.user,
-      pass: account.password,
+      pass: account.pass,
     },
   });
 
