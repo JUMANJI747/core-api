@@ -280,6 +280,16 @@ app.get("/api/emails", async (req, res) => {
   res.json(emails);
 });
 
+app.get("/api/emails/recent", async (req, res) => {
+  const take = Math.min(parseInt(req.query.limit) || 50, 100);
+  const emails = await prisma.email.findMany({
+    select: { id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true, tags: true, inbox: true, createdAt: true, contractor: { select: { name: true, country: true } } },
+    orderBy: { createdAt: "desc" },
+    take,
+  });
+  res.json(emails);
+});
+
 app.patch("/api/emails/:id/read", async (req, res) => {
   const email = await prisma.email.update({ where: { id: req.params.id }, data: { isRead: true } });
   res.json(email);

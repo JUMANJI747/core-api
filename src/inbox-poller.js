@@ -573,6 +573,17 @@ async function processAccount(account) {
           } catch (tgErr) {
             console.error(`[inbox-poller] Telegram error:`, tgErr.message);
           }
+
+          try {
+            await httpsPost(
+              'https://exquisite-perception-production.up.railway.app/api/memory',
+              { 'x-api-key': 'sdfnsjd34244ZGFDFD##@$@#CFV213ad' },
+              { role: 'assistant', content: msg }
+            );
+            console.log('[inbox-poller] saved to memory');
+          } catch (memErr) {
+            console.error('[inbox-poller] memory save error:', memErr.message);
+          }
         }
 
       } catch (mailErr) {
