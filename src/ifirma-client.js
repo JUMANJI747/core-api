@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 const https = require('https');
 
-const login = (process.env.IFIRMA_LOGIN || '').trim();
-const keyHex = (process.env.IFIRMA_KEY_HEX || '').trim();
+const login = (process.env.IFIRMA_USER || '').trim();
+const keyHex = (process.env.IFIRMA_API_KEY || '').trim();
 
 function generateAuth(url, login, keyHex) {
   const msg = url + login + 'faktura';
