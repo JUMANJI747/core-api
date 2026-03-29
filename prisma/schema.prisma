@@ -29,9 +29,36 @@ model Contractor {
   deals        Deal[]
   consignments Consignment[]
   emails       Email[]
+  invoices     Invoice[]
 
   @@index([country])
   @@index([tags])
+}
+
+// ============ FAKTURY (iFirma) ============
+
+model Invoice {
+  id                 String      @id @default(uuid())
+  contractorId       String?
+  contractor         Contractor? @relation(fields: [contractorId], references: [id])
+  ifirmaId           Int?        @unique
+  number             String
+  issueDate          DateTime
+  dueDate            DateTime?
+  grossAmount        Float
+  currency           String      @default("PLN")
+  paidAmount         Float       @default(0)
+  status             String      @default("unpaid")
+  type               String?
+  ifirmaContractorId String?
+  extras             Json        @default("{}")
+  bankReference      String?
+  bankDate           DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@index([contractorId])
+  @@index([number])
 }
 
 // ============ PIPELINE (STATUSY KLIENTÓW) ============
