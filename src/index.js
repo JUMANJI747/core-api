@@ -563,134 +563,140 @@ app.get("/api/stats", async (req, res) => {
   res.json({ contractors, openDeals, openConsignments, unreadEmails, pendingMailing });
 });
 
-// ============ IMPORT IFIRMA ============
+// ============ IFIRMA ============
+const { fetchInvoices: fetchIfirmaInvoices } = require("./ifirma-client");
+
+function guessCountryFromInv(inv) {
+  const rodzaj = (inv.Rodzaj || "").toLowerCase();
+  const waluta = (inv.Waluta || "PLN").toUpperCase();
+  const nip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
+  if (rodzaj.includes("kraj")) return "PL";
+  if (waluta === "EUR") {
+    if (/^\d{9}$/.test(nip) && parseInt(nip[0]) >= 1 && parseInt(nip[0]) <= 5) return "PT";
+    if (/^[BXA-Z]/i.test(nip)) return "ES";
+    if (/^\d{11}$/.test(nip) && nip[0] === "0") return "IT";
+    if (/^\d{11}$/.test(nip) && nip[0] === "4") return "FR";
+  }
+  return null;
+}
+
+async function processIfirmaInvoices(invoices) {
+  // Build unique contractors by NIP
+  const nipToInv = new Map();
+  for (const inv of invoices) {
+    const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
+    if (!rawNip) continue;
+    if (!nipToInv.has(rawNip)) nipToInv.set(rawNip, inv);
+  }
+
+  let contractorsCreated = 0, contractorsSkipped = 0;
+  const nipToContractorId = new Map();
+
+  for (const [nip, inv] of nipToInv) {
+    const existing = await prisma.contractor.findUnique({ where: { nip } });
+    if (existing) {
+      contractorsSkipped++;
+      nipToContractorId.set(nip, existing.id);
+    } else {
+      const rawName = (inv.NazwaKontrahenta || "").replace(/^-+\s*/, "").trim();
+      const country = guessCountryFromInv(inv);
+      const ifirmaContractorIdVal = inv.IdentyfikatorKontrahenta || null;
+      const created = await prisma.contractor.create({
+        data: {
+          name: rawName,
+          nip,
+          type: "BUSINESS",
+          country,
+          source: "ifirma",
+          tags: ["ifirma-import"],
+          extras: ifirmaContractorIdVal ? { ifirmaId: ifirmaContractorIdVal } : {},
+        },
+      });
+      contractorsCreated++;
+      nipToContractorId.set(nip, created.id);
+    }
+  }
+
+  let invoicesCreated = 0, invoicesUpdated = 0;
+  for (const inv of invoices) {
+    const ifirmaId = inv.FakturaId || null;
+    if (!ifirmaId) continue;
+
+    const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
+    const contractorId = rawNip ? (nipToContractorId.get(rawNip) || null) : null;
+    const grossAmount = parseFloat(inv.Brutto || 0);
+    const paidAmount = parseFloat(inv.Zaplacono || 0);
+    const currency = (inv.Waluta || "PLN").toUpperCase();
+    const status = paidAmount >= grossAmount ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
+    if (existing) {
+      await prisma.invoice.update({ where: { ifirmaId }, data: { paidAmount, status } });
+      invoicesUpdated++;
+    } else {
+      await prisma.invoice.create({
+        data: {
+          ifirmaId,
+          contractorId,
+          number: inv.PelnyNumer || "",
+          issueDate: inv.DataWystawienia ? new Date(inv.DataWystawienia) : new Date(),
+          dueDate: inv.TerminPlatnosci ? new Date(inv.TerminPlatnosci) : null,
+          grossAmount,
+          currency,
+          paidAmount,
+          status,
+          type: inv.Rodzaj || null,
+          ifirmaContractorId: inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null,
+          extras: {},
+        },
+      });
+      invoicesCreated++;
+    }
+  }
+
+  // Link emails without contractorId to contractors by name (min 4 chars, case insensitive)
+  const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
+  let linked = 0;
+  for (const contractor of allContractors) {
+    if (!contractor.name || contractor.name.length < 4) continue;
+    const updated = await prisma.email.updateMany({
+      where: { contractorId: null, fromName: { contains: contractor.name, mode: "insensitive" } },
+      data: { contractorId: contractor.id },
+    });
+    linked += updated.count;
+  }
+
+  return { contractors: { created: contractorsCreated, skipped: contractorsSkipped }, invoices: { created: invoicesCreated, updated: invoicesUpdated }, linked };
+}
+
 app.post("/api/contractors/import-ifirma", async (req, res) => {
   try {
     const { invoices } = req.body;
     if (!Array.isArray(invoices) || !invoices.length) return res.status(400).json({ error: "invoices array required" });
+    const result = await processIfirmaInvoices(invoices);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    // Helper: determine country from currency and NIP
-    function guessCountry(inv) {
-      const rodzaj = (inv.Rodzaj || "").toLowerCase();
-      const waluta = (inv.Waluta || "PLN").toUpperCase();
-      const nip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
+app.post("/api/ifirma/sync", async (req, res) => {
+  try {
+    const { dataOd, dataDo } = req.body || {};
+    const defaultOd = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const invoices = await fetchIfirmaInvoices({ dataOd: dataOd || defaultOd, dataDo });
+    const result = await processIfirmaInvoices(invoices);
+    res.json({ ok: true, fetched: invoices.length, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-      if (rodzaj.includes("kraj")) return "PL";
-      if (waluta === "EUR") {
-        if (/^\d{9}$/.test(nip) && parseInt(nip[0]) >= 1 && parseInt(nip[0]) <= 5) return "PT";
-        if (/^[BXA-Z]/i.test(nip)) return "ES";
-        if (/^\d{11}$/.test(nip) && nip[0] === "0") return "IT";
-        if (/^\d{11}$/.test(nip) && nip[0] === "4") return "FR";
-      }
-      return null;
-    }
-
-    // Build unique contractors by NIP
-    const nipToInv = new Map();
-    for (const inv of invoices) {
-      const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
-      if (!rawNip) continue;
-      if (!nipToInv.has(rawNip)) nipToInv.set(rawNip, inv);
-    }
-
-    let contractorsCreated = 0, contractorsSkipped = 0;
-    const nipToContractorId = new Map();
-
-    for (const [nip, inv] of nipToInv) {
-      const existing = await prisma.contractor.findUnique({ where: { nip } });
-      if (existing) {
-        contractorsSkipped++;
-        nipToContractorId.set(nip, existing.id);
-      } else {
-        const rawName = (inv.NazwaKontrahenta || "").replace(/^-+\s*/, "").trim();
-        const country = guessCountry(inv);
-        const ifirmaContractorIdVal = inv.IdentyfikatorKontrahenta || null;
-        const created = await prisma.contractor.create({
-          data: {
-            name: rawName,
-            nip,
-            type: "BUSINESS",
-            country,
-            source: "ifirma",
-            tags: ["ifirma-import"],
-            extras: ifirmaContractorIdVal ? { ifirmaId: ifirmaContractorIdVal } : {},
-          },
-        });
-        contractorsCreated++;
-        nipToContractorId.set(nip, created.id);
-      }
-    }
-
-    // Import invoices
-    let invoicesCreated = 0, invoicesUpdated = 0;
-    for (const inv of invoices) {
-      const ifirmaId = inv.FakturaId || null;
-      if (!ifirmaId) continue;
-
-      const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
-      const contractorId = rawNip ? (nipToContractorId.get(rawNip) || null) : null;
-
-      const grossAmount = parseFloat(inv.Brutto || 0);
-      const paidAmount = parseFloat(inv.Zaplacono || 0);
-      const currency = (inv.Waluta || "PLN").toUpperCase();
-      const status = paidAmount >= grossAmount ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
-
-      const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
-      if (existing) {
-        await prisma.invoice.update({
-          where: { ifirmaId },
-          data: { paidAmount, status },
-        });
-        invoicesUpdated++;
-      } else {
-        const number = inv.PelnyNumer || "";
-        const issueDate = inv.DataWystawienia ? new Date(inv.DataWystawienia) : new Date();
-        const dueDateRaw = inv.TerminPlatnosci;
-        const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
-        const type = inv.Rodzaj || null;
-        const ifirmaContractorId = inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null;
-
-        await prisma.invoice.create({
-          data: {
-            ifirmaId,
-            contractorId,
-            number,
-            issueDate,
-            dueDate,
-            grossAmount,
-            currency,
-            paidAmount,
-            status,
-            type,
-            ifirmaContractorId: ifirmaContractorId || null,
-            extras: {},
-          },
-        });
-        invoicesCreated++;
-      }
-    }
-
-    // Link emails without contractorId to contractors by name (min 4 chars, case insensitive)
-    const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
-    let linked = 0;
-    for (const contractor of allContractors) {
-      if (!contractor.name || contractor.name.length < 4) continue;
-      const updated = await prisma.email.updateMany({
-        where: {
-          contractorId: null,
-          fromName: { contains: contractor.name, mode: "insensitive" },
-        },
-        data: { contractorId: contractor.id },
-      });
-      linked += updated.count;
-    }
-
-    res.json({
-      ok: true,
-      contractors: { created: contractorsCreated, skipped: contractorsSkipped },
-      invoices: { created: invoicesCreated, updated: invoicesUpdated },
-      linked,
-    });
+app.get("/api/ifirma/invoices", async (req, res) => {
+  try {
+    const { dataOd, dataDo, status, nipKontrahenta } = req.query;
+    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo, status, nipKontrahenta });
+    res.json(invoices);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
