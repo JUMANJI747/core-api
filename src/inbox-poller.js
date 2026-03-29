@@ -242,6 +242,24 @@ function fetchMailsFromUid(imap, sinceUid) {
 
 // ============ AI CLASSIFICATION ============
 
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search };
+    https.get(options, res => {
+      let chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString()) });
+        } catch (e) {
+          reject(new Error('Invalid JSON: ' + Buffer.concat(chunks).toString().slice(0, 200)));
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
 function httpsPost(url, headers, body) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -293,7 +311,8 @@ Return JSON:
   "country": "ISO 3166-1 alpha-2 or best guess",
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
-  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie."
+  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie.",
+  "vat_numbers": ["lista numerów VAT/NIP/NIF znalezionych w mailu, format: kod_kraju + numer, np. PT504641263, FR0786403769. Jeśli brak — pusta tablica."]
 }
 
 Rules:
@@ -311,7 +330,7 @@ Rules:
     },
     {
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
+      max_tokens: 500,
       temperature: 0,
       messages: [{ role: 'user', content: prompt }],
     }
@@ -327,6 +346,36 @@ Rules:
   if (!jsonMatch) throw new Error('No JSON in AI response: ' + text.slice(0, 200));
 
   return JSON.parse(jsonMatch[0]);
+}
+
+// ============ VAT VERIFICATION ============
+
+async function checkVat(rawVat) {
+  const vatNumber = rawVat.trim().replace(/[\s\-]/g, '').toUpperCase();
+  const countryCode = vatNumber.slice(0, 2);
+  const number = vatNumber.slice(2);
+
+  if (countryCode === 'PL') {
+    const today = new Date().toISOString().slice(0, 10);
+    const res = await httpsGet(`https://wl-api.mf.gov.pl/api/search/nip/${number}?date=${today}`);
+    if (res.status === 404 || !res.data?.result?.subject) {
+      console.log(`[inbox-poller] VAT check: ${vatNumber} → invalid`);
+      return { vatNumber, valid: false, name: null };
+    }
+    const s = res.data.result.subject;
+    const valid = s.statusVat === 'Czynny';
+    console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
+    return { vatNumber, valid, name: s.name || null };
+  } else {
+    const data = await httpsPost(
+      'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number',
+      {},
+      { countryCode, vatNumber: number }
+    );
+    const valid = data.valid === true;
+    console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
+    return { vatNumber, valid, name: data.name || null };
+  }
 }
 
 // ============ TELEGRAM ============
@@ -420,7 +469,7 @@ async function processAccount(account) {
           continue;
         }
 
-        const { category, country, language, subject_pl, summary_pl } = classification;
+        const { category, country, language, subject_pl, summary_pl, vat_numbers } = classification;
         console.log(`[inbox-poller] ${inbox}: uid=${mail.uid} category=${category}`);
 
         // Skip spam and auto-reply — don't save, don't notify
@@ -493,10 +542,31 @@ async function processAccount(account) {
           });
         }
 
+        // VAT verification
+        let vatLines = '';
+        if (Array.isArray(vat_numbers) && vat_numbers.length > 0) {
+          const vatResults = [];
+          for (const vat of vat_numbers) {
+            try {
+              const result = await checkVat(vat);
+              const label = result.valid
+                ? `aktywny${result.name ? ` (${result.name})` : ''}`
+                : 'NIEWAŻNY';
+              vatResults.push(`VAT ${result.vatNumber}: ${label}`);
+            } catch (vatErr) {
+              console.error(`[inbox-poller] VAT check error for ${vat}:`, vatErr.message);
+              vatResults.push(`VAT ${vat}: błąd weryfikacji`);
+            }
+          }
+          if (vatResults.length > 0) {
+            vatLines = '\n' + vatResults.join('\n');
+          }
+        }
+
         // Telegram notification — only CLIENT_REPLY and COURIER_ALERT
         if ((category === 'CLIENT_REPLY' || category === 'COURIER_ALERT') && tgToken && tgChat) {
           const prefix = category === 'COURIER_ALERT' ? '[ALERT]' : '[MAIL]';
-          let msg = `${prefix} ${inbox}@ / Kraj: ${country} | ${language}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${country} | ${language}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);

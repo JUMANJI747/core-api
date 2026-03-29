@@ -556,7 +556,9 @@ app.post("/api/contractors/verify-nip", async (req, res) => {
       if (!viesRes.ok) return res.status(502).json({ error: "VIES API error", status: viesRes.status });
       const data = await viesRes.json();
 
-      return res.json({ source: "VIES", nip, countryCode, vatNumber, valid: data.isValid, name: data.name, address: data.address, requestDate: data.requestDate });
+      console.log(`[verify-nip] VIES response: valid=${data.valid}, name=${data.name}`);
+
+      return res.json({ source: "VIES", nip, countryCode, vatNumber, valid: data.valid === true, name: data.name, address: data.address, requestDate: data.requestDate });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
