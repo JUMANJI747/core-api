@@ -184,15 +184,27 @@ function fetchMailsFromUid(imap, sinceUid) {
                   bodyText = stripHtml(parsed.html);
                   bodySource = 'html';
                 } else {
-                  bodyText = '[Brak treści]';
+                  const attachmentNames = (parsed.attachments || []).map(a => a.filename || 'attachment');
+                  if (attachmentNames.length > 0) {
+                    bodyText = `[Mail zawiera załączniki: ${attachmentNames.join(', ')}]`;
+                    bodySource = 'attachments';
+                  } else {
+                    bodyText = '[Brak treści]';
+                  }
                 }
                 console.log(`[inbox-poller] body source: ${bodySource}`);
 
-                const attachments = (parsed.attachments || []).map(a => ({
-                  filename: a.filename || 'attachment',
-                  contentType: a.contentType || 'application/octet-stream',
-                  size: a.size || 0,
-                }));
+                const attachments = (parsed.attachments || []).map(a => {
+                  const att = {
+                    filename: a.filename || 'attachment',
+                    contentType: a.contentType || 'application/octet-stream',
+                    size: a.size || 0,
+                  };
+                  if (a.contentType && a.contentType.startsWith('image/') && a.content && a.content.length <= 5 * 1024 * 1024) {
+                    att.buffer = a.content;
+                  }
+                  return att;
+                });
 
                 const autoSubmitted = parsed.headers && parsed.headers.get
                   ? (parsed.headers.get('auto-submitted') || '')
@@ -388,6 +400,44 @@ async function sendTelegram(botToken, chatId, text) {
   );
 }
 
+async function sendTelegramPhoto(botToken, chatId, imageBuffer, filename, caption) {
+  const boundary = '----TgBoundary' + Date.now();
+  const nl = '\r\n';
+  const parts = [
+    `--${boundary}${nl}Content-Disposition: form-data; name="chat_id"${nl}${nl}${chatId}${nl}`,
+    ...(caption ? [`--${boundary}${nl}Content-Disposition: form-data; name="caption"${nl}${nl}${caption}${nl}`] : []),
+    `--${boundary}${nl}Content-Disposition: form-data; name="photo"; filename="${filename}"${nl}Content-Type: image/jpeg${nl}${nl}`,
+  ];
+  const body = Buffer.concat([
+    Buffer.from(parts.join('')),
+    imageBuffer,
+    Buffer.from(`${nl}--${boundary}--${nl}`),
+  ]);
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.telegram.org',
+      path: `/bot${botToken}/sendPhoto`,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': body.length,
+      },
+    };
+    const req = https.request(options, res => {
+      let chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 // ============ PROCESS ONE ACCOUNT ============
 
 async function processAccount(account) {
@@ -472,6 +522,29 @@ async function processAccount(account) {
         const { category, country, language, subject_pl, summary_pl, vat_numbers } = classification;
         console.log(`[inbox-poller] ${inbox}: uid=${mail.uid} category=${category}`);
 
+        // Context inheritance: fill in UNKNOWN country/language from previous mail by same sender
+        let effectiveCountry = country;
+        let effectiveLanguage = language;
+        if ((effectiveCountry === 'UNKNOWN' || !effectiveCountry || effectiveLanguage === 'unknown' || !effectiveLanguage) && mail.fromEmail) {
+          const prevEmail = await prisma.email.findFirst({
+            where: { fromEmail: { equals: mail.fromEmail, mode: 'insensitive' } },
+            orderBy: { createdAt: 'desc' },
+            select: { tags: true },
+          });
+          if (prevEmail && Array.isArray(prevEmail.tags) && prevEmail.tags.length >= 3) {
+            const prevCountry = prevEmail.tags[1];
+            const prevLanguage = prevEmail.tags[2];
+            if ((effectiveCountry === 'UNKNOWN' || !effectiveCountry) && prevCountry && prevCountry !== 'UNKNOWN') {
+              effectiveCountry = prevCountry;
+              console.log(`[inbox-poller] inherited country=${effectiveCountry} from previous mail`);
+            }
+            if ((effectiveLanguage === 'unknown' || !effectiveLanguage) && prevLanguage && prevLanguage !== 'unknown') {
+              effectiveLanguage = prevLanguage;
+              console.log(`[inbox-poller] inherited language=${effectiveLanguage} from previous mail`);
+            }
+          }
+        }
+
         // Skip spam and auto-reply — don't save, don't notify
         if (category === 'SPAM' || category === 'AUTO_REPLY') {
           continue;
@@ -503,7 +576,7 @@ async function processAccount(account) {
             bodyFull,
             messageId: mail.messageId || null,
             inReplyTo: mail.inReplyTo || null,
-            tags: [category, country, language].filter(Boolean),
+            tags: [category, effectiveCountry, effectiveLanguage].filter(Boolean),
             contractorId,
           },
         });
@@ -521,7 +594,7 @@ async function processAccount(account) {
                 name,
                 email: mail.fromEmail,
                 type: 'BUSINESS',
-                ...(country && country !== 'UNKNOWN' ? { country } : {}),
+                ...(effectiveCountry && effectiveCountry !== 'UNKNOWN' ? { country: effectiveCountry } : {}),
                 source: 'email',
                 tags: ['auto-created'],
               },
@@ -566,7 +639,7 @@ async function processAccount(account) {
         // Telegram notification — only CLIENT_REPLY and COURIER_ALERT
         if ((category === 'CLIENT_REPLY' || category === 'COURIER_ALERT') && tgToken && tgChat) {
           const prefix = category === 'COURIER_ALERT' ? '[ALERT]' : '[MAIL]';
-          let msg = `${prefix} ${inbox}@ / Kraj: ${country} | ${language}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
@@ -583,6 +656,26 @@ async function processAccount(account) {
             console.log('[inbox-poller] saved to memory');
           } catch (memErr) {
             console.error('[inbox-poller] memory save error:', memErr.message);
+          }
+
+          // Forward image attachments to Telegram
+          const imageAttachments = mail.attachments.filter(a => a.contentType && a.contentType.startsWith('image/'));
+          for (const img of imageAttachments) {
+            if (img.buffer) {
+              try {
+                await sendTelegramPhoto(tgToken, tgChat, img.buffer, img.filename, img.filename);
+                console.log(`[inbox-poller] forwarded image to Telegram: ${img.filename}`);
+              } catch (imgErr) {
+                console.error(`[inbox-poller] image forward error (${img.filename}):`, imgErr.message);
+                try {
+                  await sendTelegram(tgToken, tgChat, `[Załącznik: ${img.filename} — użyj klienta poczty żeby zobaczyć]`);
+                } catch (_) {}
+              }
+            } else {
+              try {
+                await sendTelegram(tgToken, tgChat, `[Załącznik: ${img.filename} — użyj klienta poczty żeby zobaczyć]`);
+              } catch (_) {}
+            }
           }
         }
 
