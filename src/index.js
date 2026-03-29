@@ -643,7 +643,7 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ IFIRMA ============
-const { fetchInvoices: fetchIfirmaInvoices } = require("./ifirma-client");
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf } = require("./ifirma-client");
 
 function guessCountryFromInv(inv) {
   const rodzaj = (inv.Rodzaj || "").toLowerCase();
@@ -776,6 +776,246 @@ app.get("/api/ifirma/invoices", async (req, res) => {
     const { dataOd, dataDo, status, nipKontrahenta } = req.query;
     const invoices = await fetchIfirmaInvoices({ dataOd, dataDo, status, nipKontrahenta });
     res.json(invoices);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ INVOICE HITL ============
+
+// In-memory preview store with 30-min TTL
+const invoicePreviews = new Map();
+const PREVIEW_TTL_MS = 30 * 60 * 1000;
+
+function savePreview(id, data) {
+  invoicePreviews.set(id, { data, expiresAt: Date.now() + PREVIEW_TTL_MS });
+}
+
+function getPreview(id) {
+  const entry = invoicePreviews.get(id);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { invoicePreviews.delete(id); return null; }
+  return entry.data;
+}
+
+function genUuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : require('crypto').randomUUID();
+}
+
+app.post("/api/ifirma/invoice-preview", async (req, res) => {
+  try {
+    const { contractorId, contractorSearch, items } = req.body;
+    if (!items || !items.length) return res.status(400).json({ error: "items required" });
+
+    // Resolve contractor
+    let contractor;
+    if (contractorId) {
+      contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
+    } else if (contractorSearch) {
+      contractor = await prisma.contractor.findFirst({
+        where: { name: { contains: contractorSearch, mode: "insensitive" } },
+        orderBy: { updatedAt: "desc" },
+      });
+    }
+    if (!contractor) return res.status(404).json({ error: "contractor not found" });
+
+    const waluta = (contractor.country || "PL").toUpperCase() === "PL" ? "PLN" : "EUR";
+    const rodzaj = waluta === "EUR" ? "wdt" : "krajowa";
+
+    // Expand items (resolve products + boxes)
+    const pozycje = [];
+    for (const item of items) {
+      const product = await prisma.product.findUnique({ where: { ean: item.productEan } });
+      if (!product) return res.status(404).json({ error: `product not found: ${item.productEan}` });
+
+      if (product.category === "template" && product.extras && product.extras.composition) {
+        for (const comp of product.extras.composition) {
+          const sub = await prisma.product.findUnique({ where: { ean: comp.ean } });
+          if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1) });
+        }
+      } else {
+        pozycje.push({ product, ilosc: item.qty || 1 });
+      }
+    }
+
+    // Determine prices — check last invoice for this contractor
+    const lastInvoice = await prisma.invoice.findFirst({
+      where: { contractorId: contractor.id },
+      orderBy: { issueDate: "desc" },
+    });
+    const lastInvoiceExtras = lastInvoice && lastInvoice.extras && lastInvoice.extras.pozycje;
+    const priceOverride = {};
+    if (lastInvoiceExtras && Array.isArray(lastInvoiceExtras)) {
+      for (const p of lastInvoiceExtras) {
+        if (p.ean) priceOverride[p.ean] = { pricePLN: p.pricePLN, priceEUR: p.priceEUR };
+      }
+    }
+
+    const linee = pozycje.map(({ product: p, ilosc }) => {
+      const override = priceOverride[p.ean] || {};
+      const cenaNetto = waluta === "EUR"
+        ? (override.priceEUR ?? p.priceEUR)
+        : (override.pricePLN ?? p.pricePLN);
+      const wartoscNetto = Math.round(cenaNetto * ilosc * 100) / 100;
+      return {
+        ean: p.ean,
+        nazwa: p.name,
+        wariant: p.variant || null,
+        ilosc,
+        cenaNetto,
+        wartoscNetto,
+      };
+    });
+
+    const sumaNetto = Math.round(linee.reduce((s, l) => s + l.wartoscNetto, 0) * 100) / 100;
+    const vat = rodzaj === "wdt" ? 0 : Math.round(sumaNetto * 0.23 * 100) / 100;
+    const brutto = Math.round((sumaNetto + vat) * 100) / 100;
+    const terminPlatnosci = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const preview = {
+      contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country, address: contractor.address },
+      waluta,
+      rodzaj,
+      pozycje: linee,
+      suma: { netto: sumaNetto, vat, brutto },
+      terminPlatnosci,
+    };
+
+    const previewId = require("crypto").randomUUID();
+    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj });
+
+    res.json({ ok: true, preview, previewId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/ifirma/invoice-confirm", async (req, res) => {
+  try {
+    const { previewId } = req.body;
+    if (!previewId) return res.status(400).json({ error: "previewId required" });
+
+    const stored = getPreview(previewId);
+    if (!stored) return res.status(404).json({ error: "preview not found or expired" });
+
+    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
+
+    // Create invoice in iFirma
+    const ifirmaResp = await createInvoice({
+      kontrahent: {
+        name: contractor.name,
+        nip: contractor.nip,
+        address: contractor.address,
+        city: contractor.city,
+        postCode: contractor.extras && contractor.extras.postCode || "",
+        country: contractor.country,
+      },
+      pozycje,
+      waluta,
+      rodzaj,
+    });
+
+    const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
+    const pelnyNumer = ifirmaInvoice && (ifirmaInvoice.PelnyNumer || ifirmaInvoice.Numer) || "UNKNOWN";
+    const ifirmaId = ifirmaInvoice && ifirmaInvoice.FakturaId || null;
+
+    const sumaNetto = stored.preview.suma.netto;
+    const brutto = stored.preview.suma.brutto;
+
+    // Save to DB
+    const invoice = await prisma.invoice.create({
+      data: {
+        contractorId: contractor.id,
+        ifirmaId,
+        number: pelnyNumer,
+        issueDate: new Date(),
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        grossAmount: brutto,
+        currency: waluta,
+        paidAmount: 0,
+        status: "unpaid",
+        type: rodzaj,
+        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cenaNetto, priceEUR: p.cenaNetto })) },
+      },
+    });
+
+    // Fetch PDF
+    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj);
+
+    // Send to Telegram
+    let pdfSent = false;
+    try {
+      const [tokenCfg, chatCfg] = await Promise.all([
+        prisma.config.findUnique({ where: { key: "telegram_bot_token" } }),
+        prisma.config.findUnique({ where: { key: "telegram_chat_id" } }),
+      ]);
+      const token = tokenCfg && tokenCfg.value;
+      const chatId = chatCfg && chatCfg.value;
+
+      if (token && chatId) {
+        const boundary = "----FormBoundary" + Date.now();
+        const caption = `Faktura ${pelnyNumer} dla ${contractor.name}`;
+        const filename = `faktura_${pelnyNumer.replace(/\//g, "_")}.pdf`;
+
+        const parts = [
+          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+        ];
+
+        const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
+        const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+        const body = Buffer.concat([pre, pdfBuffer, post]);
+
+        await new Promise((resolve, reject) => {
+          const tgUrl = new URL(`https://api.telegram.org/bot${token}/sendDocument`);
+          const options = {
+            hostname: tgUrl.hostname,
+            path: tgUrl.pathname,
+            method: 'POST',
+            headers: {
+              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+              'Content-Length': body.length,
+            },
+          };
+          const req2 = require('https').request(options, r => { r.resume(); resolve(); });
+          req2.on('error', reject);
+          req2.write(body);
+          req2.end();
+        });
+        pdfSent = true;
+      }
+    } catch (tgErr) {
+      console.error('[invoice-confirm] Telegram error:', tgErr.message);
+    }
+
+    invoicePreviews.delete(previewId);
+    res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/ifirma/send-invoice-email", async (req, res) => {
+  try {
+    const { invoiceId, toEmail } = req.body;
+    if (!invoiceId || !toEmail) return res.status(400).json({ error: "invoiceId and toEmail required" });
+
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) return res.status(404).json({ error: "invoice not found" });
+
+    const pdfBuffer = await fetchInvoicePdf(invoice.number, invoice.type);
+    const filename = `faktura_${invoice.number.replace(/\//g, "_")}.pdf`;
+
+    await sendMail({
+      from: "info@surfstickbell.com",
+      to: toEmail,
+      subject: `Faktura ${invoice.number} - Surf Stick Bell`,
+      body: "W załączeniu faktura.",
+      attachments: [{ filename, content: pdfBuffer, contentType: "application/pdf" }],
+    });
+
+    res.json({ ok: true, sent: true, invoiceNumber: invoice.number });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

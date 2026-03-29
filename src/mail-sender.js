@@ -61,7 +61,7 @@ function extractInbox(email) {
 
 // ============ SEND MAIL ============
 
-async function sendMail({ from, to, subject, body, replyTo }) {
+async function sendMail({ from, to, subject, body, replyTo, attachments }) {
   console.log('[mail-sender] IMAP_ACCOUNTS parsed:', JSON.stringify(getAccounts().map(a => ({ inbox: a.inbox, user: a.user, hasPass: !!a.pass }))));
   console.log('[mail-sender] looking for FROM:', from);
   const account = findAccount(from);
@@ -91,6 +91,7 @@ async function sendMail({ from, to, subject, body, replyTo }) {
     subject,
     text: body,
     ...(replyTo ? { replyTo } : {}),
+    ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
   });
 
   console.log(`[mail-sender] sent from ${from} to ${to} subject: ${subject}`);
