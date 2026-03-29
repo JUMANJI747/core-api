@@ -20,6 +20,11 @@ function getAccounts() {
   }
 }
 
+// ============ VAT CACHE ============
+
+const VAT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const vatCache = new Map(); // key: normalized VAT number, value: {valid, name, timestamp}
+
 // ============ HARD FILTER ============
 
 const BLOCKED_FROM_KEYWORDS = [
@@ -324,7 +329,7 @@ Return JSON:
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
   "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie.",
-  "vat_numbers": ["lista numerów VAT/NIP/NIF znalezionych w mailu, format: kod_kraju + numer, np. PT504641263, FR0786403769. Jeśli brak — pusta tablica."]
+  "vat_numbers": ["lista numerów VAT/NIP/NIF znalezionych w mailu, format: kod_kraju + numer, np. PT504641263, FR0786403769. Jeśli brak — pusta tablica. WAŻNE: wyciągaj numery VAT TYLKO z nowej wiadomości nadawcy. Ignoruj cytowane odpowiedzi (tekst po znakach >, po 'wrote:', po 'escribió:', po 'a écrit:', po liniach '---' lub '___'). Jeśli cały mail to tylko cytowana historia — vat_numbers zostaw pustą tablicę."]
 }
 
 Rules:
@@ -364,6 +369,14 @@ Rules:
 
 async function checkVat(rawVat) {
   const vatNumber = rawVat.trim().replace(/[\s\-]/g, '').toUpperCase();
+
+  // Cache check
+  const cached = vatCache.get(vatNumber);
+  if (cached && Date.now() - cached.timestamp < VAT_CACHE_TTL_MS) {
+    console.log(`[inbox-poller] VAT cache hit: ${vatNumber} ${cached.valid ? 'valid' : 'invalid'}`);
+    return { vatNumber, valid: cached.valid, name: cached.name };
+  }
+
   const countryCode = vatNumber.slice(0, 2);
   const number = vatNumber.slice(2);
 
@@ -372,11 +385,13 @@ async function checkVat(rawVat) {
     const res = await httpsGet(`https://wl-api.mf.gov.pl/api/search/nip/${number}?date=${today}`);
     if (res.status === 404 || !res.data?.result?.subject) {
       console.log(`[inbox-poller] VAT check: ${vatNumber} → invalid`);
+      vatCache.set(vatNumber, { valid: false, name: null, timestamp: Date.now() });
       return { vatNumber, valid: false, name: null };
     }
     const s = res.data.result.subject;
     const valid = s.statusVat === 'Czynny';
     console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
+    vatCache.set(vatNumber, { valid, name: s.name || null, timestamp: Date.now() });
     return { vatNumber, valid, name: s.name || null };
   } else {
     const data = await httpsPost(
@@ -386,6 +401,7 @@ async function checkVat(rawVat) {
     );
     const valid = data.valid === true;
     console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
+    vatCache.set(vatNumber, { valid, name: data.name || null, timestamp: Date.now() });
     return { vatNumber, valid, name: data.name || null };
   }
 }
