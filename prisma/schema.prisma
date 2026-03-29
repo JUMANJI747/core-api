@@ -239,6 +239,24 @@ model ImapState {
   updatedAt DateTime @updatedAt
 }
 
+// ============ SYSTEM EVENTS ============
+
+model SystemEvent {
+  id        String   @id @default(uuid())
+  type      String
+  severity  String   @default("info")
+  source    String
+  message   String
+  data      Json     @default("{}")
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([resolved])
+}
+
 // ============ AUDIT LOG ============
 
 model AuditLog {

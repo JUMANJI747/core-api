@@ -529,6 +529,22 @@ app.delete("/api/memory/clear", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ============ EVENTS ============
+app.get("/api/events", async (req, res) => {
+  const { type, severity, resolved, limit, since } = req.query;
+  const where = {};
+  if (type) where.type = type;
+  if (severity) where.severity = severity;
+  if (resolved !== undefined) where.resolved = resolved === "true";
+  if (since) where.createdAt = { gte: new Date(since) };
+  const events = await prisma.systemEvent.findMany({
+    where,
+    take: Math.min(parseInt(limit) || 50, 500),
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(events);
+});
+
 // ============ AUDIT ============
 app.post("/api/audit", async (req, res) => {
   const log = await prisma.auditLog.create({ data: req.body });
