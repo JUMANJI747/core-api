@@ -33,37 +33,53 @@ function httpsGetRaw(url, headers) {
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
+  const today = new Date().toISOString().slice(0, 10);
   const urlBase = 'https://www.ifirma.pl/iapi/faktury.json';
-  const params = new URLSearchParams();
-  if (dataOd) params.set('dataOd', dataOd);
-  if (dataDo) params.set('dataDo', dataDo);
-  if (status) params.set('status', status);
-  if (nipKontrahenta) params.set('nipKontrahenta', nipKontrahenta);
 
-  const query = params.toString();
-  const fullUrl = query ? urlBase + '?' + query : urlBase;
+  const baseParams = new URLSearchParams();
+  baseParams.set('dataOd', dataOd || '2025-01-01');
+  baseParams.set('dataDo', dataDo || today);
+  baseParams.set('iloscNaStronie', '200');
+  if (status) baseParams.set('status', status);
+  if (nipKontrahenta) baseParams.set('nipKontrahenta', nipKontrahenta);
 
-  const auth = generateAuth(urlBase, login, keyHex);
+  const allInvoices = [];
+  let page = 1;
 
-  console.log('[ifirma] fetching:', fullUrl);
-  console.log('[ifirma] auth header:', auth.substring(0, 50) + '...');
+  while (true) {
+    const params = new URLSearchParams(baseParams);
+    params.set('strona', String(page));
+    const fullUrl = urlBase + '?' + params.toString();
+    const auth = generateAuth(urlBase, login, keyHex);
 
-  const { status: httpStatus, body } = await httpsGetRaw(fullUrl, {
-    Authentication: auth,
-    Accept: 'application/json',
-  });
+    console.log('[ifirma] fetching:', fullUrl);
+    console.log('[ifirma] auth header:', auth.substring(0, 50) + '...');
 
-  console.log('[ifirma] response status:', httpStatus, 'body length:', body.length);
-  console.log('[ifirma] raw response (first 500 chars):', body.substring(0, 500));
+    const { status: httpStatus, body } = await httpsGetRaw(fullUrl, {
+      Authentication: auth,
+      Accept: 'application/json',
+    });
 
-  let data;
-  try {
-    data = JSON.parse(body);
-  } catch (e) {
-    throw new Error('iFirma invalid JSON: ' + body.slice(0, 200));
+    console.log('[ifirma] response status:', httpStatus, 'body length:', body.length);
+    console.log('[ifirma] raw response (first 500 chars):', body.substring(0, 500));
+
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch (e) {
+      throw new Error('iFirma invalid JSON: ' + body.slice(0, 200));
+    }
+
+    const pageInvoices = (data.response && data.response.Wynik) || [];
+    console.log(`[ifirma] page ${page}: fetched ${pageInvoices.length} invoices`);
+
+    allInvoices.push(...pageInvoices);
+
+    if (pageInvoices.length < 200) break;
+    page++;
   }
 
-  return (data.response && data.response.Wynik) || [];
+  return allInvoices;
 }
 
 module.exports = { fetchInvoices };
