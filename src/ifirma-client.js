@@ -12,7 +12,7 @@ function generateAuth(url, login, keyHex) {
   return 'IAPIS user=' + login + ', hmac-sha1=' + sig;
 }
 
-function httpsGetJson(url, headers) {
+function httpsGetRaw(url, headers) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options = {
@@ -24,18 +24,14 @@ function httpsGetJson(url, headers) {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString()));
-        } catch (e) {
-          reject(new Error('iFirma invalid JSON: ' + Buffer.concat(chunks).toString().slice(0, 200)));
-        }
+        resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() });
       });
     }).on('error', reject);
   });
 }
 
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
-  if (!login || !keyHex) throw new Error('IFIRMA_LOGIN or IFIRMA_KEY_HEX not set');
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const urlBase = 'https://www.ifirma.pl/iapi/faktury.json';
   const params = new URLSearchParams();
@@ -48,12 +44,26 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
   const fullUrl = query ? urlBase + '?' + query : urlBase;
 
   const auth = generateAuth(urlBase, login, keyHex);
-  const data = await httpsGetJson(fullUrl, {
+
+  console.log('[ifirma] fetching:', fullUrl);
+  console.log('[ifirma] auth header:', auth.substring(0, 50) + '...');
+
+  const { status: httpStatus, body } = await httpsGetRaw(fullUrl, {
     Authentication: auth,
     Accept: 'application/json',
   });
 
-  return data.Wynik || [];
+  console.log('[ifirma] response status:', httpStatus, 'body length:', body.length);
+  console.log('[ifirma] raw response (first 500 chars):', body.substring(0, 500));
+
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (e) {
+    throw new Error('iFirma invalid JSON: ' + body.slice(0, 200));
+  }
+
+  return (data.response && data.response.Wynik) || [];
 }
 
 module.exports = { fetchInvoices };
