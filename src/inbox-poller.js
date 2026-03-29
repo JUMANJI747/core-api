@@ -573,11 +573,16 @@ async function processAccount(account) {
 
         // Try to link contractor
         let contractorId = null;
+        let contractorName = null;
         if (mail.fromEmail) {
           const contractor = await prisma.contractor.findFirst({
             where: { email: { equals: mail.fromEmail, mode: 'insensitive' } },
           });
-          if (contractor) contractorId = contractor.id;
+          if (contractor) {
+            contractorId = contractor.id;
+            contractorName = contractor.name;
+            console.log(`[inbox-poller] linked to existing contractor: ${contractorName}`);
+          }
         }
 
         const savedEmail = await prisma.email.create({
@@ -596,32 +601,6 @@ async function processAccount(account) {
             contractorId,
           },
         });
-
-        // Auto-create contractor if not found
-        if (!contractorId && mail.fromEmail) {
-          const FREE_DOMAINS = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com'];
-          const domain = mail.fromEmail.split('@')[1] || '';
-          const skipCreate = FREE_DOMAINS.includes(domain.toLowerCase()) && !mail.fromName;
-
-          if (!skipCreate) {
-            const name = mail.fromName || mail.fromEmail.split('@')[0];
-            const newContractor = await prisma.contractor.create({
-              data: {
-                name,
-                email: mail.fromEmail,
-                type: 'BUSINESS',
-                ...(effectiveCountry && effectiveCountry !== 'UNKNOWN' ? { country: effectiveCountry } : {}),
-                source: 'email',
-                tags: ['auto-created'],
-              },
-            });
-            contractorId = newContractor.id;
-            console.log(`[inbox-poller] auto-created contractor: ${name} <${mail.fromEmail}>`);
-          }
-        } else if (contractorId) {
-          const contractor = await prisma.contractor.findFirst({ where: { id: contractorId } });
-          console.log(`[inbox-poller] linked to existing contractor: ${contractor?.name}`);
-        }
 
         // Link email to contractor
         if (contractorId) {
@@ -655,7 +634,10 @@ async function processAccount(account) {
         // Telegram notification — only CLIENT_REPLY and COURIER_ALERT
         if ((category === 'CLIENT_REPLY' || category === 'COURIER_ALERT') && tgToken && tgChat) {
           const prefix = category === 'COURIER_ALERT' ? '[ALERT]' : '[MAIL]';
-          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}`;
+          const contractorLine = contractorName
+            ? `\nKontrahent: ${contractorName}`
+            : `\nNowy adres - napisz 'dodaj kontrahenta' lub 'połącz z [nazwa]'`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);

@@ -34,16 +34,45 @@ app.post("/api/contractors/upsert", async (req, res) => {
     const { name, nip, type, phone, email, country, city, address, notes, extras, tags, source } = req.body;
     if (!name) return res.status(400).json({ error: "name required" });
 
+    // Find existing by nip or email
+    let existing = null;
+    if (nip) existing = await prisma.contractor.findUnique({ where: { nip } });
+    if (!existing && email) existing = await prisma.contractor.findFirst({ where: { email: { equals: email, mode: "insensitive" } } });
+
     let contractor;
-    if (nip) {
-      contractor = await prisma.contractor.upsert({
-        where: { nip },
-        update: { name, type, phone, email, country, city, address, notes, extras, tags, source },
-        create: { name, nip, type: type || "BUSINESS", phone, email, country, city, address, notes, extras: extras || {}, tags: tags || [], source },
+    if (existing) {
+      // Additive merge
+      const mergedExtras = { ...(existing.extras || {}), ...(extras || {}) };
+
+      if (nip && existing.nip && nip !== existing.nip) {
+        mergedExtras.nipList = Array.from(new Set([existing.nip, nip, ...(mergedExtras.nipList || [])]));
+      }
+      if (phone && existing.phone && phone !== existing.phone) {
+        mergedExtras.phoneList = Array.from(new Set([existing.phone, phone, ...(mergedExtras.phoneList || [])]));
+      }
+      if (email && existing.email && email.toLowerCase() !== existing.email.toLowerCase()) {
+        mergedExtras.emailList = Array.from(new Set([existing.email, email, ...(mergedExtras.emailList || [])]));
+      }
+
+      const mergedTags = Array.from(new Set([...(existing.tags || []), ...(tags || [])]));
+
+      contractor = await prisma.contractor.update({
+        where: { id: existing.id },
+        data: {
+          name,
+          ...(type !== undefined ? { type } : {}),
+          ...(address !== undefined ? { address } : {}),
+          ...(city !== undefined ? { city } : {}),
+          ...(country !== undefined ? { country } : {}),
+          ...(notes !== undefined ? { notes } : {}),
+          ...(source !== undefined ? { source } : {}),
+          extras: mergedExtras,
+          tags: mergedTags,
+        },
       });
     } else {
       contractor = await prisma.contractor.create({
-        data: { name, type: type || "PERSON", phone, email, country, city, address, notes, extras: extras || {}, tags: tags || [], source },
+        data: { name, nip, type: type || (nip ? "BUSINESS" : "PERSON"), phone, email, country, city, address, notes, extras: extras || {}, tags: tags || [], source },
       });
     }
     res.json(contractor);
