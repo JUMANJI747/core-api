@@ -239,6 +239,25 @@ model ImapState {
   updatedAt DateTime @updatedAt
 }
 
+// ============ PRODUKTY ============
+
+model Product {
+  id        String   @id @default(uuid())
+  ean       String   @unique
+  name      String
+  brand     String   @default("BELL")
+  category  String
+  variant   String?
+  capacity  String?
+  pricePLN  Float    @default(18)
+  priceEUR  Float    @default(4.5)
+  unit      String   @default("szt")
+  active    Boolean  @default(true)
+  extras    Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // ============ SYSTEM EVENTS ============
 
 model SystemEvent {
