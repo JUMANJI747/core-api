@@ -555,9 +555,9 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
 
     // Helper: determine country from currency and NIP
     function guessCountry(inv) {
-      const rodzaj = (inv.Rodzaj || inv.rodzaj || "").toLowerCase();
-      const waluta = (inv.Waluta || inv.waluta || "PLN").toUpperCase();
-      const nip = (inv.NIPKontrahenta || inv.nipKontrahenta || "").replace(/[\s\-]/g, "");
+      const rodzaj = (inv.Rodzaj || "").toLowerCase();
+      const waluta = (inv.Waluta || "PLN").toUpperCase();
+      const nip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
 
       if (rodzaj.includes("kraj")) return "PL";
       if (waluta === "EUR") {
@@ -572,7 +572,7 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
     // Build unique contractors by NIP
     const nipToInv = new Map();
     for (const inv of invoices) {
-      const rawNip = (inv.NIPKontrahenta || inv.nipKontrahenta || "").replace(/[\s\-]/g, "");
+      const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
       if (!rawNip) continue;
       if (!nipToInv.has(rawNip)) nipToInv.set(rawNip, inv);
     }
@@ -586,9 +586,9 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
         contractorsSkipped++;
         nipToContractorId.set(nip, existing.id);
       } else {
-        const rawName = (inv.NazwaKontrahenta || inv.nazwaKontrahenta || "").replace(/^-+\s*/, "").trim();
+        const rawName = (inv.NazwaKontrahenta || "").replace(/^-+\s*/, "").trim();
         const country = guessCountry(inv);
-        const ifirmaId = inv.IdentyfikatorKontrahenta || inv.identyfikatorKontrahenta || null;
+        const ifirmaContractorIdVal = inv.IdentyfikatorKontrahenta || null;
         const created = await prisma.contractor.create({
           data: {
             name: rawName,
@@ -597,7 +597,7 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
             country,
             source: "ifirma",
             tags: ["ifirma-import"],
-            extras: ifirmaId ? { ifirmaId } : {},
+            extras: ifirmaContractorIdVal ? { ifirmaId: ifirmaContractorIdVal } : {},
           },
         });
         contractorsCreated++;
@@ -608,15 +608,15 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
     // Import invoices
     let invoicesCreated = 0, invoicesUpdated = 0;
     for (const inv of invoices) {
-      const ifirmaId = inv.IdentyfikatorFaktury || inv.identyfikatorFaktury || null;
+      const ifirmaId = inv.FakturaId || null;
       if (!ifirmaId) continue;
 
-      const rawNip = (inv.NIPKontrahenta || inv.nipKontrahenta || "").replace(/[\s\-]/g, "");
+      const rawNip = (inv.NIPKontrahenta || "").replace(/[\s\-]/g, "");
       const contractorId = rawNip ? (nipToContractorId.get(rawNip) || null) : null;
 
-      const grossAmount = parseFloat(inv.BruttoFaktury || inv.bruttoFaktury || 0);
-      const paidAmount = parseFloat(inv.ZaplatconoBrutto || inv.zaplaconoBrutto || inv.ZaplaconoBrutto || 0);
-      const currency = (inv.Waluta || inv.waluta || "PLN").toUpperCase();
+      const grossAmount = parseFloat(inv.Brutto || 0);
+      const paidAmount = parseFloat(inv.Zaplacono || 0);
+      const currency = (inv.Waluta || "PLN").toUpperCase();
       const status = paidAmount >= grossAmount ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
       const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
@@ -627,12 +627,12 @@ app.post("/api/contractors/import-ifirma", async (req, res) => {
         });
         invoicesUpdated++;
       } else {
-        const number = inv.NumerFaktury || inv.numerFaktury || "";
-        const issueDate = inv.DataWystawienia || inv.dataWystawienia ? new Date(inv.DataWystawienia || inv.dataWystawienia) : new Date();
-        const dueDateRaw = inv.TerminPlatnosci || inv.terminPlatnosci;
+        const number = inv.PelnyNumer || "";
+        const issueDate = inv.DataWystawienia ? new Date(inv.DataWystawienia) : new Date();
+        const dueDateRaw = inv.TerminPlatnosci;
         const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
-        const type = inv.Rodzaj || inv.rodzaj || null;
-        const ifirmaContractorId = String(inv.IdentyfikatorKontrahenta || inv.identyfikatorKontrahenta || "");
+        const type = inv.Rodzaj || null;
+        const ifirmaContractorId = inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null;
 
         await prisma.invoice.create({
           data: {
