@@ -545,10 +545,44 @@ const SEED_PRODUCTS = [
   {ean:"5902082576150", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Blue", capacity:"9ml", pricePLN:18, priceEUR:4.5},
   {ean:"5902082576174", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Pink", capacity:"9ml", pricePLN:18, priceEUR:4.5},
   {ean:"5902082576181", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Black", capacity:"9ml", pricePLN:18, priceEUR:4.5},
-  {ean:"BOX-STICK-30", name:"Surf Stick Box / Ekspozytor", category:"box", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{composition:[{ean:"5902082556022",variant:"Blue",qty:5},{ean:"5902082556053",variant:"Pink",qty:5},{ean:"5902082556046",variant:"Purple",qty:5},{ean:"5902082556039",variant:"Mint",qty:5},{ean:"5902082564935",variant:"White",qty:5},{ean:"5902082564942",variant:"Skin",qty:5}],totalQty:30}},
-  {ean:"BOX-MASCARA-30", name:"Surf Girl Mascara Box", category:"box", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{composition:[{ean:"5902082576181",variant:"Black",qty:12},{ean:"5902082576167",variant:"Mint",qty:6},{ean:"5902082576174",variant:"Pink",qty:6},{ean:"5902082576150",variant:"Blue",qty:6}],totalQty:30}},
-  {ean:"BOX-COLLECTION-30", name:"Surf Collection Box", category:"box", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{composition:[{ean:"5902082579052",variant:"Lip Balm",qty:12},{ean:"5902082579021",variant:"Gel SPF50+",qty:6},{ean:"5902082579045",variant:"Daily UV SPF50+",qty:6},{ean:"5902082579014",variant:"Hydrating Cream",qty:6}],totalQty:30}},
+  {ean:"BOX-STICK-30", name:"Surf Stick Box / Ekspozytor", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082556022",variant:"Blue",qty:5},{ean:"5902082556053",variant:"Pink",qty:5},{ean:"5902082556046",variant:"Purple",qty:5},{ean:"5902082556039",variant:"Mint",qty:5},{ean:"5902082564935",variant:"White",qty:5},{ean:"5902082564942",variant:"Skin",qty:5}],totalQty:30}},
+  {ean:"BOX-MASCARA-30", name:"Surf Girl Mascara Box", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082576181",variant:"Black",qty:12},{ean:"5902082576167",variant:"Mint",qty:6},{ean:"5902082576174",variant:"Pink",qty:6},{ean:"5902082576150",variant:"Blue",qty:6}],totalQty:30}},
+  {ean:"BOX-COLLECTION-30", name:"Surf Collection Box", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082579052",variant:"Lip Balm",qty:12},{ean:"5902082579021",variant:"Gel SPF50+",qty:6},{ean:"5902082579045",variant:"Daily UV SPF50+",qty:6},{ean:"5902082579014",variant:"Hydrating Cream",qty:6}],totalQty:30}},
 ];
+
+app.get("/api/products/expand-box", async (req, res) => {
+  try {
+    const { ean, qty } = req.query;
+    if (!ean) return res.status(400).json({ error: "ean required" });
+    const multiplier = Math.max(1, parseInt(qty) || 1);
+
+    const template = await prisma.product.findUnique({ where: { ean } });
+    if (!template) return res.status(404).json({ error: "product not found" });
+
+    const composition = template.extras && template.extras.composition;
+    if (!composition || !Array.isArray(composition)) return res.status(400).json({ error: "product has no composition" });
+
+    const eans = composition.map(c => c.ean);
+    const products = await prisma.product.findMany({ where: { ean: { in: eans } } });
+    const byEan = Object.fromEntries(products.map(p => [p.ean, p]));
+
+    const lines = composition.map(c => {
+      const p = byEan[c.ean] || {};
+      return {
+        ean: c.ean,
+        name: p.name || null,
+        variant: c.variant || p.variant || null,
+        qty: c.qty * multiplier,
+        pricePLN: p.pricePLN ?? null,
+        priceEUR: p.priceEUR ?? null,
+      };
+    });
+
+    res.json(lines);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get("/api/products", async (req, res) => {
   const { category, active } = req.query;
