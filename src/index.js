@@ -906,8 +906,10 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
     // Expand items (resolve products + boxes)
     const pozycje = [];
     for (const item of items) {
-      const product = await prisma.product.findUnique({ where: { ean: item.productEan } });
-      if (!product) return res.status(404).json({ error: `product not found: ${item.productEan}` });
+      const ean = item.productEan || item.ean;
+      console.log('[invoice-preview] looking for product EAN:', ean);
+      const product = await prisma.product.findUnique({ where: { ean } });
+      if (!product) return res.status(404).json({ error: `product not found: ${ean}` });
 
       if (product.category === "template" && product.extras && product.extras.composition) {
         for (const comp of product.extras.composition) {
