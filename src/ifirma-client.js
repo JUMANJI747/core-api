@@ -187,20 +187,12 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     }
   }
 
-  const Kontrahent = {};
-  if (kontrahent.ifirmaId) Kontrahent.IdentyfikatorKontrahenta = kontrahent.ifirmaId;
-  Kontrahent.Nazwa = kontrahent.name;
   const _nip = kontrahent.nip;
-  if (_nip) Kontrahent.NIP = _nip;
   const _ulica = kontrahent.address || enriched.Ulica;
-  if (_ulica) Kontrahent.Ulica = _ulica;
   const _kod = kontrahent.postCode || enriched.KodPocztowy;
-  if (_kod) Kontrahent.KodPocztowy = _kod;
   const _miasto = kontrahent.city || enriched.Miejscowosc;
-  if (_miasto) Kontrahent.Miejscowosc = _miasto;
   const _country = kontrahent.country || enriched.Kraj;
-  if (_country || !isWdt) Kontrahent.Kraj = isWdt ? _country : 'Polska';
-  if (isWdt && _country) Kontrahent.PrefiksUE = _country.toUpperCase();
+  const _ifirmaId = kontrahent.ifirmaId || enriched.IdentyfikatorKontrahenta;
 
   const Pozycje = pozycje.map(p => {
     const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
@@ -223,12 +215,23 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     };
   });
 
+  const Kontrahent = {
+    Nazwa: kontrahent.name,
+    ...(_nip ? { NIP: _nip } : {}),
+    ...(_ulica ? { Ulica: _ulica } : {}),
+    ...(_kod ? { KodPocztowy: _kod } : {}),
+    ...(_miasto ? { Miejscowosc: _miasto } : {}),
+    Kraj: isWdt ? (_country || '') : 'Polska',
+  };
+
   const body = {
     Zaplacono: 0,
     ZaplaconoNaDokumencie: 0,
     WidocznyNumerGios: false,
     Numer: null,
     LiczOd: 'BRT',
+    ...(_ifirmaId ? { IdentyfikatorKontrahenta: _ifirmaId } : {}),
+    ...(_nip ? { NIPKontrahenta: _nip } : {}),
     DataWystawienia: today,
     MiejsceWystawienia: 'Warszawa',
     DataSprzedazy: today,
@@ -236,14 +239,12 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
-    ...(isWdt ? { Jezyk: 'en' } : {}),
+    ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() } : {}),
     Kontrahent,
     Pozycje,
     ...(isWdt ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
-      ...(_country ? { PrefiksUEKontrahenta: _country.toUpperCase() } : {}),
-      ...(_nip ? { NIPKontrahenta: _nip } : {}),
     } : {}),
   };
 
