@@ -1052,8 +1052,24 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
     }
 
     const ifirmaRaw = ifirmaResult.ifirmaRaw;
-    const pelnyNumer = ifirmaResult.invoiceNumber || "UNKNOWN";
-    const ifirmaId = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId || null;
+    const fakturaId = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Identyfikator || null;
+    const ifirmaIdNum = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId || fakturaId || null;
+
+    // Resolve PelnyNumer by fetching today's invoices and matching by FakturaId
+    let pelnyNumer = ifirmaResult.invoiceNumber || "UNKNOWN";
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const todayInvoices = await fetchIfirmaInvoices({ dataOd: today, dataDo: today });
+      const matched = todayInvoices.find(inv => String(inv.FakturaId) === String(ifirmaIdNum));
+      if (matched) {
+        pelnyNumer = matched.PelnyNumer || matched.Numer || pelnyNumer;
+        console.log(`[invoice-confirm] found invoice: PelnyNumer=${pelnyNumer}, FakturaId=${ifirmaIdNum}`);
+      } else {
+        console.log(`[invoice-confirm] invoice not found in today list, using: ${pelnyNumer}`);
+      }
+    } catch (lookupErr) {
+      console.error('[invoice-confirm] invoice lookup error:', lookupErr.message);
+    }
 
     const sumaNetto = stored.preview.suma.netto;
     const brutto = stored.preview.suma.brutto;
@@ -1062,7 +1078,7 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
     const invoice = await prisma.invoice.create({
       data: {
         contractorId: contractor.id,
-        ifirmaId,
+        ifirmaId: ifirmaIdNum,
         number: pelnyNumer,
         issueDate: new Date(),
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
@@ -1076,7 +1092,7 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
     });
 
     // Fetch PDF
-    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj);
+    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj, ifirmaIdNum);
 
     // Send to Telegram
     let pdfSent = false;

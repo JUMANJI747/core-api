@@ -215,18 +215,29 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
 
 // ============ FETCH PDF ============
 
-async function fetchInvoicePdf(pelnyNumer, rodzaj) {
+async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
-  const numer = pelnyNumer.replace(/\//g, '_');
-  const endpoint = (rodzaj || '').toLowerCase().includes('wdt') || (rodzaj || '').toLowerCase().includes('dostawa_ue')
-    ? 'fakturawdt'
-    : 'fakturakraj';
+  const r = (rodzaj || '').toLowerCase();
+  let endpoint;
+  if (r === 'prz_eksport_towarow' || r === 'eksport') {
+    endpoint = 'fakturaeksporttowarow';
+  } else if (r === 'prz_faktura_proforma') {
+    endpoint = 'fakturaproforma';
+  } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt') {
+    endpoint = 'fakturawdt';
+  } else {
+    endpoint = 'fakturakraj';
+  }
 
-  const url = `https://www.ifirma.pl/iapi/${endpoint}/${numer}.pdf`;
+  const isEksport = endpoint === 'fakturaeksporttowarow';
+  const numerUrl = (pelnyNumer && pelnyNumer !== 'UNKNOWN') ? pelnyNumer.replace(/\//g, '_') : null;
+  const identyfikator = (isEksport || !numerUrl) ? fakturaId : numerUrl;
+
+  const url = `https://www.ifirma.pl/iapi/${endpoint}/${identyfikator}.pdf`;
   const auth = generateAuth(url, '', login, keyHex);
 
-  console.log('[ifirma] fetching PDF:', url);
+  console.log('[ifirma] PDF download URL:', url);
 
   const { status, body } = await httpsGetRaw(url, {
     Authentication: auth,
