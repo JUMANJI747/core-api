@@ -225,6 +225,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
 
   const body = {
     Zaplacono: 0,
+    ZaplaconoNaDokumencie: 0,
+    WidocznyNumerGios: false,
+    Numer: null,
     LiczOd: 'BRT',
     DataWystawienia: today,
     MiejsceWystawienia: 'Warszawa',
