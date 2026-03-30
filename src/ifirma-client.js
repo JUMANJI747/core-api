@@ -194,10 +194,12 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
   const informacja = resp && resp.response && resp.response.Informacja;
   if (status !== 200 || (kod != null && kod !== 0) || informacja) {
     console.log('[ifirma] API error:', fullResp);
-    throw new Error('iFirma error: ' + fullResp);
+    throw Object.assign(new Error('iFirma error: ' + fullResp), { ifirmaRaw: resp });
   }
 
-  return resp;
+  const wynik = resp.response && resp.response.Wynik;
+  const invoiceNumber = wynik && (wynik.PelnyNumer || wynik.Numer) || null;
+  return { ok: true, invoiceNumber, ifirmaRaw: resp };
 }
 
 // ============ FETCH PDF ============

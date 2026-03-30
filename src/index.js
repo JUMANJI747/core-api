@@ -1032,23 +1032,28 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
 
     // Create invoice in iFirma
-    const ifirmaResp = await createInvoice({
-      kontrahent: {
-        name: contractor.name,
-        nip: contractor.nip,
-        address: contractor.address,
-        city: contractor.city,
-        postCode: contractor.extras && contractor.extras.postCode || "",
-        country: contractor.country,
-      },
-      pozycje,
-      waluta,
-      rodzaj,
-    });
+    let ifirmaResult;
+    try {
+      ifirmaResult = await createInvoice({
+        kontrahent: {
+          name: contractor.name,
+          nip: contractor.nip,
+          address: contractor.address,
+          city: contractor.city,
+          postCode: contractor.extras && contractor.extras.postCode || "",
+          country: contractor.country,
+        },
+        pozycje,
+        waluta,
+        rodzaj,
+      });
+    } catch (ifirmaErr) {
+      return res.status(502).json({ error: ifirmaErr.message, ifirmaResponse: ifirmaErr.ifirmaRaw || null });
+    }
 
-    const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
-    const pelnyNumer = ifirmaInvoice && (ifirmaInvoice.PelnyNumer || ifirmaInvoice.Numer) || "UNKNOWN";
-    const ifirmaId = ifirmaInvoice && ifirmaInvoice.FakturaId || null;
+    const ifirmaRaw = ifirmaResult.ifirmaRaw;
+    const pelnyNumer = ifirmaResult.invoiceNumber || "UNKNOWN";
+    const ifirmaId = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId || null;
 
     const sumaNetto = stored.preview.suma.netto;
     const brutto = stored.preview.suma.brutto;
@@ -1128,7 +1133,7 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
       create: { id: "ksiegowosc", data: { lastAction: "confirmed", invoiceNumber: pelnyNumer, invoiceId: invoice.id, contractor: { name: contractor.name }, timestamp: Date.now() } },
     }).catch(e => console.error('[invoice-confirm-latest] AgentContext save error:', e.message));
 
-    res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
+    res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent, ifirmaResponse: ifirmaRaw });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
