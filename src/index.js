@@ -660,7 +660,7 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ IFIRMA ============
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf } = require("./ifirma-client");
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, deleteInvoice } = require("./ifirma-client");
 
 function guessCountryFromInv(inv) {
   const rodzaj = (inv.Rodzaj || "").toLowerCase();
@@ -1281,6 +1281,103 @@ app.post("/api/ifirma/send-invoice-email", async (req, res) => {
     });
 
     res.json({ ok: true, sent: true, invoiceNumber: invoice.number });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ INVOICE MANAGEMENT ============
+
+app.post("/api/invoices/delete-search", async (req, res) => {
+  try {
+    const { contractorSearch, dateFrom, dateTo, limit } = req.body;
+    if (!contractorSearch) return res.status(400).json({ error: "contractorSearch required" });
+
+    const all = await prisma.contractor.findMany({ select: { id: true, name: true, nip: true, country: true, email: true, extras: true } });
+    const scored = all.map(c => ({ c, score: scoreContractor(c, contractorSearch) })).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+    if (!scored.length) return res.status(404).json({ error: "Nie znaleziono kontrahenta: " + contractorSearch });
+    const contractor = scored[0].c;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const where = {
+      contractorId: contractor.id,
+      issueDate: { gte: new Date(dateFrom || today), lte: new Date(dateTo || today + "T23:59:59.999Z") },
+    };
+    const invoices = await prisma.invoice.findMany({
+      where,
+      orderBy: { issueDate: "desc" },
+      take: limit || 50,
+      select: { id: true, number: true, grossAmount: true, currency: true, issueDate: true, status: true, ifirmaId: true, type: true },
+    });
+
+    if (!invoices.length) return res.status(404).json({ error: `Brak faktur dla ${contractor.name} w podanym okresie.` });
+
+    res.json({
+      ok: false,
+      action: "confirm_delete",
+      contractor: { id: contractor.id, name: contractor.name },
+      invoices,
+      message: `Znaleziono ${invoices.length} faktur dla ${contractor.name}. Potwierdź kasowanie.`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/invoices/delete-confirm", async (req, res) => {
+  try {
+    const { invoiceIds } = req.body;
+    if (!Array.isArray(invoiceIds) || !invoiceIds.length) return res.status(400).json({ error: "invoiceIds required" });
+
+    const deleted = [];
+    for (const id of invoiceIds) {
+      const inv = await prisma.invoice.findUnique({ where: { id } });
+      if (!inv) { deleted.push({ id, error: "not found" }); continue; }
+
+      let ifirmaResponse = null;
+      if (inv.ifirmaId && inv.type) {
+        try {
+          const r = await deleteInvoice(inv.ifirmaId, inv.type);
+          ifirmaResponse = r.body;
+        } catch (e) {
+          console.error(`[delete-confirm] iFirma delete error for ${inv.number}:`, e.message);
+          ifirmaResponse = { error: e.message };
+        }
+      }
+
+      await prisma.invoice.delete({ where: { id } });
+      deleted.push({ id, number: inv.number, ifirmaResponse });
+    }
+
+    res.json({ ok: true, deleted });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/invoices/unpaid", async (req, res) => {
+  try {
+    const now = new Date();
+    const invoices = await prisma.invoice.findMany({
+      where: { status: { not: "paid" } },
+      orderBy: { dueDate: "asc" },
+      include: { contractor: { select: { name: true, nip: true, country: true } } },
+    });
+
+    const result = invoices.map(inv => ({
+      id: inv.id,
+      number: inv.number,
+      contractor: inv.contractor ? { name: inv.contractor.name, nip: inv.contractor.nip, country: inv.contractor.country } : null,
+      grossAmount: inv.grossAmount,
+      currency: inv.currency,
+      paidAmount: inv.paidAmount,
+      status: inv.status,
+      issueDate: inv.issueDate,
+      dueDate: inv.dueDate,
+      daysOverdue: inv.dueDate ? Math.max(0, Math.floor((now - new Date(inv.dueDate)) / 86400000)) : null,
+    }));
+
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

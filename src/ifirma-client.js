@@ -254,4 +254,40 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   return body; // Buffer
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, createInvoice, fetchInvoicePdf };
+// ============ DELETE INVOICE ============
+
+async function deleteInvoice(fakturaId, rodzaj) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+
+  const r = (rodzaj || '').toLowerCase();
+  const endpoint = (r === 'wdt' || r === 'prz_dostawa_ue_towarow') ? 'fakturawdt' : 'fakturakraj';
+  const url = `https://www.ifirma.pl/iapi/${endpoint}/${fakturaId}.json`;
+  const msg = url + login + 'faktura';
+  const sig = require('crypto').createHmac('sha1', Buffer.from(keyHex, 'hex')).update(msg, 'utf8').digest('hex');
+  const auth = 'IAPIS user=' + login + ', hmac-sha1=' + sig;
+
+  console.log('[ifirma] deleting invoice:', fakturaId);
+
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = require('https').request({
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      method: 'DELETE',
+      headers: { Authentication: auth, Accept: 'application/json' },
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString();
+        console.log('[ifirma] delete invoice response:', res.statusCode, text.slice(0, 300));
+        try { resolve({ status: res.statusCode, body: JSON.parse(text) }); }
+        catch (e) { resolve({ status: res.statusCode, body: text }); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+module.exports = { generateAuth, fetchInvoices, fetchNbpRate, createInvoice, fetchInvoicePdf, deleteInvoice };
