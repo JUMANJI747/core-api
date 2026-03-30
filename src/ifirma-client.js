@@ -172,7 +172,6 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
-    Numer: null,
     Pozycje,
     Kontrahent,
     ...(isWdt ? { Waluta: 'EUR', KursWaluty: await fetchNbpRate(today) } : {}),
