@@ -63,6 +63,7 @@ function httpsPostJson(url, headers, bodyObj) {
 
 async function fetchNbpRate(date) {
   let d = new Date(date);
+  d.setDate(d.getDate() - 1); // NBP rate from the day preceding the invoice date
   for (let i = 0; i < 5; i++) {
     const ds = d.toISOString().slice(0, 10);
     const url = `https://api.nbp.pl/api/exchangerates/rates/A/EUR/${ds}/?format=json`;
@@ -176,8 +177,15 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
+    Jezyk: isWdt ? 'en' : 'pl',
     Kontrahent,
     Pozycje,
+    ...(isWdt ? {
+      Waluta: 'EUR',
+      KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
+      PrefiksUEKontrahenta: (kontrahent.country || '').toUpperCase(),
+      NIPKontrahenta: kontrahent.nip || '',
+    } : {}),
   };
 
   const bodyStr = JSON.stringify(body);
