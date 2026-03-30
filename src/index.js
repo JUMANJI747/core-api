@@ -984,7 +984,7 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
           prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
         ]);
         if (tgTokenRow && tgChatRow) {
-          const imgBuffer = generateInvoicePreviewImage(preview);
+          const imgBuffer = await generateInvoicePreviewImage(preview);
           await sendTelegramPhoto(tgTokenRow.value, tgChatRow.value, imgBuffer, 'invoice-preview.png', 'Podgląd faktury - potwierdź w czacie');
           console.log('[invoice-preview] preview image sent to Telegram');
         }

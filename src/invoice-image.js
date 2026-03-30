@@ -1,166 +1,122 @@
 'use strict';
 
-const { createCanvas } = require('canvas');
+const sharp = require('sharp');
 
 const W = 800;
 const PAD = 30;
 const ROW_H = 24;
-
-// Columns: x start positions for Nazwa | Wariant | Ilość | Cena | Wartość
 const COLS = [PAD, PAD + 250, PAD + 375, PAD + 440, PAD + 560];
+const FONT = 'DejaVu Sans, Liberation Sans, Arial, sans-serif';
 
-function calcHeight(pozycje) {
-  return (
-    PAD +          // top padding
-    50 +           // title
-    12 +           // separator gap
-    80 +           // contractor block (~4 lines)
-    20 +           // separator gap
-    ROW_H +        // table header row
-    pozycje.length * ROW_H + // data rows
-    16 +           // gap before summary separator
-    12 +           // separator gap
-    72 +           // summary (3 lines * 24px)
-    16 +           // separator gap
-    12 +           // separator gap
-    30 +           // payment term
-    PAD            // bottom padding
-  );
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
-function drawSeparator(ctx, y) {
-  ctx.save();
-  ctx.strokeStyle = '#cccccc';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(PAD, y);
-  ctx.lineTo(W - PAD, y);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function truncate(ctx, text, maxWidth) {
-  if (!text) return '';
-  if (ctx.measureText(text).width <= maxWidth) return text;
-  let truncated = text;
-  while (truncated.length > 1 && ctx.measureText(truncated + '…').width > maxWidth) {
-    truncated = truncated.slice(0, -1);
-  }
-  return truncated + '…';
-}
-
-function generateInvoicePreviewImage(preview) {
+async function generateInvoicePreviewImage(preview) {
   const { contractor, waluta, rodzaj, pozycje, suma, terminPlatnosci } = preview;
-  const H = calcHeight(pozycje);
 
-  const canvas = createCanvas(W, H);
-  const ctx = canvas.getContext('2d');
-
-  // White background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, W, H);
-
+  const els = [];
   let y = PAD;
 
-  // ── Title ──
-  ctx.fillStyle = '#000000';
-  ctx.font = 'bold 22px sans-serif';
-  ctx.fillText('FAKTURA — podgląd', PAD, y + 26);
-  y += 40;
-
-  drawSeparator(ctx, y);
-  y += 16;
-
-  // ── Contractor ──
-  ctx.font = 'bold 13px sans-serif';
-  ctx.fillStyle = '#333333';
-  ctx.fillText('Kontrahent:', PAD, y + 13);
-  y += 20;
-
-  ctx.font = '13px sans-serif';
-  ctx.fillStyle = '#000000';
-  ctx.fillText(contractor.name || '', PAD, y + 13);
-  y += 18;
-
-  if (contractor.nip) {
-    ctx.fillText('NIP: ' + contractor.nip, PAD, y + 13);
-    y += 18;
+  function txt(x, yPos, content, { bold = false, size = 13, fill = '#000000', anchor = 'start' } = {}) {
+    const fw = bold ? ' font-weight="bold"' : '';
+    const ta = anchor !== 'start' ? ` text-anchor="${anchor}"` : '';
+    els.push(`<text x="${x}" y="${yPos}" font-family="${FONT}" font-size="${size}"${fw} fill="${fill}"${ta}>${esc(content)}</text>`);
   }
 
-  ctx.fillText(
-    'Kraj: ' + (contractor.country || 'PL') +
-    '   Typ faktury: ' + (rodzaj === 'wdt' ? 'WDT (UE) — 0% VAT' : 'Krajowa — 23% VAT') +
-    '   Waluta: ' + waluta,
-    PAD, y + 13
-  );
-  y += 20;
+  function rect(x, yPos, w, h, fill) {
+    els.push(`<rect x="${x}" y="${yPos}" width="${w}" height="${h}" fill="${fill}"/>`);
+  }
 
-  drawSeparator(ctx, y);
-  y += 16;
+  function sep(yPos) {
+    els.push(`<line x1="${PAD}" y1="${yPos}" x2="${W - PAD}" y2="${yPos}" stroke="#cccccc" stroke-width="1"/>`);
+  }
+
+  // ── Title ──
+  txt(PAD, y + 26, 'FAKTURA \u2014 podgl\u0105d', { bold: true, size: 22 });
+  y += 42;
+  sep(y); y += 16;
+
+  // ── Contractor ──
+  txt(PAD, y + 13, 'Kontrahent:', { bold: true });
+  y += 20;
+  txt(PAD, y + 13, contractor.name || '');
+  y += 18;
+  if (contractor.nip) {
+    txt(PAD, y + 13, 'NIP: ' + contractor.nip);
+    y += 18;
+  }
+  txt(PAD, y + 13,
+    'Kraj: ' + (contractor.country || 'PL') +
+    '   Typ: ' + (rodzaj === 'wdt' ? 'WDT (UE) \u2014 0% VAT' : 'Krajowa \u2014 23% VAT') +
+    '   Waluta: ' + waluta
+  );
+  y += 18;
+
+  y += 10;
+  sep(y); y += 16;
 
   // ── Table header ──
-  ctx.fillStyle = '#e8e8e8';
-  ctx.fillRect(PAD, y, W - PAD * 2, ROW_H);
-
-  ctx.font = 'bold 12px sans-serif';
-  ctx.fillStyle = '#000000';
-  ctx.fillText('Nazwa', COLS[0] + 4, y + 16);
-  ctx.fillText('Wariant', COLS[1] + 4, y + 16);
-  ctx.fillText('Ilość', COLS[2] + 4, y + 16);
-  ctx.fillText('Cena netto', COLS[3] + 4, y + 16);
-  ctx.fillText('Wartość netto', COLS[4] + 4, y + 16);
+  rect(PAD, y, W - PAD * 2, ROW_H, '#e8e8e8');
+  txt(COLS[0] + 4, y + 16, 'Nazwa',         { bold: true, size: 12 });
+  txt(COLS[1] + 4, y + 16, 'Wariant',       { bold: true, size: 12 });
+  txt(COLS[2] + 4, y + 16, 'Ilo\u015b\u0107', { bold: true, size: 12 });
+  txt(COLS[3] + 4, y + 16, 'Cena netto',    { bold: true, size: 12 });
+  txt(COLS[4] + 4, y + 16, 'Warto\u015b\u0107 netto', { bold: true, size: 12 });
   y += ROW_H;
 
-  // ── Table rows ──
-  ctx.font = '12px sans-serif';
+  // ── Data rows ──
   pozycje.forEach((p, i) => {
-    ctx.fillStyle = i % 2 === 0 ? '#ffffff' : '#f5f5f5';
-    ctx.fillRect(PAD, y, W - PAD * 2, ROW_H);
-    ctx.fillStyle = '#000000';
-
-    const maxNazwa = COLS[1] - COLS[0] - 8;
-    const maxWariant = COLS[2] - COLS[1] - 8;
-
-    ctx.fillText(truncate(ctx, p.nazwa || '', maxNazwa), COLS[0] + 4, y + 16);
-    ctx.fillText(truncate(ctx, p.wariant || '', maxWariant), COLS[1] + 4, y + 16);
-    ctx.fillText(String(p.ilosc), COLS[2] + 4, y + 16);
-    ctx.fillText(Number(p.cenaNetto).toFixed(2) + ' ' + waluta, COLS[3] + 4, y + 16);
-    ctx.fillText(Number(p.wartoscNetto).toFixed(2) + ' ' + waluta, COLS[4] + 4, y + 16);
+    rect(PAD, y, W - PAD * 2, ROW_H, i % 2 === 0 ? '#ffffff' : '#f5f5f5');
+    txt(COLS[0] + 4, y + 16, (p.nazwa  || '').slice(0, 34), { size: 12 });
+    txt(COLS[1] + 4, y + 16, (p.wariant || '').slice(0, 14), { size: 12 });
+    txt(COLS[2] + 4, y + 16, String(p.ilosc),              { size: 12 });
+    txt(COLS[3] + 4, y + 16, Number(p.cenaNetto).toFixed(2)    + ' ' + waluta, { size: 12 });
+    txt(COLS[4] + 4, y + 16, Number(p.wartoscNetto).toFixed(2) + ' ' + waluta, { size: 12 });
     y += ROW_H;
   });
 
-  y += 16;
-  drawSeparator(ctx, y);
-  y += 16;
+  y += 14;
+  sep(y); y += 16;
 
-  // ── Summary ──
-  const sumX = W - PAD - 220;
-  const valX = W - PAD - 10;
+  // ── Summary (right-aligned) ──
+  const labelX = W - PAD - 160;
+  const valX   = W - PAD;
 
-  function drawSumRow(label, value, bold) {
-    if (bold) ctx.font = 'bold 13px sans-serif'; else ctx.font = '13px sans-serif';
-    ctx.fillStyle = '#000000';
-    ctx.fillText(label, sumX, y + 14);
-    const valStr = Number(value).toFixed(2) + ' ' + waluta;
-    const valW = ctx.measureText(valStr).width;
-    ctx.fillText(valStr, valX - valW, y + 14);
-    y += 22;
-  }
+  txt(labelX, y + 14, 'Netto:');
+  txt(valX,   y + 14, Number(suma.netto).toFixed(2)  + ' ' + waluta, { anchor: 'end' });
+  y += 22;
 
-  drawSumRow('Netto:', suma.netto, false);
-  drawSumRow('VAT:', suma.vat, false);
-  drawSumRow('BRUTTO:', suma.brutto, true);
+  txt(labelX, y + 14, 'VAT:');
+  txt(valX,   y + 14, Number(suma.vat).toFixed(2)    + ' ' + waluta, { anchor: 'end' });
+  y += 22;
 
-  y += 4;
-  drawSeparator(ctx, y);
-  y += 16;
+  txt(labelX, y + 14, 'BRUTTO:', { bold: true });
+  txt(valX,   y + 14, Number(suma.brutto).toFixed(2) + ' ' + waluta, { bold: true, anchor: 'end' });
+  y += 26;
+
+  y += 8;
+  sep(y); y += 16;
 
   // ── Payment term ──
-  ctx.font = '12px sans-serif';
-  ctx.fillStyle = '#555555';
-  ctx.fillText('Termin płatności: ' + terminPlatnosci, PAD, y + 13);
+  txt(PAD, y + 13, 'Termin p\u0142atno\u015bci: ' + (terminPlatnosci || ''), { size: 12, fill: '#555555' });
+  y += 20;
 
-  return canvas.toBuffer('image/png');
+  const H = y + PAD;
+
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">`,
+    `<rect width="${W}" height="${H}" fill="#ffffff"/>`,
+    ...els,
+    `</svg>`,
+  ].join('\n');
+
+  return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 module.exports = { generateInvoicePreviewImage };
