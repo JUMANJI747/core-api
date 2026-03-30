@@ -153,6 +153,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
 
   const Pozycje = pozycje.map(p => (isWdt ? {
     TypStawkiVat: 'NP',
+    GTU: 'GTU_12',
     Ilosc: p.ilosc,
     CenaJednostkowa: p.cenaNetto,
     NazwaPelna: p.nazwa,
