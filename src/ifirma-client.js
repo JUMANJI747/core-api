@@ -203,7 +203,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
 
   const kod = resp && resp.response && resp.response.Kod;
   const informacja = resp && resp.response && resp.response.Informacja;
-  if (status !== 200 || (kod != null && kod !== 0) || informacja) {
+  if (status !== 200 || (kod != null && kod !== 0)) {
     console.log('[ifirma] API error:', fullResp);
     throw Object.assign(new Error('iFirma error: ' + fullResp), { ifirmaRaw: resp });
   }
