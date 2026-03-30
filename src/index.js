@@ -873,7 +873,12 @@ function scoreContractor(contractor, search) {
 app.post("/api/ifirma/invoice-preview", async (req, res) => {
   try {
     const { contractorId, contractorSearch, items } = req.body;
-    if (!items || !items.length) return res.status(400).json({ error: "items required" });
+    let parsedItems = items;
+    if (typeof items === 'string') {
+      try { parsedItems = JSON.parse(items); } catch(e) { return res.status(400).json({ error: 'items must be valid JSON array' }); }
+    }
+    if (!parsedItems || !parsedItems.length) return res.status(400).json({ error: 'items required' });
+    console.log('[invoice-preview] parsed items:', JSON.stringify(parsedItems));
 
     // Resolve contractor
     let contractor;
@@ -905,7 +910,7 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
 
     // Expand items (resolve products + boxes)
     const pozycje = [];
-    for (const item of items) {
+    for (const item of parsedItems) {
       const ean = item.productEan || item.ean;
       console.log('[invoice-preview] looking for product EAN:', ean);
       const product = await prisma.product.findUnique({ where: { ean } });
