@@ -79,6 +79,31 @@ async function fetchNbpRate(date) {
   throw new Error('NBP rate not found for date: ' + date);
 }
 
+// ============ SEARCH CONTRACTOR ============
+
+async function searchContractor(nip) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+
+  const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(nip)}.json`;
+  const auth = generateAuth(url, '', login, keyHex);
+
+  console.log('[ifirma] searching contractor by NIP:', nip);
+
+  const { status, body } = await httpsGetRaw(url, {
+    Authentication: auth,
+    Accept: 'application/json',
+  });
+
+  const bodyStr = body.toString();
+  console.log('[ifirma] searchContractor status:', status, bodyStr.slice(0, 300));
+
+  let data;
+  try { data = JSON.parse(bodyStr); }
+  catch (e) { throw new Error('iFirma invalid JSON (searchContractor): ' + bodyStr.slice(0, 200)); }
+
+  return data.response && data.response.Wynik && data.response.Wynik[0] || null;
+}
+
 // ============ FETCH INVOICES ============
 
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
@@ -142,13 +167,35 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
 
   const today = new Date().toISOString().slice(0, 10);
 
+  // Enrich contractor data from iFirma if address/postCode missing
+  let enriched = {};
+  if (kontrahent.nip && (!kontrahent.address || !kontrahent.postCode)) {
+    try {
+      const ifirmaContractor = await searchContractor(kontrahent.nip);
+      if (ifirmaContractor) {
+        console.log('[ifirma] enriched contractor data from iFirma:', ifirmaContractor.Ulica, ifirmaContractor.KodPocztowy, ifirmaContractor.Miejscowosc);
+        enriched = {
+          Ulica: ifirmaContractor.Ulica || '',
+          KodPocztowy: ifirmaContractor.KodPocztowy || '',
+          Miejscowosc: ifirmaContractor.Miejscowosc || '',
+          Kraj: ifirmaContractor.Kraj || '',
+          ...(ifirmaContractor.Identyfikator ? { IdentyfikatorKontrahenta: ifirmaContractor.Identyfikator } : {}),
+        };
+      }
+    } catch (e) {
+      console.log('[ifirma] searchContractor failed (non-fatal):', e.message);
+    }
+  }
+
   const Kontrahent = {
+    ...(kontrahent.ifirmaId ? { IdentyfikatorKontrahenta: kontrahent.ifirmaId } : {}),
+    ...enriched,
     Nazwa: kontrahent.name,
     NIP: kontrahent.nip || '',
-    Ulica: kontrahent.address || '',
-    KodPocztowy: kontrahent.postCode || '',
-    Kraj: isWdt ? (kontrahent.country || '') : 'Polska',
-    Miejscowosc: kontrahent.city || '',
+    Ulica: kontrahent.address || enriched.Ulica || '',
+    KodPocztowy: kontrahent.postCode || enriched.KodPocztowy || '',
+    Kraj: isWdt ? (kontrahent.country || enriched.Kraj || '') : 'Polska',
+    Miejscowosc: kontrahent.city || enriched.Miejscowosc || '',
   };
 
   const Pozycje = pozycje.map(p => {
@@ -291,4 +338,4 @@ async function deleteInvoice(fakturaId, rodzaj) {
   });
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, createInvoice, fetchInvoicePdf, deleteInvoice };
+module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, deleteInvoice };
