@@ -186,7 +186,15 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
   console.log('[ifirma] creating invoice for', kontrahent.name);
 
   const { status, body: resp } = await httpsPostJson(url, { Authentication: auth }, body);
-  console.log('[ifirma] create invoice status:', status, JSON.stringify(resp).slice(0, 300));
+  const fullResp = JSON.stringify(resp);
+  console.log('[ifirma] create invoice status:', status, fullResp.slice(0, 300));
+
+  const kod = resp && resp.response && resp.response.Kod;
+  const informacja = resp && resp.response && resp.response.Informacja;
+  if (status !== 200 || (kod != null && kod !== 0) || informacja) {
+    console.log('[ifirma] API error:', fullResp);
+    throw new Error('iFirma error: ' + fullResp);
+  }
 
   return resp;
 }
@@ -211,7 +219,11 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj) {
     Accept: 'application/pdf',
   });
 
-  if (status !== 200) throw new Error(`iFirma PDF error: status ${status}`);
+  if (status !== 200) {
+    const bodyText = body.toString();
+    console.log('[ifirma] API error (PDF):', JSON.stringify({ status, body: bodyText }));
+    throw new Error('iFirma PDF error: status ' + status + ' — ' + bodyText);
+  }
   return body; // Buffer
 }
 
