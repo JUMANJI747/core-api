@@ -151,22 +151,25 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     Miejscowosc: kontrahent.city || '',
   };
 
-  const Pozycje = pozycje.map(p => (isWdt ? {
-    TypStawkiVat: 'NP',
-    GTU: 'GTU_12',
-    Ilosc: p.ilosc,
-    CenaJednostkowa: p.cenaNetto,
-    NazwaPelna: p.nazwa,
-    Jednostka: 'szt.',
-  } : {
-    StawkaVat: 0.23,
-    TypStawkiVat: 'PRC',
-    GTU: 'GTU_12',
-    Ilosc: p.ilosc,
-    CenaJednostkowa: p.cenaNetto,
-    NazwaPelna: p.nazwa,
-    Jednostka: 'szt.',
-  }));
+  const Pozycje = pozycje.map(p => {
+    const nazwaBase = p.wariant ? `${p.nazwa} - ${p.wariant}` : p.nazwa;
+    const NazwaPelna = p.ean ? `${nazwaBase} EAN ${p.ean}` : nazwaBase;
+    return isWdt ? {
+      TypStawkiVat: 'NP',
+      Ilosc: p.ilosc,
+      CenaJednostkowa: p.cenaNetto,
+      NazwaPelna,
+      Jednostka: 'szt.',
+    } : {
+      StawkaVat: 0.23,
+      TypStawkiVat: 'PRC',
+      GTU: 'GTU_12',
+      Ilosc: p.ilosc,
+      CenaJednostkowa: p.cenaNetto,
+      NazwaPelna,
+      Jednostka: 'szt.',
+    };
+  });
 
   const body = {
     Zaplacono: 0,
@@ -230,9 +233,8 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
     endpoint = 'fakturakraj';
   }
 
-  const isEksport = endpoint === 'fakturaeksporttowarow';
   const numerUrl = (pelnyNumer && pelnyNumer !== 'UNKNOWN') ? pelnyNumer.replace(/\//g, '_') : null;
-  const identyfikator = (isEksport || !numerUrl) ? fakturaId : numerUrl;
+  const identyfikator = fakturaId || numerUrl;
 
   const url = `https://www.ifirma.pl/iapi/${endpoint}/${identyfikator}.pdf`;
   const auth = generateAuth(url, '', login, keyHex);

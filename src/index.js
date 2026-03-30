@@ -1091,8 +1091,8 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
       },
     });
 
-    // Fetch PDF
-    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj, ifirmaIdNum);
+    // Fetch PDF — always use fakturaId (Identyfikator from iFirma response)
+    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId);
 
     // Send to Telegram
     let pdfSent = false;
