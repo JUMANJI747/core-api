@@ -131,7 +131,7 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
-async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
+async function createInvoice({ kontrahent, pozycje, rodzaj }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const isWdt = rodzaj === 'wdt';
@@ -140,27 +140,31 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
     : 'https://www.ifirma.pl/iapi/fakturakraj.json';
 
   const today = new Date().toISOString().slice(0, 10);
-  const due = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
-  const Pozycje = pozycje.map(p => ({
-    ...(isWdt ? {} : { StawkaVat: 0.23 }),
-    TypStawkiVat: isWdt ? 'NP' : 'PRC',
-    ...(isWdt ? {} : { GTU: 'GTU_12' }),
-    Ilosc: p.ilosc,
-    CenaJednostkowa: p.cenaNetto,
-    NazwaPelna: p.wariant ? `${p.nazwa} - ${p.wariant}` : p.nazwa,
-    Jednostka: 'szt.',
-  }));
 
   const Kontrahent = {
     Nazwa: kontrahent.name,
     NIP: kontrahent.nip || '',
     Ulica: kontrahent.address || '',
     KodPocztowy: kontrahent.postCode || '',
-    Miejscowosc: kontrahent.city || '',
     Kraj: isWdt ? (kontrahent.country || '') : 'Polska',
-    ...(isWdt && kontrahent.nip ? { PrefiksUE: (kontrahent.country || '').toUpperCase() } : {}),
+    Miejscowosc: kontrahent.city || '',
   };
+
+  const Pozycje = pozycje.map(p => (isWdt ? {
+    TypStawkiVat: 'NP',
+    Ilosc: p.ilosc,
+    CenaJednostkowa: p.cenaNetto,
+    NazwaPelna: p.nazwa,
+    Jednostka: 'szt.',
+  } : {
+    StawkaVat: 0.23,
+    TypStawkiVat: 'PRC',
+    GTU: 'GTU_12',
+    Ilosc: p.ilosc,
+    CenaJednostkowa: p.cenaNetto,
+    NazwaPelna: p.nazwa,
+    Jednostka: 'szt.',
+  }));
 
   const body = {
     Zaplacono: 0,
@@ -172,9 +176,8 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
-    Pozycje,
     Kontrahent,
-    ...(isWdt ? { Waluta: 'EUR', KursWaluty: await fetchNbpRate(today) } : {}),
+    Pozycje,
   };
 
   const bodyStr = JSON.stringify(body);
