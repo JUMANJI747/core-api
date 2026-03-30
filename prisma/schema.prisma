@@ -276,6 +276,14 @@ model SystemEvent {
   @@index([resolved])
 }
 
+// ============ AGENT CONTEXT ============
+
+model AgentContext {
+  id        String   @id @default("default")
+  data      Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
 // ============ AUDIT LOG ============
 
 model AuditLog {

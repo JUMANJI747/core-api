@@ -798,6 +798,32 @@ app.get("/api/ifirma/invoices", async (req, res) => {
   }
 });
 
+// ============ AGENT CONTEXT ============
+
+app.get("/api/agent-context/:agentId", async (req, res) => {
+  try {
+    const entry = await prisma.agentContext.findUnique({ where: { id: req.params.agentId } });
+    res.json(entry ? entry.data : {});
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/agent-context/:agentId", async (req, res) => {
+  try {
+    const { data } = req.body;
+    if (data === undefined) return res.status(400).json({ error: "data required" });
+    const entry = await prisma.agentContext.upsert({
+      where: { id: req.params.agentId },
+      update: { data },
+      create: { id: req.params.agentId, data },
+    });
+    res.json({ ok: true, data: entry.data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ INVOICE HITL ============
 
 // In-memory preview store with 30-min TTL
@@ -974,6 +1000,11 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
     const previewId = require("crypto").randomUUID();
     savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj });
 
+    prisma.agentContext.upsert({
+      where: { id: "ksiegowosc" },
+      update: { data: { lastAction: "preview", previewId, contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country }, suma: preview.suma, waluta, timestamp: Date.now() } },
+      create: { id: "ksiegowosc", data: { lastAction: "preview", previewId, contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country }, suma: preview.suma, waluta, timestamp: Date.now() } },
+    }).catch(e => console.error('[invoice-preview] AgentContext save error:', e.message));
 
     res.json({ ok: true, preview, previewId });
   } catch (e) {
@@ -1090,6 +1121,13 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
     }
 
     invoicePreviews.delete(bestId);
+
+    prisma.agentContext.upsert({
+      where: { id: "ksiegowosc" },
+      update: { data: { lastAction: "confirmed", invoiceNumber: pelnyNumer, invoiceId: invoice.id, contractor: { name: contractor.name }, timestamp: Date.now() } },
+      create: { id: "ksiegowosc", data: { lastAction: "confirmed", invoiceNumber: pelnyNumer, invoiceId: invoice.id, contractor: { name: contractor.name }, timestamp: Date.now() } },
+    }).catch(e => console.error('[invoice-confirm-latest] AgentContext save error:', e.message));
+
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
   } catch (e) {
     res.status(500).json({ error: e.message });
