@@ -143,12 +143,13 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
   const due = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const Pozycje = pozycje.map(p => ({
-    StawkaVat: isWdt ? 0 : 0.23,
-    TypStawkiVat: isWdt ? 'ZW' : 'PRC',
+    ...(isWdt ? {} : { StawkaVat: 0.23 }),
+    TypStawkiVat: isWdt ? 'NP' : 'PRC',
+    ...(isWdt ? {} : { GTU: 'GTU_12' }),
     Ilosc: p.ilosc,
     CenaJednostkowa: p.cenaNetto,
     NazwaPelna: p.wariant ? `${p.nazwa} - ${p.wariant}` : p.nazwa,
-    Jednostka: 'szt',
+    Jednostka: 'szt.',
   }));
 
   const Kontrahent = {
@@ -168,12 +169,9 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
     MiejsceWystawienia: 'Warszawa',
     DataSprzedazy: today,
     FormatDatySprzedazy: 'DZN',
-    TerminPlatnosci: due,
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
-    NazwaSzablonu: 'default',
-    RodzajPodpisuOdbiorcy: 'BPO',
-    WidocznoscNumeruGTU: false,
+    RodzajPodpisuOdbiorcy: 'BWO',
     Numer: null,
     Pozycje,
     Kontrahent,
