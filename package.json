@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
+    "canvas": "^3.2.2",
     "express": "^4.21.0",
     "imap": "^0.8.19",
     "mailparser": "^3.9.6",
