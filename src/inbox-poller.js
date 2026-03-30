@@ -29,13 +29,32 @@ const vatCache = new Map(); // key: normalized VAT number, value: {valid, name, 
 
 const BLOCKED_FROM_KEYWORDS = [
   'mailer-daemon', 'postmaster', 'noreply', 'no-reply',
-  'donotreply', 'bounce', 'notification@', 'alert@', 'system@',
+  'donotreply', 'bounce', 'bounced', 'daemon', 'returned',
+  'notification@', 'alert@', 'system@',
 ];
 
 const BLOCKED_SUBJECT_KEYWORDS = [
   'mail delivery', 'undelivered', 'delivery failed', 'failure notice',
   'returned mail', 'undeliverable', 'out of office', 'auto-reply',
   'autoreply', 'automatische antwort', 'absence du bureau', 'unsubscribe',
+  // Email-bounce specific (no courier ambiguity)
+  'nicht zustellbar', 'non remis', 'sender rejected',
+  'mail delivery failed', 'message not delivered',
+];
+
+// Ambiguous bounce subjects — only block when sender is a bounce address or fromEmail is empty
+const BOUNCE_SUBJECT_KEYWORDS = [
+  'niedostarczalne', 'no entregado', 'delivery has failed', 'delivery failure',
+  'nie można dostarczyć', 'nie udało się dostarczyć', 'returned to sender',
+  'zwrot do nadawcy', 'could not be delivered',
+];
+
+// Technical DSN/bounce content — safe to check in body regardless of sender
+const BOUNCE_BODY_KEYWORDS = [
+  'mailer-daemon', 'delivery status notification', 'sender rejected',
+  'mail flow rule', 'blocked by', '550 5.', '551 5.', '552 5.',
+  '553 5.', '554 5.', 'dsn code', 'message was rejected',
+  "couldn't be delivered", 'rejected your message',
 ];
 
 const BLOCKED_DOMAINS = [
@@ -54,6 +73,29 @@ function newsletterFilter(mail) {
   const kw = NEWSLETTER_BODY_KEYWORDS.find(k => tail.includes(k));
   if (kw) return 'unsubscribe link';
   return null;
+}
+
+function isBounceAddress(fromEmail) {
+  if (!fromEmail) return true;
+  return ['daemon', 'postmaster', 'bounce', 'mailer', 'returned'].some(k => fromEmail.includes(k));
+}
+
+// Returns true if the mail looks like an email bounce/delivery failure notification
+function bounceFilter(mail) {
+  const fromEmail = (mail.fromEmail || '').toLowerCase();
+  const subject = (mail.subject || '').toLowerCase();
+  const bodyHead = (mail.bodyText || '').toLowerCase().slice(0, 1000);
+
+  // Technical DSN codes / bounce phrases in body — blocks regardless of sender
+  if (BOUNCE_BODY_KEYWORDS.some(k => bodyHead.includes(k))) return true;
+
+  // Ambiguous subject phrases — only block when sender is a known bounce address or empty
+  if (isBounceAddress(fromEmail) && BOUNCE_SUBJECT_KEYWORDS.some(k => subject.includes(k))) return true;
+
+  // Empty fromEmail + any delivery/rejection keyword in subject (point 4)
+  if (!fromEmail && ['niedostarczalne', 'undeliverable', 'delivery', 'rejected', 'returned'].some(k => subject.includes(k))) return true;
+
+  return false;
 }
 
 function hardFilter(mail) {
@@ -507,6 +549,12 @@ async function processAccount(account) {
         // Hard filter
         if (!hardFilter(mail)) {
           console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
+          continue;
+        }
+
+        // Bounce filter
+        if (bounceFilter(mail)) {
+          console.log(`[inbox-poller] filtered (bounce) uid=${mail.uid} subject=${mail.subject}`);
           continue;
         }
 
