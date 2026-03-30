@@ -97,6 +97,23 @@ app.get("/api/contractors/:id", async (req, res) => {
   res.json(c);
 });
 
+app.post("/api/contractors/:id/alias", async (req, res) => {
+  try {
+    const { alias } = req.body;
+    if (!alias || typeof alias !== "string") return res.status(400).json({ error: "alias required" });
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: "contractor not found" });
+    const extras = c.extras || {};
+    const aliases = Array.isArray(extras.aliases) ? extras.aliases : [];
+    const normalized = alias.trim().toLowerCase();
+    if (!aliases.includes(normalized)) aliases.push(normalized);
+    await prisma.contractor.update({ where: { id: req.params.id }, data: { extras: { ...extras, aliases } } });
+    res.json({ ok: true, aliases });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ DEALS (PIPELINE) ============
 app.post("/api/deals", async (req, res) => {
   try {
@@ -802,6 +819,57 @@ function genUuid() {
   return crypto.randomUUID ? crypto.randomUUID() : require('crypto').randomUUID();
 }
 
+// ============ FUZZY CONTRACTOR MATCH ============
+
+function normalizeContractorName(s) {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove diacritics
+    .replace(/[áàä]/g, 'a').replace(/[éèë]/g, 'e').replace(/[íìï]/g, 'i')
+    .replace(/[óòö]/g, 'o').replace(/[úùü]/g, 'u').replace(/ñ/g, 'n')
+    .replace(/ç/g, 'c').replace(/[ãõ]/g, a => a === 'ã' ? 'a' : 'o')
+    .replace(/[-.,&]/g, ' ')
+    .replace(/\b(lda|slu|sl|sa|sp|gmbh|srl|snc|unipessoal|spolka|sp z o o|sp\. z o\.o\.?)\b/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function scoreContractor(contractor, search) {
+  const normSearch = normalizeContractorName(search);
+  const normName = normalizeContractorName(contractor.name);
+  const searchWords = normSearch.split(/\s+/).filter(w => w.length >= 3);
+
+  // 100: exact match
+  if (normName === normSearch) return 100;
+
+  // 90: name contains ALL words from search
+  if (searchWords.length > 0 && searchWords.every(w => normName.includes(w))) return 90;
+
+  // 80: name contains ANY word from search (min 3 chars)
+  if (searchWords.some(w => normName.includes(w))) return 80;
+
+  // 70: any search word is substring of name token or vice versa
+  const nameWords = normName.split(/\s+/).filter(w => w.length >= 3);
+  const has70 = searchWords.some(sw => nameWords.some(nw => nw.includes(sw) || sw.includes(nw)));
+  if (has70) return 70;
+
+  // 60: extras.aliases contains search
+  const aliases = (contractor.extras && Array.isArray(contractor.extras.aliases)) ? contractor.extras.aliases : [];
+  if (aliases.some(a => normalizeContractorName(a) === normSearch)) return 60;
+
+  // 50: NIP contains search string
+  if (contractor.nip && contractor.nip.replace(/\s/g, '').includes(search.replace(/\s/g, ''))) return 50;
+
+  // 40: phonetic — first 3-4 chars of each search word match a name word
+  const has40 = searchWords.some(sw => {
+    const pfx = sw.slice(0, 4);
+    return nameWords.some(nw => nw.startsWith(pfx));
+  });
+  if (has40) return 40;
+
+  return 0;
+}
+
 app.post("/api/ifirma/invoice-preview", async (req, res) => {
   try {
     const { contractorId, contractorSearch, items } = req.body;
@@ -812,10 +880,23 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
     if (contractorId) {
       contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
     } else if (contractorSearch) {
-      contractor = await prisma.contractor.findFirst({
-        where: { name: { contains: contractorSearch, mode: "insensitive" } },
-        orderBy: { updatedAt: "desc" },
+      const all = await prisma.contractor.findMany({
+        select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
       });
+      const scored = all
+        .map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      const best = scored[0];
+      console.log(`[invoice-preview] contractor match: "${contractorSearch}" → "${best ? best.contractor.name : 'none'}" (score: ${best ? best.score : 0})`);
+
+      if (best && best.score >= 50) {
+        contractor = await prisma.contractor.findUnique({ where: { id: best.contractor.id } });
+      } else {
+        const suggestions = scored.slice(0, 5).map(x => ({ id: x.contractor.id, name: x.contractor.name, score: x.score }));
+        return res.json({ ok: false, suggestions });
+      }
     }
     if (!contractor) return res.status(404).json({ error: "contractor not found" });
 
