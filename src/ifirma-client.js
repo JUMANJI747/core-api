@@ -152,8 +152,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
   };
 
   const Pozycje = pozycje.map(p => {
-    const nazwaBase = p.wariant ? `${p.nazwa} - ${p.wariant}` : p.nazwa;
-    const NazwaPelna = p.ean ? `${nazwaBase} EAN ${p.ean}` : nazwaBase;
+    const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
+      ? ` - ${p.wariant}` : '';
+    const NazwaPelna = `${p.nazwa}${wariantSuffix}${p.ean ? ` EAN ${p.ean}` : ''}`;
     return isWdt ? {
       TypStawkiVat: 'NP',
       Ilosc: p.ilosc,
@@ -181,7 +182,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
-    Jezyk: isWdt ? 'en' : 'pl',
+    ...(isWdt ? { Jezyk: 'en' } : {}),
     Kontrahent,
     Pozycje,
     ...(isWdt ? {

@@ -549,20 +549,20 @@ app.delete("/api/memory/clear", async (req, res) => {
 
 // ============ PRODUCTS ============
 const SEED_PRODUCTS = [
-  {ean:"5902082579014", name:"Bell Surf Care Hydrating Cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579021", name:"Bell Surf Extreme Waterproof Gel SPF 50+", category:"ochrona słoneczna", capacity:"40g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579045", name:"Bell Surf Daily UV Protection SPF 50+", category:"ochrona słoneczna", capacity:"30g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579052", name:"Bell Surf Lip Balm SPF 50+", category:"ochrona słoneczna", variant:"lip balm", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082556022", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"Blue", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082556053", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"Pink", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082556046", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"Purple", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082556039", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"Mint", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082564935", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"White", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082564942", name:"Surf Stick Bell", category:"ochrona słoneczna", variant:"Skin", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082576167", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Mint", capacity:"9ml", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082576150", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Blue", capacity:"9ml", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082576174", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Pink", capacity:"9ml", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082576181", name:"Surf Girl Mascara Bell", category:"makijaż", variant:"Black", capacity:"9ml", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082579021", name:"SURF GEL extreme waterproof gel spf 50+", category:"ochrona słoneczna", capacity:"40g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082579045", name:"SURF DAILY protection spf 50", category:"ochrona słoneczna", capacity:"30g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082579052", name:"SURF LIPS lip balm spf 50+", category:"ochrona słoneczna", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082556022", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Blue", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082556053", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Pink", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082556046", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Purple", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082556039", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Mint", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082564935", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"White", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082564942", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Skin", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082576150", name:"SURF GIRL waterproof mascara", category:"makijaż", variant:"Blue", capacity:"9ml", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082576167", name:"SURF GIRL waterproof mascara", category:"makijaż", variant:"Mint", capacity:"9ml", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082576174", name:"SURF GIRL waterproof mascara", category:"makijaż", variant:"Pink", capacity:"9ml", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082576181", name:"SURF GIRL waterproof mascara", category:"makijaż", variant:"Black", capacity:"9ml", pricePLN:18, priceEUR:4.5},
   {ean:"BOX-STICK-30", name:"Surf Stick Box / Ekspozytor", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082556022",variant:"Blue",qty:5},{ean:"5902082556053",variant:"Pink",qty:5},{ean:"5902082556046",variant:"Purple",qty:5},{ean:"5902082556039",variant:"Mint",qty:5},{ean:"5902082564935",variant:"White",qty:5},{ean:"5902082564942",variant:"Skin",qty:5}],totalQty:30}},
   {ean:"BOX-MASCARA-30", name:"Surf Girl Mascara Box", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082576181",variant:"Black",qty:12},{ean:"5902082576167",variant:"Mint",qty:6},{ean:"5902082576174",variant:"Pink",qty:6},{ean:"5902082576150",variant:"Blue",qty:6}],totalQty:30}},
   {ean:"BOX-COLLECTION-30", name:"Surf Collection Box", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082579052",variant:"Lip Balm",qty:12},{ean:"5902082579021",variant:"Gel SPF50+",qty:6},{ean:"5902082579045",variant:"Daily UV SPF50+",qty:6},{ean:"5902082579014",variant:"Hydrating Cream",qty:6}],totalQty:30}},
@@ -613,14 +613,19 @@ app.get("/api/products", async (req, res) => {
 
 app.post("/api/products/seed", async (req, res) => {
   try {
-    let created = 0, skipped = 0;
+    let created = 0, updated = 0;
     for (const p of SEED_PRODUCTS) {
-      const exists = await prisma.product.findUnique({ where: { ean: p.ean } });
-      if (exists) { skipped++; continue; }
-      await prisma.product.create({ data: { ...p, extras: p.extras || {} } });
-      created++;
+      const data = { ...p, extras: p.extras || {} };
+      const existing = await prisma.product.findUnique({ where: { ean: p.ean } });
+      if (existing) {
+        await prisma.product.update({ where: { ean: p.ean }, data: { name: p.name, variant: p.variant ?? null, category: p.category, capacity: p.capacity ?? null, pricePLN: p.pricePLN, priceEUR: p.priceEUR } });
+        updated++;
+      } else {
+        await prisma.product.create({ data });
+        created++;
+      }
     }
-    res.json({ ok: true, created, skipped, total: SEED_PRODUCTS.length });
+    res.json({ ok: true, created, updated, total: SEED_PRODUCTS.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
