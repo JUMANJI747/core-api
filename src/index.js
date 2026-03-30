@@ -981,6 +981,121 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
   }
 });
 
+app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
+  try {
+    // Find the most recently created, non-expired preview
+    const now = Date.now();
+    let bestId = null;
+    let bestExpiry = 0;
+    for (const [id, entry] of invoicePreviews.entries()) {
+      if (entry.expiresAt > now && entry.expiresAt > bestExpiry) {
+        bestExpiry = entry.expiresAt;
+        bestId = id;
+      }
+    }
+    if (!bestId) return res.status(404).json({ error: "Brak aktywnego podglądu. Utwórz nowy." });
+
+    const stored = getPreview(bestId);
+    if (!stored) return res.status(404).json({ error: "Brak aktywnego podglądu. Utwórz nowy." });
+
+    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
+
+    // Create invoice in iFirma
+    const ifirmaResp = await createInvoice({
+      kontrahent: {
+        name: contractor.name,
+        nip: contractor.nip,
+        address: contractor.address,
+        city: contractor.city,
+        postCode: contractor.extras && contractor.extras.postCode || "",
+        country: contractor.country,
+      },
+      pozycje,
+      waluta,
+      rodzaj,
+    });
+
+    const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
+    const pelnyNumer = ifirmaInvoice && (ifirmaInvoice.PelnyNumer || ifirmaInvoice.Numer) || "UNKNOWN";
+    const ifirmaId = ifirmaInvoice && ifirmaInvoice.FakturaId || null;
+
+    const sumaNetto = stored.preview.suma.netto;
+    const brutto = stored.preview.suma.brutto;
+
+    // Save to DB
+    const invoice = await prisma.invoice.create({
+      data: {
+        contractorId: contractor.id,
+        ifirmaId,
+        number: pelnyNumer,
+        issueDate: new Date(),
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        grossAmount: brutto,
+        currency: waluta,
+        paidAmount: 0,
+        status: "unpaid",
+        type: rodzaj,
+        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cenaNetto, priceEUR: p.cenaNetto })) },
+      },
+    });
+
+    // Fetch PDF
+    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj);
+
+    // Send to Telegram
+    let pdfSent = false;
+    try {
+      const [tokenCfg, chatCfg] = await Promise.all([
+        prisma.config.findUnique({ where: { key: "telegram_bot_token" } }),
+        prisma.config.findUnique({ where: { key: "telegram_chat_id" } }),
+      ]);
+      const token = tokenCfg && tokenCfg.value;
+      const chatId = chatCfg && chatCfg.value;
+
+      if (token && chatId) {
+        const boundary = "----FormBoundary" + Date.now();
+        const caption = `Faktura ${pelnyNumer} dla ${contractor.name}`;
+        const filename = `faktura_${pelnyNumer.replace(/\//g, "_")}.pdf`;
+
+        const parts = [
+          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+        ];
+
+        const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
+        const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+        const body = Buffer.concat([pre, pdfBuffer, post]);
+
+        await new Promise((resolve, reject) => {
+          const tgUrl = new URL(`https://api.telegram.org/bot${token}/sendDocument`);
+          const options = {
+            hostname: tgUrl.hostname,
+            path: tgUrl.pathname,
+            method: 'POST',
+            headers: {
+              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+              'Content-Length': body.length,
+            },
+          };
+          const req2 = require('https').request(options, r => { r.resume(); resolve(); });
+          req2.on('error', reject);
+          req2.write(body);
+          req2.end();
+        });
+        pdfSent = true;
+      }
+    } catch (tgErr) {
+      console.error('[invoice-confirm-latest] Telegram error:', tgErr.message);
+    }
+
+    invoicePreviews.delete(bestId);
+    res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/ifirma/invoice-confirm", async (req, res) => {
   try {
     const { previewId } = req.body;
