@@ -184,6 +184,9 @@ async function createInvoice({ kontrahent, pozycje, waluta, rodzaj }) {
   const auth = generateAuth(url, bodyStr, login, keyHex);
 
   console.log('[ifirma] creating invoice for', kontrahent.name);
+  console.log('[ifirma] CREATE INVOICE URL:', url);
+  console.log('[ifirma] CREATE INVOICE AUTH:', auth.slice(0, 60) + '...');
+  console.log('[ifirma] CREATE INVOICE REQUEST BODY:', JSON.stringify(body, null, 2));
 
   const { status, body: resp } = await httpsPostJson(url, { Authentication: auth }, body);
   const fullResp = JSON.stringify(resp);
