@@ -187,16 +187,20 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     }
   }
 
-  const Kontrahent = {
-    ...(kontrahent.ifirmaId ? { IdentyfikatorKontrahenta: kontrahent.ifirmaId } : {}),
-    ...enriched,
-    Nazwa: kontrahent.name,
-    NIP: kontrahent.nip || '',
-    Ulica: kontrahent.address || enriched.Ulica || '',
-    KodPocztowy: kontrahent.postCode || enriched.KodPocztowy || '',
-    Kraj: isWdt ? (kontrahent.country || enriched.Kraj || '') : 'Polska',
-    Miejscowosc: kontrahent.city || enriched.Miejscowosc || '',
-  };
+  const Kontrahent = {};
+  if (kontrahent.ifirmaId) Kontrahent.IdentyfikatorKontrahenta = kontrahent.ifirmaId;
+  Kontrahent.Nazwa = kontrahent.name;
+  const _nip = kontrahent.nip;
+  if (_nip) Kontrahent.NIP = _nip;
+  const _ulica = kontrahent.address || enriched.Ulica;
+  if (_ulica) Kontrahent.Ulica = _ulica;
+  const _kod = kontrahent.postCode || enriched.KodPocztowy;
+  if (_kod) Kontrahent.KodPocztowy = _kod;
+  const _miasto = kontrahent.city || enriched.Miejscowosc;
+  if (_miasto) Kontrahent.Miejscowosc = _miasto;
+  const _country = kontrahent.country || enriched.Kraj;
+  if (_country || !isWdt) Kontrahent.Kraj = isWdt ? _country : 'Polska';
+  if (isWdt && _country) Kontrahent.PrefiksUE = _country.toUpperCase();
 
   const Pozycje = pozycje.map(p => {
     const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
@@ -235,8 +239,8 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     ...(isWdt ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
-      PrefiksUEKontrahenta: (kontrahent.country || '').toUpperCase(),
-      NIPKontrahenta: kontrahent.nip || '',
+      ...(_country ? { PrefiksUEKontrahenta: _country.toUpperCase() } : {}),
+      ...(_nip ? { NIPKontrahenta: _nip } : {}),
     } : {}),
   };
 
