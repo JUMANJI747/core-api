@@ -1056,6 +1056,7 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
           city: contractor.city,
           postCode: contractor.extras && contractor.extras.postCode || "",
           country: contractor.country,
+          ifirmaId: contractor.extras && contractor.extras.ifirmaId || null,
         },
         pozycje,
         rodzaj,
