@@ -1,8 +1,6 @@
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
 const { sendMail, findAccount, extractInbox, getAccounts } = require("./mail-sender");
-const { sendTelegramPhoto } = require("./telegram-utils");
-const { generateInvoicePreviewImage } = require("./invoice-image");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -976,22 +974,6 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
     const previewId = require("crypto").randomUUID();
     savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj });
 
-    // Send preview image to Telegram (non-blocking)
-    (async () => {
-      try {
-        const [tgTokenRow, tgChatRow] = await Promise.all([
-          prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-          prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-        ]);
-        if (tgTokenRow && tgChatRow) {
-          const imgBuffer = await generateInvoicePreviewImage(preview);
-          await sendTelegramPhoto(tgTokenRow.value, tgChatRow.value, imgBuffer, 'invoice-preview.png', 'Podgląd faktury - potwierdź w czacie');
-          console.log('[invoice-preview] preview image sent to Telegram');
-        }
-      } catch (tgErr) {
-        console.error('[invoice-preview] Telegram send error:', tgErr.message);
-      }
-    })();
 
     res.json({ ok: true, preview, previewId });
   } catch (e) {
