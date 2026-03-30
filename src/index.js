@@ -1,6 +1,7 @@
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
 const { sendMail, findAccount, extractInbox, getAccounts } = require("./mail-sender");
+const { sendTelegram } = require("./telegram-utils");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -1031,6 +1032,14 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
 
+    // Get Telegram config (used for both success and error notifications)
+    const [tgTokenCfg, tgChatCfg] = await Promise.all([
+      prisma.config.findUnique({ where: { key: "telegram_bot_token" } }),
+      prisma.config.findUnique({ where: { key: "telegram_chat_id" } }),
+    ]);
+    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgChat = tgChatCfg && tgChatCfg.value;
+
     // Create invoice in iFirma
     let ifirmaResult;
     try {
@@ -1044,11 +1053,19 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
           country: contractor.country,
         },
         pozycje,
-        waluta,
         rodzaj,
       });
     } catch (ifirmaErr) {
-      return res.status(502).json({ error: ifirmaErr.message, ifirmaResponse: ifirmaErr.ifirmaRaw || null });
+      const raw = ifirmaErr.ifirmaRaw || null;
+      const kod = raw && raw.response && raw.response.Kod;
+      const info = raw && raw.response && raw.response.Informacja;
+      console.log('[invoice-confirm] sending iFirma response to Telegram (error)');
+      if (tgToken && tgChat) {
+        sendTelegram(tgToken, tgChat,
+          `IFIRMA ODPOWIEDŹ:\nStatus: BŁĄD\nKod: ${kod != null ? kod : "?"}\nInformacja: ${info || ifirmaErr.message}\nKontrahent: ${contractor.name}\nPełna odpowiedź: ${JSON.stringify(raw)}`
+        ).catch(e => console.error('[invoice-confirm] tg error:', e.message));
+      }
+      return res.json({ ok: false, error: "iFirma error", ifirmaResponse: raw });
     }
 
     const ifirmaRaw = ifirmaResult.ifirmaRaw;
@@ -1091,18 +1108,23 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
       },
     });
 
+    // Notify Telegram — iFirma success response
+    console.log('[invoice-confirm] sending iFirma response to Telegram');
+    if (tgToken && tgChat) {
+      const info = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Informacja || "";
+      sendTelegram(tgToken, tgChat,
+        `IFIRMA ODPOWIEDŹ:\nStatus: SUKCES\nKod: 0\nInformacja: ${info}\nIdentyfikator: ${fakturaId}\nKontrahent: ${contractor.name}\nKwota: ${stored.preview.suma.brutto} ${waluta}`
+      ).catch(e => console.error('[invoice-confirm] tg notify error:', e.message));
+    }
+
     // Fetch PDF — always use fakturaId (Identyfikator from iFirma response)
     const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId);
 
-    // Send to Telegram
+    // Send PDF to Telegram
     let pdfSent = false;
     try {
-      const [tokenCfg, chatCfg] = await Promise.all([
-        prisma.config.findUnique({ where: { key: "telegram_bot_token" } }),
-        prisma.config.findUnique({ where: { key: "telegram_chat_id" } }),
-      ]);
-      const token = tokenCfg && tokenCfg.value;
-      const chatId = chatCfg && chatCfg.value;
+      const token = tgToken;
+      const chatId = tgChat;
 
       if (token && chatId) {
         const boundary = "----FormBoundary" + Date.now();
