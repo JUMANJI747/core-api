@@ -668,7 +668,7 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ IFIRMA ============
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf } = require("./ifirma-client");
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails } = require("./ifirma-client");
 
 function guessCountryFromInv(inv) {
   const rodzaj = (inv.Rodzaj || "").toLowerCase();
@@ -958,11 +958,11 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
           if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1) });
         }
       } else {
-        pozycje.push({ product, ilosc: item.qty || 1 });
+        pozycje.push({ product, ilosc: item.qty || 1, itemCena: item.cena ?? null });
       }
     }
 
-    // Determine prices — check last invoice for this contractor
+    // Determine prices — priority: item.cena > contractor.extras.lastPrice > last invoice DB > product default
     const lastInvoice = await prisma.invoice.findFirst({
       where: { contractorId: contractor.id },
       orderBy: { issueDate: "desc" },
@@ -975,20 +975,31 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
       }
     }
 
-    const linee = pozycje.map(({ product: p, ilosc }) => {
-      const override = priceOverride[p.ean] || {};
-      const cenaNetto = waluta === "EUR"
-        ? (override.priceEUR ?? p.priceEUR)
-        : (override.pricePLN ?? p.pricePLN);
+    const linee = pozycje.map(({ product: p, ilosc, itemCena }) => {
+      let cenaNetto, priceSource;
+      if (itemCena != null) {
+        cenaNetto = itemCena;
+        priceSource = 'user-specified';
+      } else if (contractor.extras && contractor.extras.lastPrice != null) {
+        cenaNetto = contractor.extras.lastPrice;
+        priceSource = 'contractor.extras.lastPrice';
+      } else {
+        const override = priceOverride[p.ean] || {};
+        if (override.pricePLN != null || override.priceEUR != null) {
+          cenaNetto = waluta === "EUR" ? (override.priceEUR ?? p.priceEUR) : (override.pricePLN ?? p.pricePLN);
+          priceSource = 'last invoice DB';
+        } else {
+          cenaNetto = waluta === "EUR" ? p.priceEUR : p.pricePLN;
+          priceSource = 'product default';
+        }
+      }
+      if (priceSource === 'user-specified') {
+        console.log(`[invoice-preview] user-specified price: ${cenaNetto} for ${p.ean}`);
+      } else {
+        console.log(`[invoice-preview] price source for ${p.ean}: ${priceSource} → ${cenaNetto}`);
+      }
       const wartoscNetto = Math.round(cenaNetto * ilosc * 100) / 100;
-      return {
-        ean: p.ean,
-        nazwa: p.name,
-        wariant: p.variant || null,
-        ilosc,
-        cenaNetto,
-        wartoscNetto,
-      };
+      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cenaNetto, wartoscNetto };
     });
 
     const sumaNetto = Math.round(linee.reduce((s, l) => s + l.wartoscNetto, 0) * 100) / 100;
@@ -1317,6 +1328,44 @@ app.post("/api/ifirma/send-invoice-email", async (req, res) => {
 });
 
 // ============ INVOICE MANAGEMENT ============
+
+app.post("/api/invoices/extract-prices", async (req, res) => {
+  try {
+    const contractors = await prisma.contractor.findMany({
+      where: { nip: { not: null } },
+      select: { id: true, name: true, nip: true, extras: true },
+    });
+
+    const results = [];
+    for (const contractor of contractors) {
+      try {
+        const invoices = await fetchIfirmaInvoices({ nipKontrahenta: contractor.nip });
+        if (!invoices.length) { results.push({ id: contractor.id, name: contractor.name, skipped: 'no invoices' }); continue; }
+
+        invoices.sort((a, b) => new Date(b.DataWystawienia || 0) - new Date(a.DataWystawienia || 0));
+        const latest = invoices[0];
+        const fakturaId = latest.Identyfikator || latest.id;
+        const rodzaj = latest.Rodzaj || 'krajowa';
+        const waluta = latest.Waluta || 'PLN';
+
+        const details = await fetchInvoiceDetails(fakturaId, rodzaj);
+        const pozycje = details && (details.Pozycje || details.pozycje);
+        if (!pozycje || !pozycje.length) { results.push({ id: contractor.id, name: contractor.name, skipped: 'no positions in invoice' }); continue; }
+
+        const cena = pozycje[0].CenaJednostkowa;
+        const extras = { ...(contractor.extras || {}), lastPrice: cena, lastPriceCurrency: waluta };
+        await prisma.contractor.update({ where: { id: contractor.id }, data: { extras } });
+        results.push({ id: contractor.id, name: contractor.name, lastPrice: cena, lastPriceCurrency: waluta });
+      } catch (e) {
+        results.push({ id: contractor.id, name: contractor.name, error: e.message });
+      }
+    }
+
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post("/api/invoices/delete-search", async (req, res) => {
   try {

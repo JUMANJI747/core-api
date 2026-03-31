@@ -310,6 +310,43 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   return body; // Buffer
 }
 
+// ============ FETCH INVOICE DETAILS ============
+
+async function fetchInvoiceDetails(fakturaId, rodzaj) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+
+  const r = (rodzaj || '').toLowerCase();
+  let endpoint;
+  if (r === 'prz_eksport_towarow' || r === 'eksport') {
+    endpoint = 'fakturaeksporttowarow';
+  } else if (r === 'prz_faktura_proforma') {
+    endpoint = 'fakturaproforma';
+  } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt') {
+    endpoint = 'fakturawdt';
+  } else {
+    endpoint = 'fakturakraj';
+  }
+
+  const url = `https://www.ifirma.pl/iapi/${endpoint}/${fakturaId}.json`;
+  const auth = generateAuth(url, '', login, keyHex);
+
+  console.log('[ifirma] fetching invoice details:', fakturaId);
+
+  const { status, body } = await httpsGetRaw(url, {
+    Authentication: auth,
+    Accept: 'application/json',
+  });
+
+  const bodyStr = body.toString();
+  if (status !== 200) throw new Error('iFirma invoice details error: status ' + status + ' — ' + bodyStr.slice(0, 200));
+
+  let data;
+  try { data = JSON.parse(bodyStr); }
+  catch (e) { throw new Error('iFirma invalid JSON (fetchInvoiceDetails): ' + bodyStr.slice(0, 200)); }
+
+  return (data.response && data.response.Wynik) || data;
+}
+
 // ============ DELETE INVOICE ============
 
 async function deleteInvoice(fakturaId, rodzaj) {
@@ -346,4 +383,4 @@ async function deleteInvoice(fakturaId, rodzaj) {
   });
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, deleteInvoice };
+module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice };
