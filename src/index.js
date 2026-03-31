@@ -666,7 +666,7 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // ============ IFIRMA ============
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, deleteInvoice } = require("./ifirma-client");
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf } = require("./ifirma-client");
 
 function guessCountryFromInv(inv) {
   const rodzaj = (inv.Rodzaj || "").toLowerCase();
@@ -1341,9 +1341,7 @@ app.post("/api/invoices/delete-search", async (req, res) => {
     if (!invoices.length) return res.status(404).json({ error: `Brak faktur dla ${contractor.name} w podanym okresie.` });
 
     res.json({
-      ok: false,
-      action: "confirm_delete",
-      contractor: { id: contractor.id, name: contractor.name },
+      ok: true,
       invoices,
       message: `Znaleziono ${invoices.length} faktur dla ${contractor.name}. Potwierdź kasowanie.`,
     });
@@ -1362,22 +1360,12 @@ app.post("/api/invoices/delete-confirm", async (req, res) => {
       const inv = await prisma.invoice.findUnique({ where: { id } });
       if (!inv) { deleted.push({ id, error: "not found" }); continue; }
 
-      let ifirmaResponse = null;
-      if (inv.ifirmaId && inv.type) {
-        try {
-          const r = await deleteInvoice(inv.ifirmaId, inv.type);
-          ifirmaResponse = r.body;
-        } catch (e) {
-          console.error(`[delete-confirm] iFirma delete error for ${inv.number}:`, e.message);
-          ifirmaResponse = { error: e.message };
-        }
-      }
-
       await prisma.invoice.delete({ where: { id } });
-      deleted.push({ id, number: inv.number, ifirmaResponse });
+      console.log(`[invoices] deleted from local DB: ${inv.number}, ifirmaId=${inv.ifirmaId} (iFirma manual deletion required)`);
+      deleted.push({ id, number: inv.number });
     }
 
-    res.json({ ok: true, deleted });
+    res.json({ ok: true, deleted, note: "Skasowano z lokalnej bazy. Faktury w iFirma trzeba skasować ręcznie w panelu." });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
