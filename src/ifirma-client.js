@@ -199,11 +199,13 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
       ? ` - ${p.wariant}` : '';
     const isRealEan = p.ean && /^\d/.test(p.ean);
     const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
+    const CenaJednostkowa = p.cena || p.cenaNetto;
+    console.log('[ifirma] position price:', CenaJednostkowa);
     return isWdt ? {
       TypStawkiVat: 'NP',
       GTU: 'GTU_12',
       Ilosc: p.ilosc,
-      CenaJednostkowa: p.cenaNetto,
+      CenaJednostkowa,
       NazwaPelna,
       Jednostka: 'szt.',
     } : {
@@ -211,7 +213,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
       TypStawkiVat: 'PRC',
       GTU: 'GTU_12',
       Ilosc: p.ilosc,
-      CenaJednostkowa: p.cenaNetto,
+      CenaJednostkowa,
       NazwaPelna,
       Jednostka: 'szt.',
     };
