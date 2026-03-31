@@ -115,6 +115,21 @@ app.post("/api/contractors/:id/alias", async (req, res) => {
   }
 });
 
+app.put("/api/contractors/:id/price", async (req, res) => {
+  try {
+    const { price, typ } = req.body;
+    if (price == null) return res.status(400).json({ error: "price required" });
+    if (typ !== 'brutto' && typ !== 'netto') return res.status(400).json({ error: "typ must be 'brutto' or 'netto'" });
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: "contractor not found" });
+    const extras = { ...(c.extras || {}), lastPrice: price, lastPriceTyp: typ };
+    await prisma.contractor.update({ where: { id: req.params.id }, data: { extras } });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ DEALS (PIPELINE) ============
 app.post("/api/deals", async (req, res) => {
   try {
@@ -548,6 +563,23 @@ app.delete("/api/memory/clear", async (req, res) => {
 });
 
 // ============ PRODUCTS ============
+const CENNIK = {
+  PLN: {
+    default: { cena: 18, typ: 'brutto' },
+    wyjatki: {
+      'Super -Pharm Holding': { cena: 16.10, typ: 'netto' },
+      'Nordsøen Designs': { cena: 13.32, typ: 'netto' },
+    },
+  },
+  EUR: {
+    default: { cena: 4.50, typ: 'brutto' },
+    wyjatki: {
+      'Nuno Viegas Costa': { cena: 3.00, typ: 'brutto' },
+      'Sirena Sardinia': { cena: 3.00, typ: 'brutto' },
+    },
+  },
+};
+
 const SEED_PRODUCTS = [
   {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
   {ean:"5902082579021", name:"SURF GEL extreme waterproof gel spf 50+", category:"ochrona słoneczna", capacity:"40g", pricePLN:18, priceEUR:4.5},
@@ -962,42 +994,25 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
       }
     }
 
-    // Determine prices — priority: item.cena > contractor.extras.lastPrice > last invoice DB > product default
-    const lastInvoice = await prisma.invoice.findFirst({
-      where: { contractorId: contractor.id },
-      orderBy: { issueDate: "desc" },
-    });
-    const lastInvoiceExtras = lastInvoice && lastInvoice.extras && lastInvoice.extras.pozycje;
-    const priceOverride = {};
-    if (lastInvoiceExtras && Array.isArray(lastInvoiceExtras)) {
-      for (const p of lastInvoiceExtras) {
-        if (p.ean) priceOverride[p.ean] = { pricePLN: p.pricePLN, priceEUR: p.priceEUR };
+    // Determine prices — priority: item.cena > extras.lastPrice > cennik wyjątek > cennik default
+    const cennikWaluta = CENNIK[waluta] || CENNIK.PLN;
+    const resolvePrice = (itemCena, contractorName, contractorExtras) => {
+      if (itemCena != null) return { cena: itemCena, typ: 'brutto', source: 'user' };
+      if (contractorExtras && contractorExtras.lastPrice != null) {
+        return { cena: contractorExtras.lastPrice, typ: contractorExtras.lastPriceTyp || 'brutto', source: 'lastPrice' };
       }
-    }
+      const nameNorm = (contractorName || '').toLowerCase();
+      for (const [key, val] of Object.entries(cennikWaluta.wyjatki)) {
+        if (nameNorm.includes(key.toLowerCase())) return { ...val, source: 'wyjątek' };
+      }
+      return { ...cennikWaluta.default, source: 'default' };
+    };
 
     const linee = pozycje.map(({ product: p, ilosc, itemCena }) => {
-      let cenaNetto, priceSource;
-      if (itemCena != null) {
-        cenaNetto = itemCena;
-        priceSource = 'user-specified';
-      } else if (contractor.extras && contractor.extras.lastPrice != null) {
-        cenaNetto = contractor.extras.lastPrice;
-        priceSource = 'contractor.extras.lastPrice';
-      } else {
-        const override = priceOverride[p.ean] || {};
-        if (override.pricePLN != null || override.priceEUR != null) {
-          cenaNetto = waluta === "EUR" ? (override.priceEUR ?? p.priceEUR) : (override.pricePLN ?? p.pricePLN);
-          priceSource = 'last invoice DB';
-        } else {
-          cenaNetto = waluta === "EUR" ? p.priceEUR : p.pricePLN;
-          priceSource = 'product default';
-        }
-      }
-      if (priceSource === 'user-specified') {
-        console.log(`[invoice-preview] user-specified price: ${cenaNetto} for ${p.ean}`);
-      } else {
-        console.log(`[invoice-preview] price source for ${p.ean}: ${priceSource} → ${cenaNetto}`);
-      }
+      const { cena, typ, source } = resolvePrice(itemCena, contractor.name, contractor.extras);
+      console.log(`[invoice-preview] price for ${contractor.name}: ${cena} ${typ} (source: ${source})`);
+      // cenaNetto: jeśli typ='brutto' to iFirma sam przeliczy przez LiczOd:'BRT'; przekazujemy wartość wprost
+      const cenaNetto = cena;
       const wartoscNetto = Math.round(cenaNetto * ilosc * 100) / 100;
       return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cenaNetto, wartoscNetto };
     });
