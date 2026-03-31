@@ -565,17 +565,17 @@ app.delete("/api/memory/clear", async (req, res) => {
 // ============ PRODUCTS ============
 const CENNIK = {
   PLN: {
-    default: { cena: 18, typ: 'brutto' },
+    default: 18,
     wyjatki: {
-      'Super -Pharm Holding': { cena: 16.10, typ: 'netto' },
-      'Nordsøen Designs': { cena: 13.32, typ: 'netto' },
+      'Super -Pharm Holding': 16.10,
+      'Nordsøen Designs': 13.32,
     },
   },
   EUR: {
-    default: { cena: 4.50, typ: 'brutto' },
+    default: 4.50,
     wyjatki: {
-      'Nuno Viegas Costa': { cena: 3.00, typ: 'brutto' },
-      'Sirena Sardinia': { cena: 3.00, typ: 'brutto' },
+      'Nuno Viegas Costa': 3.00,
+      'Sirena Sardinia': 3.00,
     },
   },
 };
@@ -994,32 +994,31 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
       }
     }
 
-    // Determine prices — priority: item.cena > extras.lastPrice > cennik wyjątek > cennik default
+    // Determine prices — all prices are BRUTTO, LiczOd always "BRT"
+    // Priority: item.cena > extras.lastPrice > cennik wyjątek > cennik default
     const cennikWaluta = CENNIK[waluta] || CENNIK.PLN;
     const resolvePrice = (itemCena, contractorName, contractorExtras) => {
-      if (itemCena != null) return { cena: itemCena, typ: 'brutto', source: 'user' };
+      if (itemCena != null) return { cena: itemCena, source: 'user' };
       if (contractorExtras && contractorExtras.lastPrice != null) {
-        return { cena: contractorExtras.lastPrice, typ: contractorExtras.lastPriceTyp || 'brutto', source: 'lastPrice' };
+        return { cena: contractorExtras.lastPrice, source: 'lastPrice' };
       }
       const nameNorm = (contractorName || '').toLowerCase();
       for (const [key, val] of Object.entries(cennikWaluta.wyjatki)) {
-        if (nameNorm.includes(key.toLowerCase())) return { ...val, source: 'wyjątek' };
+        if (nameNorm.includes(key.toLowerCase())) return { cena: val, source: 'wyjątek' };
       }
-      return { ...cennikWaluta.default, source: 'default' };
+      return { cena: cennikWaluta.default, source: 'default' };
     };
 
     const linee = pozycje.map(({ product: p, ilosc, itemCena }) => {
-      const { cena, typ, source } = resolvePrice(itemCena, contractor.name, contractor.extras);
-      console.log(`[invoice-preview] price for ${contractor.name}: ${cena} ${typ} (source: ${source})`);
-      // cenaNetto: jeśli typ='brutto' to iFirma sam przeliczy przez LiczOd:'BRT'; przekazujemy wartość wprost
-      const cenaNetto = cena;
-      const wartoscNetto = Math.round(cenaNetto * ilosc * 100) / 100;
-      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cenaNetto, wartoscNetto };
+      const { cena, source } = resolvePrice(itemCena, contractor.name, contractor.extras);
+      console.log(`[invoice-preview] price for ${contractor.name}: ${cena} brutto (source: ${source})`);
+      const wartosc = Math.round(cena * ilosc * 100) / 100;
+      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, wartosc };
     });
 
-    const sumaNetto = Math.round(linee.reduce((s, l) => s + l.wartoscNetto, 0) * 100) / 100;
-    const vat = rodzaj === "wdt" ? 0 : Math.round(sumaNetto * 0.23 * 100) / 100;
-    const brutto = Math.round((sumaNetto + vat) * 100) / 100;
+    const brutto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
+    const netto = rodzaj === "wdt" ? brutto : Math.round(brutto / 1.23 * 100) / 100;
+    const vat = Math.round((brutto - netto) * 100) / 100;
     const terminPlatnosci = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const preview = {
@@ -1027,7 +1026,7 @@ app.post("/api/ifirma/invoice-preview", async (req, res) => {
       waluta,
       rodzaj,
       pozycje: linee,
-      suma: { netto: sumaNetto, vat, brutto },
+      suma: { brutto, netto, vat },
       terminPlatnosci,
     };
 
@@ -1138,7 +1137,7 @@ app.post("/api/ifirma/invoice-confirm-latest", async (req, res) => {
         paidAmount: 0,
         status: "unpaid",
         type: rodzaj,
-        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cenaNetto, priceEUR: p.cenaNetto })) },
+        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })) },
       },
     });
 
@@ -1256,7 +1255,7 @@ app.post("/api/ifirma/invoice-confirm", async (req, res) => {
         paidAmount: 0,
         status: "unpaid",
         type: rodzaj,
-        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cenaNetto, priceEUR: p.cenaNetto })) },
+        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })) },
       },
     });
 
