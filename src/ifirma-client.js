@@ -197,9 +197,11 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
   const Pozycje = pozycje.map(p => {
     const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
       ? ` - ${p.wariant}` : '';
-    const NazwaPelna = `${p.nazwa}${wariantSuffix}${p.ean ? ` EAN ${p.ean}` : ''}`;
+    const isRealEan = p.ean && /^\d/.test(p.ean);
+    const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
     return isWdt ? {
       TypStawkiVat: 'NP',
+      GTU: 'GTU_12',
       Ilosc: p.ilosc,
       CenaJednostkowa: p.cenaNetto,
       NazwaPelna,
