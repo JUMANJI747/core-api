@@ -151,6 +151,33 @@ router.post('/send-email/confirm', async (req, res) => {
   }
 });
 
+router.post('/send-email/confirm-latest', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const draft = await prisma.email.findFirst({
+      where: { direction: 'DRAFT', createdAt: { gte: thirtyMinutesAgo } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!draft) return res.json({ ok: false, error: 'Brak aktywnego draftu' });
+
+    await sendMail({
+      from: draft.fromEmail,
+      to: draft.toEmail,
+      subject: draft.subject || '',
+      body: draft.bodyFull || '',
+      replyTo: draft.inReplyTo || undefined,
+    });
+
+    await prisma.email.update({ where: { id: draft.id }, data: { direction: 'OUTBOUND' } });
+
+    return res.json({ ok: true, sent: true, to: draft.toEmail, subject: draft.subject });
+  } catch (e) {
+    const status = e.message.startsWith('Rate limit') ? 429 : 500;
+    res.status(status).json({ error: e.message });
+  }
+});
+
 router.post('/send-email/:id/confirm', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {

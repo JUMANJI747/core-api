@@ -1,6 +1,35 @@
 'use strict';
 
+const http = require('http');
 const router = require('express').Router();
+
+function internalPost(path, apiKey) {
+  return new Promise((resolve, reject) => {
+    const port = process.env.PORT || 3000;
+    const body = '{}';
+    const options = {
+      hostname: 'localhost',
+      port,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'x-api-key': apiKey || '',
+      },
+    };
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON from internal endpoint')); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 // ============ CONFIG ============
 
@@ -108,6 +137,54 @@ router.put('/agent-context/:agentId', async (req, res) => {
       create: { id: req.params.agentId, data },
     });
     res.json({ ok: true, data: entry.data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ CONFIRM LATEST ============
+
+router.post('/confirm-latest', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = Date.now();
+    const thirtyMin = 30 * 60 * 1000;
+
+    // Check AgentContext "ksiegowosc" for invoice preview
+    let invoiceTimestamp = null;
+    const agentCtx = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc' } });
+    if (agentCtx && agentCtx.data && agentCtx.data.lastAction === 'preview') {
+      const ts = agentCtx.data.timestamp;
+      if (ts && (now - ts) < thirtyMin) {
+        invoiceTimestamp = ts;
+      }
+    }
+
+    // Check newest email draft < 30 min
+    let emailTimestamp = null;
+    const thirtyMinutesAgo = new Date(now - thirtyMin);
+    const draft = await prisma.email.findFirst({
+      where: { direction: 'DRAFT', createdAt: { gte: thirtyMinutesAgo } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (draft) {
+      emailTimestamp = draft.createdAt.getTime();
+    }
+
+    if (!invoiceTimestamp && !emailTimestamp) {
+      return res.json({ ok: false, error: 'Nic do potwierdzenia' });
+    }
+
+    const apiKey = req.headers['x-api-key'] || '';
+
+    // Take the newer of the two
+    if (invoiceTimestamp && (!emailTimestamp || invoiceTimestamp >= emailTimestamp)) {
+      const result = await internalPost('/api/ifirma/invoice-confirm-latest', apiKey);
+      return res.json({ ok: true, type: 'invoice', result });
+    } else {
+      const result = await internalPost('/api/send-email/confirm-latest', apiKey);
+      return res.json({ ok: true, type: 'email', result });
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
