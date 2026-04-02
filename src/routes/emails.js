@@ -1,7 +1,48 @@
 'use strict';
 
+const https = require('https');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
+const { scoreContractor } = require('./contractors');
+const { OFFER_TEMPLATES } = require('../offer-templates');
+
+const OFFER_PDFS = {
+  FR: { fileId: '112mOTMThWgaCAoy70E6JMG-dAnPYetqx', filename: 'Offre_SurfStickBell.pdf' },
+  PT: { fileId: '1KCFnyTyBECMPZtM4Z14jy4pYzjbKUB3Q', filename: 'Oferta_SurfStickBell.pdf' },
+  ES: { fileId: '1QG2YrS5f2Ls1EAwjEw60WJRdOUoURVXt', filename: 'Oferta_SurfStickBell.pdf' },
+  EN: { fileId: '1WFyKYs7HVQgXFsLq-t-rgRsSwqTRFuhb', filename: 'Offer_SurfStickBell.pdf' },
+  PL: { fileId: '1spzOpX62gzZ_J138t3Jxl0tL750qtd-D', filename: 'Oferta_SurfStickBell.pdf' },
+};
+
+const OFFER_SUBJECTS = {
+  FR: 'Surf Stick Bell - Protection solaire SPF 50+',
+  PT: 'Surf Stick Bell - Proteção solar SPF 50+',
+  ES: 'Surf Stick Bell - Protección solar SPF 50+',
+  EN: 'Surf Stick Bell - Sun Protection SPF 50+',
+  PL: 'Surf Stick Bell - Ochrona słoneczna SPF 50+',
+};
+
+const COUNTRY_TO_LANG = { PT: 'PT', ES: 'ES', FR: 'FR', GB: 'EN', US: 'EN', DE: 'EN', IT: 'EN', PL: 'PL' };
+
+function downloadPdf(fileId) {
+  return new Promise((resolve, reject) => {
+    const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    const follow = (u, redirects) => {
+      if (redirects > 5) return reject(new Error('Too many redirects'));
+      https.get(u, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return follow(res.headers.location, redirects + 1);
+        }
+        if (res.statusCode !== 200) return reject(new Error(`Download failed: ${res.statusCode}`));
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      }).on('error', reject);
+    };
+    follow(url, 0);
+  });
+}
 
 // ============ INBOX ============
 
@@ -201,6 +242,63 @@ router.post('/send-email/:id/confirm', async (req, res) => {
       emailId: email.id,
       message: `Sent from ${email.fromEmail} to ${email.toEmail}`,
     });
+  } catch (e) {
+    const status = e.message.startsWith('Rate limit') ? 429 : 500;
+    res.status(status).json({ error: e.message });
+  }
+});
+
+// ============ SEND OFFER ============
+
+router.post('/send-offer', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    let { to, language, contractorSearch } = req.body;
+
+    // Find contractor if search provided
+    let contractor = null;
+    if (contractorSearch) {
+      const all = await prisma.contractor.findMany({
+        select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
+      });
+      const scored = all
+        .map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score);
+      if (scored.length) contractor = scored[0].contractor;
+    }
+
+    // Resolve "to" from contractor if not provided
+    if (!to && contractor && contractor.email) {
+      to = contractor.email;
+    }
+    if (!to) return res.status(400).json({ error: 'to is required (or contractorSearch must match a contractor with email)' });
+
+    // Resolve language
+    if (!language && contractor && contractor.country) {
+      language = COUNTRY_TO_LANG[contractor.country.toUpperCase()] || 'EN';
+    }
+    language = (language || 'EN').toUpperCase();
+    if (!OFFER_TEMPLATES[language]) language = 'EN';
+
+    const subject = OFFER_SUBJECTS[language];
+    const html = OFFER_TEMPLATES[language];
+    const pdf = OFFER_PDFS[language];
+
+    // Download PDF from Google Drive
+    const pdfBuffer = await downloadPdf(pdf.fileId);
+
+    // Send email
+    await sendMail({
+      from: 'info@surfstickbell.com',
+      to,
+      subject,
+      html,
+      attachments: [{ filename: pdf.filename, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
+
+    console.log(`[send-offer] sent ${language} offer to ${to}`);
+    return res.json({ ok: true, sent: true, to, language, subject });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });

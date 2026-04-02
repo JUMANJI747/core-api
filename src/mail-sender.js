@@ -61,7 +61,7 @@ function extractInbox(email) {
 
 // ============ SEND MAIL ============
 
-async function sendMail({ from, to, subject, body, replyTo, attachments }) {
+async function sendMail({ from, to, subject, body, html, replyTo, attachments }) {
   console.log('[mail-sender] IMAP_ACCOUNTS parsed:', JSON.stringify(getAccounts().map(a => ({ inbox: a.inbox, user: a.user, hasPass: !!a.pass }))));
   console.log('[mail-sender] looking for FROM:', from);
   const account = findAccount(from);
@@ -89,7 +89,8 @@ async function sendMail({ from, to, subject, body, replyTo, attachments }) {
     from,
     to,
     subject,
-    text: body,
+    ...(html ? { html } : {}),
+    ...(body ? { text: body } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
   });
@@ -110,8 +111,8 @@ async function sendMail({ from, to, subject, body, replyTo, attachments }) {
       fromEmail: from,
       toEmail: to,
       subject: subject || null,
-      bodyPreview: (body || '').slice(0, 300),
-      bodyFull: (body || '').slice(0, 2000),
+      bodyPreview: (body || html || '').replace(/<[^>]*>/g, '').slice(0, 300),
+      bodyFull: (body || html || '').slice(0, 2000),
       contractorId,
     },
   });
