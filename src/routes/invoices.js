@@ -1,7 +1,7 @@
 'use strict';
 
 const router = require('express').Router();
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails } = require('../ifirma-client');
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment } = require('../ifirma-client');
 const { sendMail } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
@@ -567,6 +567,91 @@ router.get('/invoices/unpaid', async (req, res) => {
     }));
 
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ PAYMENT MATCHING ============
+
+router.post('/payments/match', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { amount, currency, sender } = req.body;
+    const date = req.body.date || new Date().toISOString().slice(0, 10);
+    if (!amount || !currency || !sender) return res.status(400).json({ error: 'amount, currency, sender required' });
+
+    const [tgTokenCfg, tgChatCfg] = await Promise.all([
+      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
+      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
+    ]);
+    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgChat = tgChatCfg && tgChatCfg.value;
+
+    // Find contractor by sender
+    const all = await prisma.contractor.findMany({
+      select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
+    });
+    const scored = all
+      .map(c => ({ contractor: c, score: scoreContractor(c, sender) }))
+      .filter(x => x.score >= 40)
+      .sort((a, b) => b.score - a.score);
+
+    if (!scored.length) {
+      const msg = `WPŁATA: ${amount} ${currency} od ${sender} → nieznany nadawca`;
+      console.log('[payments/match]', msg);
+      if (tgToken && tgChat) sendTelegram(tgToken, tgChat, msg).catch(e => console.error('[payments/match] tg error:', e.message));
+      return res.json({ ok: true, matched: false, invoice: null, contractor: null, ifirma: null, message: msg });
+    }
+
+    const contractor = scored[0].contractor;
+
+    // Find unpaid invoice closest to amount (tolerance 1%)
+    const invoices = await prisma.invoice.findMany({
+      where: { contractorId: contractor.id, currency, status: { not: 'paid' } },
+      orderBy: { grossAmount: 'asc' },
+    });
+
+    let bestInvoice = null;
+    let bestDiff = Infinity;
+    for (const inv of invoices) {
+      const diff = Math.abs(inv.grossAmount - amount);
+      const tolerance = inv.grossAmount * 0.01;
+      if (diff <= tolerance && diff < bestDiff) {
+        bestDiff = diff;
+        bestInvoice = inv;
+      }
+    }
+
+    if (!bestInvoice) {
+      const msg = `WPŁATA: ${amount} ${currency} od ${sender} → brak pasującej faktury`;
+      console.log('[payments/match]', msg);
+      if (tgToken && tgChat) sendTelegram(tgToken, tgChat, msg).catch(e => console.error('[payments/match] tg error:', e.message));
+      return res.json({ ok: true, matched: false, invoice: null, contractor: contractor.name, ifirma: null, message: msg });
+    }
+
+    // Update invoice in DB
+    await prisma.invoice.update({
+      where: { id: bestInvoice.id },
+      data: { status: 'paid', paidAmount: amount },
+    });
+
+    // Register payment in iFirma
+    const invoiceType = bestInvoice.type || (currency === 'EUR' ? 'wdt' : 'krajowa');
+    let ifirmaResp = null;
+    let ifirmaOk = false;
+    try {
+      ifirmaResp = await registerPayment(bestInvoice.number, invoiceType, amount, currency, date);
+      ifirmaOk = ifirmaResp && ifirmaResp.status === 200;
+    } catch (e) {
+      console.error('[payments/match] iFirma error:', e.message);
+    }
+
+    const msg = `WPŁATA: ${amount} ${currency} od ${sender} → FV ${bestInvoice.number} opłacona (iFirma: ${ifirmaOk ? 'OK' : 'BŁĄD'})`;
+    console.log('[payments/match]', msg);
+    if (tgToken && tgChat) sendTelegram(tgToken, tgChat, msg).catch(e => console.error('[payments/match] tg error:', e.message));
+
+    return res.json({ ok: true, matched: true, invoice: bestInvoice.number, contractor: contractor.name, ifirma: ifirmaResp });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

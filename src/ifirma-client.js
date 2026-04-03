@@ -387,4 +387,24 @@ async function deleteInvoice(fakturaId, rodzaj) {
   });
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice };
+// ============ REGISTER PAYMENT ============
+
+async function registerPayment(invoiceNumber, type, amount, currency, date) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+
+  const typ = type === 'krajowa' ? 'prz_faktura_kraj' : 'prz_dostawa_ue_towarow';
+  const numer = invoiceNumber.replace(/\//g, '_');
+  const url = `https://www.ifirma.pl/iapi/faktury/wplaty/${typ}/${numer}.json`;
+
+  const body = currency === 'EUR' ? { Kwota: amount, Data: date } : { Kwota: amount };
+  const bodyStr = JSON.stringify(body);
+  const auth = generateAuth(url, bodyStr, login, keyHex);
+
+  console.log(`[ifirma] registering payment: ${invoiceNumber}, ${amount} ${currency}`);
+
+  const result = await httpsPostJson(url, { Authentication: auth, Accept: 'application/json' }, body);
+  console.log('[ifirma] registerPayment response:', result.status, JSON.stringify(result.body).slice(0, 300));
+  return result;
+}
+
+module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice, registerPayment };
