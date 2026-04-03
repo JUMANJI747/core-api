@@ -396,7 +396,17 @@ async function registerPayment(invoiceNumber, type, amount, currency, date) {
   const numer = invoiceNumber.replace(/\//g, '_');
   const url = `https://www.ifirma.pl/iapi/faktury/wplaty/${typ}/${numer}.json`;
 
-  const body = currency === 'EUR' ? { Kwota: amount, Data: date } : { Kwota: amount };
+  const body = { Kwota: amount };
+  if (currency !== 'PLN') {
+    const rateUrl = `https://api.nbp.pl/api/exchangerates/rates/a/${currency}/?format=json`;
+    const { status: rateStatus, body: rateBody } = await httpsGetRaw(rateUrl, { Accept: 'application/json' });
+    if (rateStatus !== 200) throw new Error(`NBP rate fetch failed for ${currency}: status ${rateStatus}`);
+    const rateData = JSON.parse(rateBody.toString());
+    const kursNBP = rateData.rates[0].mid;
+    console.log(`[ifirma] NBP rate for ${currency}: ${kursNBP}`);
+    body.Kurs = kursNBP;
+    body.Data = date;
+  }
   const bodyStr = JSON.stringify(body);
   const auth = generateAuth(url, bodyStr, login, keyHex);
 
