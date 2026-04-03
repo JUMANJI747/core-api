@@ -244,20 +244,13 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() } : {}),
+    NumerKontaBankowego: isWdt ? '67114020040000391213583952' : '11114020040000300281459633',
     Kontrahent,
     Pozycje,
     ...(isWdt ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
     } : {}),
-    ...(() => {
-      const bankAccount = isWdt ? (process.env.BANK_EUR || '').trim() : (process.env.BANK_PLN || '').trim();
-      if (bankAccount && bankAccount !== 'BRAK') {
-        console.log(`[ifirma] using bank account: ${isWdt ? 'EUR' : 'PLN'}`);
-        return { NumerKontaBankowego: bankAccount };
-      }
-      return {};
-    })(),
   };
 
   const bodyStr = JSON.stringify(body);
