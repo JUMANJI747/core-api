@@ -250,6 +250,14 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
     } : {}),
+    ...(() => {
+      const bankAccount = isWdt ? (process.env.BANK_EUR || '').trim() : (process.env.BANK_PLN || '').trim();
+      if (bankAccount && bankAccount !== 'BRAK') {
+        console.log(`[ifirma] using bank account: ${isWdt ? 'EUR' : 'PLN'}`);
+        return { NumerKontaBankowego: bankAccount };
+      }
+      return {};
+    })(),
   };
 
   const bodyStr = JSON.stringify(body);
