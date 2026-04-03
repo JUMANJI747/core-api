@@ -253,7 +253,8 @@ router.post('/send-email/:id/confirm', async (req, res) => {
 router.post('/send-offer', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    let { to, language, contractorSearch } = req.body;
+    let { to, language, contractorSearch, from } = req.body;
+    const sender = (from && from.trim()) ? from.trim() : 'info@surfstickbell.com';
 
     // Find contractor if search provided
     let contractor = null;
@@ -290,7 +291,7 @@ router.post('/send-offer', async (req, res) => {
 
     // Send email
     await sendMail({
-      from: 'info@surfstickbell.com',
+      from: sender,
       to,
       subject,
       html,
