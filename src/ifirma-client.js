@@ -244,7 +244,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() } : {}),
-    NumerKontaBankowego: isWdt ? '67114020040000391213583952' : '11114020040000300281459633',
+    NumerKontaBankowego: isWdt ? '67 1140 2004 0000 3912 1358 3952' : '11 1140 2004 0000 3002 8145 9633',
     Kontrahent,
     Pozycje,
     ...(isWdt ? {
