@@ -42,6 +42,7 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api', require('./routes/config'));
 app.use('/api', require('./routes/invoices'));
 app.use('/api/jpk', require('./routes/jpk'));
+app.use('/api/jpk', require('./routes/jpk-package'));
 
 // ============ START ============
 app.listen(PORT, () => {

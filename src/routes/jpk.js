@@ -940,3 +940,4 @@ router.post('/seed-sofarma', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.performWdtMatching = performWdtMatching;

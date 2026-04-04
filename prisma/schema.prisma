@@ -286,6 +286,37 @@ model AgentContext {
   updatedAt DateTime @updatedAt
 }
 
+// ============ MONTHLY PACKAGES ============
+
+model MonthlyPackage {
+  id        String     @id @default(uuid())
+  period    String     @unique
+  status    String     @default("building")
+  metadata  Json       @default("{}")
+  sentTo    String?
+  sentAt    DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  documents Document[]
+}
+
+model Document {
+  id            String         @id @default(uuid())
+  packageId     String
+  package       MonthlyPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  type          String
+  name          String
+  filename      String
+  invoiceNumber String?
+  mimeType      String         @default("application/pdf")
+  data          Bytes
+  size          Int
+  createdAt     DateTime       @default(now())
+
+  @@index([packageId, type])
+  @@unique([packageId, filename])
+}
+
 // ============ AUDIT LOG ============
 
 model AuditLog {
