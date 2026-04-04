@@ -52,6 +52,8 @@ model Invoice {
   type               String?
   ifirmaContractorId String?
   extras             Json        @default("{}")
+  source             String?   @default("system")
+  ifirmaType         String?
   bankReference      String?
   bankDate           DateTime?
   createdAt          DateTime    @default(now())

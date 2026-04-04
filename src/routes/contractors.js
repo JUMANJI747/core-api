@@ -61,7 +61,10 @@ function guessCountryFromInv(inv) {
   return null;
 }
 
-async function processIfirmaInvoices(invoices, prisma) {
+async function processIfirmaInvoices(invoices, prisma, opts = {}) {
+  const { dataOd, dataDo, dryRun = false } = opts;
+
+  // ============ FAZA 1: KONTRAHENCI ============
   const nipToInv = new Map();
   for (const inv of invoices) {
     const rawNip = (inv.NIPKontrahenta || '').replace(/[\s\-]/g, '');
@@ -77,7 +80,7 @@ async function processIfirmaInvoices(invoices, prisma) {
     if (existing) {
       contractorsSkipped++;
       nipToContractorId.set(nip, existing.id);
-    } else {
+    } else if (!dryRun) {
       const rawName = (inv.NazwaKontrahenta || '').replace(/^-+\s*/, '').trim();
       const country = guessCountryFromInv(inv);
       const ifirmaContractorIdVal = inv.IdentyfikatorKontrahenta || null;
@@ -94,9 +97,12 @@ async function processIfirmaInvoices(invoices, prisma) {
       });
       contractorsCreated++;
       nipToContractorId.set(nip, created.id);
+    } else {
+      contractorsCreated++;
     }
   }
 
+  // ============ FAZA 2: FAKTURY ============
   let invoicesCreated = 0, invoicesUpdated = 0;
   for (const inv of invoices) {
     const ifirmaId = inv.FakturaId || null;
@@ -111,41 +117,113 @@ async function processIfirmaInvoices(invoices, prisma) {
 
     const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
     if (existing) {
-      await prisma.invoice.update({ where: { ifirmaId }, data: { paidAmount, status } });
+      if (!dryRun) {
+        const updateData = { paidAmount, status };
+        if (!existing.ifirmaType && inv.Rodzaj) updateData.ifirmaType = inv.Rodzaj;
+        await prisma.invoice.update({ where: { ifirmaId }, data: updateData });
+      }
       invoicesUpdated++;
     } else {
-      await prisma.invoice.create({
-        data: {
-          ifirmaId,
-          contractorId,
-          number: inv.PelnyNumer || '',
-          issueDate: inv.DataWystawienia ? new Date(inv.DataWystawienia) : new Date(),
-          dueDate: inv.TerminPlatnosci ? new Date(inv.TerminPlatnosci) : null,
-          grossAmount,
-          currency,
-          paidAmount,
-          status,
-          type: inv.Rodzaj || null,
-          ifirmaContractorId: inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null,
-          extras: {},
-        },
-      });
+      if (!dryRun) {
+        await prisma.invoice.create({
+          data: {
+            ifirmaId,
+            contractorId,
+            number: inv.PelnyNumer || '',
+            issueDate: inv.DataWystawienia ? new Date(inv.DataWystawienia) : new Date(),
+            dueDate: inv.TerminPlatnosci ? new Date(inv.TerminPlatnosci) : null,
+            grossAmount,
+            currency,
+            paidAmount,
+            status,
+            type: inv.Rodzaj || null,
+            ifirmaType: inv.Rodzaj || null,
+            source: 'ifirma_sync',
+            ifirmaContractorId: inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null,
+            extras: { kontrahentNazwa: inv.NazwaKontrahenta || inv.KontrahentNazwa || '' },
+          },
+        });
+      }
       invoicesCreated++;
     }
   }
 
-  const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
-  let linked = 0;
-  for (const contractor of allContractors) {
-    if (!contractor.name || contractor.name.length < 4) continue;
-    const updated = await prisma.email.updateMany({
-      where: { contractorId: null, fromName: { contains: contractor.name, mode: 'insensitive' } },
-      data: { contractorId: contractor.id },
+  // ============ FAZA 2.5: USUWANIE NIEISTNIEJĄCYCH W IFIRMA ============
+  const deleted = [];
+  if (dataOd && dataDo) {
+    const localInvoices = await prisma.invoice.findMany({
+      where: { issueDate: { gte: new Date(dataOd), lte: new Date(dataDo + 'T23:59:59Z') } },
     });
-    linked += updated.count;
+
+    const ifirmaIds = new Set(invoices.map(i => i.FakturaId).filter(Boolean));
+    const ifirmaNumbers = new Set(invoices.map(i => i.PelnyNumer).filter(Boolean));
+
+    for (const local of localInvoices) {
+      let foundInIfirma = false;
+      if (local.ifirmaId) {
+        foundInIfirma = ifirmaIds.has(local.ifirmaId);
+      } else {
+        foundInIfirma = ifirmaNumbers.has(local.number);
+      }
+
+      if (!foundInIfirma) {
+        if (!dryRun) {
+          try {
+            await prisma.invoice.delete({ where: { id: local.id } });
+          } catch (e) {
+            console.error(`[sync] failed to delete invoice ${local.number}:`, e.message);
+            continue;
+          }
+        }
+        deleted.push({ id: local.id, number: local.number, ifirmaId: local.ifirmaId, grossAmount: local.grossAmount });
+      }
+    }
   }
 
-  return { contractors: { created: contractorsCreated, skipped: contractorsSkipped }, invoices: { created: invoicesCreated, updated: invoicesUpdated }, linked };
+  // ============ FAZA 3: LINKOWANIE EMAILI ============
+  let linked = 0;
+  if (!dryRun) {
+    const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
+    for (const contractor of allContractors) {
+      if (!contractor.name || contractor.name.length < 4) continue;
+      const updated = await prisma.email.updateMany({
+        where: { contractorId: null, fromName: { contains: contractor.name, mode: 'insensitive' } },
+        data: { contractorId: contractor.id },
+      });
+      linked += updated.count;
+    }
+  }
+
+  // ============ TELEGRAM ============
+  if (!dryRun && dataOd && dataDo && (invoicesCreated > 0 || invoicesUpdated > 0 || deleted.length > 0)) {
+    try {
+      const { sendTelegram } = require('../telegram-utils');
+      const [tgTokenCfg, tgChatCfg] = await Promise.all([
+        prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
+        prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
+      ]);
+      const tgToken = tgTokenCfg && tgTokenCfg.value;
+      const tgChat = tgChatCfg && tgChatCfg.value;
+      if (tgToken && tgChat) {
+        const localCount = dataOd ? (await prisma.invoice.count({
+          where: { issueDate: { gte: new Date(dataOd), lte: new Date(dataDo + 'T23:59:59Z') } },
+        })) : '?';
+        await sendTelegram(tgToken, tgChat,
+          `🔄 Sync iFirma — ${dataOd} → ${dataDo}\n📊 iFirma: ${invoices.length} | Lokalne: ${localCount}\n🗑 Usunięte: ${deleted.length}\n📥 Nowe: ${invoicesCreated}\n✏️ Zaktualizowane: ${invoicesUpdated}`
+        );
+      }
+    } catch (e) {
+      console.error('[sync] Telegram notify error:', e.message);
+    }
+  }
+
+  return {
+    contractors: { created: contractorsCreated, skipped: contractorsSkipped },
+    invoices: { created: invoicesCreated, updated: invoicesUpdated },
+    deleted,
+    deletedCount: deleted.length,
+    linked,
+  };
 }
 
 // ============ ROUTES ============

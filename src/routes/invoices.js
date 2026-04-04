@@ -29,11 +29,37 @@ const CENNIK = {
 router.post('/ifirma/sync', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { dataOd, dataDo } = req.body || {};
-    const defaultOd = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const invoices = await fetchIfirmaInvoices({ dataOd: dataOd || defaultOd, dataDo });
-    const result = await processIfirmaInvoices(invoices, prisma);
-    res.json({ ok: true, fetched: invoices.length, ...result });
+    const { year, month, dryRun } = req.body || {};
+    const now = new Date();
+    const y = year || now.getFullYear();
+    const m = month || (now.getMonth() + 1);
+
+    const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
+
+    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: dryRun || false });
+    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, fetched: invoices.length, dryRun: dryRun || false, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/ifirma/sync/preview', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const y = parseInt(req.query.year) || now.getFullYear();
+    const m = parseInt(req.query.month) || (now.getMonth() + 1);
+
+    const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
+
+    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: true });
+    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, fetched: invoices.length, dryRun: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
