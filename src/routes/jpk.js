@@ -185,7 +185,7 @@ router.get('/wdt-matching', async (req, res) => {
       let bestIdx = -1;
 
       // Priority order for match quality
-      const MATCH_PRIORITY = ['exact_name', 'fuzzy_name', 'compound_name', 'stripped_name', 'substring_name', 'fuzzy_stripped', 'address', 'postal_code'];
+      const MATCH_PRIORITY = ['exact_name', 'fuzzy_name', 'compound_name', 'compound_substring', 'stripped_name', 'substring_name', 'fuzzy_stripped', 'single_keyword', 'address', 'postal_code'];
 
       function isBetterMatch(newMatchBy, currentMatchBy) {
         if (!currentMatchBy) return true;
@@ -228,7 +228,25 @@ router.get('/wdt-matching', async (req, res) => {
           }
         }
 
-        // 4) STRIPPED: exact match after removing company suffixes
+        // 4) COMPOUND SUBSTRING: one contains the other without spaces (min 8 chars)
+        if (compContractor.length >= 8 && compRecv.length >= 8) {
+          if (compContractor.includes(compRecv) || compRecv.includes(compContractor)) {
+            if (isBetterMatch('compound_substring', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'compound_substring'; bestIdx = i;
+              continue;
+            }
+          }
+        }
+        if (compContractor.length >= 8 && compContact.length >= 8) {
+          if (compContractor.includes(compContact) || compContact.includes(compContractor)) {
+            if (isBetterMatch('compound_substring', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'compound_substring'; bestIdx = i;
+              continue;
+            }
+          }
+        }
+
+        // 5) STRIPPED: exact match after removing company suffixes
         const strContractor = stripCompanySuffix(inv.contractor);
         const strRecv = stripCompanySuffix(receiverName);
         const strContact = stripCompanySuffix(contactPerson);
@@ -257,14 +275,23 @@ router.get('/wdt-matching', async (req, res) => {
           }
         }
 
-        // 6) FUZZY STRIPPED: >= 2 common words after stripping suffixes
+        // 7) FUZZY STRIPPED: >= 2 common words after stripping suffixes
         const commonStripped = Math.max(countCommonWords(strContractor, strRecv), countCommonWords(strContractor, strContact));
         if (commonStripped >= 2 && isBetterMatch('fuzzy_stripped', bestMatchBy)) {
           bestMatch = order; bestMatchBy = 'fuzzy_stripped'; bestIdx = i;
           continue;
         }
 
-        // 7) ADDRESS match
+        // 8) SINGLE KEYWORD: 1 shared word >= 6 chars after stripping
+        const strWordsContractor = getWords(strContractor).filter(w => w.length >= 6);
+        const strWordsRecv = getWords(strRecv).concat(getWords(strContact));
+        const hasLongCommon = strWordsContractor.some(w => strWordsRecv.includes(w));
+        if (hasLongCommon && isBetterMatch('single_keyword', bestMatchBy)) {
+          bestMatch = order; bestMatchBy = 'single_keyword'; bestIdx = i;
+          continue;
+        }
+
+        // 9) ADDRESS match
         if (inv.contractorAddress && receiverStreet) {
           const normAddr = normalize(inv.contractorAddress);
           const normRecv2 = normalize(receiverStreet);
@@ -276,7 +303,7 @@ router.get('/wdt-matching', async (req, res) => {
           }
         }
 
-        // 8) POSTAL CODE match
+        // 10) POSTAL CODE match
         if (inv.contractorPostCode && receiverPostal) {
           const normPost = inv.contractorPostCode.replace(/\s/g, '');
           const normRecvPost = receiverPostal.replace(/\s/g, '');
