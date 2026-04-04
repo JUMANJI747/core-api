@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
+const { deleteInvoice } = require('../ifirma-client');
 
 // ============ HELPERS ============
 
@@ -372,6 +373,118 @@ router.get('/wdt-matching', async (req, res) => {
     });
   } catch (e) {
     console.error('[jpk] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ UNPAID REVIEW ============
+
+router.get('/unpaid-review', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = parseInt(req.query.year) || prevMonth.getFullYear();
+    const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
+
+    const startOfMonth = new Date(y, m - 1, 1);
+    const lastDay = new Date(y, m, 0).getDate();
+    const endOfMonth = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
+    const today = new Date();
+
+    const unpaid = await prisma.invoice.findMany({
+      where: {
+        issueDate: { gte: startOfMonth, lte: endOfMonth },
+        status: { not: 'paid' },
+      },
+      include: { contractor: true },
+      orderBy: { issueDate: 'asc' },
+    });
+
+    const invoices = unpaid.map(inv => {
+      const contractor = (inv.contractor && inv.contractor.name)
+        || (inv.extras && inv.extras.kontrahentNazwa)
+        || '';
+      return {
+        id: inv.id,
+        number: inv.number,
+        ifirmaId: inv.ifirmaId,
+        contractor,
+        grossAmount: inv.grossAmount,
+        currency: inv.currency,
+        status: inv.status,
+        paidAmount: inv.paidAmount,
+        issueDate: inv.issueDate,
+        dueDate: inv.dueDate,
+        isOverdue: inv.dueDate ? new Date(inv.dueDate) < today : false,
+        type: inv.ifirmaType || inv.type || null,
+      };
+    });
+
+    const totalUnpaid = Math.round(invoices.reduce((s, i) => s + i.grossAmount, 0) * 100) / 100;
+    const period = `${y}-${String(m).padStart(2, '0')}`;
+
+    const lines = invoices.map((inv, idx) => {
+      const overdue = inv.isOverdue ? ' ⚠️ przeterminowana' : '';
+      return `${idx + 1}. ${inv.number} — ${inv.contractor} — ${inv.grossAmount} ${inv.currency}${overdue}`;
+    });
+    const telegramMessage = `📋 Nieopłacone za ${period}:\n\n${lines.join('\n')}`;
+
+    res.json({ ok: true, period, unpaidCount: invoices.length, totalUnpaid, invoices, telegramMessage });
+  } catch (e) {
+    console.error('[jpk] unpaid-review error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ DELETE INVOICES ============
+
+router.post('/delete-invoices', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { invoiceIds, invoiceNumbers } = req.body;
+    if ((!invoiceIds || !invoiceIds.length) && (!invoiceNumbers || !invoiceNumbers.length)) {
+      return res.status(400).json({ error: 'invoiceIds or invoiceNumbers required' });
+    }
+
+    // Resolve invoices
+    let invoices = [];
+    if (invoiceIds && invoiceIds.length) {
+      invoices = await prisma.invoice.findMany({ where: { id: { in: invoiceIds } } });
+    } else if (invoiceNumbers && invoiceNumbers.length) {
+      invoices = await prisma.invoice.findMany({ where: { number: { in: invoiceNumbers } } });
+    }
+
+    const deleted = [];
+    const errors = [];
+
+    for (const inv of invoices) {
+      console.log('[jpk] Deleting invoice', inv.number, 'ifirmaId:', inv.ifirmaId);
+
+      // Delete from iFirma if has ifirmaId
+      if (inv.ifirmaId) {
+        try {
+          const rodzaj = inv.ifirmaType || inv.type || 'krajowa';
+          await deleteInvoice(inv.ifirmaId, rodzaj);
+        } catch (e) {
+          console.error(`[jpk] iFirma delete failed for ${inv.number}:`, e.message);
+          errors.push({ number: inv.number, ifirmaId: inv.ifirmaId, error: e.message });
+        }
+      }
+
+      // Delete from local DB
+      try {
+        await prisma.invoice.delete({ where: { id: inv.id } });
+        deleted.push({ id: inv.id, number: inv.number, ifirmaId: inv.ifirmaId, grossAmount: inv.grossAmount });
+      } catch (e) {
+        console.error(`[jpk] DB delete failed for ${inv.number}:`, e.message);
+        errors.push({ number: inv.number, error: e.message });
+      }
+    }
+
+    res.json({ ok: true, deleted, errors });
+  } catch (e) {
+    console.error('[jpk] delete-invoices error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
