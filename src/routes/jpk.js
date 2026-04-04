@@ -52,6 +52,18 @@ function normalize(str) {
     .replace(/\s+/g, ' ');
 }
 
+function stripCompanySuffix(str) {
+  return normalize(str)
+    .replace(/\b(unipessoal|lda|slu|s\.?l\.?u?|s\.?a\.?|sarl|gmbh|sp\.?\s*z\.?\s*o\.?\s*o\.?|limited|ltd|inc|e\.?u\.?|eireli|srl|snc|comercio e distribuicao)\b/gi, '')
+    .replace(/[,.\-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function removeSpaces(str) {
+  return normalize(str).replace(/\s+/g, '');
+}
+
 function getWords(str) {
   return normalize(str).split(' ').filter(w => w.length >= 2);
 }
@@ -172,6 +184,14 @@ router.get('/wdt-matching', async (req, res) => {
       let bestMatchBy = null;
       let bestIdx = -1;
 
+      // Priority order for match quality
+      const MATCH_PRIORITY = ['exact_name', 'fuzzy_name', 'compound_name', 'stripped_name', 'substring_name', 'fuzzy_stripped', 'address', 'postal_code'];
+
+      function isBetterMatch(newMatchBy, currentMatchBy) {
+        if (!currentMatchBy) return true;
+        return MATCH_PRIORITY.indexOf(newMatchBy) < MATCH_PRIORITY.indexOf(currentMatchBy);
+      }
+
       for (let i = 0; i < availableOrders.length; i++) {
         const order = availableOrders[i];
         const receiver = order.receiverAddress || order.receiver || {};
@@ -180,47 +200,89 @@ router.get('/wdt-matching', async (req, res) => {
         const receiverStreet = receiver.street || '';
         const receiverPostal = receiver.postalCode || receiver.postal_code || receiver.zipCode || '';
 
-        // a) EXACT name match
         const normContractor = normalize(inv.contractor);
-        if (normContractor && (normContractor === normalize(receiverName) || normContractor === normalize(contactPerson))) {
-          bestMatch = order;
-          bestMatchBy = 'exact_name';
-          bestIdx = i;
+        const normRecvName = normalize(receiverName);
+        const normContact = normalize(contactPerson);
+
+        // 1) EXACT name match
+        if (normContractor && (normContractor === normRecvName || normContractor === normContact)) {
+          bestMatch = order; bestMatchBy = 'exact_name'; bestIdx = i;
           break;
         }
 
-        // b) FUZZY: >= 2 common words
+        // 2) FUZZY: >= 2 common words
         const commonName = Math.max(countCommonWords(inv.contractor, receiverName), countCommonWords(inv.contractor, contactPerson));
-        if (commonName >= 2 && !bestMatch) {
-          bestMatch = order;
-          bestMatchBy = 'fuzzy_name';
-          bestIdx = i;
+        if (commonName >= 2 && isBetterMatch('fuzzy_name', bestMatchBy)) {
+          bestMatch = order; bestMatchBy = 'fuzzy_name'; bestIdx = i;
           continue;
         }
 
-        // c) ADDRESS match
-        if (inv.contractorAddress && receiverStreet) {
-          const normAddr = normalize(inv.contractorAddress);
-          const normRecv = normalize(receiverStreet);
-          if (normAddr && normRecv && (normAddr.includes(normRecv) || normRecv.includes(normAddr))) {
-            if (!bestMatch || bestMatchBy === 'postal_code') {
-              bestMatch = order;
-              bestMatchBy = 'address';
-              bestIdx = i;
+        // 3) COMPOUND: "HONESTMOLECULE" === "honest molecule" after removeSpaces
+        const compContractor = removeSpaces(stripCompanySuffix(inv.contractor));
+        const compRecv = removeSpaces(stripCompanySuffix(receiverName));
+        const compContact = removeSpaces(stripCompanySuffix(contactPerson));
+        if (compContractor.length >= 5 && (compContractor === compRecv || compContractor === compContact)) {
+          if (isBetterMatch('compound_name', bestMatchBy)) {
+            bestMatch = order; bestMatchBy = 'compound_name'; bestIdx = i;
+            continue;
+          }
+        }
+
+        // 4) STRIPPED: exact match after removing company suffixes
+        const strContractor = stripCompanySuffix(inv.contractor);
+        const strRecv = stripCompanySuffix(receiverName);
+        const strContact = stripCompanySuffix(contactPerson);
+        if (strContractor.length >= 5 && (strContractor === strRecv || strContractor === strContact)) {
+          if (isBetterMatch('stripped_name', bestMatchBy)) {
+            bestMatch = order; bestMatchBy = 'stripped_name'; bestIdx = i;
+            continue;
+          }
+        }
+
+        // 5) SUBSTRING: one stripped name contains the other (min 5 chars)
+        if (strContractor.length >= 5 && strRecv.length >= 5) {
+          if (strContractor.includes(strRecv) || strRecv.includes(strContractor)) {
+            if (isBetterMatch('substring_name', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'substring_name'; bestIdx = i;
+              continue;
+            }
+          }
+        }
+        if (strContractor.length >= 5 && strContact.length >= 5) {
+          if (strContractor.includes(strContact) || strContact.includes(strContractor)) {
+            if (isBetterMatch('substring_name', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'substring_name'; bestIdx = i;
               continue;
             }
           }
         }
 
-        // d) POSTAL CODE match
+        // 6) FUZZY STRIPPED: >= 2 common words after stripping suffixes
+        const commonStripped = Math.max(countCommonWords(strContractor, strRecv), countCommonWords(strContractor, strContact));
+        if (commonStripped >= 2 && isBetterMatch('fuzzy_stripped', bestMatchBy)) {
+          bestMatch = order; bestMatchBy = 'fuzzy_stripped'; bestIdx = i;
+          continue;
+        }
+
+        // 7) ADDRESS match
+        if (inv.contractorAddress && receiverStreet) {
+          const normAddr = normalize(inv.contractorAddress);
+          const normRecv2 = normalize(receiverStreet);
+          if (normAddr && normRecv2 && (normAddr.includes(normRecv2) || normRecv2.includes(normAddr))) {
+            if (isBetterMatch('address', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'address'; bestIdx = i;
+              continue;
+            }
+          }
+        }
+
+        // 8) POSTAL CODE match
         if (inv.contractorPostCode && receiverPostal) {
           const normPost = inv.contractorPostCode.replace(/\s/g, '');
           const normRecvPost = receiverPostal.replace(/\s/g, '');
           if (normPost && normRecvPost && normPost === normRecvPost) {
-            if (!bestMatch) {
-              bestMatch = order;
-              bestMatchBy = 'postal_code';
-              bestIdx = i;
+            if (isBetterMatch('postal_code', bestMatchBy)) {
+              bestMatch = order; bestMatchBy = 'postal_code'; bestIdx = i;
             }
           }
         }
