@@ -166,6 +166,10 @@ Masz teraz pełne adresy obu stron. Dla farmacji i firm o podobnych nazwach — 
 
 Jeśli po nazwie nie da się sparować, sprawdź czy pasuje adres (miasto + kod pocztowy).
 
+WAŻNE: NIE paruj firm surfowych tylko dlatego że obie mają 'surf' w nazwie. 'CAMPELLO SURF SHOP' to INNA firma niż 'AWA SURF' czy 'Escuela de surf Somo'. Paruj TYLKO gdy nazwa firmy się zgadza (nie samo słowo 'surf'). Jeśli nie masz pewności — zostaw jako nieparowane.
+
+Jeśli kontrahent ma dwie faktury i trzy zamówienia — sparuj po datach (chronologicznie) i zostaw nadmiarowe zamówienie jako nieparowane. NIE wymuszaj parowania 1:1 jeśli liczby się nie zgadzają.
+
 NIE paruj na siłę — jeśli nie ma pewności, zostaw jako nieparowane.
 
 FAKTURY WDT:
