@@ -386,8 +386,54 @@ async function performWdtMatching(prisma, y, m) {
     matchingMethod = 'fallback';
   }
 
-  const { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
+  let { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
   const period = `${y}-${String(m).padStart(2, '0')}`;
+
+  // === MANUAL MATCHES: add pairs from invoice.extras.matchedOrder ===
+  const manuallyAdded = [];
+  const matchedInvSet = new Set(matched.map(m => m.invoice.number));
+  const matchedOrdSet = new Set(matched.map(m => m.order.number));
+
+  for (const inv of wdtInvoices) {
+    if (matchedInvSet.has(inv.number)) continue;
+    const mo = inv.extras && inv.extras.matchedOrder;
+    if (!mo || !mo.number) continue;
+    if (matchedOrdSet.has(mo.number)) continue;
+
+    const ord = filteredOrders.find(o => (o.number || o.orderNumber || o.id) === mo.number);
+    if (!ord) continue;
+
+    const invItem = invoiceItems.find(i => i.number === inv.number);
+    if (!invItem) continue;
+
+    const receiver = ord.receiverAddress || ord.receiver || {};
+    matched.push({
+      invoice: { number: invItem.number, contractor: invItem.contractor, contractorId: invItem.contractorId, grossAmount: invItem.grossAmount, currency: invItem.currency },
+      order: {
+        number: mo.number,
+        hash: mo.hash || ord.hash || ord.id,
+        carrier: ord.carrierName || ord.carrier || '',
+        receiverName: receiver.name || mo.receiverName || '',
+        contactPerson: receiver.contactPerson || '',
+        street: ((receiver.street || '') + ' ' + (receiver.houseNumber || '')).trim(),
+        postCode: receiver.postCode || '',
+        city: receiver.city || mo.city || '',
+        countryId: receiver.countryId || '',
+        creationDate: ord.creationDate || ord.created_at || ord.createdAt,
+      },
+      matchedBy: 'manual',
+    });
+    matchedInvSet.add(inv.number);
+    matchedOrdSet.add(mo.number);
+    manuallyAdded.push(inv.number);
+  }
+
+  if (manuallyAdded.length) {
+    unmatchedInvoices = unmatchedInvoices.filter(i => !manuallyAdded.includes(i.number));
+    unmatchedOrders = unmatchedOrders.filter(o => !matchedOrdSet.has(o.number));
+    console.log(`[jpk] Added ${manuallyAdded.length} manual matches: ${manuallyAdded.join(', ')}`);
+  }
+
   console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length} (${matchingMethod})`);
 
   // === LEARNING: save shipping names to contractor extras ===
@@ -698,6 +744,139 @@ router.post('/delete-invoices', async (req, res) => {
     res.json({ ok: true, deleted, errors });
   } catch (e) {
     console.error('[jpk] delete-invoices error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ MANUAL MATCH ============
+
+router.post('/manual-match', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { pairs } = req.body;
+    if (!pairs || !pairs.length) return res.status(400).json({ error: 'pairs required' });
+
+    // Login to GlobKurier
+    const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
+    const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
+    let gkOrders = [];
+    if (gkEmail && gkPassword) {
+      const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, { email: gkEmail, password: gkPassword });
+      if (loginResp.status === 200 && loginResp.body.token) {
+        const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
+          'X-Auth-Token': loginResp.body.token, 'Accept-Language': 'pl', 'Accept': 'application/json',
+        });
+        const ordersData = ordersResp.body;
+        gkOrders = (ordersData && ordersData.results) ? ordersData.results
+          : (ordersData && ordersData.items) ? ordersData.items
+          : Array.isArray(ordersData) ? ordersData : [];
+      }
+    }
+
+    const results = [];
+    let learned = 0;
+    const tgLines = [];
+
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+    const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+
+    for (const pair of pairs) {
+      const invoiceNumber = pair.invoiceNumber;
+      let orderNumber = pair.orderNumber;
+      if (orderNumber && !orderNumber.startsWith('GK')) orderNumber = 'GK' + orderNumber;
+
+      // Find invoice
+      const invoice = await prisma.invoice.findFirst({ where: { number: invoiceNumber }, include: { contractor: true } });
+      if (!invoice) {
+        results.push({ invoiceNumber, orderNumber, status: 'error', reason: 'invoice not found' });
+        continue;
+      }
+
+      // Find order
+      const order = gkOrders.find(o => (o.number || o.orderNumber || o.id) === orderNumber);
+      if (!order) {
+        results.push({ invoiceNumber, orderNumber, status: 'error', reason: 'order not found' });
+        continue;
+      }
+
+      const receiver = order.receiverAddress || order.receiver || {};
+      const receiverName = receiver.name || '';
+      const receiverCity = receiver.city || '';
+      const receiverStreet = ((receiver.street || '') + ' ' + (receiver.houseNumber || '')).trim();
+      const receiverPostCode = receiver.postCode || '';
+
+      // Save matchedOrder to invoice extras
+      await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          extras: {
+            ...(typeof invoice.extras === 'object' ? invoice.extras : {}),
+            matchedOrder: {
+              number: orderNumber,
+              hash: order.hash || order.id,
+              receiverName,
+              city: receiverCity,
+              matchedBy: 'manual',
+              matchedAt: new Date().toISOString(),
+            },
+          },
+        },
+      });
+
+      // Learn: save to contractor
+      let contractorLearned = false;
+      if (invoice.contractorId && receiverName) {
+        try {
+          const contractor = await prisma.contractor.findUnique({ where: { id: invoice.contractorId } });
+          if (contractor) {
+            const currentExtras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
+            const existingLocations = currentExtras.locations || [];
+            const alreadyExists = existingLocations.some(loc =>
+              loc.tradeName && loc.tradeName.toLowerCase().trim() === receiverName.toLowerCase().trim()
+            );
+
+            if (!alreadyExists) {
+              await prisma.contractor.update({
+                where: { id: invoice.contractorId },
+                data: {
+                  extras: {
+                    ...currentExtras,
+                    tradeName: currentExtras.tradeName || receiverName,
+                    locations: [...existingLocations, {
+                      tradeName: receiverName,
+                      street: receiverStreet,
+                      postCode: receiverPostCode,
+                      city: receiverCity,
+                      countryId: receiver.countryId || '',
+                      learnedFrom: 'manual-match',
+                      learnedAt: new Date().toISOString().split('T')[0],
+                    }],
+                  },
+                },
+              });
+              contractorLearned = true;
+              learned++;
+              console.log('[jpk] Manual learned: ' + (contractor.name) + ' → ' + receiverName + ' (' + receiverCity + ')');
+            }
+          }
+        } catch (err) {
+          console.error('[jpk] Manual learning error:', err.message);
+        }
+      }
+
+      results.push({ invoiceNumber, orderNumber, receiverName, status: 'ok', contractorLearned });
+      tgLines.push(`• ${invoiceNumber} ↔ ${orderNumber} (${receiverName}) — zapisano`);
+    }
+
+    // Telegram
+    if (tgLines.length) {
+      const tgMsg = `✅ Ręczne parowanie:\n${tgLines.join('\n')}\n📇 Wyuczone ${learned} nowe adresy wysyłkowe`;
+      await sendTelegram(tgToken, tgChat, tgMsg).catch(e => console.error('[jpk] TG error:', e.message));
+    }
+
+    res.json({ ok: true, results, learned });
+  } catch (e) {
+    console.error('[jpk] manual-match error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
