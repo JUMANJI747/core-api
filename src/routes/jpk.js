@@ -241,137 +241,133 @@ Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
   return { matched, unmatchedInvoices, unmatchedOrders };
 }
 
-// ============ WDT MATCHING ============
+// ============ WDT MATCHING (shared logic) ============
+
+async function performWdtMatching(prisma, y, m) {
+  const dataOd = new Date(y, m - 1, 1);
+  const lastDay = new Date(y, m, 0).getDate();
+  const dataDo = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
+
+  // 1. FETCH WDT INVOICES
+  const wdtInvoices = await prisma.invoice.findMany({
+    where: {
+      issueDate: { gte: dataOd, lte: dataDo },
+      OR: [
+        { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
+        { type: { contains: 'wdt', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+      ],
+    },
+    include: { contractor: true },
+  });
+
+  const invoiceItems = wdtInvoices.map(inv => {
+    const contractorName = (inv.contractor && inv.contractor.name)
+      || (inv.extras && inv.extras.kontrahentNazwa)
+      || '';
+    const contractorAddress = inv.contractor && inv.contractor.address || '';
+    const contractorCity = inv.contractor && inv.contractor.city || '';
+    const contractorExtras = inv.contractor && inv.contractor.extras || {};
+    return {
+      id: inv.id,
+      number: inv.number,
+      contractor: contractorName,
+      contractorAddress,
+      contractorCity,
+      contractorPostCode: contractorExtras.postCode || '',
+      grossAmount: inv.grossAmount,
+      currency: inv.currency,
+      issueDate: inv.issueDate,
+      ifirmaId: inv.ifirmaId,
+    };
+  });
+
+  // 2. FETCH GLOBKURIER ORDERS
+  const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
+  const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
+  if (!gkEmail || !gkPassword) {
+    throw new Error('GLOBKURIER_EMAIL or GLOBKURIER_PASSWORD not set');
+  }
+
+  const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, {
+    email: gkEmail,
+    password: gkPassword,
+  });
+  console.log('[jpk] GlobKurier token:', loginResp.body && loginResp.body.token ? loginResp.body.token.substring(0, 20) + '...' : 'NO TOKEN');
+  if (loginResp.status !== 200 || !loginResp.body.token) {
+    throw new Error('GlobKurier login failed');
+  }
+  const token = loginResp.body.token;
+
+  const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
+    'X-Auth-Token': token,
+    'Accept-Language': 'pl',
+    'Accept': 'application/json',
+  });
+  if (ordersResp.status !== 200) {
+    throw new Error('GlobKurier orders fetch failed');
+  }
+
+  const ordersData = ordersResp.body;
+  const allOrders = (ordersData && ordersData.results) ? ordersData.results
+    : (ordersData && ordersData.items) ? ordersData.items
+    : (ordersData && ordersData.data) ? ordersData.data
+    : Array.isArray(ordersData) ? ordersData
+    : [];
+
+  const filterFrom = dataOd;
+  const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999);
+  const filteredOrders = allOrders.filter(order => {
+    const creationDate = new Date(order.creationDate || order.created_at || order.createdAt || 0);
+    if (creationDate < filterFrom || creationDate > nextMonthEnd) return false;
+    const receiver = order.receiverAddress || order.receiver || {};
+    if (receiver.countryId === 1 || receiver.country_id === 1) return false;
+    return true;
+  });
+
+  // 3. MATCHING — try LLM first, fallback to regex
+  let matchResult;
+  let matchingMethod = 'llm';
+  try {
+    matchResult = await llmMatching(invoiceItems, filteredOrders);
+  } catch (e) {
+    console.error('[jpk] LLM matching failed:', e.message);
+    console.log('[jpk] LLM failed, using fallback matching');
+    matchResult = fallbackMatching(invoiceItems, filteredOrders);
+    matchingMethod = 'fallback';
+  }
+
+  const { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
+  const period = `${y}-${String(m).padStart(2, '0')}`;
+  console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length} (${matchingMethod})`);
+
+  return {
+    period,
+    matchingMethod,
+    summary: {
+      wdtInvoices: invoiceItems.length,
+      globOrders: filteredOrders.length,
+      matched: matched.length,
+      unmatchedInvoices: unmatchedInvoices.length,
+      unmatchedOrders: unmatchedOrders.length,
+    },
+    matched,
+    unmatchedInvoices,
+    unmatchedOrders,
+  };
+}
 
 router.get('/wdt-matching', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    // Default to PREVIOUS month
     const now = new Date();
     const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const y = parseInt(req.query.year) || prevMonth.getFullYear();
     const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
 
-    const dataOd = new Date(y, m - 1, 1);
-    const lastDay = new Date(y, m, 0).getDate();
-    const dataDo = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
-
-    // 1. FETCH WDT INVOICES
-    const wdtInvoices = await prisma.invoice.findMany({
-      where: {
-        issueDate: { gte: dataOd, lte: dataDo },
-        OR: [
-          { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
-          { type: { contains: 'wdt', mode: 'insensitive' } },
-          { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
-          { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
-        ],
-      },
-      include: { contractor: true },
-    });
-
-    const invoiceItems = wdtInvoices.map(inv => {
-      const contractorName = (inv.contractor && inv.contractor.name)
-        || (inv.extras && inv.extras.kontrahentNazwa)
-        || '';
-      const contractorAddress = inv.contractor && inv.contractor.address || '';
-      const contractorCity = inv.contractor && inv.contractor.city || '';
-      const contractorExtras = inv.contractor && inv.contractor.extras || {};
-      return {
-        id: inv.id,
-        number: inv.number,
-        contractor: contractorName,
-        contractorAddress,
-        contractorCity,
-        contractorPostCode: contractorExtras.postCode || '',
-        grossAmount: inv.grossAmount,
-        currency: inv.currency,
-        issueDate: inv.issueDate,
-        ifirmaId: inv.ifirmaId,
-      };
-    });
-
-    // 2. FETCH GLOBKURIER ORDERS
-    const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
-    const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
-    if (!gkEmail || !gkPassword) {
-      return res.json({ ok: false, error: 'GLOBKURIER_EMAIL or GLOBKURIER_PASSWORD not set' });
-    }
-
-    // Login
-    const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, {
-      email: gkEmail,
-      password: gkPassword,
-    });
-    console.log('[jpk] GlobKurier login response keys:', Object.keys(loginResp.body || {}));
-    console.log('[jpk] GlobKurier token:', loginResp.body && loginResp.body.token ? loginResp.body.token.substring(0, 20) + '...' : 'NO TOKEN');
-    if (loginResp.status !== 200 || !loginResp.body.token) {
-      return res.status(500).json({ ok: false, error: 'GlobKurier login failed', details: loginResp.body });
-    }
-    const token = loginResp.body.token;
-
-    // Fetch orders
-    const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
-      'X-Auth-Token': token,
-      'Accept-Language': 'pl',
-      'Accept': 'application/json',
-    });
-    if (ordersResp.status !== 200) {
-      return res.status(500).json({ ok: false, error: 'GlobKurier orders fetch failed', details: ordersResp.body });
-    }
-
-    const ordersData = ordersResp.body;
-    console.log('[jpk] GlobKurier raw response keys:', Object.keys(ordersData || {}));
-
-    const allOrders = (ordersData && ordersData.results) ? ordersData.results
-      : (ordersData && ordersData.items) ? ordersData.items
-      : (ordersData && ordersData.data) ? ordersData.data
-      : Array.isArray(ordersData) ? ordersData
-      : [];
-
-    // Filter: date range (invoice month + next month) and non-Poland receiver
-    const filterFrom = dataOd;
-    const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999);
-    const filteredOrders = allOrders.filter(order => {
-      const creationDate = new Date(order.creationDate || order.created_at || order.createdAt || 0);
-      if (creationDate < filterFrom || creationDate > nextMonthEnd) return false;
-      const receiver = order.receiverAddress || order.receiver || {};
-      if (receiver.countryId === 1 || receiver.country_id === 1) return false;
-      return true;
-    });
-
-    // 3. MATCHING — try LLM first, fallback to regex
-    let matchResult;
-    let matchingMethod = 'llm';
-    try {
-      matchResult = await llmMatching(invoiceItems, filteredOrders);
-    } catch (e) {
-      console.error('[jpk] LLM matching failed:', e.message);
-      console.log('[jpk] LLM failed, using fallback matching');
-      matchResult = fallbackMatching(invoiceItems, filteredOrders);
-      matchingMethod = 'fallback';
-    }
-
-    const { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
-
-    const period = `${y}-${String(m).padStart(2, '0')}`;
-    console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length} (${matchingMethod})`);
-
-    res.json({
-      ok: true,
-      period,
-      matchingMethod,
-      summary: {
-        wdtInvoices: invoiceItems.length,
-        globOrders: filteredOrders.length,
-        matched: matched.length,
-        unmatchedInvoices: unmatchedInvoices.length,
-        unmatchedOrders: unmatchedOrders.length,
-      },
-      matched,
-      unmatchedInvoices,
-      unmatchedOrders,
-    });
+    const result = await performWdtMatching(prisma, y, m);
+    res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[jpk] error:', e.message);
     res.status(500).json({ error: e.message });
@@ -464,54 +460,8 @@ router.post('/start-monthly-review', async (req, res) => {
     if (invoices.length === 0) {
       // All paid — proceed with sync + matching
       await sendTelegram(tgToken, tgChat, `✅ Wszystkie faktury za ${period} opłacone. Przechodzę do synca i parowania WDT.`);
-
-      // Sync
-      const { fetchInvoices: fetchIfirmaInvoices } = require('../ifirma-client');
-      const { processIfirmaInvoices } = require('./contractors');
-      const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
-      const lastDay = new Date(y, m, 0).getDate();
-      const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
-      const ifirmaInvoices = await fetchIfirmaInvoices({ dataOd, dataDo });
-      const syncResult = await processIfirmaInvoices(ifirmaInvoices, prisma, { dataOd, dataDo, dryRun: false });
-
-      // WDT Matching — reuse the same DB + GlobKurier logic
-      // We call our own endpoint internally via http
-      const http = require('http');
-      const port = process.env.PORT || 3000;
-      const matchResult = await new Promise((resolve, reject) => {
-        http.get(`http://localhost:${port}/api/jpk/wdt-matching?year=${y}&month=${m}`, {
-          headers: { 'x-api-key': req.headers['x-api-key'] || '' },
-        }, (r) => {
-          let data = '';
-          r.on('data', c => { data += c; });
-          r.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
-        }).on('error', reject);
-      });
-
-      // Send matching report to Telegram
-      const s = matchResult.summary || {};
-      const matchedLines = (matchResult.matched || []).map((m, i) =>
-        `${i + 1}. ${m.invoice.number} (${m.invoice.contractor}) ↔ ${m.order.number} (${m.order.receiverName})`
-      );
-      const unmatchedInvLines = (matchResult.unmatchedInvoices || []).map(i => `• ${i.number} — ${i.contractor}`);
-      const unmatchedOrdLines = (matchResult.unmatchedOrders || []).map(o => `• ${o.number} → ${o.receiverName}`);
-
-      let tgReport = `🔄 Raport JPK za ${period}:\n\n`;
-      tgReport += `📊 Faktury WDT: ${s.wdtInvoices} | Zamówienia GlobKurier: ${s.globOrders}\n`;
-      tgReport += `✅ Sparowane: ${s.matched}\n\n`;
-      if (matchedLines.length) tgReport += `Pary:\n${matchedLines.join('\n')}\n\n`;
-      if (unmatchedInvLines.length) tgReport += `❌ Nieparowane faktury:\n${unmatchedInvLines.join('\n')}\n\n`;
-      if (unmatchedOrdLines.length) tgReport += `📦 Nieparowane zamówienia:\n${unmatchedOrdLines.join('\n')}`;
-
-      await sendTelegram(tgToken, tgChat, tgReport);
-
-      return res.json({
-        ok: true,
-        step: 'completed',
-        period,
-        sync: { fetched: ifirmaInvoices.length, ...syncResult },
-        matching: matchResult.summary,
-      });
+      const runResult = await runSyncAndMatching(prisma, y, m, tgToken, tgChat);
+      return res.json({ ok: true, step: 'completed', period, ...runResult });
     }
 
     // Has unpaid invoices — send review to Telegram and wait
@@ -535,6 +485,71 @@ router.post('/start-monthly-review', async (req, res) => {
     });
   } catch (e) {
     console.error('[jpk] start-monthly-review error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ SYNC + MATCHING (shared logic) ============
+
+async function runSyncAndMatching(prisma, y, m, tgToken, tgChat) {
+  const { fetchInvoices: fetchIfirmaInvoices } = require('../ifirma-client');
+  const { processIfirmaInvoices } = require('./contractors');
+
+  // 1. Sync
+  const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
+  const ifirmaInvoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+  const syncResult = await processIfirmaInvoices(ifirmaInvoices, prisma, { dataOd, dataDo, dryRun: false });
+
+  // 2. WDT Matching
+  const matchResult = await performWdtMatching(prisma, y, m);
+
+  // 3. Telegram report
+  const period = `${y}-${String(m).padStart(2, '0')}`;
+  const s = matchResult.summary;
+  const matchedLines = matchResult.matched.map((p, i) =>
+    `${i + 1}. ${p.invoice.number} (${p.invoice.contractor}) ↔ ${p.order.number} (${p.order.receiverName})`
+  );
+  const unmatchedInvLines = matchResult.unmatchedInvoices.map(i => `• ${i.number} — ${i.contractor} — ${i.grossAmount} ${i.currency}`);
+  const unmatchedOrdLines = matchResult.unmatchedOrders.map(o => `• ${o.number} → ${o.receiverName}`);
+
+  let tgReport = `📊 Rozliczenie za ${period}:\n\n`;
+  tgReport += `Sync: ${syncResult.invoices.created} nowe, ${syncResult.invoices.updated} zaktualizowane, ${syncResult.deletedCount || 0} usunięte\n\n`;
+  tgReport += `WDT: ${s.matched}/${s.wdtInvoices} sparowanych z listami\n\n`;
+  if (matchedLines.length) tgReport += `✅ Sparowane:\n${matchedLines.join('\n')}\n\n`;
+  if (unmatchedInvLines.length) tgReport += `❌ Brak listu:\n${unmatchedInvLines.join('\n')}\n\n`;
+  if (unmatchedOrdLines.length) tgReport += `📦 Nieparowane zamówienia:\n${unmatchedOrdLines.join('\n')}`;
+
+  if (tgToken && tgChat) {
+    await sendTelegram(tgToken, tgChat, tgReport);
+  }
+
+  return {
+    sync: { fetched: ifirmaInvoices.length, created: syncResult.invoices.created, updated: syncResult.invoices.updated, deleted: syncResult.deletedCount || 0 },
+    matching: { summary: s, matched: matchResult.matched, unmatchedInvoices: matchResult.unmatchedInvoices, unmatchedOrders: matchResult.unmatchedOrders },
+  };
+}
+
+// ============ RUN MONTHLY ============
+
+router.post('/run-monthly', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = (req.body && req.body.year) || prevMonth.getFullYear();
+    const m = (req.body && req.body.month) || (prevMonth.getMonth() + 1);
+    const period = `${y}-${String(m).padStart(2, '0')}`;
+
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+    const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+
+    const result = await runSyncAndMatching(prisma, y, m, tgToken, tgChat);
+
+    res.json({ ok: true, period, ...result });
+  } catch (e) {
+    console.error('[jpk] run-monthly error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
