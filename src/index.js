@@ -41,6 +41,7 @@ app.use('/api/mailing', require('./routes/mailing'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api', require('./routes/config'));
 app.use('/api', require('./routes/invoices'));
+app.use('/api/jpk', require('./routes/jpk'));
 
 // ============ START ============
 app.listen(PORT, () => {
