@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { deleteInvoice } = require('../ifirma-client');
+const { deleteInvoice, fetchInvoiceDetails } = require('../ifirma-client');
 const { sendTelegram } = require('../telegram-utils');
 
 // ============ HELPERS ============
@@ -120,6 +120,10 @@ async function llmMatching(invoiceItems, filteredOrders) {
     number: inv.number,
     contractor: inv.contractor,
     city: inv.contractorCity || '',
+    street: inv.contractorAddress || '',
+    postCode: inv.contractorPostCode || '',
+    country: inv.contractorCountry || '',
+    nip: inv.contractorNip || '',
     grossAmount: inv.grossAmount,
     currency: inv.currency,
   }));
@@ -132,8 +136,11 @@ async function llmMatching(invoiceItems, filteredOrders) {
       receiverName: receiver.name || '',
       contactPerson: receiver.contactPerson || receiver.contact_person || '',
       city: receiver.city || '',
-      postCode: receiver.postalCode || receiver.postal_code || receiver.zipCode || '',
-      street: receiver.street || '',
+      street: ((receiver.street || '') + ' ' + (receiver.houseNumber || '')).trim(),
+      postCode: receiver.postCode || '',
+      countryId: receiver.countryId || '',
+      phone: receiver.phone || '',
+      email: receiver.email || '',
       creationDate: ord.creationDate || ord.created_at || ord.createdAt,
     };
   });
@@ -149,7 +156,9 @@ Paruj po nazwie kontrahenta/odbiorcy — to ta sama firma, ale nazwy mogą się 
 - Skrócone nazwy (np. "Farmácia Braga" to skrót od "FARMÁCIA S. VICENTE DE BRAGA, LDA")
 - Nazwy mogą być w polu receiverName LUB contactPerson
 
-Jeśli po nazwie nie da się sparować, sprawdź czy pasuje miasto + kraj.
+Masz teraz pełne adresy obu stron. Dla farmacji i firm o podobnych nazwach — paruj po ADRESIE (miasto + kod pocztowy + ulica). Jeśli faktura ma miasto 'Braga' i zamówienie ma miasto 'Braga' z tym samym kodem pocztowym — to para.
+
+Jeśli po nazwie nie da się sparować, sprawdź czy pasuje adres (miasto + kod pocztowy).
 
 NIE paruj na siłę — jeśli nie ma pewności, zostaw jako nieparowane.
 
@@ -262,26 +271,55 @@ async function performWdtMatching(prisma, y, m) {
     include: { contractor: true },
   });
 
-  const invoiceItems = wdtInvoices.map(inv => {
+  // Enrich invoices with address data from iFirma
+  const invoiceItems = [];
+  for (const inv of wdtInvoices) {
     const contractorName = (inv.contractor && inv.contractor.name)
       || (inv.extras && inv.extras.kontrahentNazwa)
       || '';
     const contractorAddress = inv.contractor && inv.contractor.address || '';
     const contractorCity = inv.contractor && inv.contractor.city || '';
     const contractorExtras = inv.contractor && inv.contractor.extras || {};
-    return {
+
+    let ifirmaCity = '';
+    let ifirmaStreet = '';
+    let ifirmaPostCode = '';
+    let ifirmaCountry = '';
+    let ifirmaNip = '';
+
+    if (inv.ifirmaId) {
+      try {
+        const rodzaj = inv.ifirmaType || inv.type || 'wdt';
+        console.log('[jpk] Fetching invoice details from iFirma:', inv.number);
+        const details = await fetchInvoiceDetails(inv.ifirmaId, rodzaj);
+        const k = details && details.Kontrahent;
+        if (k) {
+          ifirmaCity = k.Miejscowosc || '';
+          ifirmaStreet = ((k.Ulica || '') + ' ' + (k.NumerDomu || '')).trim();
+          ifirmaPostCode = k.KodPocztowy || '';
+          ifirmaCountry = k.Kraj || k.KrajKod || '';
+          ifirmaNip = k.NIP || '';
+        }
+      } catch (e) {
+        console.error(`[jpk] Failed to fetch details for ${inv.number}:`, e.message);
+      }
+    }
+
+    invoiceItems.push({
       id: inv.id,
       number: inv.number,
       contractor: contractorName,
-      contractorAddress,
-      contractorCity,
-      contractorPostCode: contractorExtras.postCode || '',
+      contractorAddress: contractorAddress || ifirmaStreet,
+      contractorCity: contractorCity || ifirmaCity,
+      contractorPostCode: contractorExtras.postCode || ifirmaPostCode,
+      contractorCountry: (inv.contractor && inv.contractor.country) || ifirmaCountry,
+      contractorNip: ifirmaNip,
       grossAmount: inv.grossAmount,
       currency: inv.currency,
       issueDate: inv.issueDate,
       ifirmaId: inv.ifirmaId,
-    };
-  });
+    });
+  }
 
   // 2. FETCH GLOBKURIER ORDERS
   const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
@@ -370,111 +408,6 @@ router.get('/wdt-matching', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[jpk] error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ============ MATCHING DEBUG ============
-
-router.get('/matching-debug', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  try {
-    const now = new Date();
-    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const y = parseInt(req.query.year) || prevMonth.getFullYear();
-    const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
-
-    const dataOd = new Date(y, m - 1, 1);
-    const lastDay = new Date(y, m, 0).getDate();
-    const dataDo = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
-
-    // WDT invoices with full contractor data
-    const wdtInvoices = await prisma.invoice.findMany({
-      where: {
-        issueDate: { gte: dataOd, lte: dataDo },
-        OR: [
-          { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
-          { type: { contains: 'wdt', mode: 'insensitive' } },
-          { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
-          { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
-        ],
-      },
-      include: { contractor: true },
-      take: 3,
-    });
-
-    const invoicesDebug = wdtInvoices.map(inv => ({
-      number: inv.number,
-      contractor: inv.contractor ? {
-        name: inv.contractor.name,
-        country: inv.contractor.country,
-        city: inv.contractor.city,
-        address: inv.contractor.address,
-        extras: inv.contractor.extras,
-      } : null,
-      invoiceExtras: inv.extras,
-      sentToLLM: {
-        number: inv.number,
-        contractor: (inv.contractor && inv.contractor.name) || (inv.extras && inv.extras.kontrahentNazwa) || '',
-        city: (inv.contractor && inv.contractor.city) || '',
-        grossAmount: inv.grossAmount,
-        currency: inv.currency,
-      },
-    }));
-
-    // GlobKurier orders
-    const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
-    const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
-    let ordersDebug = [];
-    if (gkEmail && gkPassword) {
-      const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, { email: gkEmail, password: gkPassword });
-      if (loginResp.status === 200 && loginResp.body.token) {
-        const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
-          'X-Auth-Token': loginResp.body.token, 'Accept-Language': 'pl', 'Accept': 'application/json',
-        });
-        const ordersData = ordersResp.body;
-        const allOrders = (ordersData && ordersData.results) ? ordersData.results
-          : (ordersData && ordersData.items) ? ordersData.items
-          : Array.isArray(ordersData) ? ordersData : [];
-
-        const filterFrom = dataOd;
-        const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999);
-        const filtered = allOrders.filter(order => {
-          const cd = new Date(order.creationDate || order.created_at || 0);
-          if (cd < filterFrom || cd > nextMonthEnd) return false;
-          const r = order.receiverAddress || order.receiver || {};
-          if (r.countryId === 1 || r.country_id === 1) return false;
-          return true;
-        });
-
-        ordersDebug = filtered.slice(0, 3).map(ord => {
-          const r = ord.receiverAddress || ord.receiver || {};
-          return {
-            number: ord.number || ord.orderNumber || ord.id,
-            hash: ord.hash || ord.id,
-            rawReceiverAddress: r,
-            sentToLLM: {
-              number: ord.number || ord.orderNumber || ord.id,
-              hash: ord.hash || ord.id,
-              receiverName: r.name || '',
-              contactPerson: r.contactPerson || r.contact_person || '',
-              city: r.city || '',
-              postCode: r.postalCode || r.postal_code || r.zipCode || '',
-              street: r.street || '',
-              creationDate: ord.creationDate || ord.created_at || ord.createdAt,
-            },
-          };
-        });
-      }
-    }
-
-    res.json({
-      ok: true,
-      period: `${y}-${String(m).padStart(2, '0')}`,
-      invoices: invoicesDebug,
-      orders: ordersDebug,
-    });
-  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
