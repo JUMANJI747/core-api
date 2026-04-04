@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const https = require('https');
 const { deleteInvoice } = require('../ifirma-client');
+const { sendTelegram } = require('../telegram-utils');
 
 // ============ HELPERS ============
 
@@ -379,6 +380,56 @@ router.get('/wdt-matching', async (req, res) => {
 
 // ============ UNPAID REVIEW ============
 
+async function getUnpaidInvoices(prisma, year, month) {
+  const startOfMonth = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0).getDate();
+  const endOfMonth = new Date(year, month - 1, lastDay, 23, 59, 59, 999);
+  const today = new Date();
+
+  const unpaid = await prisma.invoice.findMany({
+    where: {
+      issueDate: { gte: startOfMonth, lte: endOfMonth },
+      status: { not: 'paid' },
+    },
+    include: { contractor: true },
+    orderBy: { issueDate: 'asc' },
+  });
+
+  const invoices = unpaid.map(inv => {
+    const contractor = (inv.contractor && inv.contractor.name)
+      || (inv.extras && inv.extras.kontrahentNazwa)
+      || '';
+    return {
+      id: inv.id,
+      number: inv.number,
+      ifirmaId: inv.ifirmaId,
+      contractor,
+      grossAmount: inv.grossAmount,
+      currency: inv.currency,
+      status: inv.status,
+      paidAmount: inv.paidAmount,
+      issueDate: inv.issueDate,
+      dueDate: inv.dueDate,
+      isOverdue: inv.dueDate ? new Date(inv.dueDate) < today : false,
+      type: inv.ifirmaType || inv.type || null,
+    };
+  });
+
+  // Sort: overdue first, then the rest
+  invoices.sort((a, b) => (b.isOverdue ? 1 : 0) - (a.isOverdue ? 1 : 0));
+
+  const totalUnpaid = Math.round(invoices.reduce((s, i) => s + i.grossAmount, 0) * 100) / 100;
+  const period = `${year}-${String(month).padStart(2, '0')}`;
+
+  const lines = invoices.map((inv, idx) => {
+    const overdue = inv.isOverdue ? ' ⚠️' : '';
+    return `${idx + 1}. ${inv.number} — ${inv.contractor} — ${inv.grossAmount.toFixed(2)} ${inv.currency}${overdue}`;
+  });
+  const telegramMessage = `📋 Nieopłacone za ${period}:\n\n${lines.join('\n')}`;
+
+  return { period, invoices, totalUnpaid, telegramMessage };
+}
+
 router.get('/unpaid-review', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -387,52 +438,103 @@ router.get('/unpaid-review', async (req, res) => {
     const y = parseInt(req.query.year) || prevMonth.getFullYear();
     const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
 
-    const startOfMonth = new Date(y, m - 1, 1);
-    const lastDay = new Date(y, m, 0).getDate();
-    const endOfMonth = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
-    const today = new Date();
-
-    const unpaid = await prisma.invoice.findMany({
-      where: {
-        issueDate: { gte: startOfMonth, lte: endOfMonth },
-        status: { not: 'paid' },
-      },
-      include: { contractor: true },
-      orderBy: { issueDate: 'asc' },
-    });
-
-    const invoices = unpaid.map(inv => {
-      const contractor = (inv.contractor && inv.contractor.name)
-        || (inv.extras && inv.extras.kontrahentNazwa)
-        || '';
-      return {
-        id: inv.id,
-        number: inv.number,
-        ifirmaId: inv.ifirmaId,
-        contractor,
-        grossAmount: inv.grossAmount,
-        currency: inv.currency,
-        status: inv.status,
-        paidAmount: inv.paidAmount,
-        issueDate: inv.issueDate,
-        dueDate: inv.dueDate,
-        isOverdue: inv.dueDate ? new Date(inv.dueDate) < today : false,
-        type: inv.ifirmaType || inv.type || null,
-      };
-    });
-
-    const totalUnpaid = Math.round(invoices.reduce((s, i) => s + i.grossAmount, 0) * 100) / 100;
-    const period = `${y}-${String(m).padStart(2, '0')}`;
-
-    const lines = invoices.map((inv, idx) => {
-      const overdue = inv.isOverdue ? ' ⚠️ przeterminowana' : '';
-      return `${idx + 1}. ${inv.number} — ${inv.contractor} — ${inv.grossAmount} ${inv.currency}${overdue}`;
-    });
-    const telegramMessage = `📋 Nieopłacone za ${period}:\n\n${lines.join('\n')}`;
-
+    const { period, invoices, totalUnpaid, telegramMessage } = await getUnpaidInvoices(prisma, y, m);
     res.json({ ok: true, period, unpaidCount: invoices.length, totalUnpaid, invoices, telegramMessage });
   } catch (e) {
     console.error('[jpk] unpaid-review error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ START MONTHLY REVIEW ============
+
+router.post('/start-monthly-review', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = parseInt(req.query.year) || prevMonth.getFullYear();
+    const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
+
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+    const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+
+    const { period, invoices, totalUnpaid, telegramMessage } = await getUnpaidInvoices(prisma, y, m);
+
+    if (invoices.length === 0) {
+      // All paid — proceed with sync + matching
+      await sendTelegram(tgToken, tgChat, `✅ Wszystkie faktury za ${period} opłacone. Przechodzę do synca i parowania WDT.`);
+
+      // Sync
+      const { fetchInvoices: fetchIfirmaInvoices } = require('../ifirma-client');
+      const { processIfirmaInvoices } = require('./contractors');
+      const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
+      const ifirmaInvoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+      const syncResult = await processIfirmaInvoices(ifirmaInvoices, prisma, { dataOd, dataDo, dryRun: false });
+
+      // WDT Matching — reuse the same DB + GlobKurier logic
+      // We call our own endpoint internally via http
+      const http = require('http');
+      const port = process.env.PORT || 3000;
+      const matchResult = await new Promise((resolve, reject) => {
+        http.get(`http://localhost:${port}/api/jpk/wdt-matching?year=${y}&month=${m}`, {
+          headers: { 'x-api-key': req.headers['x-api-key'] || '' },
+        }, (r) => {
+          let data = '';
+          r.on('data', c => { data += c; });
+          r.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+        }).on('error', reject);
+      });
+
+      // Send matching report to Telegram
+      const s = matchResult.summary || {};
+      const matchedLines = (matchResult.matched || []).map((m, i) =>
+        `${i + 1}. ${m.invoice.number} (${m.invoice.contractor}) ↔ ${m.order.number} (${m.order.receiverName})`
+      );
+      const unmatchedInvLines = (matchResult.unmatchedInvoices || []).map(i => `• ${i.number} — ${i.contractor}`);
+      const unmatchedOrdLines = (matchResult.unmatchedOrders || []).map(o => `• ${o.number} → ${o.receiverName}`);
+
+      let tgReport = `🔄 Raport JPK za ${period}:\n\n`;
+      tgReport += `📊 Faktury WDT: ${s.wdtInvoices} | Zamówienia GlobKurier: ${s.globOrders}\n`;
+      tgReport += `✅ Sparowane: ${s.matched}\n\n`;
+      if (matchedLines.length) tgReport += `Pary:\n${matchedLines.join('\n')}\n\n`;
+      if (unmatchedInvLines.length) tgReport += `❌ Nieparowane faktury:\n${unmatchedInvLines.join('\n')}\n\n`;
+      if (unmatchedOrdLines.length) tgReport += `📦 Nieparowane zamówienia:\n${unmatchedOrdLines.join('\n')}`;
+
+      await sendTelegram(tgToken, tgChat, tgReport);
+
+      return res.json({
+        ok: true,
+        step: 'completed',
+        period,
+        sync: { fetched: ifirmaInvoices.length, ...syncResult },
+        matching: matchResult.summary,
+      });
+    }
+
+    // Has unpaid invoices — send review to Telegram and wait
+    const lines = invoices.map((inv, idx) => {
+      const overdue = inv.isOverdue ? ' ⚠️' : '';
+      return `${idx + 1}. ${inv.number} — ${inv.contractor} — ${inv.grossAmount.toFixed(2)} ${inv.currency}${overdue}`;
+    });
+
+    const tgMsg = `📋 Nieopłacone faktury za ${period}:\n\n${lines.join('\n')}\n\nRazem: ${invoices.length} faktur\n\nOdpowiedz:\n• 'zostaw' — idziemy dalej ze wszystkimi\n• 'usuń 46/2026, 47/2026' — skasuje wskazane i idziemy dalej`;
+
+    await sendTelegram(tgToken, tgChat, tgMsg);
+    console.log(`[jpk] start-monthly-review: ${invoices.length} unpaid for ${period}, Telegram sent`);
+
+    return res.json({
+      ok: true,
+      step: 'waiting_for_response',
+      period,
+      unpaidCount: invoices.length,
+      totalUnpaid,
+      telegramSent: true,
+    });
+  } catch (e) {
+    console.error('[jpk] start-monthly-review error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
