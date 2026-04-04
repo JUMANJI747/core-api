@@ -124,6 +124,8 @@ router.get('/wdt-matching', async (req, res) => {
       email: gkEmail,
       password: gkPassword,
     });
+    console.log('[jpk] GlobKurier login response keys:', Object.keys(loginResp.body || {}));
+    console.log('[jpk] GlobKurier token:', loginResp.body && loginResp.body.token ? loginResp.body.token.substring(0, 20) + '...' : 'NO TOKEN');
     if (loginResp.status !== 200 || !loginResp.body.token) {
       return res.status(500).json({ ok: false, error: 'GlobKurier login failed', details: loginResp.body });
     }
@@ -139,9 +141,14 @@ router.get('/wdt-matching', async (req, res) => {
       return res.status(500).json({ ok: false, error: 'GlobKurier orders fetch failed', details: ordersResp.body });
     }
 
-    const allOrders = Array.isArray(ordersResp.body) ? ordersResp.body
-      : (ordersResp.body && ordersResp.body.items) ? ordersResp.body.items
-      : (ordersResp.body && ordersResp.body.data) ? ordersResp.body.data
+    const ordersData = ordersResp.body;
+    console.log('[jpk] GlobKurier raw response keys:', Object.keys(ordersData || {}));
+    console.log('[jpk] GlobKurier raw response (first 500 chars):', JSON.stringify(ordersData).substring(0, 500));
+
+    const allOrders = (ordersData && ordersData.results) ? ordersData.results
+      : (ordersData && ordersData.items) ? ordersData.items
+      : (ordersData && ordersData.data) ? ordersData.data
+      : Array.isArray(ordersData) ? ordersData
       : [];
 
     // Filter: date range (invoice month + next month) and non-Poland receiver
