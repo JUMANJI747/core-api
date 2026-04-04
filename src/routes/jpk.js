@@ -52,26 +52,191 @@ function normalize(str) {
     .replace(/\s+/g, ' ');
 }
 
-function stripCompanySuffix(str) {
-  return normalize(str)
-    .replace(/\b(unipessoal|lda|slu|s\.?l\.?u?|s\.?a\.?|sarl|gmbh|sp\.?\s*z\.?\s*o\.?\s*o\.?|limited|ltd|inc|e\.?u\.?|eireli|srl|snc|comercio e distribuicao)\b/gi, '')
-    .replace(/[,.\-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+// ============ FALLBACK MATCHING (regex-based) ============
+
+function fallbackMatching(invoiceItems, filteredOrders) {
+  const availableOrders = [...filteredOrders];
+  const matched = [];
+  const unmatchedInvoices = [];
+
+  for (const inv of invoiceItems) {
+    let bestMatch = null;
+    let bestIdx = -1;
+
+    for (let i = 0; i < availableOrders.length; i++) {
+      const order = availableOrders[i];
+      const receiver = order.receiverAddress || order.receiver || {};
+      const receiverName = receiver.name || '';
+      const contactPerson = receiver.contactPerson || receiver.contact_person || '';
+
+      const normContractor = normalize(inv.contractor);
+      if (normContractor && (normContractor === normalize(receiverName) || normContractor === normalize(contactPerson))) {
+        bestMatch = order; bestIdx = i;
+        break;
+      }
+    }
+
+    if (bestMatch) {
+      const receiver = bestMatch.receiverAddress || bestMatch.receiver || {};
+      matched.push({
+        invoice: { number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency },
+        order: {
+          number: bestMatch.number || bestMatch.orderNumber || bestMatch.id,
+          hash: bestMatch.hash || bestMatch.id,
+          carrier: bestMatch.carrierName || bestMatch.carrier || (bestMatch.service && bestMatch.service.carrier) || '',
+          receiverName: receiver.name || '',
+          creationDate: bestMatch.creationDate || bestMatch.created_at || bestMatch.createdAt,
+        },
+        matchedBy: 'exact_name',
+      });
+      availableOrders.splice(bestIdx, 1);
+    } else {
+      unmatchedInvoices.push({ number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency });
+    }
+  }
+
+  const unmatchedOrders = availableOrders.map(order => {
+    const receiver = order.receiverAddress || order.receiver || {};
+    return {
+      number: order.number || order.orderNumber || order.id,
+      hash: order.hash || order.id,
+      receiverName: receiver.name || '',
+      creationDate: order.creationDate || order.created_at || order.createdAt,
+    };
+  });
+
+  return { matched, unmatchedInvoices, unmatchedOrders };
 }
 
-function removeSpaces(str) {
-  return normalize(str).replace(/\s+/g, '');
-}
+// ============ LLM MATCHING (Claude Sonnet) ============
 
-function getWords(str) {
-  return normalize(str).split(' ').filter(w => w.length >= 2);
-}
+async function llmMatching(invoiceItems, filteredOrders) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
 
-function countCommonWords(a, b) {
-  const wordsA = getWords(a);
-  const wordsB = getWords(b);
-  return wordsA.filter(w => wordsB.includes(w)).length;
+  const invoicesForLLM = invoiceItems.map(inv => ({
+    number: inv.number,
+    contractor: inv.contractor,
+    city: inv.contractorCity || '',
+    grossAmount: inv.grossAmount,
+    currency: inv.currency,
+  }));
+
+  const ordersForLLM = filteredOrders.map(ord => {
+    const receiver = ord.receiverAddress || ord.receiver || {};
+    return {
+      number: ord.number || ord.orderNumber || ord.id,
+      hash: ord.hash || ord.id,
+      receiverName: receiver.name || '',
+      contactPerson: receiver.contactPerson || receiver.contact_person || '',
+      city: receiver.city || '',
+      postCode: receiver.postalCode || receiver.postal_code || receiver.zipCode || '',
+      street: receiver.street || '',
+      creationDate: ord.creationDate || ord.created_at || ord.createdAt,
+    };
+  });
+
+  const prompt = `Sparuj faktury WDT z listami przewozowymi GlobKurier.
+
+Każda faktura WDT powinna mieć MAKSYMALNIE jeden list przewozowy. Każdy list może być użyty tylko raz.
+
+Paruj po nazwie kontrahenta/odbiorcy — to ta sama firma, ale nazwy mogą się różnić:
+- Inna wielkość liter, polskie/portugalskie znaki
+- Suffixy firmowe (LDA, SL, SLU, SA, Unipessoal) na fakturze ale nie na liście lub odwrotnie
+- Złączone słowa (np. "HONESTMOLECULE" = "Honest Molecule")
+- Skrócone nazwy (np. "Farmácia Braga" to skrót od "FARMÁCIA S. VICENTE DE BRAGA, LDA")
+- Nazwy mogą być w polu receiverName LUB contactPerson
+
+Jeśli po nazwie nie da się sparować, sprawdź czy pasuje miasto + kraj.
+
+NIE paruj na siłę — jeśli nie ma pewności, zostaw jako nieparowane.
+
+FAKTURY WDT:
+${JSON.stringify(invoicesForLLM, null, 2)}
+
+ZAMÓWIENIA GLOBKURIER:
+${JSON.stringify(ordersForLLM, null, 2)}
+
+Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
+{
+  "matched": [
+    { "invoiceNumber": "25/2026", "orderNumber": "GK123", "reason": "krótki opis dlaczego pasuje" }
+  ],
+  "unmatchedInvoices": ["30/2026", "31/2026"],
+  "unmatchedOrders": ["GK456", "GK789"]
+}`;
+
+  console.log('[jpk] Using LLM matching (Claude Sonnet)');
+
+  const response = await httpsPost('https://api.anthropic.com/v1/messages', {
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+  }, {
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  if (response.status !== 200) {
+    throw new Error(`Anthropic API error: ${response.status} ${JSON.stringify(response.body).slice(0, 300)}`);
+  }
+
+  const llmText = response.body.content[0].text;
+  const cleanJson = llmText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  const llmResult = JSON.parse(cleanJson);
+
+  // Build lookup maps
+  const invoiceMap = new Map(invoiceItems.map(inv => [inv.number, inv]));
+  const orderMap = new Map();
+  for (const ord of filteredOrders) {
+    const num = ord.number || ord.orderNumber || ord.id;
+    orderMap.set(num, ord);
+  }
+
+  // Build matched array
+  const matched = [];
+  const usedOrders = new Set();
+  for (const pair of (llmResult.matched || [])) {
+    const inv = invoiceMap.get(pair.invoiceNumber);
+    const ord = orderMap.get(pair.orderNumber);
+    if (!inv || !ord || usedOrders.has(pair.orderNumber)) continue;
+    usedOrders.add(pair.orderNumber);
+
+    const receiver = ord.receiverAddress || ord.receiver || {};
+    matched.push({
+      invoice: { number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency },
+      order: {
+        number: pair.orderNumber,
+        hash: ord.hash || ord.id,
+        carrier: ord.carrierName || ord.carrier || (ord.service && ord.service.carrier) || '',
+        receiverName: receiver.name || '',
+        creationDate: ord.creationDate || ord.created_at || ord.createdAt,
+      },
+      matchedBy: pair.reason || 'llm',
+    });
+  }
+
+  // Build unmatched
+  const matchedInvNumbers = new Set(matched.map(m => m.invoice.number));
+  const matchedOrdNumbers = new Set(matched.map(m => m.order.number));
+
+  const unmatchedInvoices = invoiceItems
+    .filter(inv => !matchedInvNumbers.has(inv.number))
+    .map(inv => ({ number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency }));
+
+  const unmatchedOrders = filteredOrders
+    .filter(ord => !matchedOrdNumbers.has(ord.number || ord.orderNumber || ord.id))
+    .map(ord => {
+      const receiver = ord.receiverAddress || ord.receiver || {};
+      return {
+        number: ord.number || ord.orderNumber || ord.id,
+        hash: ord.hash || ord.id,
+        receiverName: receiver.name || '',
+        creationDate: ord.creationDate || ord.created_at || ord.createdAt,
+      };
+    });
+
+  return { matched, unmatchedInvoices, unmatchedOrders };
 }
 
 // ============ WDT MATCHING ============
@@ -155,7 +320,6 @@ router.get('/wdt-matching', async (req, res) => {
 
     const ordersData = ordersResp.body;
     console.log('[jpk] GlobKurier raw response keys:', Object.keys(ordersData || {}));
-    console.log('[jpk] GlobKurier raw response (first 500 chars):', JSON.stringify(ordersData).substring(0, 500));
 
     const allOrders = (ordersData && ordersData.results) ? ordersData.results
       : (ordersData && ordersData.items) ? ordersData.items
@@ -165,191 +329,36 @@ router.get('/wdt-matching', async (req, res) => {
 
     // Filter: date range (invoice month + next month) and non-Poland receiver
     const filterFrom = dataOd;
-    const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999); // last day of next month
+    const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999);
     const filteredOrders = allOrders.filter(order => {
       const creationDate = new Date(order.creationDate || order.created_at || order.createdAt || 0);
       if (creationDate < filterFrom || creationDate > nextMonthEnd) return false;
       const receiver = order.receiverAddress || order.receiver || {};
-      if (receiver.countryId === 1 || receiver.country_id === 1) return false; // skip Poland
+      if (receiver.countryId === 1 || receiver.country_id === 1) return false;
       return true;
     });
 
-    // 3. MATCHING
-    const availableOrders = [...filteredOrders];
-    const matched = [];
-    const unmatchedInvoices = [];
-
-    for (const inv of invoiceItems) {
-      let bestMatch = null;
-      let bestMatchBy = null;
-      let bestIdx = -1;
-
-      // Priority order for match quality
-      const MATCH_PRIORITY = ['exact_name', 'fuzzy_name', 'compound_name', 'compound_substring', 'stripped_name', 'substring_name', 'fuzzy_stripped', 'single_keyword', 'address', 'postal_code'];
-
-      function isBetterMatch(newMatchBy, currentMatchBy) {
-        if (!currentMatchBy) return true;
-        return MATCH_PRIORITY.indexOf(newMatchBy) < MATCH_PRIORITY.indexOf(currentMatchBy);
-      }
-
-      for (let i = 0; i < availableOrders.length; i++) {
-        const order = availableOrders[i];
-        const receiver = order.receiverAddress || order.receiver || {};
-        const receiverName = receiver.name || '';
-        const contactPerson = receiver.contactPerson || receiver.contact_person || '';
-        const receiverStreet = receiver.street || '';
-        const receiverPostal = receiver.postalCode || receiver.postal_code || receiver.zipCode || '';
-
-        const normContractor = normalize(inv.contractor);
-        const normRecvName = normalize(receiverName);
-        const normContact = normalize(contactPerson);
-
-        // 1) EXACT name match
-        if (normContractor && (normContractor === normRecvName || normContractor === normContact)) {
-          bestMatch = order; bestMatchBy = 'exact_name'; bestIdx = i;
-          break;
-        }
-
-        // 2) FUZZY: >= 2 common words
-        const commonName = Math.max(countCommonWords(inv.contractor, receiverName), countCommonWords(inv.contractor, contactPerson));
-        if (commonName >= 2 && isBetterMatch('fuzzy_name', bestMatchBy)) {
-          bestMatch = order; bestMatchBy = 'fuzzy_name'; bestIdx = i;
-          continue;
-        }
-
-        // 3) COMPOUND: "HONESTMOLECULE" === "honest molecule" after removeSpaces
-        const compContractor = removeSpaces(stripCompanySuffix(inv.contractor));
-        const compRecv = removeSpaces(stripCompanySuffix(receiverName));
-        const compContact = removeSpaces(stripCompanySuffix(contactPerson));
-        if (compContractor.length >= 5 && (compContractor === compRecv || compContractor === compContact)) {
-          if (isBetterMatch('compound_name', bestMatchBy)) {
-            bestMatch = order; bestMatchBy = 'compound_name'; bestIdx = i;
-            continue;
-          }
-        }
-
-        // 4) COMPOUND SUBSTRING: one contains the other without spaces (min 8 chars)
-        if (compContractor.length >= 8 && compRecv.length >= 8) {
-          if (compContractor.includes(compRecv) || compRecv.includes(compContractor)) {
-            if (isBetterMatch('compound_substring', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'compound_substring'; bestIdx = i;
-              continue;
-            }
-          }
-        }
-        if (compContractor.length >= 8 && compContact.length >= 8) {
-          if (compContractor.includes(compContact) || compContact.includes(compContractor)) {
-            if (isBetterMatch('compound_substring', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'compound_substring'; bestIdx = i;
-              continue;
-            }
-          }
-        }
-
-        // 5) STRIPPED: exact match after removing company suffixes
-        const strContractor = stripCompanySuffix(inv.contractor);
-        const strRecv = stripCompanySuffix(receiverName);
-        const strContact = stripCompanySuffix(contactPerson);
-        if (strContractor.length >= 5 && (strContractor === strRecv || strContractor === strContact)) {
-          if (isBetterMatch('stripped_name', bestMatchBy)) {
-            bestMatch = order; bestMatchBy = 'stripped_name'; bestIdx = i;
-            continue;
-          }
-        }
-
-        // 5) SUBSTRING: one stripped name contains the other (min 5 chars)
-        if (strContractor.length >= 5 && strRecv.length >= 5) {
-          if (strContractor.includes(strRecv) || strRecv.includes(strContractor)) {
-            if (isBetterMatch('substring_name', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'substring_name'; bestIdx = i;
-              continue;
-            }
-          }
-        }
-        if (strContractor.length >= 5 && strContact.length >= 5) {
-          if (strContractor.includes(strContact) || strContact.includes(strContractor)) {
-            if (isBetterMatch('substring_name', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'substring_name'; bestIdx = i;
-              continue;
-            }
-          }
-        }
-
-        // 7) FUZZY STRIPPED: >= 2 common words after stripping suffixes
-        const commonStripped = Math.max(countCommonWords(strContractor, strRecv), countCommonWords(strContractor, strContact));
-        if (commonStripped >= 2 && isBetterMatch('fuzzy_stripped', bestMatchBy)) {
-          bestMatch = order; bestMatchBy = 'fuzzy_stripped'; bestIdx = i;
-          continue;
-        }
-
-        // 8) SINGLE KEYWORD: 1 shared word >= 6 chars after stripping
-        const strWordsContractor = getWords(strContractor).filter(w => w.length >= 6);
-        const strWordsRecv = getWords(strRecv).concat(getWords(strContact));
-        const hasLongCommon = strWordsContractor.some(w => strWordsRecv.includes(w));
-        if (hasLongCommon && isBetterMatch('single_keyword', bestMatchBy)) {
-          bestMatch = order; bestMatchBy = 'single_keyword'; bestIdx = i;
-          continue;
-        }
-
-        // 9) ADDRESS match
-        if (inv.contractorAddress && receiverStreet) {
-          const normAddr = normalize(inv.contractorAddress);
-          const normRecv2 = normalize(receiverStreet);
-          if (normAddr && normRecv2 && (normAddr.includes(normRecv2) || normRecv2.includes(normAddr))) {
-            if (isBetterMatch('address', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'address'; bestIdx = i;
-              continue;
-            }
-          }
-        }
-
-        // 10) POSTAL CODE match
-        if (inv.contractorPostCode && receiverPostal) {
-          const normPost = inv.contractorPostCode.replace(/\s/g, '');
-          const normRecvPost = receiverPostal.replace(/\s/g, '');
-          if (normPost && normRecvPost && normPost === normRecvPost) {
-            if (isBetterMatch('postal_code', bestMatchBy)) {
-              bestMatch = order; bestMatchBy = 'postal_code'; bestIdx = i;
-            }
-          }
-        }
-      }
-
-      if (bestMatch) {
-        const receiver = bestMatch.receiverAddress || bestMatch.receiver || {};
-        matched.push({
-          invoice: { number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency },
-          order: {
-            number: bestMatch.number || bestMatch.orderNumber || bestMatch.id,
-            hash: bestMatch.hash || bestMatch.id,
-            carrier: bestMatch.carrierName || bestMatch.carrier || (bestMatch.service && bestMatch.service.carrier) || '',
-            receiverName: receiver.name || '',
-            creationDate: bestMatch.creationDate || bestMatch.created_at || bestMatch.createdAt,
-          },
-          matchedBy: bestMatchBy,
-        });
-        availableOrders.splice(bestIdx, 1);
-      } else {
-        unmatchedInvoices.push({ number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency });
-      }
+    // 3. MATCHING — try LLM first, fallback to regex
+    let matchResult;
+    let matchingMethod = 'llm';
+    try {
+      matchResult = await llmMatching(invoiceItems, filteredOrders);
+    } catch (e) {
+      console.error('[jpk] LLM matching failed:', e.message);
+      console.log('[jpk] LLM failed, using fallback matching');
+      matchResult = fallbackMatching(invoiceItems, filteredOrders);
+      matchingMethod = 'fallback';
     }
 
-    const unmatchedOrders = availableOrders.map(order => {
-      const receiver = order.receiverAddress || order.receiver || {};
-      return {
-        number: order.number || order.orderNumber || order.id,
-        hash: order.hash || order.id,
-        receiverName: receiver.name || '',
-        creationDate: order.creationDate || order.created_at || order.createdAt,
-      };
-    });
+    const { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
 
     const period = `${y}-${String(m).padStart(2, '0')}`;
-    console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length}`);
+    console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length} (${matchingMethod})`);
 
     res.json({
       ok: true,
       period,
+      matchingMethod,
       summary: {
         wdtInvoices: invoiceItems.length,
         globOrders: filteredOrders.length,
