@@ -155,22 +155,14 @@ Paruj po nazwie kontrahenta/odbiorcy — to ta sama firma, ale nazwy mogą się 
 - Inna wielkość liter, polskie/portugalskie znaki
 - Suffixy firmowe (LDA, SL, SLU, SA, Unipessoal) na fakturze ale nie na liście lub odwrotnie
 - Złączone słowa (np. "HONESTMOLECULE" = "Honest Molecule")
-- Skrócone nazwy (np. "Farmácia Braga" to skrót od "FARMÁCIA S. VICENTE DE BRAGA, LDA")
+- Skrócone nazwy
 - Nazwy mogą być w polu receiverName LUB contactPerson
 
-Niektórzy kontrahenci mają pole 'tradeName' i 'locations' — to nazwy handlowe farmácias i ich adresy. Farmácia na fakturze może mieć nazwę prawną (np. FOZFARMA UNIPESSOAL LDA) ale w GlobKurier występuje pod nazwą handlową (np. Farmácia Gomes). Paruj po tradeName i adresach z locations.
+Każda faktura może mieć pola 'tradeName' i 'locations' — to nazwy handlowe i adresy wysyłkowe kontrahenta wyuczone z poprzednich parowań. Kontrahent na fakturze ma nazwę prawną (np. FOZFARMA UNIPESSOAL LDA) ale w GlobKurier może występować pod nazwą handlową z locations (np. Farmácia Gomes). Używaj tradeName i locations do parowania gdy nazwa prawna nie pasuje do żadnego zamówienia.
 
-WAŻNE: Jeden kontrahent (np. FOZFARMA) może mieć WIELE lokalizacji (locations). Każda lokalizacja ma swoją tradeName. Paruj każdą fakturę z zamówieniem które pasuje do JEDNEJ z lokalizacji — po tradeName LUB po adresie (miasto + kod pocztowy + ulica).
+Jeśli kontrahent ma wiele locations a jest kilka faktur na ten sam NIP — paruj po adresie dostawy (miasto + kod pocztowy).
 
-Masz teraz pełne adresy obu stron. Dla farmacji i firm o podobnych nazwach — paruj po ADRESIE (miasto + kod pocztowy + ulica). Jeśli faktura ma miasto 'Braga' i zamówienie ma miasto 'Braga' z tym samym kodem pocztowym — to para.
-
-Jeśli po nazwie nie da się sparować, sprawdź czy pasuje adres (miasto + kod pocztowy).
-
-WAŻNE: NIE paruj firm surfowych tylko dlatego że obie mają 'surf' w nazwie. 'CAMPELLO SURF SHOP' to INNA firma niż 'AWA SURF' czy 'Escuela de surf Somo'. Paruj TYLKO gdy nazwa firmy się zgadza (nie samo słowo 'surf'). Jeśli nie masz pewności — zostaw jako nieparowane.
-
-Jeśli kontrahent ma dwie faktury i trzy zamówienia — sparuj po datach (chronologicznie) i zostaw nadmiarowe zamówienie jako nieparowane. NIE wymuszaj parowania 1:1 jeśli liczby się nie zgadzają.
-
-NIE paruj na siłę — jeśli nie ma pewności, zostaw jako nieparowane.
+Paruj po: nazwie (prawnej lub handlowej), adresie (ulica + miasto + kod pocztowy), NIP. NIE paruj po słowach ogólnych jak 'surf', 'farmacia', 'shop'. Jeśli nie masz pewności — zostaw jako nieparowane.
 
 FAKTURY WDT:
 ${JSON.stringify(invoicesForLLM, null, 2)}
@@ -225,12 +217,17 @@ Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
 
     const receiver = ord.receiverAddress || ord.receiver || {};
     matched.push({
-      invoice: { number: inv.number, contractor: inv.contractor, grossAmount: inv.grossAmount, currency: inv.currency },
+      invoice: { number: inv.number, contractor: inv.contractor, contractorId: inv.contractorId, grossAmount: inv.grossAmount, currency: inv.currency },
       order: {
         number: pair.orderNumber,
         hash: ord.hash || ord.id,
         carrier: ord.carrierName || ord.carrier || (ord.service && ord.service.carrier) || '',
         receiverName: receiver.name || '',
+        contactPerson: receiver.contactPerson || receiver.contact_person || '',
+        street: ((receiver.street || '') + ' ' + (receiver.houseNumber || '')).trim(),
+        postCode: receiver.postCode || '',
+        city: receiver.city || '',
+        countryId: receiver.countryId || '',
         creationDate: ord.creationDate || ord.created_at || ord.createdAt,
       },
       matchedBy: pair.reason || 'llm',
@@ -317,6 +314,7 @@ async function performWdtMatching(prisma, y, m) {
 
     invoiceItems.push({
       id: inv.id,
+      contractorId: inv.contractorId || null,
       number: inv.number,
       contractor: contractorName,
       contractorAddress: contractorAddress || ifirmaStreet,
@@ -391,6 +389,54 @@ async function performWdtMatching(prisma, y, m) {
   const { matched, unmatchedInvoices, unmatchedOrders } = matchResult;
   const period = `${y}-${String(m).padStart(2, '0')}`;
   console.log(`[jpk] WDT invoices: ${invoiceItems.length}, GlobKurier orders: ${filteredOrders.length}, Matched: ${matched.length} (${matchingMethod})`);
+
+  // === LEARNING: save shipping names to contractor extras ===
+  for (const pair of matched) {
+    const contractorId = pair.invoice.contractorId;
+    if (!contractorId) continue;
+
+    try {
+      const contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
+      if (!contractor) continue;
+
+      const currentExtras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
+      const existingLocations = currentExtras.locations || [];
+
+      const receiverName = pair.order.receiverName || pair.order.contactPerson || '';
+      if (!receiverName) continue;
+
+      const alreadyExists = existingLocations.some(loc =>
+        loc.tradeName && loc.tradeName.toLowerCase().trim() === receiverName.toLowerCase().trim()
+      );
+
+      if (!alreadyExists) {
+        const newLocation = {
+          tradeName: receiverName,
+          street: pair.order.street || '',
+          postCode: pair.order.postCode || '',
+          city: pair.order.city || '',
+          countryId: pair.order.countryId || '',
+          learnedFrom: 'wdt-matching',
+          learnedAt: new Date().toISOString().split('T')[0],
+        };
+
+        await prisma.contractor.update({
+          where: { id: contractorId },
+          data: {
+            extras: {
+              ...currentExtras,
+              tradeName: currentExtras.tradeName || receiverName,
+              locations: [...existingLocations, newLocation],
+            },
+          },
+        });
+
+        console.log('[jpk] Learned: ' + contractor.name + ' → ' + receiverName + ' (' + (pair.order.city || '?') + ')');
+      }
+    } catch (err) {
+      console.error('[jpk] Learning error for contractor:', err.message);
+    }
+  }
 
   return {
     period,
