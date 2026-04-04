@@ -374,6 +374,111 @@ router.get('/wdt-matching', async (req, res) => {
   }
 });
 
+// ============ MATCHING DEBUG ============
+
+router.get('/matching-debug', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = parseInt(req.query.year) || prevMonth.getFullYear();
+    const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
+
+    const dataOd = new Date(y, m - 1, 1);
+    const lastDay = new Date(y, m, 0).getDate();
+    const dataDo = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
+
+    // WDT invoices with full contractor data
+    const wdtInvoices = await prisma.invoice.findMany({
+      where: {
+        issueDate: { gte: dataOd, lte: dataDo },
+        OR: [
+          { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
+          { type: { contains: 'wdt', mode: 'insensitive' } },
+          { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
+          { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+        ],
+      },
+      include: { contractor: true },
+      take: 3,
+    });
+
+    const invoicesDebug = wdtInvoices.map(inv => ({
+      number: inv.number,
+      contractor: inv.contractor ? {
+        name: inv.contractor.name,
+        country: inv.contractor.country,
+        city: inv.contractor.city,
+        address: inv.contractor.address,
+        extras: inv.contractor.extras,
+      } : null,
+      invoiceExtras: inv.extras,
+      sentToLLM: {
+        number: inv.number,
+        contractor: (inv.contractor && inv.contractor.name) || (inv.extras && inv.extras.kontrahentNazwa) || '',
+        city: (inv.contractor && inv.contractor.city) || '',
+        grossAmount: inv.grossAmount,
+        currency: inv.currency,
+      },
+    }));
+
+    // GlobKurier orders
+    const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
+    const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
+    let ordersDebug = [];
+    if (gkEmail && gkPassword) {
+      const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, { email: gkEmail, password: gkPassword });
+      if (loginResp.status === 200 && loginResp.body.token) {
+        const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
+          'X-Auth-Token': loginResp.body.token, 'Accept-Language': 'pl', 'Accept': 'application/json',
+        });
+        const ordersData = ordersResp.body;
+        const allOrders = (ordersData && ordersData.results) ? ordersData.results
+          : (ordersData && ordersData.items) ? ordersData.items
+          : Array.isArray(ordersData) ? ordersData : [];
+
+        const filterFrom = dataOd;
+        const nextMonthEnd = new Date(y, m + 1, 0, 23, 59, 59, 999);
+        const filtered = allOrders.filter(order => {
+          const cd = new Date(order.creationDate || order.created_at || 0);
+          if (cd < filterFrom || cd > nextMonthEnd) return false;
+          const r = order.receiverAddress || order.receiver || {};
+          if (r.countryId === 1 || r.country_id === 1) return false;
+          return true;
+        });
+
+        ordersDebug = filtered.slice(0, 3).map(ord => {
+          const r = ord.receiverAddress || ord.receiver || {};
+          return {
+            number: ord.number || ord.orderNumber || ord.id,
+            hash: ord.hash || ord.id,
+            rawReceiverAddress: r,
+            sentToLLM: {
+              number: ord.number || ord.orderNumber || ord.id,
+              hash: ord.hash || ord.id,
+              receiverName: r.name || '',
+              contactPerson: r.contactPerson || r.contact_person || '',
+              city: r.city || '',
+              postCode: r.postalCode || r.postal_code || r.zipCode || '',
+              street: r.street || '',
+              creationDate: ord.creationDate || ord.created_at || ord.createdAt,
+            },
+          };
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      period: `${y}-${String(m).padStart(2, '0')}`,
+      invoices: invoicesDebug,
+      orders: ordersDebug,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ UNPAID REVIEW ============
 
 async function getUnpaidInvoices(prisma, year, month) {
