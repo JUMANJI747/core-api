@@ -119,6 +119,8 @@ async function llmMatching(invoiceItems, filteredOrders) {
   const invoicesForLLM = invoiceItems.map(inv => ({
     number: inv.number,
     contractor: inv.contractor,
+    tradeName: inv.tradeName || '',
+    locations: inv.locations && inv.locations.length ? inv.locations : undefined,
     city: inv.contractorCity || '',
     street: inv.contractorAddress || '',
     postCode: inv.contractorPostCode || '',
@@ -155,6 +157,10 @@ Paruj po nazwie kontrahenta/odbiorcy — to ta sama firma, ale nazwy mogą się 
 - Złączone słowa (np. "HONESTMOLECULE" = "Honest Molecule")
 - Skrócone nazwy (np. "Farmácia Braga" to skrót od "FARMÁCIA S. VICENTE DE BRAGA, LDA")
 - Nazwy mogą być w polu receiverName LUB contactPerson
+
+Niektórzy kontrahenci mają pole 'tradeName' i 'locations' — to nazwy handlowe farmácias i ich adresy. Farmácia na fakturze może mieć nazwę prawną (np. FOZFARMA UNIPESSOAL LDA) ale w GlobKurier występuje pod nazwą handlową (np. Farmácia Gomes). Paruj po tradeName i adresach z locations.
+
+WAŻNE: Jeden kontrahent (np. FOZFARMA) może mieć WIELE lokalizacji (locations). Każda lokalizacja ma swoją tradeName. Paruj każdą fakturę z zamówieniem które pasuje do JEDNEJ z lokalizacji — po tradeName LUB po adresie (miasto + kod pocztowy + ulica).
 
 Masz teraz pełne adresy obu stron. Dla farmacji i firm o podobnych nazwach — paruj po ADRESIE (miasto + kod pocztowy + ulica). Jeśli faktura ma miasto 'Braga' i zamówienie ma miasto 'Braga' z tym samym kodem pocztowym — to para.
 
@@ -314,6 +320,8 @@ async function performWdtMatching(prisma, y, m) {
       contractorPostCode: contractorExtras.postCode || ifirmaPostCode,
       contractorCountry: (inv.contractor && inv.contractor.country) || ifirmaCountry,
       contractorNip: ifirmaNip,
+      tradeName: contractorExtras.tradeName || '',
+      locations: contractorExtras.locations || [],
       grossAmount: inv.grossAmount,
       currency: inv.currency,
       issueDate: inv.issueDate,
@@ -640,6 +648,64 @@ router.post('/delete-invoices', async (req, res) => {
     res.json({ ok: true, deleted, errors });
   } catch (e) {
     console.error('[jpk] delete-invoices error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ SEED SOFARMA ============
+
+router.post('/seed-sofarma', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const sofarmaPharmacies = [
+      { legalName: 'FARMACIA BIRRA UNIPESSOAL LDA', tradeName: 'Farmácia Birra', nip: '513410619', street: 'Praça da Liberdade 124', postCode: '4000-322', city: 'Porto', country: 'PT' },
+      { legalName: 'FOZFARMA UNIPESSOAL LDA', tradeName: 'Farmácia Gomes', nip: '510714846', street: 'Avenida São Miguel 269', postCode: '4575-302', city: 'Paredes - Penafiel', country: 'PT' },
+      { legalName: 'FOZFARMA UNIPESSOAL LDA', tradeName: 'Farmácia Santo Ovídio', nip: '510714846', street: 'Rua Soares dos Reis 650', postCode: '4400-314', city: 'Vila Nova de Gaia', country: 'PT', secondLocation: true },
+      { legalName: 'FARMÁCIA S. VICENTE DE BRAGA, LDA', tradeName: 'Farmácia Santos', nip: '505372339', street: 'Rua Conselheiro Januário 95-99', postCode: '4700-373', city: 'Braga', country: 'PT' },
+      { legalName: 'LOPES BARATA UNIPESSOAL LDA', tradeName: 'Farmácia Guifões', nip: '510463894', street: 'Largo Padre Joaquim Pereira Santos 376', postCode: '4460-033', city: 'Guifões - Matosinhos', country: 'PT' },
+      { legalName: 'LOPES BARATA UNIPESSOAL LDA', tradeName: 'Farmácia Braga', nip: '510463894', street: 'Avenida Frei Bartolomeu dos Mártires s/n', postCode: '4715-384', city: 'Braga', country: 'PT', secondLocation: true },
+      { legalName: 'LBFARMA, LDA', tradeName: 'Farmácia Monte da Virgem', nip: '508400074', street: 'Rua Conceição Fernandes 1170', postCode: '4430-062', city: 'Vila Nova de Gaia', country: 'PT' },
+      { legalName: 'SOC COMERCIAL FARMACEUTICA LDA', tradeName: 'Farmácia Vitália', nip: '500264724', street: 'Praça da Liberdade 37', postCode: '4200-322', city: 'Porto', country: 'PT' },
+    ];
+
+    const results = [];
+    for (const entry of sofarmaPharmacies) {
+      const found = await prisma.contractor.findFirst({ where: { nip: entry.nip } });
+      const location = { tradeName: entry.tradeName, street: entry.street, postCode: entry.postCode, city: entry.city };
+
+      if (found) {
+        const existingLocations = (found.extras && found.extras.locations) || [];
+        const alreadyHas = existingLocations.some(l => l.tradeName === entry.tradeName);
+        if (!alreadyHas) {
+          existingLocations.push(location);
+        }
+        await prisma.contractor.update({
+          where: { id: found.id },
+          data: {
+            extras: { ...found.extras, tradeName: entry.tradeName, street: entry.street, postCode: entry.postCode, city: entry.city, locations: existingLocations },
+            country: entry.country,
+          },
+        });
+        results.push({ nip: entry.nip, name: found.name, tradeName: entry.tradeName, action: alreadyHas ? 'already_exists' : 'updated' });
+      } else {
+        await prisma.contractor.create({
+          data: {
+            name: entry.legalName,
+            nip: entry.nip,
+            type: 'BUSINESS',
+            country: entry.country,
+            source: 'manual',
+            tags: ['sofarma', 'pharmacy'],
+            extras: { tradeName: entry.tradeName, street: entry.street, postCode: entry.postCode, city: entry.city, locations: [location] },
+          },
+        });
+        results.push({ nip: entry.nip, name: entry.legalName, tradeName: entry.tradeName, action: 'created' });
+      }
+    }
+
+    res.json({ ok: true, results });
+  } catch (e) {
+    console.error('[jpk] seed-sofarma error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
