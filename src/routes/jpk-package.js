@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const https = require('https');
 const { fetchInvoicePdf } = require('../ifirma-client');
+const { sendMail } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { performWdtMatching } = require('./jpk');
 
@@ -337,6 +338,81 @@ router.post('/build-merged-pdf', async (req, res) => {
     res.json({ ok: true, period, pages: totalPages, invoices: invoiceDocs.length, size: mergedBuffer.length, filename });
   } catch (e) {
     console.error('[package] build-merged-pdf error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ SEND PACKAGE ============
+
+router.post('/send-package', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { to } = req.body;
+    if (!to) return res.status(400).json({ error: 'to (email) is required' });
+
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = (req.body && req.body.year) || prevMonth.getFullYear();
+    const m = (req.body && req.body.month) || (prevMonth.getMonth() + 1);
+    const period = `${y}-${String(m).padStart(2, '0')}`;
+
+    const pkg = await prisma.monthlyPackage.findUnique({ where: { period } });
+    if (!pkg) return res.json({ ok: false, error: 'Pakiet nie istnieje' });
+
+    const merged = await prisma.document.findFirst({ where: { packageId: pkg.id, type: 'merged_invoices' } });
+    if (!merged) return res.json({ ok: false, error: 'Brak merged PDF. Uruchom build-merged-pdf.' });
+
+    const cmrs = await prisma.document.findMany({
+      where: { packageId: pkg.id, type: 'cmr' },
+      orderBy: { invoiceNumber: 'asc' },
+    });
+
+    const invoiceCount = (pkg.metadata && pkg.metadata.totalInvoices) || '?';
+    const cmrCount = cmrs.length;
+
+    const attachments = [
+      { filename: merged.filename, content: Buffer.from(merged.data), contentType: 'application/pdf' },
+      ...cmrs.map(cmr => ({
+        filename: cmr.filename,
+        content: Buffer.from(cmr.data),
+        contentType: 'application/pdf',
+      })),
+    ];
+
+    const totalSize = attachments.reduce((s, a) => s + a.content.length, 0);
+
+    const htmlBody = `<h3>Dokumenty za ${period}</h3>
+<p>W załączeniu:</p>
+<ul>
+<li>📄 Zbiorczy PDF faktur (${invoiceCount} faktur)</li>
+<li>📦 ${cmrCount} listów przewozowych CMR</li>
+</ul>
+<p>Wygenerowano automatycznie przez system SurfStickBell.</p>`;
+
+    await sendMail({
+      from: 'info@surfstickbell.com',
+      to,
+      subject: `Dokumenty za ${period} — SurfStickBell`,
+      html: htmlBody,
+      attachments,
+    });
+
+    await prisma.monthlyPackage.update({
+      where: { id: pkg.id },
+      data: { status: 'sent', sentTo: to, sentAt: new Date() },
+    });
+
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+    const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+    await sendTelegram(tgToken, tgChat,
+      `📧 Pakiet za ${period} wysłany na ${to} — ${invoiceCount} faktur + ${cmrCount} CMR`
+    ).catch(e => console.error('[package] TG error:', e.message));
+
+    console.log(`[package] Sent package ${period} to ${to} — ${attachments.length} attachments, ${Math.round(totalSize / 1024)} KB`);
+
+    res.json({ ok: true, period, sentTo: to, attachments: attachments.length, totalSize: Math.round(totalSize / 1024) + ' KB' });
+  } catch (e) {
+    console.error('[package] send-package error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
