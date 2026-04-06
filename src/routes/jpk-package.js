@@ -297,27 +297,22 @@ router.post('/build-merged-pdf', async (req, res) => {
       console.log('[package] Removed old merged PDF');
     }
 
-    // Merge PDFs
-    const { PDFDocument } = require('pdf-lib');
-    const mergedPdf = await PDFDocument.create();
-    let totalPages = 0;
+    // Merge PDFs using pdf-merger-js
+    const PDFMerger = require('pdf-merger-js');
+    const merger = new PDFMerger();
+    let addedCount = 0;
 
     for (const doc of invoiceDocs) {
       try {
-        const pdfBytes = new Uint8Array(doc.data);
-        console.log('[package] Loading PDF:', doc.invoiceNumber, 'size:', pdfBytes.length, 'first bytes:', pdfBytes.slice(0, 5).join(','));
-        const sourcePdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-        const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
-        pages.forEach(page => mergedPdf.addPage(page));
-        totalPages += pages.length;
-        console.log('[package] Merged:', doc.invoiceNumber, '—', pages.length, 'pages');
+        await merger.add(Buffer.from(doc.data));
+        addedCount++;
+        console.log('[package] Added:', doc.invoiceNumber);
       } catch (err) {
-        console.error('[package] Failed to merge:', doc.invoiceNumber, '—', err.message);
+        console.error('[package] Failed to add:', doc.invoiceNumber, '—', err.message);
       }
     }
 
-    const mergedBytes = await mergedPdf.save();
-    const mergedBuffer = Buffer.from(mergedBytes);
+    const mergedBuffer = await merger.saveAsBuffer();
     const filename = `FAKTURY_${period.replace('-', '_')}.pdf`;
 
     await prisma.document.create({
@@ -333,9 +328,9 @@ router.post('/build-merged-pdf', async (req, res) => {
       },
     });
 
-    console.log(`[package] Merged PDF: ${invoiceDocs.length} invoices, ${totalPages} pages, ${Math.round(mergedBuffer.length / 1024)} KB`);
+    console.log(`[package] Merged PDF: ${addedCount}/${invoiceDocs.length} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
 
-    res.json({ ok: true, period, pages: totalPages, invoices: invoiceDocs.length, size: mergedBuffer.length, filename });
+    res.json({ ok: true, period, invoices: addedCount, size: mergedBuffer.length, filename });
   } catch (e) {
     console.error('[package] build-merged-pdf error:', e.message);
     res.status(500).json({ error: e.message });
