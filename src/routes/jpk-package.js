@@ -303,13 +303,15 @@ router.post('/build-merged-pdf', async (req, res) => {
 
     for (const doc of invoiceDocs) {
       try {
-        const sourcePdf = await PDFDocument.load(doc.data);
+        const pdfBytes = new Uint8Array(doc.data);
+        console.log('[package] Loading PDF:', doc.invoiceNumber, 'size:', pdfBytes.length, 'first bytes:', pdfBytes.slice(0, 5).join(','));
+        const sourcePdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
         const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
         pages.forEach(page => mergedPdf.addPage(page));
         totalPages += pages.length;
-        console.log('[package] Merged:', doc.invoiceNumber);
+        console.log('[package] Merged:', doc.invoiceNumber, '—', pages.length, 'pages');
       } catch (err) {
-        console.error('[package] Failed to merge:', doc.invoiceNumber, err.message);
+        console.error('[package] Failed to merge:', doc.invoiceNumber, '—', err.message);
       }
     }
 
