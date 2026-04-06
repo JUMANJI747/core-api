@@ -297,59 +297,68 @@ router.post('/build-merged-pdf', async (req, res) => {
       console.log('[package] Removed old merged PDF');
     }
 
-    // Merge PDFs — try ghostscript CLI first, fallback to pdf-merger-js
+    // Merge PDFs — decrypt with gs first, then merge
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    const os = require('os');
+
     let mergedBuffer;
     let addedCount = 0;
     const filename = `FAKTURY_${period.replace('-', '_')}.pdf`;
-
-    // Try CLI tools first (best quality for encrypted PDFs)
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-    let usedCli = false;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
 
     try {
-      const { execSync } = require('child_process');
-      execSync('which gs', { stdio: 'ignore' });
+      // Check if gs is available
+      let hasGs = false;
+      try { execSync('which gs', { stdio: 'ignore' }); hasGs = true; } catch (e) { /* no gs */ }
 
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
-      try {
-        const inputFiles = [];
+      if (hasGs) {
+        // Step 1: Decrypt each PDF individually
+        const decryptedFiles = [];
         for (let i = 0; i < invoiceDocs.length; i++) {
           const doc = invoiceDocs[i];
-          const tmpFile = path.join(tmpDir, `${String(i).padStart(3, '0')}.pdf`);
-          fs.writeFileSync(tmpFile, doc.data);
-          inputFiles.push(tmpFile);
-        }
-        const outputFile = path.join(tmpDir, 'merged.pdf');
-        const inputList = inputFiles.map(f => `"${f}"`).join(' ');
-        execSync(`gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile="${outputFile}" ${inputList}`, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
-        mergedBuffer = fs.readFileSync(outputFile);
-        addedCount = invoiceDocs.length;
-        usedCli = true;
-        console.log(`[package] Merged with ghostscript: ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
-      } finally {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
-      }
-    } catch (e) {
-      console.log('[package] gs not available, using pdf-merger-js');
-    }
+          const inputFile = path.join(tmpDir, `raw_${i}.pdf`);
+          const decryptedFile = path.join(tmpDir, `dec_${i}.pdf`);
+          fs.writeFileSync(inputFile, doc.data);
 
-    // Fallback: pdf-merger-js
-    if (!usedCli) {
-      const PDFMerger = require('pdf-merger-js').default || require('pdf-merger-js');
-      const merger = new PDFMerger();
-      for (const doc of invoiceDocs) {
-        try {
-          await merger.add(Buffer.from(doc.data));
-          addedCount++;
-          console.log('[package] Added:', doc.invoiceNumber);
-        } catch (err) {
-          console.error('[package] Failed to add:', doc.invoiceNumber, '—', err.message);
+          try {
+            execSync(`gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -dPDFSETTINGS=/prepress -sOutputFile="${decryptedFile}" "${inputFile}"`, { timeout: 30000 });
+            decryptedFiles.push(decryptedFile);
+            addedCount++;
+            console.log('[package] Decrypted:', doc.invoiceNumber);
+          } catch (err) {
+            console.error('[package] Decrypt failed:', doc.invoiceNumber, err.message.slice(0, 100));
+            decryptedFiles.push(inputFile); // use original as fallback
+            addedCount++;
+          }
         }
+
+        // Step 2: Merge all decrypted PDFs
+        const outputFile = path.join(tmpDir, 'merged.pdf');
+        const fileList = decryptedFiles.map(f => `"${f}"`).join(' ');
+        execSync(`gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile="${outputFile}" ${fileList}`, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
+        mergedBuffer = fs.readFileSync(outputFile);
+        console.log(`[package] Merged with gs (decrypt+merge): ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
+      } else {
+        // Fallback: pdf-merger-js (no gs available)
+        console.log('[package] gs not available, using pdf-merger-js');
+        const PDFMerger = require('pdf-merger-js').default || require('pdf-merger-js');
+        const merger = new PDFMerger();
+        for (const doc of invoiceDocs) {
+          try {
+            await merger.add(Buffer.from(doc.data));
+            addedCount++;
+            console.log('[package] Added:', doc.invoiceNumber);
+          } catch (err) {
+            console.error('[package] Failed to add:', doc.invoiceNumber, '—', err.message);
+          }
+        }
+        mergedBuffer = await merger.saveAsBuffer();
+        console.log(`[package] Merged with pdf-merger-js: ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
       }
-      mergedBuffer = await merger.saveAsBuffer();
-      console.log(`[package] Merged with pdf-merger-js: ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     }
 
     await prisma.document.create({
