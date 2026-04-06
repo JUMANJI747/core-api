@@ -298,7 +298,7 @@ router.post('/build-merged-pdf', async (req, res) => {
     }
 
     // Merge PDFs using pdf-merger-js
-    const PDFMerger = require('pdf-merger-js');
+    const PDFMerger = require('pdf-merger-js').default || require('pdf-merger-js');
     const merger = new PDFMerger();
     let addedCount = 0;
 
