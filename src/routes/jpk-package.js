@@ -297,22 +297,59 @@ router.post('/build-merged-pdf', async (req, res) => {
       console.log('[package] Removed old merged PDF');
     }
 
-    // Merge PDFs using pdf-merger-js
-    const PDFMerger = require('pdf-merger-js').default || require('pdf-merger-js');
-    const merger = new PDFMerger();
+    // Merge PDFs using ghostscript (handles encrypted iFirma PDFs)
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    const os = require('os');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+    let mergedBuffer;
     let addedCount = 0;
 
-    for (const doc of invoiceDocs) {
-      try {
-        await merger.add(Buffer.from(doc.data));
+    try {
+      const inputFiles = [];
+      for (let i = 0; i < invoiceDocs.length; i++) {
+        const doc = invoiceDocs[i];
+        const tmpFile = path.join(tmpDir, `${String(i).padStart(3, '0')}_${(doc.invoiceNumber || String(i)).replace(/\//g, '_')}.pdf`);
+        fs.writeFileSync(tmpFile, doc.data);
+        inputFiles.push(tmpFile);
         addedCount++;
-        console.log('[package] Added:', doc.invoiceNumber);
-      } catch (err) {
-        console.error('[package] Failed to add:', doc.invoiceNumber, '—', err.message);
+        console.log('[package] Wrote temp:', doc.invoiceNumber);
       }
+
+      const outputFile = path.join(tmpDir, 'merged.pdf');
+      const inputList = inputFiles.map(f => `"${f}"`).join(' ');
+
+      // Try ghostscript first, then qpdf, then pdfunite
+      let merged = false;
+      const methods = [
+        { name: 'gs', cmd: `gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile="${outputFile}" ${inputList}` },
+        { name: 'qpdf', cmd: `qpdf --empty --pages ${inputList} -- "${outputFile}"` },
+        { name: 'pdfunite', cmd: `pdfunite ${inputList} "${outputFile}"` },
+      ];
+
+      for (const method of methods) {
+        try {
+          execSync(`which ${method.name}`, { stdio: 'ignore' });
+          console.log(`[package] Using ${method.name} to merge ${addedCount} PDFs`);
+          execSync(method.cmd, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
+          merged = true;
+          console.log(`[package] Merged with ${method.name}`);
+          break;
+        } catch (e) {
+          console.log(`[package] ${method.name} not available or failed:`, e.message.slice(0, 100));
+        }
+      }
+
+      if (!merged) throw new Error('No PDF merge tool available (tried gs, qpdf, pdfunite)');
+
+      mergedBuffer = fs.readFileSync(outputFile);
+      console.log(`[package] Merged PDF: ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     }
 
-    const mergedBuffer = await merger.saveAsBuffer();
     const filename = `FAKTURY_${period.replace('-', '_')}.pdf`;
 
     await prisma.document.create({
@@ -327,8 +364,6 @@ router.post('/build-merged-pdf', async (req, res) => {
         size: mergedBuffer.length,
       },
     });
-
-    console.log(`[package] Merged PDF: ${addedCount}/${invoiceDocs.length} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
 
     res.json({ ok: true, period, invoices: addedCount, size: mergedBuffer.length, filename });
   } catch (e) {
