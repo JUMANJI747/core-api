@@ -213,15 +213,16 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     let ifirmaResult;
     try {
+      const cExtras = contractor.extras || {};
       ifirmaResult = await createInvoice({
         kontrahent: {
           name: contractor.name,
           nip: contractor.nip,
-          address: contractor.address,
-          city: contractor.city,
-          postCode: contractor.extras && contractor.extras.postCode || '',
-          country: contractor.country,
-          ifirmaId: contractor.extras && contractor.extras.ifirmaId || null,
+          address: contractor.address || cExtras.street || '',
+          city: contractor.city || cExtras.city || '',
+          postCode: cExtras.postCode || '',
+          country: contractor.country || '',
+          ifirmaId: cExtras.ifirmaId || null,
         },
         pozycje,
         rodzaj,
@@ -352,14 +353,15 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
 
+    const cExtras2 = contractor.extras || {};
     const ifirmaResp = await createInvoice({
       kontrahent: {
         name: contractor.name,
         nip: contractor.nip,
-        address: contractor.address,
-        city: contractor.city,
-        postCode: contractor.extras && contractor.extras.postCode || '',
-        country: contractor.country,
+        address: contractor.address || cExtras2.street || '',
+        city: contractor.city || cExtras2.city || '',
+        postCode: cExtras2.postCode || '',
+        country: contractor.country || '',
       },
       pozycje,
       waluta,

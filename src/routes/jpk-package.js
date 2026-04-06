@@ -268,4 +268,75 @@ router.get('/document/:id', async (req, res) => {
   }
 });
 
+// ============ BUILD MERGED PDF ============
+
+router.post('/build-merged-pdf', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const y = (req.body && req.body.year) || prevMonth.getFullYear();
+    const m = (req.body && req.body.month) || (prevMonth.getMonth() + 1);
+    const period = `${y}-${String(m).padStart(2, '0')}`;
+
+    const pkg = await prisma.monthlyPackage.findUnique({ where: { period } });
+    if (!pkg) return res.json({ ok: false, error: 'Pakiet nie istnieje. Uruchom build-package.' });
+
+    const invoiceDocs = await prisma.document.findMany({
+      where: { packageId: pkg.id, type: 'invoice' },
+      orderBy: { invoiceNumber: 'asc' },
+    });
+
+    if (!invoiceDocs.length) return res.json({ ok: false, error: 'Brak faktur w pakiecie.' });
+
+    // Remove existing merged if any
+    const existing = await prisma.document.findFirst({ where: { packageId: pkg.id, type: 'merged_invoices' } });
+    if (existing) {
+      await prisma.document.delete({ where: { id: existing.id } });
+      console.log('[package] Removed old merged PDF');
+    }
+
+    // Merge PDFs
+    const { PDFDocument } = require('pdf-lib');
+    const mergedPdf = await PDFDocument.create();
+    let totalPages = 0;
+
+    for (const doc of invoiceDocs) {
+      try {
+        const sourcePdf = await PDFDocument.load(doc.data);
+        const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+        pages.forEach(page => mergedPdf.addPage(page));
+        totalPages += pages.length;
+        console.log('[package] Merged:', doc.invoiceNumber);
+      } catch (err) {
+        console.error('[package] Failed to merge:', doc.invoiceNumber, err.message);
+      }
+    }
+
+    const mergedBytes = await mergedPdf.save();
+    const mergedBuffer = Buffer.from(mergedBytes);
+    const filename = `FAKTURY_${period.replace('-', '_')}.pdf`;
+
+    await prisma.document.create({
+      data: {
+        packageId: pkg.id,
+        type: 'merged_invoices',
+        name: `Wszystkie faktury — ${period}`,
+        filename,
+        invoiceNumber: null,
+        mimeType: 'application/pdf',
+        data: mergedBuffer,
+        size: mergedBuffer.length,
+      },
+    });
+
+    console.log(`[package] Merged PDF: ${invoiceDocs.length} invoices, ${totalPages} pages, ${Math.round(mergedBuffer.length / 1024)} KB`);
+
+    res.json({ ok: true, period, pages: totalPages, invoices: invoiceDocs.length, size: mergedBuffer.length, filename });
+  } catch (e) {
+    console.error('[package] build-merged-pdf error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
