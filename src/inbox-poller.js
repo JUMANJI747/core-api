@@ -232,27 +232,17 @@ function fetchMailsFromUid(imap, sinceUid) {
                   bodyText = stripHtml(parsed.html);
                   bodySource = 'html';
                 } else {
-                  const attachmentNames = (parsed.attachments || []).map(a => a.filename || 'attachment');
-                  if (attachmentNames.length > 0) {
-                    bodyText = `[Mail zawiera załączniki: ${attachmentNames.join(', ')}]`;
-                    bodySource = 'attachments';
-                  } else {
-                    bodyText = '[Brak treści]';
-                  }
+                  bodyText = '[Brak treści tekstowej]';
+                  bodySource = 'empty';
                 }
                 console.log(`[inbox-poller] body source: ${bodySource}`);
 
-                const attachments = (parsed.attachments || []).map(a => {
-                  const att = {
-                    filename: a.filename || 'attachment',
-                    contentType: a.contentType || 'application/octet-stream',
-                    size: a.size || 0,
-                  };
-                  if (a.contentType && a.contentType.startsWith('image/') && a.content && a.content.length <= 5 * 1024 * 1024) {
-                    att.buffer = a.content;
-                  }
-                  return att;
-                });
+                const attachments = (parsed.attachments || []).map(a => ({
+                  filename: a.filename || 'attachment',
+                  contentType: a.contentType || 'application/octet-stream',
+                  size: a.size || (a.content ? a.content.length : 0),
+                  buffer: (a.content && a.content.length <= 10 * 1024 * 1024) ? a.content : null,
+                }));
 
                 const autoSubmitted = parsed.headers && parsed.headers.get
                   ? (parsed.headers.get('auto-submitted') || '')
@@ -611,6 +601,27 @@ async function processAccount(account) {
             where: { id: savedEmail.id },
             data: { contractorId },
           });
+        }
+
+        // Save attachments
+        if (mail.attachments && mail.attachments.length > 0) {
+          for (const att of mail.attachments) {
+            if (!att.buffer || !att.filename) continue;
+            try {
+              await prisma.emailAttachment.create({
+                data: {
+                  emailId: savedEmail.id,
+                  filename: att.filename,
+                  contentType: att.contentType || 'application/octet-stream',
+                  size: att.size || att.buffer.length,
+                  data: att.buffer,
+                },
+              });
+              console.log(`[inbox-poller] Saved attachment: ${att.filename} (${Math.round(att.size / 1024)} KB)`);
+            } catch (attErr) {
+              console.error(`[inbox-poller] Failed to save attachment ${att.filename}:`, attErr.message);
+            }
+          }
         }
 
         // VAT verification

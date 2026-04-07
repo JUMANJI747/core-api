@@ -130,13 +130,28 @@ model Email {
   isRead       Boolean @default(false)
   isSpam       Boolean @default(false)
   tags         String[] @default([])
-  
+
   createdAt    DateTime @default(now())
+
+  attachments  EmailAttachment[]
 
   @@index([contractorId])
   @@index([inbox])
   @@index([isRead])
   @@index([direction])
+}
+
+model EmailAttachment {
+  id          String   @id @default(uuid())
+  emailId     String
+  email       Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String
+  size        Int
+  data        Bytes
+  createdAt   DateTime @default(now())
+
+  @@index([emailId])
 }
 
 // ============ KOMIS ============

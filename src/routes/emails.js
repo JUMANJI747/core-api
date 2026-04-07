@@ -92,7 +92,15 @@ router.get('/emails', async (req, res) => {
     ];
   }
   const take = Math.min(parseInt(limit) || 20, 100);
-  const emails = await prisma.email.findMany({ where, include: { contractor: true }, take, orderBy: { createdAt: 'desc' } });
+  const emails = await prisma.email.findMany({
+    where,
+    include: {
+      contractor: true,
+      attachments: { select: { id: true, filename: true, contentType: true, size: true } },
+    },
+    take,
+    orderBy: { createdAt: 'desc' },
+  });
   res.json(emails);
 });
 
@@ -100,6 +108,73 @@ router.patch('/emails/:id/read', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const email = await prisma.email.update({ where: { id: req.params.id }, data: { isRead: true } });
   res.json(email);
+});
+
+// ============ EMAIL DETAIL WITH ATTACHMENTS ============
+
+router.get('/emails/:id', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const email = await prisma.email.findUnique({
+      where: { id: req.params.id },
+      include: {
+        contractor: true,
+        attachments: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } },
+      },
+    });
+    if (!email) return res.status(404).json({ error: 'Email not found' });
+    res.json(email);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/emails/:emailId/attachments', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const attachments = await prisma.emailAttachment.findMany({
+    where: { emailId: req.params.emailId },
+    select: { id: true, filename: true, contentType: true, size: true, createdAt: true },
+  });
+  res.json(attachments);
+});
+
+router.get('/attachment/:id', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const att = await prisma.emailAttachment.findUnique({ where: { id: req.params.id } });
+    if (!att) return res.status(404).json({ error: 'Attachment not found' });
+    res.setHeader('Content-Type', att.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${att.filename}"`);
+    res.send(att.data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/attachment/:id/parse', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const att = await prisma.emailAttachment.findUnique({ where: { id: req.params.id } });
+    if (!att) return res.status(404).json({ error: 'Attachment not found' });
+
+    if (att.contentType === 'application/pdf' || att.filename.endsWith('.pdf')) {
+      try {
+        const pdfParse = require('pdf-parse');
+        const result = await pdfParse(att.data);
+        return res.json({ ok: true, filename: att.filename, size: att.size, pages: result.numpages, text: result.text });
+      } catch (e) {
+        return res.json({ ok: false, filename: att.filename, error: 'PDF parse failed: ' + e.message });
+      }
+    }
+
+    if (att.contentType === 'text/plain' || att.filename.endsWith('.txt') || att.filename.endsWith('.csv')) {
+      return res.json({ ok: true, filename: att.filename, size: att.size, text: att.data.toString('utf-8') });
+    }
+
+    res.json({ ok: false, filename: att.filename, contentType: att.contentType, error: 'Unsupported format for text extraction' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ============ SEND EMAIL (HITL) ============

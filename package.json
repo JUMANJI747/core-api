@@ -18,6 +18,7 @@
     "nodemailer": "^8.0.4",
     "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",
+    "pdf-parse": "^2.4.5",
     "prisma": "^6.5.0"
   }
 }
