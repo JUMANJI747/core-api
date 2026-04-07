@@ -15,6 +15,7 @@
     "express": "^4.21.0",
     "imap": "^0.8.19",
     "mailparser": "^3.9.6",
+    "multer": "^2.1.1",
     "nodemailer": "^8.0.4",
     "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",

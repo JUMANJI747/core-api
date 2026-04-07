@@ -43,6 +43,7 @@ app.use('/api', require('./routes/config'));
 app.use('/api', require('./routes/invoices'));
 app.use('/api/jpk', require('./routes/jpk'));
 app.use('/api/jpk', require('./routes/jpk-package'));
+app.use('/api', require('./routes/parse-document'));
 
 // ============ START ============
 app.listen(PORT, () => {
