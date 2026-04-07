@@ -604,11 +604,15 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
 
     if (!to) return res.status(400).json({ error: 'toEmail required (or provide emailId to reply)' });
 
+    const defaultBody = 'Dzień dobry,\n\nFaktura w załączniku.\n\nPozdrawiam,\nMichał Pałyska\nSurf Stick Bell';
+    const defaultHtml = 'Dzień dobry,<br><br>Faktura w załączniku.<br><br>Pozdrawiam,<br>Michał Pałyska<br>Surf Stick Bell';
+
     await sendMail({
       from,
       to,
       subject,
-      body: customBody || 'W załączeniu faktura.',
+      body: customBody || defaultBody,
+      html: customBody ? undefined : defaultHtml,
       inReplyTo,
       references,
       attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
