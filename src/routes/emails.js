@@ -107,9 +107,33 @@ router.patch('/emails/:id/read', async (req, res) => {
 router.post('/send-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { from, to, subject, body, replyTo, draft = true } = req.body;
+    let { from, to, subject, body, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+
+    // Reply-in-thread: resolve from/to/subject from original email
+    let inReplyTo = null;
+    let references = null;
+
+    if (replyToEmailId) {
+      const originalEmail = await prisma.email.findUnique({ where: { id: replyToEmailId } });
+      if (!originalEmail) return res.status(404).json({ error: 'emailId not found — mail to reply to does not exist' });
+
+      to = to || originalEmail.fromEmail;
+      const inboxEmail = originalEmail.inbox ? `${originalEmail.inbox}@surfstickbell.com` : 'info@surfstickbell.com';
+      from = from || inboxEmail;
+      if (!subject) {
+        const origSubject = originalEmail.subject || '';
+        subject = origSubject.replace(/^(Re:\s*)+/i, '').trim();
+        subject = `Re: ${subject}`;
+      }
+      if (originalEmail.messageId) {
+        inReplyTo = originalEmail.messageId;
+        references = ((originalEmail.references || '') + ' ' + originalEmail.messageId).trim();
+      }
+      console.log(`[send-email] Reply-in-thread: emailId=${replyToEmailId}, inReplyTo=${inReplyTo}, from=${from}, to=${to}`);
+    }
+
     if (!from || !to || !subject || !body) {
-      return res.status(400).json({ error: 'from, to, subject, body are required' });
+      return res.status(400).json({ error: 'from, to, subject, body are required (or provide emailId to auto-fill)' });
     }
 
     const account = findAccount(from);
@@ -134,7 +158,8 @@ router.post('/send-email', async (req, res) => {
           subject: subject || null,
           bodyPreview: (body || '').slice(0, 300),
           bodyFull: (body || '').slice(0, 2000),
-          ...(replyTo ? { inReplyTo: replyTo } : {}),
+          inReplyTo: inReplyTo || null,
+          references: references || null,
           contractorId,
         },
       });
@@ -143,12 +168,12 @@ router.post('/send-email', async (req, res) => {
         ok: true,
         draft: true,
         emailId: saved.id,
-        preview: { from, to, subject, body },
+        preview: { from, to, subject, body, replyToThread: !!inReplyTo },
       });
     }
 
-    const saved = await sendMail({ from, to, subject, body, replyTo });
-    return res.json({ ok: true, sent: true, emailId: saved.id });
+    const saved = await sendMail({ from, to, subject, body, inReplyTo, references });
+    return res.json({ ok: true, sent: true, emailId: saved.id, replyToThread: !!inReplyTo });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });
@@ -180,12 +205,13 @@ router.post('/send-email/confirm', async (req, res) => {
       to: email.toEmail,
       subject: email.subject || '',
       body: email.bodyFull || '',
-      replyTo: email.inReplyTo || undefined,
+      inReplyTo: email.inReplyTo || undefined,
+      references: email.references || undefined,
     });
 
     await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
 
-    return res.json({ ok: true, sent: true, emailId: email.id, from: email.fromEmail, to: email.toEmail, subject: email.subject, message: `Mail wysłany z ${email.fromEmail} do ${email.toEmail}, temat: ${email.subject}` });
+    return res.json({ ok: true, sent: true, emailId: email.id, from: email.fromEmail, to: email.toEmail, subject: email.subject, replyToThread: !!email.inReplyTo, message: `Mail wysłany z ${email.fromEmail} do ${email.toEmail}, temat: ${email.subject}` });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });
@@ -207,12 +233,13 @@ router.post('/send-email/confirm-latest', async (req, res) => {
       to: draft.toEmail,
       subject: draft.subject || '',
       body: draft.bodyFull || '',
-      replyTo: draft.inReplyTo || undefined,
+      inReplyTo: draft.inReplyTo || undefined,
+      references: draft.references || undefined,
     });
 
     await prisma.email.update({ where: { id: draft.id }, data: { direction: 'OUTBOUND' } });
 
-    return res.json({ ok: true, sent: true, to: draft.toEmail, subject: draft.subject });
+    return res.json({ ok: true, sent: true, to: draft.toEmail, subject: draft.subject, replyToThread: !!draft.inReplyTo });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });
@@ -231,7 +258,8 @@ router.post('/send-email/:id/confirm', async (req, res) => {
       to: email.toEmail,
       subject: email.subject || '',
       body: email.bodyFull || '',
-      replyTo: email.inReplyTo || undefined,
+      inReplyTo: email.inReplyTo || undefined,
+      references: email.references || undefined,
     });
 
     await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
@@ -240,6 +268,7 @@ router.post('/send-email/:id/confirm', async (req, res) => {
       ok: true,
       sent: true,
       emailId: email.id,
+      replyToThread: !!email.inReplyTo,
       message: `Sent from ${email.fromEmail} to ${email.toEmail}`,
     });
   } catch (e) {
