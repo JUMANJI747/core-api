@@ -75,12 +75,59 @@ router.get('/ifirma/invoices', async (req, res) => {
   }
 });
 
+// ============ FUZZY PRODUCT LOOKUP ============
+
+function findProductFuzzy(catalog, query) {
+  if (!query) return null;
+
+  const normalize = s => (s || '').toString().toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  const q = normalize(query);
+  if (!q) return null;
+
+  // 1. Exact EAN/SKU
+  const byEan = catalog.find(p => p.ean === query.toString());
+  if (byEan) return byEan;
+
+  // 2. Exact name+variant match
+  const byExact = catalog.find(p => {
+    const nv = normalize((p.name || '') + ' ' + (p.variant || ''));
+    return nv === q;
+  });
+  if (byExact) return byExact;
+
+  // 3. All query words contained in name+variant
+  const words = q.split(' ').filter(w => w.length > 1);
+  const candidates = catalog.filter(p => {
+    const nv = normalize((p.name || '') + ' ' + (p.variant || ''));
+    return words.every(w => nv.includes(w));
+  });
+
+  if (candidates.length === 1) return candidates[0];
+
+  if (candidates.length > 1) {
+    // Prefer non-generic, then shortest match
+    const nonGeneric = candidates.filter(c => !c.ean.startsWith('STICK-') && !c.ean.startsWith('MASCARA-'));
+    const pool = nonGeneric.length ? nonGeneric : candidates;
+    pool.sort((a, b) => {
+      const nvA = normalize((a.name || '') + ' ' + (a.variant || ''));
+      const nvB = normalize((b.name || '') + ' ' + (b.variant || ''));
+      return nvA.length - nvB.length;
+    });
+    return pool[0];
+  }
+
+  return null;
+}
+
 // ============ INVOICE PREVIEW ============
 
 router.post('/ifirma/invoice-preview', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { contractorId, contractorSearch, items } = req.body;
+    const { contractorId, contractorSearch, items, globalPriceNetto, globalPriceBrutto } = req.body;
     let parsedItems = items;
     if (typeof items === 'string') {
       try { parsedItems = JSON.parse(items); } catch(e) { return res.status(400).json({ error: 'items must be valid JSON array' }); }
@@ -115,22 +162,71 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const waluta = (contractor.country || 'PL').toUpperCase() === 'PL' ? 'PLN' : 'EUR';
     const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
 
+    // Load product catalog for fuzzy lookup
+    const catalog = await prisma.product.findMany({ where: { active: true } });
+
     const pozycje = [];
     for (const item of parsedItems) {
+      // Fuzzy product lookup: try EAN first, then name+variant
       const ean = item.productEan || item.ean;
-      console.log('[invoice-preview] looking for product EAN:', ean);
-      const product = await prisma.product.findUnique({ where: { ean } });
-      if (!product) return res.status(404).json({ error: `product not found: ${ean}` });
+      let product = null;
 
-      console.log('[invoice-preview] template extras:', JSON.stringify(product.extras));
+      if (ean) {
+        product = catalog.find(p => p.ean === ean);
+      }
+
+      if (!product) {
+        const query = [item.name, item.productName, item.product, item.variant, item.color]
+          .filter(Boolean).join(' ');
+        if (query) product = findProductFuzzy(catalog, query);
+      }
+
+      if (!product && ean) {
+        // Last resort: try findUnique by EAN (maybe not in catalog query)
+        product = await prisma.product.findUnique({ where: { ean } });
+      }
+
+      if (!product) {
+        const searchedFor = ean || item.name || item.productName || item.product || 'unknown';
+        return res.status(404).json({ error: `product not found: ${searchedFor}` });
+      }
+
+      console.log('[invoice-preview] Matched:', (item.name || item.productName || ean), '→', product.name, product.variant || '', '(EAN:', product.ean, ')');
+
       if (product.category === 'template' && product.extras && product.extras.composition) {
         for (const comp of product.extras.composition) {
-          console.log('[invoice-preview] composition item:', JSON.stringify(comp));
           const sub = await prisma.product.findUnique({ where: { ean: comp.ean } });
-          if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1) });
+          if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1), itemCena: null });
         }
       } else {
-        pozycje.push({ product, ilosc: item.qty || 1, itemCena: item.cena ?? null });
+        // Resolve per-item price override
+        let itemCena = null;
+        let priceSource = null;
+
+        if (item.priceNetto != null) {
+          const vatRate = rodzaj === 'krajowa' ? 0.23 : 0;
+          itemCena = Math.round(parseFloat(item.priceNetto) * (1 + vatRate) * 100) / 100;
+          priceSource = 'netto_override';
+        } else if (item.priceBrutto != null || item.price != null) {
+          itemCena = parseFloat(item.priceBrutto || item.price);
+          priceSource = 'brutto_override';
+        } else if (item.cena != null) {
+          itemCena = parseFloat(item.cena);
+          priceSource = 'cena_override';
+        } else if (globalPriceNetto != null) {
+          const vatRate = rodzaj === 'krajowa' ? 0.23 : 0;
+          itemCena = Math.round(parseFloat(globalPriceNetto) * (1 + vatRate) * 100) / 100;
+          priceSource = 'global_netto';
+        } else if (globalPriceBrutto != null) {
+          itemCena = parseFloat(globalPriceBrutto);
+          priceSource = 'global_brutto';
+        }
+
+        if (priceSource) {
+          console.log(`[invoice-preview] Price override for ${product.name}: ${itemCena} brutto (${priceSource})`);
+        }
+
+        pozycje.push({ product, ilosc: item.qty || 1, itemCena });
       }
     }
 
@@ -151,7 +247,7 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       const { cena, source } = resolvePrice(itemCena, contractor.name, contractor.extras);
       console.log(`[invoice-preview] price for ${contractor.name}: ${cena} brutto (source: ${source})`);
       const wartosc = Math.round(cena * ilosc * 100) / 100;
-      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, wartosc };
+      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, wartosc, priceSource: source };
     });
 
     const brutto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
