@@ -242,10 +242,12 @@ model Config {
 
 model Memory {
   id        String   @id @default(uuid())
+  chatId    String?
   role      String   // user | assistant
   content   String
   createdAt DateTime @default(now())
 
+  @@index([chatId, createdAt])
   @@index([createdAt])
 }
 

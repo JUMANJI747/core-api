@@ -56,22 +56,37 @@ router.put('/config/:key', async (req, res) => {
 
 router.get('/memory', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { limit } = req.query;
-  const messages = await prisma.memory.findMany({ take: parseInt(limit) || 20, orderBy: { createdAt: 'desc' } });
+  const { limit, chatId } = req.query;
+  if (!chatId) return res.json([]);
+  const take = Math.min(parseInt(limit) || 20, 100);
+  const messages = await prisma.memory.findMany({
+    where: { chatId },
+    take,
+    orderBy: { createdAt: 'desc' },
+  });
   res.json(messages.reverse());
 });
 
 router.post('/memory', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { role, content } = req.body;
-  const msg = await prisma.memory.create({ data: { role, content } });
+  const { role, content, chatId } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  const msg = await prisma.memory.create({ data: { chatId, role, content } });
   res.json(msg);
 });
 
 router.delete('/memory/clear', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  await prisma.memory.deleteMany();
-  res.json({ ok: true });
+  const { chatId } = req.query;
+  if (!chatId) return res.status(400).json({ error: 'chatId required (use /memory/cleanup to purge orphans)' });
+  const result = await prisma.memory.deleteMany({ where: { chatId } });
+  res.json({ ok: true, deleted: result.count });
+});
+
+router.post('/memory/cleanup', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const result = await prisma.memory.deleteMany({ where: { chatId: null } });
+  res.json({ ok: true, deleted: result.count });
 });
 
 // ============ EVENTS ============
