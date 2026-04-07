@@ -157,7 +157,7 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
-async function createInvoice({ kontrahent, pozycje, rodzaj }) {
+async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const isWdt = rodzaj === 'wdt';
@@ -194,13 +194,16 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
   const _country = kontrahent.country || enriched.Kraj;
   const _ifirmaId = kontrahent.ifirmaId || enriched.IdentyfikatorKontrahenta;
 
+  const isNetto = priceMode === 'netto';
+  console.log('[ifirma] Price mode:', priceMode || 'brutto (default)');
+
   const Pozycje = pozycje.map(p => {
     const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
       ? ` - ${p.wariant}` : '';
     const isRealEan = p.ean && /^\d/.test(p.ean);
     const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
-    const CenaJednostkowa = p.cena || p.cenaNetto;
-    console.log('[ifirma] position price:', CenaJednostkowa);
+    const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
+    console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)');
     return isWdt ? {
       TypStawkiVat: 'NP',
       GTU: 'GTU_12',
@@ -233,7 +236,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj }) {
     ZaplaconoNaDokumencie: 0,
     WidocznyNumerGios: false,
     Numer: null,
-    LiczOd: 'BRT',
+    LiczOd: isNetto ? 'NET' : 'BRT',
     ...(_ifirmaId ? { IdentyfikatorKontrahenta: _ifirmaId } : {}),
     ...(_nip ? { NIPKontrahenta: _nip } : {}),
     DataWystawienia: today,

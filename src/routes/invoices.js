@@ -201,11 +201,11 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       } else {
         // Resolve per-item price override
         let itemCena = null;
+        let itemCenaNetto = null;
         let priceSource = null;
 
         if (item.priceNetto != null) {
-          const vatRate = rodzaj === 'krajowa' ? 0.23 : 0;
-          itemCena = Math.round(parseFloat(item.priceNetto) * (1 + vatRate) * 100) / 100;
+          itemCenaNetto = parseFloat(item.priceNetto);
           priceSource = 'netto_override';
         } else if (item.priceBrutto != null || item.price != null) {
           itemCena = parseFloat(item.priceBrutto || item.price);
@@ -214,8 +214,7 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
           itemCena = parseFloat(item.cena);
           priceSource = 'cena_override';
         } else if (globalPriceNetto != null) {
-          const vatRate = rodzaj === 'krajowa' ? 0.23 : 0;
-          itemCena = Math.round(parseFloat(globalPriceNetto) * (1 + vatRate) * 100) / 100;
+          itemCenaNetto = parseFloat(globalPriceNetto);
           priceSource = 'global_netto';
         } else if (globalPriceBrutto != null) {
           itemCena = parseFloat(globalPriceBrutto);
@@ -223,36 +222,53 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
         }
 
         if (priceSource) {
-          console.log(`[invoice-preview] Price override for ${product.name}: ${itemCena} brutto (${priceSource})`);
+          console.log(`[invoice-preview] Price override for ${product.name}: netto=${itemCenaNetto} brutto=${itemCena} (${priceSource})`);
         }
 
-        pozycje.push({ product, ilosc: item.qty || 1, itemCena });
+        pozycje.push({ product, ilosc: item.qty || 1, itemCena, itemCenaNetto });
       }
     }
 
     const cennikWaluta = CENNIK[waluta] || CENNIK.PLN;
-    const resolvePrice = (itemCena, contractorName, contractorExtras) => {
-      if (itemCena != null) return { cena: itemCena, source: 'user' };
+    const resolvePrice = (itemCena, itemCenaNetto, contractorName, contractorExtras) => {
+      if (itemCenaNetto != null) return { cena: itemCenaNetto, isNetto: true, source: 'user_netto' };
+      if (itemCena != null) return { cena: itemCena, isNetto: false, source: 'user' };
       if (contractorExtras && contractorExtras.lastPrice != null) {
-        return { cena: contractorExtras.lastPrice, source: 'lastPrice' };
+        return { cena: contractorExtras.lastPrice, isNetto: false, source: 'lastPrice' };
       }
       const nameNorm = (contractorName || '').toLowerCase();
       for (const [key, val] of Object.entries(cennikWaluta.wyjatki)) {
-        if (nameNorm.includes(key.toLowerCase())) return { cena: val, source: 'wyjątek' };
+        if (nameNorm.includes(key.toLowerCase())) return { cena: val, isNetto: false, source: 'wyjątek' };
       }
-      return { cena: cennikWaluta.default, source: 'default' };
+      return { cena: cennikWaluta.default, isNetto: false, source: 'default' };
     };
 
-    const linee = pozycje.map(({ product: p, ilosc, itemCena }) => {
-      const { cena, source } = resolvePrice(itemCena, contractor.name, contractor.extras);
-      console.log(`[invoice-preview] price for ${contractor.name}: ${cena} brutto (source: ${source})`);
+    // Determine price mode: if ANY item has netto price, whole invoice is netto
+    const hasNetto = pozycje.some(p => p.itemCenaNetto != null) || globalPriceNetto != null;
+    const priceMode = hasNetto ? 'netto' : 'brutto';
+    console.log(`[invoice-preview] Price mode: ${priceMode}`);
+
+    const linee = pozycje.map(({ product: p, ilosc, itemCena, itemCenaNetto }) => {
+      const { cena, isNetto, source } = resolvePrice(itemCena, itemCenaNetto, contractor.name, contractor.extras);
+      console.log(`[invoice-preview] price for ${contractor.name}: ${cena} ${isNetto ? 'netto' : 'brutto'} (source: ${source})`);
       const wartosc = Math.round(cena * ilosc * 100) / 100;
-      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, wartosc, priceSource: source };
+      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, cenaNetto: isNetto ? cena : null, wartosc, priceSource: source };
     });
 
-    const brutto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
-    const netto = rodzaj === 'wdt' ? brutto : Math.round(brutto / 1.23 * 100) / 100;
-    const vat = Math.round((brutto - netto) * 100) / 100;
+    let brutto, netto, vat;
+    if (priceMode === 'netto' && rodzaj === 'krajowa') {
+      netto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
+      vat = Math.round(netto * 0.23 * 100) / 100;
+      brutto = Math.round((netto + vat) * 100) / 100;
+    } else if (rodzaj === 'wdt') {
+      netto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
+      brutto = netto;
+      vat = 0;
+    } else {
+      brutto = Math.round(linee.reduce((s, l) => s + l.wartosc, 0) * 100) / 100;
+      netto = Math.round(brutto / 1.23 * 100) / 100;
+      vat = Math.round((brutto - netto) * 100) / 100;
+    }
     const terminPlatnosci = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const preview = {
@@ -265,7 +281,7 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     };
 
     const previewId = require('crypto').randomUUID();
-    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj });
+    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode });
 
     prisma.agentContext.upsert({
       where: { id: 'ksiegowosc' },
@@ -298,7 +314,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     const stored = getPreview(bestId);
     if (!stored) return res.status(404).json({ error: 'Brak aktywnego podglądu. Utwórz nowy.' });
 
-    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
+    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
 
     const [tgTokenCfg, tgChatCfg] = await Promise.all([
       prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
@@ -322,6 +338,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         },
         pozycje,
         rodzaj,
+        priceMode,
       });
     } catch (ifirmaErr) {
       const raw = ifirmaErr.ifirmaRaw || null;
@@ -447,7 +464,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     const stored = getPreview(previewId);
     if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
 
-    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj } = stored;
+    const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
 
     const cExtras2 = contractor.extras || {};
     const ifirmaResp = await createInvoice({
@@ -462,6 +479,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       pozycje,
       waluta,
       rodzaj,
+      priceMode: storedPriceMode,
     });
 
     const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
