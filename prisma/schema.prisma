@@ -125,6 +125,7 @@ model Email {
   bodyFull     String?
   messageId    String? @unique
   inReplyTo    String? // threading
+  references   String? // full thread chain
   
   isRead       Boolean @default(false)
   isSpam       Boolean @default(false)

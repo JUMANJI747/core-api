@@ -61,7 +61,7 @@ function extractInbox(email) {
 
 // ============ SEND MAIL ============
 
-async function sendMail({ from, to, subject, body, html, replyTo, attachments }) {
+async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, references, attachments }) {
   console.log('[mail-sender] IMAP_ACCOUNTS parsed:', JSON.stringify(getAccounts().map(a => ({ inbox: a.inbox, user: a.user, hasPass: !!a.pass }))));
   console.log('[mail-sender] looking for FROM:', from);
   const account = findAccount(from);
@@ -85,15 +85,19 @@ async function sendMail({ from, to, subject, body, html, replyTo, attachments })
     },
   });
 
-  await transporter.sendMail({
+  const mailOptions = {
     from,
     to,
     subject,
     ...(html ? { html } : {}),
     ...(body ? { text: body } : {}),
     ...(replyTo ? { replyTo } : {}),
+    ...(inReplyTo ? { inReplyTo, references: references || inReplyTo } : {}),
     ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
-  });
+  };
+
+  const result = await transporter.sendMail(mailOptions);
+  const sentMessageId = result.messageId || null;
 
   console.log(`[mail-sender] sent from ${from} to ${to} subject: ${subject}`);
 
@@ -113,6 +117,9 @@ async function sendMail({ from, to, subject, body, html, replyTo, attachments })
       subject: subject || null,
       bodyPreview: (body || html || '').replace(/<[^>]*>/g, '').slice(0, 300),
       bodyFull: (body || html || '').slice(0, 2000),
+      messageId: sentMessageId,
+      inReplyTo: inReplyTo || null,
+      references: references || null,
       contractorId,
     },
   });

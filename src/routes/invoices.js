@@ -546,8 +546,8 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 router.post('/ifirma/send-invoice-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { invoiceId, toEmail } = req.body;
-    if (!invoiceId || !toEmail) return res.status(400).json({ error: 'invoiceId and toEmail required' });
+    const { invoiceId, toEmail, emailId, subject: customSubject, body: customBody } = req.body;
+    if (!invoiceId) return res.status(400).json({ error: 'invoiceId required' });
 
     const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) return res.status(404).json({ error: 'invoice not found' });
@@ -555,15 +555,48 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     const pdfBuffer = await fetchInvoicePdf(invoice.number, invoice.type);
     const filename = `faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
 
+    // Threading: if emailId provided, reply in same thread
+    let to = toEmail;
+    let from = 'info@surfstickbell.com';
+    let subject = customSubject || `Faktura ${invoice.number} - Surf Stick Bell`;
+    let inReplyTo = null;
+    let references = null;
+
+    if (emailId) {
+      const originalEmail = await prisma.email.findUnique({ where: { id: emailId } });
+      if (originalEmail) {
+        // Use the sender's email as recipient (reply to them)
+        if (!to) to = originalEmail.fromEmail;
+        // Send from the inbox that received the original email
+        const inboxEmail = originalEmail.inbox ? `${originalEmail.inbox}@surfstickbell.com` : from;
+        from = inboxEmail;
+        // Threading headers
+        if (originalEmail.messageId) {
+          inReplyTo = originalEmail.messageId;
+          references = ((originalEmail.references || '') + ' ' + originalEmail.messageId).trim();
+        }
+        // Re: subject
+        if (!customSubject) {
+          const origSubject = originalEmail.subject || '';
+          subject = origSubject.startsWith('Re:') ? origSubject : `Re: ${origSubject}`;
+        }
+        console.log(`[send-invoice-email] Replying in thread: inReplyTo=${inReplyTo}, from=${from}, to=${to}`);
+      }
+    }
+
+    if (!to) return res.status(400).json({ error: 'toEmail required (or provide emailId to reply)' });
+
     await sendMail({
-      from: 'info@surfstickbell.com',
-      to: toEmail,
-      subject: `Faktura ${invoice.number} - Surf Stick Bell`,
-      body: 'W załączeniu faktura.',
+      from,
+      to,
+      subject,
+      body: customBody || 'W załączeniu faktura.',
+      inReplyTo,
+      references,
       attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
-    res.json({ ok: true, sent: true, invoiceNumber: invoice.number });
+    res.json({ ok: true, sent: true, invoiceNumber: invoice.number, to, subject, replyToThread: !!inReplyTo });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
