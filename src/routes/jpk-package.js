@@ -305,6 +305,7 @@ router.post('/build-merged-pdf', async (req, res) => {
 
     let mergedBuffer;
     let addedCount = 0;
+    let mergeMethod = 'pdf-merger-js';
     const filename = `FAKTURY_${period.replace('-', '_')}.pdf`;
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
 
@@ -339,6 +340,7 @@ router.post('/build-merged-pdf', async (req, res) => {
         const fileList = decryptedFiles.map(f => `"${f}"`).join(' ');
         execSync(`gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile="${outputFile}" ${fileList}`, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
         mergedBuffer = fs.readFileSync(outputFile);
+        mergeMethod = 'ghostscript';
         console.log(`[package] Merged with gs (decrypt+merge): ${addedCount} invoices, ${Math.round(mergedBuffer.length / 1024)} KB`);
       } else {
         // Fallback: pdf-merger-js (no gs available)
@@ -374,11 +376,28 @@ router.post('/build-merged-pdf', async (req, res) => {
       },
     });
 
-    res.json({ ok: true, period, invoices: addedCount, size: mergedBuffer.length, filename });
+    res.json({ ok: true, period, invoices: addedCount, size: mergedBuffer.length, filename, method: mergeMethod });
   } catch (e) {
     console.error('[package] build-merged-pdf error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ============ DIAGNOSTICS ============
+
+router.get('/merge-diagnostics', async (req, res) => {
+  const { execSync } = require('child_process');
+  const checks = {};
+  for (const tool of ['gs', 'qpdf', 'pdfunite', 'pdftk']) {
+    try {
+      const path = execSync(`which ${tool} 2>/dev/null`).toString().trim();
+      const version = execSync(`${tool} --version 2>&1 || ${tool} -v 2>&1`).toString().trim().slice(0, 100);
+      checks[tool] = { available: true, path, version };
+    } catch (e) {
+      checks[tool] = { available: false };
+    }
+  }
+  res.json({ ok: true, tools: checks, dockerfile: require('fs').existsSync('/app/package.json') ? 'docker' : 'nixpacks' });
 });
 
 // ============ SEND PACKAGE ============
