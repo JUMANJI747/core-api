@@ -1,6 +1,7 @@
 'use strict';
 
 const https = require('https');
+const crypto = require('crypto');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
 const { scoreContractor } = require('./contractors');
@@ -42,6 +43,21 @@ function downloadPdf(fileId) {
     };
     follow(url, 0);
   });
+}
+
+// ============ DEDUP ============
+
+async function wasRecentlySent(prisma, to, subject, body) {
+  const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+  const recent = await prisma.email.findFirst({
+    where: {
+      direction: 'OUTBOUND',
+      toEmail: to,
+      subject: subject || '',
+      createdAt: { gte: twoMinAgo },
+    },
+  });
+  return recent !== null;
 }
 
 // ============ INBOX ============
@@ -249,6 +265,11 @@ router.post('/send-email', async (req, res) => {
       });
     }
 
+    if (await wasRecentlySent(prisma, to, subject, body)) {
+      console.log('[dedup] Skipping duplicate send to', to, subject);
+      return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
+    }
+
     const saved = await sendMail({ from, to, subject, body, inReplyTo, references });
     return res.json({ ok: true, sent: true, emailId: saved.id, replyToThread: !!inReplyTo });
   } catch (e) {
@@ -276,6 +297,12 @@ router.post('/send-email/confirm', async (req, res) => {
     const email = await prisma.email.findUnique({ where: { id: emailId } });
     if (!email) return res.status(404).json({ error: 'Email not found' });
     if (email.direction !== 'DRAFT') return res.status(400).json({ error: 'Not a draft' });
+
+    if (await wasRecentlySent(prisma, email.toEmail, email.subject, email.bodyFull)) {
+      console.log('[dedup] Skipping duplicate confirm to', email.toEmail, email.subject);
+      await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
+      return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
+    }
 
     await sendMail({
       from: email.fromEmail,
@@ -305,6 +332,12 @@ router.post('/send-email/confirm-latest', async (req, res) => {
     });
     if (!draft) return res.json({ ok: false, error: 'Brak aktywnego draftu' });
 
+    if (await wasRecentlySent(prisma, draft.toEmail, draft.subject, draft.bodyFull)) {
+      console.log('[dedup] Skipping duplicate confirm-latest to', draft.toEmail, draft.subject);
+      await prisma.email.update({ where: { id: draft.id }, data: { direction: 'OUTBOUND' } });
+      return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
+    }
+
     await sendMail({
       from: draft.fromEmail,
       to: draft.toEmail,
@@ -329,6 +362,12 @@ router.post('/send-email/:id/confirm', async (req, res) => {
     const email = await prisma.email.findUnique({ where: { id: req.params.id } });
     if (!email) return res.status(404).json({ error: 'Email not found' });
     if (email.direction !== 'DRAFT') return res.status(400).json({ error: 'Not a draft' });
+
+    if (await wasRecentlySent(prisma, email.toEmail, email.subject, email.bodyFull)) {
+      console.log('[dedup] Skipping duplicate /:id/confirm to', email.toEmail, email.subject);
+      await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
+      return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
+    }
 
     await sendMail({
       from: email.fromEmail,
