@@ -159,7 +159,46 @@ router.get('/db-stats', async (req, res) => {
       LIMIT 15
     `;
 
-    res.json({ ok: true, counts, sizes: sizes.map(s => ({ ...s, bytes: parseInt(s.bytes) })) });
+    const dbSize = await prisma.$queryRaw`SELECT pg_size_pretty(pg_database_size(current_database())) as total, pg_database_size(current_database())::text as bytes`;
+
+    let bloat = [];
+    try {
+      bloat = await prisma.$queryRaw`
+        SELECT relname as "table", n_dead_tup::text as dead, n_live_tup::text as live,
+          pg_size_pretty(pg_total_relation_size(c.oid)) as size
+        FROM pg_stat_user_tables t
+        JOIN pg_class c ON c.relname = t.relname AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+        WHERE n_dead_tup > 0
+        ORDER BY n_dead_tup DESC LIMIT 10
+      `;
+    } catch (e) { bloat = [{ error: e.message }]; }
+
+    let walSize = null;
+    try {
+      const wal = await prisma.$queryRaw`SELECT pg_size_pretty(sum(size)) as wal_size FROM pg_ls_waldir()`;
+      walSize = wal[0] && wal[0].wal_size;
+    } catch (e) { walSize = 'no permission'; }
+
+    // Cleanup old drafts if requested
+    let cleaned = null;
+    if (req.query.cleanup === 'true') {
+      const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const deletedDrafts = await prisma.email.deleteMany({ where: { direction: 'DRAFT', createdAt: { lt: dayAgo } } });
+      cleaned = { draftsDeleted: deletedDrafts.count };
+
+      // VACUUM after cleanup
+      try { await prisma.$executeRawUnsafe('VACUUM ANALYZE'); cleaned.vacuum = 'ok'; } catch (e) { cleaned.vacuum = e.message; }
+    }
+
+    res.json({
+      ok: true,
+      totalDbSize: { total: dbSize[0].total, bytes: parseInt(dbSize[0].bytes) },
+      counts,
+      sizes: sizes.map(s => ({ ...s, bytes: parseInt(s.bytes) })),
+      bloat: bloat.map(b => ({ ...b, dead: parseInt(b.dead || 0), live: parseInt(b.live || 0) })),
+      walSize,
+      ...(cleaned ? { cleaned } : {}),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
