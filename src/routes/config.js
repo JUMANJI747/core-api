@@ -151,7 +151,7 @@ router.get('/db-stats', async (req, res) => {
       SELECT
         c.relname AS "table",
         pg_size_pretty(pg_total_relation_size(c.oid)) AS size,
-        pg_total_relation_size(c.oid) AS bytes
+        pg_total_relation_size(c.oid)::text AS bytes
       FROM pg_class c
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE c.relkind = 'r' AND n.nspname = 'public'
@@ -159,7 +159,7 @@ router.get('/db-stats', async (req, res) => {
       LIMIT 15
     `;
 
-    res.json({ ok: true, counts, sizes });
+    res.json({ ok: true, counts, sizes: sizes.map(s => ({ ...s, bytes: parseInt(s.bytes) })) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
