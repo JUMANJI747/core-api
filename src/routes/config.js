@@ -190,6 +190,32 @@ router.get('/db-stats', async (req, res) => {
       try { await prisma.$executeRawUnsafe('VACUUM ANALYZE'); cleaned.vacuum = 'ok'; } catch (e) { cleaned.vacuum = e.message; }
     }
 
+    // Deep diagnostics
+    let walFiles = null;
+    try {
+      const wf = await prisma.$queryRaw`SELECT count(*)::text as count, pg_size_pretty(sum(size)::bigint) as total FROM pg_ls_waldir()`;
+      walFiles = { count: parseInt(wf[0].count), total: wf[0].total };
+    } catch (e) { walFiles = { error: e.message }; }
+
+    let replicationSlots = [];
+    try {
+      replicationSlots = await prisma.$queryRaw`
+        SELECT slot_name, slot_type, active::text,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as retained_wal,
+          pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::text as retained_bytes
+        FROM pg_replication_slots
+      `;
+      replicationSlots = replicationSlots.map(s => ({ ...s, retained_bytes: parseInt(s.retained_bytes || 0) }));
+    } catch (e) { replicationSlots = [{ error: e.message }]; }
+
+    let walSettings = [];
+    try {
+      walSettings = await prisma.$queryRaw`
+        SELECT name, setting, unit FROM pg_settings
+        WHERE name IN ('wal_keep_size','max_wal_size','min_wal_size','wal_level','archive_mode','max_slot_wal_keep_size')
+      `;
+    } catch (e) { walSettings = [{ error: e.message }]; }
+
     res.json({
       ok: true,
       totalDbSize: { total: dbSize[0].total, bytes: parseInt(dbSize[0].bytes) },
@@ -197,6 +223,9 @@ router.get('/db-stats', async (req, res) => {
       sizes: sizes.map(s => ({ ...s, bytes: parseInt(s.bytes) })),
       bloat: bloat.map(b => ({ ...b, dead: parseInt(b.dead || 0), live: parseInt(b.live || 0) })),
       walSize,
+      walFiles,
+      replicationSlots,
+      walSettings,
       ...(cleaned ? { cleaned } : {}),
     });
   } catch (e) {
