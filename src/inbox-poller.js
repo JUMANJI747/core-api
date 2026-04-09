@@ -651,7 +651,8 @@ async function processAccount(account) {
           const contractorLine = contractorName
             ? `\nKontrahent: ${contractorName}`
             : `\nNowy adres - napisz 'dodaj kontrahenta' lub 'połącz z [nazwa]'`;
-          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}`;
+          const ctxLine = `\n\n[ctx: emailId=${savedEmail.id}, from=${savedEmail.fromEmail || ''}, lang=${effectiveLanguage || 'en'}]`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}${ctxLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
