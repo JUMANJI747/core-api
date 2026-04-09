@@ -211,8 +211,13 @@ router.post('/send-email', async (req, res) => {
       if (!originalEmail) return res.status(404).json({ error: 'emailId not found — mail to reply to does not exist' });
 
       to = to || originalEmail.fromEmail;
-      const inboxEmail = originalEmail.inbox ? `${originalEmail.inbox}@surfstickbell.com` : 'info@surfstickbell.com';
-      from = from || inboxEmail;
+      // Map inbox name to full email using IMAP_ACCOUNTS
+      if (!from && originalEmail.inbox) {
+        const accounts = getAccounts();
+        const matchedAccount = accounts.find(a => (a.inbox || '').toLowerCase() === originalEmail.inbox.toLowerCase());
+        from = matchedAccount ? matchedAccount.user : 'info@surfstickbell.com';
+      }
+      from = from || 'info@surfstickbell.com';
       if (!subject) {
         const origSubject = originalEmail.subject || '';
         subject = origSubject.replace(/^(Re:\s*)+/i, '').trim();

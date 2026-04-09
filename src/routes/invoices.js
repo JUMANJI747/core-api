@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment } = require('../ifirma-client');
-const { sendMail } = require('../mail-sender');
+const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { scoreContractor, processIfirmaInvoices } = require('./contractors');
@@ -586,8 +586,11 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         // Use the sender's email as recipient (reply to them)
         if (!to) to = originalEmail.fromEmail;
         // Send from the inbox that received the original email
-        const inboxEmail = originalEmail.inbox ? `${originalEmail.inbox}@surfstickbell.com` : from;
-        from = inboxEmail;
+        if (originalEmail.inbox) {
+          const accounts = getAccounts();
+          const matchedAccount = accounts.find(a => (a.inbox || '').toLowerCase() === originalEmail.inbox.toLowerCase());
+          from = matchedAccount ? matchedAccount.user : from;
+        }
         // Threading headers
         if (originalEmail.messageId) {
           inReplyTo = originalEmail.messageId;
