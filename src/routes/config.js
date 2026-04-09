@@ -149,11 +149,13 @@ router.get('/db-stats', async (req, res) => {
 
     const sizes = await prisma.$queryRaw`
       SELECT
-        schemaname || '.' || relname AS "table",
-        pg_size_pretty(pg_total_relation_size(schemaname || '.' || relname)) AS size,
-        pg_total_relation_size(schemaname || '.' || relname) AS bytes
-      FROM pg_stat_user_tables
-      ORDER BY pg_total_relation_size(schemaname || '.' || relname) DESC
+        c.relname AS "table",
+        pg_size_pretty(pg_total_relation_size(c.oid)) AS size,
+        pg_total_relation_size(c.oid) AS bytes
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind = 'r' AND n.nspname = 'public'
+      ORDER BY pg_total_relation_size(c.oid) DESC
       LIMIT 15
     `;
 
