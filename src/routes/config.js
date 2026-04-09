@@ -129,6 +129,40 @@ router.get('/stats', async (req, res) => {
   res.json({ contractors, openDeals, openConsignments, unreadEmails, pendingMailing });
 });
 
+// ============ DB STATS ============
+
+router.get('/db-stats', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const counts = {
+      emails: await prisma.email.count(),
+      emailsInbound: await prisma.email.count({ where: { direction: 'INBOUND' } }),
+      emailsOutbound: await prisma.email.count({ where: { direction: 'OUTBOUND' } }),
+      emailsDraft: await prisma.email.count({ where: { direction: 'DRAFT' } }),
+      emailAttachments: await prisma.emailAttachment.count(),
+      documents: await prisma.document.count(),
+      monthlyPackages: await prisma.monthlyPackage.count(),
+      invoices: await prisma.invoice.count(),
+      contractors: await prisma.contractor.count(),
+      memory: await prisma.memory.count(),
+    };
+
+    const sizes = await prisma.$queryRaw`
+      SELECT
+        schemaname || '.' || relname AS "table",
+        pg_size_pretty(pg_total_relation_size(schemaname || '.' || relname)) AS size,
+        pg_total_relation_size(schemaname || '.' || relname) AS bytes
+      FROM pg_stat_user_tables
+      ORDER BY pg_total_relation_size(schemaname || '.' || relname) DESC
+      LIMIT 15
+    `;
+
+    res.json({ ok: true, counts, sizes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ AGENT CONTEXT ============
 
 router.get('/agent-context/:agentId', async (req, res) => {
