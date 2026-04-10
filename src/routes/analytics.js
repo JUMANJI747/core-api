@@ -189,6 +189,18 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
       summary = 'Brak wyników dla tego pytania.';
     }
 
+    // Check last iFirma sync
+    const lastSyncedInvoice = await prisma.invoice.findFirst({
+      where: { source: 'ifirma_sync' },
+      orderBy: { updatedAt: 'desc' },
+      select: { updatedAt: true },
+    });
+    const lastSync = lastSyncedInvoice && lastSyncedInvoice.updatedAt;
+    const syncAgeHours = lastSync ? Math.round((Date.now() - new Date(lastSync).getTime()) / (1000 * 60 * 60)) : null;
+    const syncWarning = (syncAgeHours !== null && syncAgeHours > 24)
+      ? `Dane mogą być nieaktualne — ostatni sync ${syncAgeHours}h temu. Powiedz "zsynchronizuj" żeby zaktualizować.`
+      : null;
+
     res.json({
       ok: true,
       question,
@@ -196,6 +208,9 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
       results: safeResults.slice(0, 100),
       summary,
       rowCount: safeResults.length,
+      lastSync: lastSync ? lastSync.toISOString() : null,
+      syncAgeHours,
+      syncWarning,
     });
   } catch (e) {
     console.error('[analytics] error:', e.message);
