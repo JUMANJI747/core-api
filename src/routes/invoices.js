@@ -1,7 +1,7 @@
 'use strict';
 
 const router = require('express').Router();
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment } = require('../ifirma-client');
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment, searchContractor } = require('../ifirma-client');
 const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
@@ -158,6 +158,82 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       }
     }
     if (!contractor) return res.status(404).json({ error: 'contractor not found' });
+
+    // Cascading address lookup if contractor has no address
+    const hasAddress = contractor.address || contractor.city ||
+      (contractor.extras && contractor.extras.billingAddress && (contractor.extras.billingAddress.street || contractor.extras.billingAddress.city)) ||
+      (contractor.extras && contractor.extras.street);
+
+    if (!hasAddress && contractor.nip) {
+      console.log('[invoice-preview] No address for', contractor.name, '- looking up...');
+      let foundAddress = null;
+
+      // STEP 1: iFirma searchContractor by NIP
+      try {
+        const cleanNip = contractor.nip.replace(/[\s.-]/g, '');
+        const ifirmaResult = await searchContractor(cleanNip);
+        if (ifirmaResult && (ifirmaResult.Ulica || ifirmaResult.Miejscowosc)) {
+          foundAddress = {
+            street: ((ifirmaResult.Ulica || '') + ' ' + (ifirmaResult.NumerDomu || '')).trim(),
+            city: ifirmaResult.Miejscowosc || '',
+            postCode: ifirmaResult.KodPocztowy || '',
+            country: ifirmaResult.Kraj || ifirmaResult.KrajKod || '',
+            source: 'ifirma',
+          };
+          console.log('[invoice-preview] Address from iFirma:', JSON.stringify(foundAddress));
+        }
+      } catch (err) {
+        console.log('[invoice-preview] iFirma search failed:', err.message);
+      }
+
+      // STEP 2: VIES fallback
+      if (!foundAddress) {
+        try {
+          const clean = contractor.nip.replace(/[\s.-]/g, '').toUpperCase();
+          const m = clean.match(/^([A-Z]{2})(.+)$/);
+          const countryCode = m ? m[1] : (contractor.country || 'PL');
+          const vatNumber = m ? m[2] : clean;
+
+          const viesRes = await fetch('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ countryCode, vatNumber }),
+          });
+          const viesData = await viesRes.json();
+
+          if (viesData.valid && viesData.address) {
+            const addrParts = viesData.address.split('\n').map(s => s.trim()).filter(Boolean);
+            const street = addrParts[0] || '';
+            const cityLine = addrParts[addrParts.length - 1] || '';
+            const postMatch = cityLine.match(/(\d{4,5}[\s-]?\w*)/);
+            const postCode = postMatch ? postMatch[1].trim() : '';
+            const city = cityLine.replace(postMatch ? postMatch[1] : '', '').trim();
+            foundAddress = { street, city, postCode, country: countryCode, source: 'vies' };
+            if (viesData.name) foundAddress.companyName = viesData.name;
+            console.log('[invoice-preview] Address from VIES:', JSON.stringify(foundAddress));
+          }
+        } catch (err) {
+          console.log('[invoice-preview] VIES lookup failed:', err.message);
+        }
+      }
+
+      // STEP 3: Save to contractor extras for future use
+      if (foundAddress) {
+        try {
+          const currentExtras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
+          await prisma.contractor.update({
+            where: { id: contractor.id },
+            data: { extras: { ...currentExtras, billingAddress: foundAddress } },
+          });
+          console.log('[invoice-preview] Saved address to contractor', contractor.name);
+          contractor = await prisma.contractor.findUnique({ where: { id: contractor.id } });
+        } catch (err) {
+          console.log('[invoice-preview] Failed to save address:', err.message);
+        }
+      } else {
+        console.log('[invoice-preview] No address found in iFirma or VIES for', contractor.name);
+      }
+    }
 
     const waluta = (contractor.country || 'PL').toUpperCase() === 'PL' ? 'PLN' : 'EUR';
     const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
@@ -326,14 +402,15 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     let ifirmaResult;
     try {
       const cExtras = contractor.extras || {};
+      const billing = (cExtras.billingAddress && typeof cExtras.billingAddress === 'object') ? cExtras.billingAddress : {};
       ifirmaResult = await createInvoice({
         kontrahent: {
           name: contractor.name,
           nip: contractor.nip,
-          address: contractor.address || cExtras.street || '',
-          city: contractor.city || cExtras.city || '',
-          postCode: cExtras.postCode || '',
-          country: contractor.country || '',
+          address: contractor.address || billing.street || cExtras.street || '',
+          city: contractor.city || billing.city || cExtras.city || '',
+          postCode: billing.postCode || cExtras.postCode || '',
+          country: contractor.country || billing.country || '',
           ifirmaId: cExtras.ifirmaId || null,
         },
         pozycje,
@@ -467,14 +544,15 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
 
     const cExtras2 = contractor.extras || {};
+    const billing2 = (cExtras2.billingAddress && typeof cExtras2.billingAddress === 'object') ? cExtras2.billingAddress : {};
     const ifirmaResp = await createInvoice({
       kontrahent: {
         name: contractor.name,
         nip: contractor.nip,
-        address: contractor.address || cExtras2.street || '',
-        city: contractor.city || cExtras2.city || '',
-        postCode: cExtras2.postCode || '',
-        country: contractor.country || '',
+        address: contractor.address || billing2.street || cExtras2.street || '',
+        city: contractor.city || billing2.city || cExtras2.city || '',
+        postCode: billing2.postCode || cExtras2.postCode || '',
+        country: contractor.country || billing2.country || '',
       },
       pozycje,
       waluta,
