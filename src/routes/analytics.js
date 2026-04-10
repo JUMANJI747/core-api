@@ -30,6 +30,26 @@ function httpsPost(url, headers, body) {
   });
 }
 
+async function callClaudeWithRetry(body, maxRetries = 3) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const resp = await httpsPost('https://api.anthropic.com/v1/messages', {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    }, body);
+
+    const isOverloaded = resp.body && resp.body.error && resp.body.error.type === 'overloaded_error';
+    if (isOverloaded && attempt < maxRetries) {
+      const waitMs = attempt * 5000;
+      console.log('[analytics] Anthropic overloaded, retry', attempt, 'in', waitMs, 'ms');
+      await new Promise(r => setTimeout(r, waitMs));
+      continue;
+    }
+
+    return resp;
+  }
+}
+
 // ============ SCHEMA DESCRIPTION ============
 
 const SCHEMA_DESCRIPTION = `SCHEMA BAZY DANYCH SurfStickBell:
@@ -128,10 +148,7 @@ Wygeneruj TYLKO zapytanie SQL (PostgreSQL) które odpowiada na to pytanie.
 
 Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
 
-    const sqlResp = await httpsPost('https://api.anthropic.com/v1/messages', {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    }, {
+    const sqlResp = await callClaudeWithRetry({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
       messages: [{ role: 'user', content: sqlPrompt }],
@@ -168,10 +185,7 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
     let summary = null;
     if (safeResults.length > 0) {
       try {
-        const summaryResp = await httpsPost('https://api.anthropic.com/v1/messages', {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        }, {
+        const summaryResp = await callClaudeWithRetry({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 1000,
           messages: [{
