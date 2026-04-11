@@ -29,8 +29,15 @@ const CENNIK = {
 router.post('/ifirma/sync', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { year, month, dryRun } = req.body || {};
+    let { year, month, dryRun } = req.body || {};
     const now = new Date();
+
+    // Reject hallucinated year values (agent sometimes sends 2024 when current is 2026)
+    if (year && (year < now.getFullYear() - 2 || year > now.getFullYear() + 1)) {
+      console.log('[ifirma-sync] Invalid year from agent:', year, '- using current:', now.getFullYear());
+      year = now.getFullYear();
+    }
+
     const y = year || now.getFullYear();
     const m = month || (now.getMonth() + 1);
 
@@ -50,7 +57,11 @@ router.get('/ifirma/sync/preview', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const now = new Date();
-    const y = parseInt(req.query.year) || now.getFullYear();
+    let y = parseInt(req.query.year) || now.getFullYear();
+    if (y < now.getFullYear() - 2 || y > now.getFullYear() + 1) {
+      console.log('[ifirma-sync-preview] Invalid year:', y, '- using current:', now.getFullYear());
+      y = now.getFullYear();
+    }
     const m = parseInt(req.query.month) || (now.getMonth() + 1);
 
     const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
