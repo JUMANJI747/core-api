@@ -109,9 +109,9 @@ WAŻNE:
 // ============ HELPERS ============
 
 function serializeForJson(obj) {
-  // Recursive BigInt → Number conversion (Postgres returns BigInt for sums/counts)
   if (obj === null || obj === undefined) return obj;
   if (typeof obj === 'bigint') return Number(obj);
+  if (obj instanceof Date) return obj.toISOString();
   if (Array.isArray(obj)) return obj.map(serializeForJson);
   if (typeof obj === 'object') {
     const out = {};
