@@ -45,6 +45,7 @@ app.use('/api/jpk', require('./routes/jpk'));
 app.use('/api/jpk', require('./routes/jpk-package'));
 app.use('/api', require('./routes/parse-document'));
 app.use('/api', require('./routes/analytics'));
+app.use('/api', require('./routes/glob'));
 
 // ============ START ============
 app.listen(PORT, () => {

@@ -304,6 +304,29 @@ model AgentContext {
   updatedAt DateTime @updatedAt
 }
 
+// ============ SENDERS (GlobKurier) ============
+
+model Sender {
+  id            String   @id @default(uuid())
+  globKurierId  String?  @unique
+  name          String
+  companyName   String?
+  street        String?
+  houseNumber   String?
+  postCode      String?
+  city          String?
+  country       String?  @default("PL")
+  countryId     Int?
+  phone         String?
+  email         String?
+  isDefault     Boolean  @default(false)
+  extras        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([name])
+}
+
 // ============ MONTHLY PACKAGES ============
 
 model MonthlyPackage {
