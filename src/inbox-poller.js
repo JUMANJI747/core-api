@@ -466,6 +466,15 @@ function parseEuroAmount(str) {
   return isNaN(n) ? null : n;
 }
 
+function parsePhone(body) {
+  if (!body) return null;
+  const plusMatch = body.match(/(\+\d[\d\s-]{8,})/);
+  if (plusMatch) return plusMatch[1].trim();
+  const longMatch = body.match(/(\d{9,15})/);
+  if (longMatch) return longMatch[1];
+  return null;
+}
+
 function parseWebOrder(body) {
   const order = { items: [] };
   const b = body || '';
@@ -489,8 +498,7 @@ function parseWebOrder(body) {
   const emailMatches = b.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
   order.email = emailMatches.find(e => !/surfstickbell/i.test(e)) || null;
 
-  const phoneMatch = b.match(/(?:^|\s)(\+?\d[\d\s-]{7,})/m);
-  order.phone = phoneMatch ? phoneMatch[1].trim() : null;
+  order.phone = parsePhone(b);
 
   const totalMatch = b.match(/Total:\s*([\d.,]+)\s*€/i);
   order.total = totalMatch ? parseEuroAmount(totalMatch[1]) : null;
