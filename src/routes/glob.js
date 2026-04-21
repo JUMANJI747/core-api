@@ -161,10 +161,13 @@ router.post('/glob/sync-receivers', async (req, res) => {
                 city: recCity,
                 postCode: recPostCode,
                 country: r.country || r.countryCode || '',
+                countryId: r.countryId || null,
                 email: recEmail,
                 phone: r.phone || null,
                 street: r.street || null,
                 houseNumber: r.houseNumber || null,
+                apartmentNumber: r.apartmentNumber || null,
+                contactPerson: r.contactPerson || null,
               },
             },
           },
@@ -173,7 +176,7 @@ router.post('/glob/sync-receivers', async (req, res) => {
         console.log(`[glob/sync-receivers] Matched: ${recName} → ${contractor.name}`);
       } else {
         unmatched++;
-        unmatchedList.push({ globId, name: recName, city: recCity, country: r.country || r.countryCode || '', email: recEmail });
+        unmatchedList.push({ globId, name: recName, city: recCity, country: r.country || r.countryCode || '', countryId: r.countryId || null, email: recEmail });
       }
     }
 
@@ -230,19 +233,35 @@ router.get('/glob/orders', async (req, res) => {
     const mapped = orders.map(o => {
       const recv = o.receiverAddress || o.receiver || {};
       const send = o.senderAddress || o.sender || {};
+      const pricing = o.pricing || {};
+      const carrier = o.carrier || {};
       return {
         id: o.id,
         hash: o.hash || o.orderHash,
-        orderNumber: o.orderNumber || o.number,
+        orderNumber: o.number || o.orderNumber,
         status: o.status || o.statusName,
-        statusId: o.statusId,
         creationDate: o.creationDate || o.created_at || o.createdAt,
-        receiver: { name: recv.companyName || recv.name, city: recv.city, country: recv.country || recv.countryCode, postCode: recv.postCode || recv.zipCode },
-        sender: { name: send.companyName || send.name, city: send.city },
+        receiver: {
+          name: recv.companyName || recv.name,
+          contactPerson: recv.contactPerson,
+          city: recv.city,
+          postCode: recv.postCode || recv.zipCode,
+          countryId: recv.countryId || null,
+          country: recv.country || recv.countryCode || null,
+          phone: recv.phone,
+          email: recv.email,
+        },
+        sender: {
+          name: send.companyName || send.name,
+          city: send.city,
+          countryId: send.countryId || null,
+        },
         tracking: o.trackingNumber || o.tracking,
         product: o.productName || (o.product && o.product.name),
-        weight: o.weight,
-        price: o.price || o.totalPrice,
+        carrier: typeof carrier === 'object' ? (carrier.name || '') : carrier,
+        priceGross: pricing.priceGross || o.priceGross || null,
+        priceNet: pricing.priceNet || o.priceNet || null,
+        currency: pricing.currency || o.currency || 'PLN',
       };
     });
 
@@ -361,14 +380,17 @@ router.post('/glob/quote', async (req, res) => {
       city: gkData.city || billing.city || contractor.city || '',
       postCode: gkData.postCode || billing.postCode || '',
       country: gkData.country || billing.country || contractor.country || 'PL',
+      countryId: gkData.countryId || null,
       phone: gkData.phone || contractor.phone || '',
       email: gkData.email || contractor.email || '',
       street: gkData.street || billing.street || contractor.address || '',
       houseNumber: gkData.houseNumber || '',
+      apartmentNumber: gkData.apartmentNumber || '',
+      contactPerson: gkData.contactPerson || null,
     };
 
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
-    const receiverCountryId = COUNTRY_IDS[receiver.country] || 1;
+    const receiverCountryId = gkData.countryId || COUNTRY_IDS[receiver.country] || 1;
 
     const quoteParams = {
       weight, length, width, height,
@@ -501,7 +523,7 @@ router.post('/glob/order', async (req, res) => {
         houseNumber: receiver.houseNumber || '',
         postCode: receiver.postCode || '',
         city: receiver.city || '',
-        countryId: COUNTRY_IDS[receiver.country] || 1,
+        countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
         phone: receiver.phone || '',
         email: receiver.email || '',
       },
