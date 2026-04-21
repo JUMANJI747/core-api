@@ -440,6 +440,236 @@ async function checkVat(rawVat) {
   }
 }
 
+// ============ WEB ORDER DETECTION ============
+
+function isWebOrder(subject, body, inReplyTo) {
+  if (inReplyTo) return false;
+  const s = (subject || '').toLowerCase();
+  if (/quote request.*#\(?\d+\)?/i.test(subject || '')) return true;
+  if (/new customer quote request/i.test(subject || '')) return true;
+  if (/^order request/i.test(s) && /order\s*#\s*\d+/i.test(body || '')) return true;
+  return false;
+}
+
+function parseSpanishId(id) {
+  const clean = (id || '').replace(/[\s.-]/g, '').toUpperCase();
+  if (/^\d{8}[A-Z]$/.test(clean)) return { type: 'DNI', person: true, clean };
+  if (/^[ABCDEFGHJKLMNPQRSUVW]\d{8}$/.test(clean)) return { type: 'CIF', company: true, clean };
+  if (/^[A-Z]{2}[A-Z0-9]+$/.test(clean)) return { type: 'VAT', company: true, clean };
+  return { type: 'UNKNOWN', clean };
+}
+
+function parseEuroAmount(str) {
+  if (!str) return null;
+  const clean = String(str).replace(/\s|€|EUR/gi, '').replace(',', '.');
+  const n = parseFloat(clean);
+  return isNaN(n) ? null : n;
+}
+
+function parseWebOrder(body) {
+  const order = { items: [] };
+  const b = body || '';
+
+  const orderMatch = b.match(/Order\s*#\s*\(?(\d+)\)?/i);
+  order.orderNumber = orderMatch ? orderMatch[1] : null;
+
+  const companyMatch = b.match(/(?:quote|request)\s+from\s+([^.\n]+?)(?:\s*\.|$|\n)/i);
+  order.companyName = companyMatch ? companyMatch[1].trim() : null;
+
+  const nipMatch = b.match(/CIF\/NIF:\s*([^\s\n]+)/i)
+    || b.match(/NIF:\s*([^\s\n]+)/i)
+    || b.match(/VAT[:\s]+([A-Z]{2}\s*[A-Z0-9]+)/i);
+  order.nipRaw = nipMatch ? nipMatch[1].trim() : null;
+
+  const contactMatch = b.match(/Persona de contacto:\s*([^\n]+)/i)
+    || b.match(/Contact person:\s*([^\n]+)/i);
+  order.contactPerson = contactMatch ? contactMatch[1].trim() : null;
+
+  // Email — prefer one that's not info@surfstickbell
+  const emailMatches = b.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+  order.email = emailMatches.find(e => !/surfstickbell/i.test(e)) || null;
+
+  const phoneMatch = b.match(/(?:^|\s)(\+?\d[\d\s-]{7,})/m);
+  order.phone = phoneMatch ? phoneMatch[1].trim() : null;
+
+  const totalMatch = b.match(/Total:\s*([\d.,]+)\s*€/i);
+  order.total = totalMatch ? parseEuroAmount(totalMatch[1]) : null;
+  const subtotalMatch = b.match(/Subtotal:\s*([\d.,]+)\s*€/i);
+  order.subtotal = subtotalMatch ? parseEuroAmount(subtotalMatch[1]) : null;
+
+  // Items — lines with "NAME qty price €"
+  const lines = b.split('\n').map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (/subtotal|total|shipping|payment/i.test(line)) continue;
+    const m = line.match(/^(.+?)\s+(\d+)\s+([\d.,]+)\s*€/);
+    if (m) {
+      const name = m[1].trim();
+      const qty = parseInt(m[2]);
+      const price = parseEuroAmount(m[3]);
+      if (name && qty > 0 && price !== null && name.length > 3) {
+        order.items.push({ name, qty, price });
+      }
+    }
+  }
+
+  const addrMatch = b.match(/Billing address\s*\n([\s\S]*?)(?:\n\s*\n|\nCIF|\nPayment|\nSurf Stick)/i);
+  if (addrMatch) order.billingAddress = addrMatch[1].trim();
+
+  return order;
+}
+
+async function processWebOrder(prisma, savedEmail, parsed) {
+  const result = { parsed, viesValid: null, viesName: null, viesAddress: null, contractor: null, isNew: false, idType: null };
+
+  const parsedId = parsed.nipRaw ? parseSpanishId(parsed.nipRaw) : { type: 'NONE' };
+  result.idType = parsedId.type;
+
+  // VIES check only for company VAT numbers with country prefix
+  if (parsedId.type === 'VAT' || (parsedId.type === 'CIF' && parsed.nipRaw)) {
+    const clean = parsedId.clean;
+    const m = clean.match(/^([A-Z]{2})([A-Z0-9]+)$/);
+    if (m && m[1] !== 'PL') {
+      try {
+        const viesUrl = 'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number';
+        const viesRes = await fetch(viesUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ countryCode: m[1], vatNumber: m[2] }),
+        });
+        const viesData = await viesRes.json();
+        result.viesValid = viesData.valid === true;
+        result.viesName = viesData.name || null;
+        result.viesAddress = viesData.address || null;
+      } catch (err) {
+        console.log('[web-order] VIES check failed:', err.message);
+      }
+    }
+  }
+
+  // Find contractor by email, then by name
+  if (parsed.email) {
+    result.contractor = await prisma.contractor.findFirst({
+      where: { email: { equals: parsed.email, mode: 'insensitive' } },
+    });
+  }
+  if (!result.contractor && parsed.companyName) {
+    const firstWord = parsed.companyName.split(/\s+/)[0];
+    if (firstWord && firstWord.length > 3) {
+      result.contractor = await prisma.contractor.findFirst({
+        where: { name: { contains: firstWord, mode: 'insensitive' } },
+      });
+    }
+  }
+
+  // Create new contractor
+  if (!result.contractor && parsed.companyName) {
+    const clean = parsedId.clean || '';
+    const countryMatch = clean.match(/^([A-Z]{2})/);
+    const country = countryMatch ? countryMatch[1] : null;
+    const isPerson = parsedId.person === true || !parsed.nipRaw;
+    try {
+      result.contractor = await prisma.contractor.create({
+        data: {
+          name: parsed.companyName,
+          nip: (parsedId.company && parsed.nipRaw) ? parsed.nipRaw : null,
+          email: parsed.email || null,
+          phone: parsed.phone || null,
+          country: country || null,
+          type: isPerson ? 'PERSON' : 'BUSINESS',
+          source: 'web_order',
+          tags: ['web_order'],
+          extras: {
+            contactPerson: parsed.contactPerson || null,
+            billingAddress: parsed.billingAddress || null,
+            idType: parsedId.type,
+            idRaw: parsed.nipRaw || null,
+            viesValid: result.viesValid,
+            viesName: result.viesName,
+            viesAddress: result.viesAddress,
+            firstOrderNumber: parsed.orderNumber,
+          },
+        },
+      });
+      result.isNew = true;
+      console.log('[web-order] Created contractor:', result.contractor.name);
+    } catch (err) {
+      console.error('[web-order] Create contractor failed:', err.message);
+    }
+  }
+
+  // Link email to contractor
+  if (result.contractor && savedEmail && !savedEmail.contractorId) {
+    try {
+      await prisma.email.update({
+        where: { id: savedEmail.id },
+        data: { contractorId: result.contractor.id },
+      });
+    } catch (_) {}
+  }
+
+  return result;
+}
+
+function buildWebOrderTelegram(savedEmail, parsed, orderResult, lang) {
+  const lines = [];
+  lines.push(`🛒 ZAMÓWIENIE ZE STRONY #${parsed.orderNumber || '?'}`);
+  lines.push('');
+  if (parsed.companyName) lines.push(`Firma/Osoba: ${parsed.companyName}`);
+  if (parsed.contactPerson) lines.push(`Kontakt: ${parsed.contactPerson}`);
+  if (parsed.email) lines.push(`Email: ${parsed.email}`);
+  if (parsed.phone) lines.push(`Tel: ${parsed.phone}`);
+
+  // NIP line with VIES status
+  if (parsed.nipRaw) {
+    let nipLine = `${orderResult.idType || 'ID'}: ${parsed.nipRaw}`;
+    if (orderResult.idType === 'DNI') {
+      nipLine += ' (osoba prywatna, ES)';
+    } else if (orderResult.viesValid === true) {
+      nipLine += ' ✅ VIES OK';
+      if (orderResult.viesName) nipLine += ` (${orderResult.viesName})`;
+    } else if (orderResult.viesValid === false) {
+      nipLine += ' ⚠️ NIEWAŻNY w VIES';
+    } else if (orderResult.idType === 'UNKNOWN') {
+      nipLine += ' ⚠️ nieprawidłowy format';
+    }
+    lines.push(nipLine);
+  }
+
+  // Contractor
+  if (orderResult.isNew) lines.push(`🆕 Dodano kontrahenta: ${orderResult.contractor.name}`);
+  else if (orderResult.contractor) lines.push(`📋 Kontrahent w bazie: ${orderResult.contractor.name}`);
+
+  lines.push('');
+  if (parsed.items && parsed.items.length) {
+    lines.push(`Pozycje (${parsed.items.length}):`);
+    for (const it of parsed.items.slice(0, 20)) {
+      lines.push(`  ${it.name} × ${it.qty} = ${it.price.toFixed(2)} €`);
+    }
+    if (parsed.items.length > 20) lines.push(`  ... i ${parsed.items.length - 20} więcej`);
+  }
+
+  if (parsed.total !== null) {
+    lines.push('');
+    lines.push(`Suma: ${parsed.total.toFixed(2)} €`);
+  }
+
+  if (parsed.billingAddress) {
+    lines.push('');
+    lines.push(`Adres:\n${parsed.billingAddress}`);
+  }
+
+  lines.push('');
+  lines.push('Co robimy?');
+  lines.push(`- "wystaw fv na zamówienie ${parsed.orderNumber}"`);
+  lines.push(`- "odpisz że potwierdzamy zamówienie"`);
+  lines.push(`- "dopytaj o dane do wysyłki"`);
+
+  lines.push('');
+  lines.push(`[ctx: emailId=${savedEmail.id}, from=${savedEmail.fromEmail || ''}, lang=${lang || 'en'}, orderNumber=${parsed.orderNumber || ''}]`);
+
+  return lines.join('\n');
+}
+
 // ============ PROCESS ONE ACCOUNT ============
 
 async function processAccount(account) {
@@ -642,6 +872,28 @@ async function processAccount(account) {
           }
           if (vatResults.length > 0) {
             vatLines = '\n' + vatResults.join('\n');
+          }
+        }
+
+        // Web order detection — intercept BEFORE standard notification
+        if (isWebOrder(mail.subject, bodyFull, mail.inReplyTo)) {
+          try {
+            if (!bodyFull || bodyFull.length < 50) {
+              console.warn('[web-order] Order mail with empty body — skipping parse:', mail.subject);
+            } else {
+              const parsed = parseWebOrder(bodyFull);
+              console.log('[web-order] Parsed order:', parsed.orderNumber, '| items:', parsed.items.length, '| total:', parsed.total);
+              const orderResult = await processWebOrder(prisma, savedEmail, parsed);
+              if (tgToken && tgChat) {
+                const msg = buildWebOrderTelegram(savedEmail, parsed, orderResult, effectiveLanguage);
+                await sendTelegram(tgToken, tgChat, msg);
+              }
+              // Skip standard notification for this email
+              continue;
+            }
+          } catch (orderErr) {
+            console.error('[web-order] Processing failed:', orderErr.message);
+            // Fall through to standard notification
           }
         }
 
