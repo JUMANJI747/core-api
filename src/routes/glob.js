@@ -1,11 +1,25 @@
 'use strict';
 
 const router = require('express').Router();
-const { getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels } = require('../glob-client');
+const { getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getQuote, getAddons, getPickupTimes, createOrder } = require('../glob-client');
 
 function normalizeText(s) {
   return (s || '').toString().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
+
+const PACKAGE_PRESETS = {
+  karton_stickow: { name: 'Karton 30 sticków', weight: 1, length: 30, width: 20, height: 8, qty: 30, product: 'stick' },
+  karton_mascar: { name: 'Karton 30 mascar', weight: 1, length: 30, width: 20, height: 8, qty: 30, product: 'mascara' },
+  karton_collection: { name: 'Karton collection', weight: 2, length: 35, width: 25, height: 12, qty: 30, product: 'collection' },
+  maly_karton: { name: 'Mały karton (do 10 szt)', weight: 0.5, length: 20, width: 15, height: 8, qty: 10, product: 'mix' },
+};
+
+// GlobKurier countryId mapping (PL=1 confirmed from production data)
+const COUNTRY_IDS = {
+  PL: 1, DE: 2, FR: 3, ES: 4, PT: 5, IT: 6, GB: 7, NL: 8, BE: 9, AT: 10,
+  CZ: 11, SK: 12, HU: 13, RO: 14, BG: 15, HR: 16, SI: 17, LT: 18, LV: 19, EE: 20,
+  DK: 21, SE: 22, FI: 23, IE: 24, GR: 25, LU: 26,
+};
 
 // ============ SYNC SENDERS ============
 
@@ -263,6 +277,242 @@ router.get('/glob/labels/:hash', async (req, res) => {
     res.send(result.body);
   } catch (err) {
     console.error('[glob/labels]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ PRESETS ============
+
+router.get('/glob/presets', (req, res) => {
+  res.json({ ok: true, presets: PACKAGE_PRESETS });
+});
+
+// ============ QUOTE ============
+
+router.post('/glob/quote', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    let { preset, receiverSearch, senderId, weight, length, width, height } = req.body || {};
+
+    if (preset && PACKAGE_PRESETS[preset]) {
+      const p = PACKAGE_PRESETS[preset];
+      weight = weight || p.weight;
+      length = length || p.length;
+      width = width || p.width;
+      height = height || p.height;
+    }
+
+    if (!weight || !length || !width || !height) {
+      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj preset lub weight/length/width/height' });
+    }
+
+    // Sender
+    let sender;
+    if (senderId) {
+      sender = await prisma.sender.findUnique({ where: { id: senderId } });
+    } else {
+      sender = await prisma.sender.findFirst({ where: { isDefault: true } });
+      if (!sender) sender = await prisma.sender.findFirst();
+    }
+    if (!sender) return res.status(400).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
+
+    // Receiver via Contractor search
+    if (!receiverSearch) return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta)' });
+
+    const contractor = await prisma.contractor.findFirst({
+      where: {
+        OR: [
+          { name: { contains: receiverSearch, mode: 'insensitive' } },
+          { city: { contains: receiverSearch, mode: 'insensitive' } },
+          { email: { contains: receiverSearch, mode: 'insensitive' } },
+        ],
+      },
+    });
+    if (!contractor) return res.status(404).json({ ok: false, error: 'Nie znaleziono kontrahenta: ' + receiverSearch });
+
+    const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
+    const gkData = cExtras.globKurierReceiverData || {};
+    const billing = cExtras.billingAddress || {};
+    const receiver = {
+      name: contractor.name,
+      contractorId: contractor.id,
+      city: gkData.city || billing.city || contractor.city || '',
+      postCode: gkData.postCode || billing.postCode || '',
+      country: gkData.country || billing.country || contractor.country || 'PL',
+      phone: gkData.phone || contractor.phone || '',
+      email: gkData.email || contractor.email || '',
+      street: gkData.street || billing.street || contractor.address || '',
+      houseNumber: gkData.houseNumber || '',
+    };
+
+    const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
+    const receiverCountryId = COUNTRY_IDS[receiver.country] || 1;
+
+    const quoteParams = {
+      weight, length, width, height,
+      senderCountryId,
+      senderPostCode: sender.postCode || '',
+      receiverCountryId,
+      receiverPostCode: receiver.postCode || '',
+    };
+
+    const productsData = await getQuote(quoteParams);
+    const products = productsData.standard || productsData.results || productsData.items || (Array.isArray(productsData) ? productsData : []);
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.json({ ok: true, offers: [], note: 'Brak ofert dla tej trasy', rawResponse: productsData });
+    }
+
+    const filtered = products
+      .filter(p => {
+        const name = (p.name || '').toLowerCase();
+        const carrier = (p.carrierName || '').toLowerCase();
+        return !name.includes('pocztex') && !carrier.includes('pocztex');
+      })
+      .sort((a, b) => (parseFloat(a.netPrice) || 999) - (parseFloat(b.netPrice) || 999));
+
+    const offers = filtered.slice(0, 10).map(p => ({
+      productId: p.id,
+      carrier: p.carrierName,
+      name: p.name,
+      netPrice: parseFloat(p.netPrice),
+      grossPrice: parseFloat(p.grossPrice),
+      currency: p.currency || 'PLN',
+      deliveryTime: p.deliveryTime || p.transitTime,
+      maxWeight: p.maxWeight,
+    }));
+
+    const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
+    const quoteId = Date.now().toString();
+    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, createdAt: new Date() };
+    for (const k of Object.keys(quoteStore)) {
+      if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
+    }
+
+    res.json({
+      ok: true,
+      quoteId,
+      sender: { name: sender.companyName || sender.name, city: sender.city },
+      receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
+      package: { weight, length, width, height, preset: preset || 'custom' },
+      offers,
+      cheapest: offers[0] || null,
+      note: 'Wybierz ofertę: POST /api/glob/order { quoteId, productId }',
+    });
+  } catch (err) {
+    console.error('[glob/quote]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ ORDER ============
+
+router.post('/glob/order', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { quoteId, productId } = req.body || {};
+    if (!quoteId) return res.status(400).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
+
+    const quoteStore = req.app.locals.quoteStore || {};
+    const quote = quoteStore[quoteId];
+    if (!quote) return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
+
+    const selectedOffer = productId
+      ? quote.offers.find(o => String(o.productId) === String(productId))
+      : quote.offers[0];
+    if (!selectedOffer) return res.status(404).json({ ok: false, error: 'Nie znaleziono oferty o podanym productId' });
+
+    // Get addons and pickup times
+    const addonsData = await getAddons(selectedOffer.productId, quote.quoteParams);
+    const addons = addonsData.addons || addonsData.results || [];
+    const pickupAddon = addons.find(a => /podjazd/i.test(a.addonName || ''));
+    const deliveryAddon = addons.find(a => /doręczenie|delivery/i.test(a.addonName || ''));
+
+    const pickupData = await getPickupTimes(selectedOffer.productId, {
+      ...quote.quoteParams,
+      receiverCity: quote.receiver.city,
+    });
+    const pickupList = pickupData.results || pickupData.items || (Array.isArray(pickupData) ? pickupData : []);
+    const firstPickup = pickupList[0] || {};
+
+    const sender = quote.sender;
+    const receiver = quote.receiver;
+    const senderExtras = (typeof sender.extras === 'object' && sender.extras) || {};
+
+    function trimName(name, max = 30) {
+      if (!name || name.length <= max) return name;
+      return name.split(' ').reduce((acc, w) => {
+        const next = (acc + ' ' + w).trim();
+        return next.length <= max ? next : acc;
+      }, '').trim();
+    }
+
+    const orderPayload = {
+      shipment: {
+        productId: selectedOffer.productId,
+        addonIds: [pickupAddon && pickupAddon.id, deliveryAddon && deliveryAddon.id].filter(Boolean),
+        collectionDate: firstPickup.date || new Date().toISOString().split('T')[0],
+        collectionTimeFrom: firstPickup.from || '09:00',
+        collectionTimeTo: firstPickup.to || '17:00',
+        parcel: {
+          weight: quote.quoteParams.weight,
+          length: quote.quoteParams.length,
+          width: quote.quoteParams.width,
+          height: quote.quoteParams.height,
+          quantity: 1,
+          contents: 'Cosmetics / Surf Stick Bell',
+        },
+      },
+      senderAddress: {
+        name: trimName(senderExtras.name || sender.companyName || sender.name),
+        street: senderExtras.street || sender.street || '',
+        houseNumber: senderExtras.houseNumber || sender.houseNumber || '',
+        postCode: sender.postCode || '',
+        city: sender.city || '',
+        countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
+        phone: senderExtras.phone || sender.phone || '',
+        email: senderExtras.email || sender.email || 'delivery@surfstickbell.com',
+      },
+      receiverAddress: {
+        name: trimName(receiver.name),
+        street: receiver.street || '',
+        houseNumber: receiver.houseNumber || '',
+        postCode: receiver.postCode || '',
+        city: receiver.city || '',
+        countryId: COUNTRY_IDS[receiver.country] || 1,
+        phone: receiver.phone || '',
+        email: receiver.email || '',
+      },
+    };
+
+    function removeNulls(obj) {
+      if (Array.isArray(obj)) return obj.map(removeNulls).filter(v => v !== null && v !== undefined && v !== '');
+      if (obj && typeof obj === 'object') {
+        const cleaned = {};
+        for (const [k, v] of Object.entries(obj)) {
+          if (v !== null && v !== undefined && v !== '' && v !== 'null') cleaned[k] = removeNulls(v);
+        }
+        return cleaned;
+      }
+      return obj;
+    }
+
+    const cleanedPayload = removeNulls(orderPayload);
+    console.log('[glob/order] Creating order:', JSON.stringify(cleanedPayload));
+
+    const result = await createOrder(cleanedPayload);
+    delete quoteStore[quoteId];
+
+    res.json({
+      ok: true,
+      order: result,
+      carrier: selectedOffer.carrier,
+      price: selectedOffer.netPrice + ' ' + selectedOffer.currency,
+      sender: { name: sender.companyName || sender.name, city: sender.city },
+      receiver: { name: receiver.name, city: receiver.city },
+    });
+  } catch (err) {
+    console.error('[glob/order]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

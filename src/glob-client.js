@@ -123,4 +123,77 @@ async function createOrder(orderData) {
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder };
+async function getQuote(params) {
+  const token = await getToken();
+  const query = new URLSearchParams();
+  query.set('width', String(params.width));
+  query.set('height', String(params.height));
+  query.set('length', String(params.length));
+  query.set('weight', String(params.weight));
+  query.set('quantity', String(params.quantity || 1));
+  query.set('senderCountryId', String(params.senderCountryId));
+  query.set('senderPostCode', String(params.senderPostCode || ''));
+  query.set('receiverCountryId', String(params.receiverCountryId));
+  query.set('receiverPostCode', String(params.receiverPostCode || ''));
+  query.set('packageType', 'PARCEL');
+  query.set('transportType', 'ROAD');
+  query.append('collectionTypes[]', 'PICKUP');
+  query.append('deliveryTypes[]', 'PICKUP');
+  query.set('flatList', 'true');
+
+  const url = `https://api.globkurier.pl/v1/products?${query.toString()}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function getAddons(productId, params) {
+  const token = await getToken();
+  const query = new URLSearchParams();
+  query.set('productId', String(productId));
+  query.set('length', String(params.length));
+  query.set('width', String(params.width));
+  query.set('height', String(params.height));
+  query.set('weight', String(params.weight));
+  query.set('quantity', String(params.quantity || 1));
+  query.set('senderCountryId', String(params.senderCountryId));
+  query.set('receiverCountryId', String(params.receiverCountryId));
+  query.set('senderPostCode', String(params.senderPostCode || ''));
+  query.set('receiverPostCode', String(params.receiverPostCode || ''));
+
+  const url = `https://api.globkurier.pl/v1/product/addons?${query.toString()}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function getPickupTimes(productId, params) {
+  const token = await getToken();
+  const query = new URLSearchParams();
+  query.set('productId', String(productId));
+  query.set('senderCountryId', String(params.senderCountryId));
+  query.set('senderPostCode', String(params.senderPostCode || ''));
+  query.set('receiverCountryId', String(params.receiverCountryId));
+  query.set('receiverPostCode', String(params.receiverPostCode || ''));
+  query.set('receiverCity', String(params.receiverCity || ''));
+  query.set('date', params.date || new Date().toISOString().split('T')[0]);
+  query.set('weight', String(params.weight));
+  query.set('quantity', '1');
+
+  const url = `https://api.globkurier.pl/v1/order/pickupTimeRanges?${query.toString()}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function getCustomRequiredFields(productId, senderCountryId, receiverCountryId) {
+  const token = await getToken();
+  const query = new URLSearchParams();
+  query.set('productId', String(productId));
+  query.set('senderCountryId', String(senderCountryId));
+  query.set('receiverCountryId', String(receiverCountryId));
+  query.set('collectionType', 'PICKUP');
+
+  const url = `https://api.globkurier.pl/v1/order/customRequiredFields?${query.toString()}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, getQuote, getAddons, getPickupTimes, getCustomRequiredFields };
