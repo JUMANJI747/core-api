@@ -14,11 +14,10 @@ const PACKAGE_PRESETS = {
   maly_karton: { name: 'Mały karton (do 10 szt)', weight: 0.5, length: 20, width: 15, height: 8, qty: 10, product: 'mix' },
 };
 
-// GlobKurier countryId mapping (PL=1 confirmed from production data)
+// GlobKurier countryId mapping (verified from real API data)
 const COUNTRY_IDS = {
-  PL: 1, DE: 2, FR: 3, ES: 4, PT: 5, IT: 6, GB: 7, NL: 8, BE: 9, AT: 10,
-  CZ: 11, SK: 12, HU: 13, RO: 14, BG: 15, HR: 16, SI: 17, LT: 18, LV: 19, EE: 20,
-  DK: 21, SE: 22, FI: 23, IE: 24, GR: 25, LU: 26,
+  PL: 1, BE: 5, CZ: 8, DK: 9, GR: 13, ES: 14, PT: 24, HU: 32, HR: 131, MT: 206, AE: 293,
+  // Missing (DE, FR, IT, NL, AT, SE, GB) — will be added when seen in data
 };
 
 // ============ SYNC SENDERS ============
