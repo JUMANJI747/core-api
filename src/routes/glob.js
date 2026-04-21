@@ -281,6 +281,28 @@ router.get('/glob/labels/:hash', async (req, res) => {
   }
 });
 
+// ============ DEBUG: RAW ==========
+
+router.get('/glob/debug/raw-receiver', async (req, res) => {
+  try {
+    const data = await getReceivers(0, 3);
+    const items = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+    res.json({ ok: true, firstItemKeys: items[0] ? Object.keys(items[0]) : [], sample: items[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/glob/debug/raw-order', async (req, res) => {
+  try {
+    const data = await getOrders({ limit: 1 });
+    const items = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+    res.json({ ok: true, firstItemKeys: items[0] ? Object.keys(items[0]) : [], sample: items[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============ PRESETS ============
 
 router.get('/glob/presets', (req, res) => {
