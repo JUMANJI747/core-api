@@ -4,6 +4,7 @@ const router = require('express').Router();
 const https = require('https');
 const { deleteInvoice, fetchInvoiceDetails } = require('../ifirma-client');
 const { sendTelegram } = require('../telegram-utils');
+const { getOrders: globGetOrders } = require('../glob-client');
 
 // ============ HELPERS ============
 
@@ -332,32 +333,7 @@ async function performWdtMatching(prisma, y, m) {
   }
 
   // 2. FETCH GLOBKURIER ORDERS
-  const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
-  const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
-  if (!gkEmail || !gkPassword) {
-    throw new Error('GLOBKURIER_EMAIL or GLOBKURIER_PASSWORD not set');
-  }
-
-  const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, {
-    email: gkEmail,
-    password: gkPassword,
-  });
-  console.log('[jpk] GlobKurier token:', loginResp.body && loginResp.body.token ? loginResp.body.token.substring(0, 20) + '...' : 'NO TOKEN');
-  if (loginResp.status !== 200 || !loginResp.body.token) {
-    throw new Error('GlobKurier login failed');
-  }
-  const token = loginResp.body.token;
-
-  const ordersResp = await httpsGet('https://api.globkurier.pl/v1/orders?limit=100', {
-    'X-Auth-Token': token,
-    'Accept-Language': 'pl',
-    'Accept': 'application/json',
-  });
-  if (ordersResp.status !== 200) {
-    throw new Error('GlobKurier orders fetch failed');
-  }
-
-  const ordersData = ordersResp.body;
+  const ordersData = await globGetOrders({ limit: 100 });
   const allOrders = (ordersData && ordersData.results) ? ordersData.results
     : (ordersData && ordersData.items) ? ordersData.items
     : (ordersData && ordersData.data) ? ordersData.data

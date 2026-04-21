@@ -69,4 +69,58 @@ async function getReceivers(offset = 0, limit = 100, phrase = '') {
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers };
+async function getOrders(params = {}) {
+  const token = await getToken();
+  const query = new URLSearchParams();
+  query.set('limit', String(params.limit || 100));
+  if (params.offset) query.set('offset', String(params.offset));
+  if (params.status) query.set('filters[status]', params.status);
+  if (params.dateFrom) query.set('filters[dateFrom]', params.dateFrom);
+  if (params.dateTo) query.set('filters[dateTo]', params.dateTo);
+
+  const url = `https://api.globkurier.pl/v1/orders?${query.toString()}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function getOrderTracking(orderHash) {
+  const token = await getToken();
+  const url = `https://api.globkurier.pl/v1/order/tracking?orderHash=${encodeURIComponent(orderHash)}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function getOrderLabels(orderHash, format = 'A4') {
+  const token = await getToken();
+  const url = `https://api.globkurier.pl/v1/order/labels?orderHashes[]=${encodeURIComponent(orderHash)}&format=${format}`;
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers: { 'X-Auth-Token': token, 'Accept-Language': 'pl' },
+    };
+    https.get(options, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+    }).on('error', reject);
+  });
+}
+
+async function getProducts(senderCountryId = 1, receiverCountryId) {
+  const token = await getToken();
+  let url = `https://api.globkurier.pl/v1/products?senderCountryId=${senderCountryId}`;
+  if (receiverCountryId) url += `&receiverCountryId=${receiverCountryId}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  return resp.body;
+}
+
+async function createOrder(orderData) {
+  const token = await getToken();
+  const resp = await httpsRequest('https://api.globkurier.pl/v1/order', 'POST', { 'X-Auth-Token': token }, orderData);
+  return resp.body;
+}
+
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder };

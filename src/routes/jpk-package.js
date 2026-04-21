@@ -5,6 +5,7 @@ const https = require('https');
 const { fetchInvoicePdf } = require('../ifirma-client');
 const { sendMail } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
+const { getOrderLabels } = require('../glob-client');
 const { performWdtMatching } = require('./jpk');
 
 // ============ HELPERS ============
@@ -74,29 +75,15 @@ router.post('/build-package', async (req, res) => {
       matchResult = { matched: [] };
     }
 
-    // Login to GlobKurier (once)
-    let gkToken = null;
-    const gkEmail = (process.env.GLOBKURIER_EMAIL || '').trim();
-    const gkPassword = (process.env.GLOBKURIER_PASSWORD || '').trim();
-    if (gkEmail && gkPassword) {
-      try {
-        const loginResp = await httpsPost('https://api.globkurier.pl/v1/auth/login', {}, { email: gkEmail, password: gkPassword });
-        if (loginResp.status === 200 && loginResp.body.token) gkToken = loginResp.body.token;
-      } catch (e) {
-        console.error('[package] GlobKurier login failed:', e.message);
-      }
-    }
-
-    // Download CMR PDFs
+    // Download CMR PDFs via glob-client
     let cmrDownloaded = 0;
     for (const pair of (matchResult.matched || [])) {
       const invoiceNumber = pair.invoice.number;
       const hash = pair.order.hash;
       const receiverName = pair.order.receiverName || '';
 
-      if (!hash || !gkToken) continue;
+      if (!hash) continue;
 
-      // Check if already exists
       const existing = await prisma.document.findFirst({
         where: { packageId: pkg.id, type: 'cmr', invoiceNumber },
       });
@@ -106,11 +93,7 @@ router.post('/build-package', async (req, res) => {
       }
 
       try {
-        const url = `https://api.globkurier.pl/v1/order/labels?orderHashes[]=${encodeURIComponent(hash)}&format=A4`;
-        const { status, body: pdfBuffer } = await httpsGetBinary(url, {
-          'X-Auth-Token': gkToken,
-          'Accept-Language': 'pl',
-        });
+        const { status, body: pdfBuffer } = await getOrderLabels(hash, 'A4');
 
         if (status !== 200 || pdfBuffer.length < 100) {
           console.error(`[package] CMR download failed for ${invoiceNumber}: status ${status}, size ${pdfBuffer.length}`);

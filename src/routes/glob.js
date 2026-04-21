@@ -1,7 +1,11 @@
 'use strict';
 
 const router = require('express').Router();
-const { getSenders, getReceivers } = require('../glob-client');
+const { getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels } = require('../glob-client');
+
+function normalizeText(s) {
+  return (s || '').toString().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
 
 // ============ SYNC SENDERS ============
 
@@ -181,6 +185,86 @@ router.post('/glob/sender/:id/set-default', async (req, res) => {
   await prisma.sender.updateMany({ data: { isDefault: false } });
   const sender = await prisma.sender.update({ where: { id: req.params.id }, data: { isDefault: true } });
   res.json({ ok: true, sender });
+});
+
+// ============ ORDERS ============
+
+router.get('/glob/orders', async (req, res) => {
+  try {
+    const { search, status, limit = 50, offset = 0 } = req.query;
+    const data = await getOrders({ limit: Math.min(parseInt(limit) || 50, 100), offset: parseInt(offset) || 0, status });
+    let orders = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+
+    if (!Array.isArray(orders)) {
+      return res.json({ ok: true, orders: [], total: 0, note: 'Unexpected response from GlobKurier' });
+    }
+
+    if (search) {
+      const q = normalizeText(search);
+      orders = orders.filter(o => {
+        const recv = o.receiverAddress || o.receiver || {};
+        const send = o.senderAddress || o.sender || {};
+        const fields = [
+          o.orderNumber, o.number, o.hash, o.trackingNumber, o.tracking,
+          recv.name, recv.companyName, recv.city, recv.country,
+          send.name, send.companyName, send.city,
+        ].filter(Boolean).map(normalizeText);
+        return fields.some(f => f.includes(q));
+      });
+    }
+
+    const mapped = orders.map(o => {
+      const recv = o.receiverAddress || o.receiver || {};
+      const send = o.senderAddress || o.sender || {};
+      return {
+        id: o.id,
+        hash: o.hash || o.orderHash,
+        orderNumber: o.orderNumber || o.number,
+        status: o.status || o.statusName,
+        statusId: o.statusId,
+        creationDate: o.creationDate || o.created_at || o.createdAt,
+        receiver: { name: recv.companyName || recv.name, city: recv.city, country: recv.country || recv.countryCode, postCode: recv.postCode || recv.zipCode },
+        sender: { name: send.companyName || send.name, city: send.city },
+        tracking: o.trackingNumber || o.tracking,
+        product: o.productName || (o.product && o.product.name),
+        weight: o.weight,
+        price: o.price || o.totalPrice,
+      };
+    });
+
+    res.json({ ok: true, orders: mapped, total: mapped.length });
+  } catch (err) {
+    console.error('[glob/orders]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ TRACKING ============
+
+router.get('/glob/tracking/:hash', async (req, res) => {
+  try {
+    const data = await getOrderTracking(req.params.hash);
+    res.json({ ok: true, tracking: data });
+  } catch (err) {
+    console.error('[glob/tracking]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ LABELS (CMR PDF) ============
+
+router.get('/glob/labels/:hash', async (req, res) => {
+  try {
+    const format = req.query.format || 'A4';
+    const result = await getOrderLabels(req.params.hash, format);
+    if (result.status !== 200) return res.status(result.status).json({ error: 'Label fetch failed' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="CMR-${req.params.hash.slice(0, 12)}.pdf"`);
+    res.send(result.body);
+  } catch (err) {
+    console.error('[glob/labels]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 module.exports = router;
