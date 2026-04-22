@@ -1,6 +1,7 @@
 'use strict';
 
 const router = require('express').Router();
+const https = require('https');
 const { getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getQuote, getAddons, getPickupTimes, createOrder } = require('../glob-client');
 
 function normalizeText(s) {
@@ -299,6 +300,79 @@ router.get('/glob/labels/:hash', async (req, res) => {
     res.send(result.body);
   } catch (err) {
     console.error('[glob/labels]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ SEND LABEL TO TELEGRAM ============
+
+router.post('/glob/send-label', async (req, res) => {
+  try {
+    const { hash, chatId, caption } = req.body || {};
+    if (!hash) return res.status(400).json({ ok: false, error: 'Brak hash zamówienia' });
+
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+    const tgChat = chatId || process.env.TELEGRAM_CHAT_ID || '8164528644';
+    if (!tgToken || !tgChat) return res.status(500).json({ ok: false, error: 'Brak konfiguracji Telegram' });
+
+    const result = await getOrderLabels(hash, 'A4');
+    if (result.status !== 200 || !result.body || result.body.length === 0) {
+      return res.status(404).json({ ok: false, error: 'Nie udało się pobrać etykiety', status: result.status });
+    }
+    const pdfBuffer = result.body;
+    const filename = `CMR-${hash.slice(0, 16)}.pdf`;
+    const captionText = caption || `List przewozowy ${hash.slice(0, 12)}...`;
+
+    // Build multipart body (same pattern as invoices.js)
+    const boundary = '----FormBoundary' + Date.now();
+    const parts = [
+      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${tgChat}`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${captionText}`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+    ];
+    const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
+    const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const body = Buffer.concat([pre, pdfBuffer, post]);
+
+    const tgResult = await new Promise((resolve, reject) => {
+      const tgUrl = new URL(`https://api.telegram.org/bot${tgToken}/sendDocument`);
+      const options = {
+        hostname: tgUrl.hostname,
+        path: tgUrl.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+        },
+      };
+      const req2 = https.request(options, r => {
+        const chunks = [];
+        r.on('data', c => chunks.push(c));
+        r.on('end', () => {
+          const text = Buffer.concat(chunks).toString();
+          try { resolve({ status: r.statusCode, body: JSON.parse(text) }); }
+          catch (e) { resolve({ status: r.statusCode, body: text }); }
+        });
+      });
+      req2.on('error', reject);
+      req2.write(body);
+      req2.end();
+    });
+
+    if (!tgResult.body || tgResult.body.ok !== true) {
+      console.error('[glob/send-label] Telegram error:', tgResult.body);
+      return res.status(500).json({ ok: false, error: 'Telegram send failed', details: tgResult.body });
+    }
+
+    res.json({
+      ok: true,
+      hash,
+      sent: true,
+      size: pdfBuffer.length,
+      telegramMessageId: tgResult.body.result && tgResult.body.result.message_id,
+    });
+  } catch (err) {
+    console.error('[glob/send-label]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
