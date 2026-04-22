@@ -205,9 +205,10 @@ router.post('/glob/sender/:id/set-default', async (req, res) => {
 
 // ============ ORDERS ============
 
-router.get('/glob/orders', async (req, res) => {
+async function handleSearchOrders(req, res) {
   try {
-    const { search, status, limit = 50, offset = 0 } = req.query;
+    const params = { ...req.query, ...(req.body || {}) };
+    const { search, status, limit = 50, offset = 0 } = params;
     const data = await getOrders({ limit: Math.min(parseInt(limit) || 50, 100), offset: parseInt(offset) || 0, status });
     let orders = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
 
@@ -269,7 +270,10 @@ router.get('/glob/orders', async (req, res) => {
     console.error('[glob/orders]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
-});
+}
+
+router.get('/glob/orders', handleSearchOrders);
+router.post('/glob/orders', handleSearchOrders);
 
 // ============ TRACKING ============
 
