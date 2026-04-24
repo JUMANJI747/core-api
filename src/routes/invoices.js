@@ -98,6 +98,14 @@ function findProductFuzzy(catalog, query) {
   const q = normalize(query);
   if (!q) return null;
 
+  // 0. EAN match — case-insensitive, with/without hyphens (e.g. "stick generic" → "STICK-GENERIC")
+  const eanInput = query.toString().trim().toUpperCase().replace(/\s+/g, '-');
+  const byEanCI = catalog.find(p => p.ean.toUpperCase() === eanInput);
+  if (byEanCI) return byEanCI;
+  const noHyphen = eanInput.replace(/-/g, '');
+  const byEanNoHyphen = catalog.find(p => p.ean.toUpperCase().replace(/-/g, '') === noHyphen);
+  if (byEanNoHyphen) return byEanNoHyphen;
+
   // 1. Exact EAN/SKU
   const byEan = catalog.find(p => p.ean === query.toString());
   if (byEan) return byEan;
