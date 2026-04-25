@@ -6,6 +6,7 @@ const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
 const { scoreContractor } = require('./contractors');
 const { OFFER_TEMPLATES } = require('../offer-templates');
+const { parseOrderWithLLM } = require('../order-llm-parser');
 
 const OFFER_PDFS = {
   FR: { fileId: '112mOTMThWgaCAoy70E6JMG-dAnPYetqx', filename: 'Offre_SurfStickBell.pdf' },
@@ -197,41 +198,24 @@ router.post('/emails/:id/parse-attachments', async (req, res) => {
           results.push({ filename: att.filename, type: 'pdf', size: att.data.length, preview: text.substring(0, 500) });
 
           if (text.length > 50 && !detectedOrder) {
-            const items = [];
-            const lines = text.split('\n');
-            for (const line of lines) {
-              const eanMatch = line.match(/(.+?)\s+(\d+)[.,]?0*\s+[\d.,]+\s+\d+\s+([\d.,]+)\s+[\d.,]+\s+(\d{13})/);
-              if (eanMatch) {
-                items.push({
-                  name: eanMatch[1].trim(),
-                  qty: parseInt(eanMatch[2]),
-                  ean: eanMatch[4],
-                  priceNetto: parseFloat(eanMatch[3].replace(',', '.')),
-                });
-                continue;
-              }
-              const simpleMatch = line.match(/(.+?)\s+(\d+)\s+szt\.?\s+([\d.,]+)/i);
-              if (simpleMatch) {
-                items.push({
-                  name: simpleMatch[1].trim(),
-                  qty: parseInt(simpleMatch[2]),
-                  priceNetto: parseFloat(simpleMatch[3].replace(',', '.')),
-                });
-              }
-            }
-
-            const totalMatch = text.match(/Razem[:\s]+([\d\s.,]+)/i) || text.match(/Total[:\s]+([\d\s.,]+)/i);
-            let total = null;
-            if (totalMatch) {
-              const nums = totalMatch[1].match(/[\d.,]+/g);
-              if (nums && nums.length) total = parseFloat(nums[nums.length - 1].replace(/\s/g, '').replace(',', '.'));
-            }
-
-            const numMatch = text.match(/[Zz]am[oó]wienie[^0-9]*?(\d+[\/\w-]*)/i) || text.match(/[Oo]rder[^0-9]*#?\s*(\d+[\/\w-]*)/i);
-            const orderNumber = numMatch ? numMatch[1] : null;
-
-            if (items.length > 0) {
-              detectedOrder = { isOrder: true, items, total, orderNumber, hasItems: true };
+            const contractorName = (email.contractor && email.contractor.name) || email.fromName;
+            const llmOrder = await parseOrderWithLLM(text, contractorName);
+            if (llmOrder && llmOrder.hasItems) {
+              detectedOrder = {
+                isOrder: true,
+                items: llmOrder.items,
+                total: llmOrder.totalBrutto || llmOrder.totalNetto,
+                totalNetto: llmOrder.totalNetto,
+                totalBrutto: llmOrder.totalBrutto,
+                currency: llmOrder.currency || 'PLN',
+                orderNumber: llmOrder.orderNumber,
+                buyerName: llmOrder.buyerName,
+                buyerNip: llmOrder.buyerNip,
+                vatRate: llmOrder.vatRate,
+                notes: llmOrder.notes,
+                hasItems: true,
+                parsedBy: 'llm',
+              };
             }
           }
         } catch (err) {

@@ -5,6 +5,7 @@ const { simpleParser } = require('mailparser');
 const https = require('https');
 const { PrismaClient } = require('@prisma/client');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
+const { parseOrderWithLLM } = require('./order-llm-parser');
 
 const prisma = new PrismaClient();
 
@@ -989,7 +990,11 @@ async function processAccount(account) {
               attachmentInfo += `\n${parsed.preview.substring(0, 300)}`;
             }
             if (parsed.text && (parsed.type === 'pdf' || parsed.type === 'txt')) {
-              const order = detectOrderInText(parsed.text);
+              const senderName = contractorName || mail.fromName || mail.fromEmail;
+              let order = await parseOrderWithLLM(parsed.text, senderName);
+              if (!order || !order.hasItems) {
+                order = detectOrderInText(parsed.text);
+              }
               if (order && order.hasItems) detectedOrder = order;
             }
           }
