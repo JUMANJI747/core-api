@@ -84,12 +84,23 @@ router.get('/emails/recent', async (req, res) => {
   const take = Math.min(Math.max(1, parseInt(req.query.limit) || 50), 100);
   const skip = Math.max(0, parseInt(req.query.offset) || 0);
   const emails = await prisma.email.findMany({
-    select: { id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true, tags: true, inbox: true, createdAt: true, contractor: { select: { name: true, country: true } } },
+    select: {
+      id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true,
+      tags: true, inbox: true, createdAt: true,
+      contractor: { select: { name: true, country: true } },
+      _count: { select: { attachments: true } },
+    },
     orderBy: { createdAt: 'desc' },
     skip,
     take,
   });
-  res.json(emails);
+  const mapped = emails.map(e => ({
+    ...e,
+    attachmentCount: (e._count && e._count.attachments) || 0,
+    hasOrder: Array.isArray(e.tags) && e.tags.includes('attachment_order'),
+    _count: undefined,
+  }));
+  res.json(mapped);
 });
 
 router.get('/emails', async (req, res) => {
