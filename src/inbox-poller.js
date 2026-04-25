@@ -678,6 +678,97 @@ function buildWebOrderTelegram(savedEmail, parsed, orderResult, lang) {
   return lines.join('\n');
 }
 
+// ============ ATTACHMENT PARSING ============
+
+async function parseAttachmentContent(attachment) {
+  const filename = (attachment.filename || '').toLowerCase();
+  const mimeType = (attachment.contentType || attachment.mimeType || '').toLowerCase();
+  const data = attachment.data;
+  if (!data || data.length === 0) return null;
+
+  try {
+    if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
+      const pdfParse = require('pdf-parse');
+      const parsed = await pdfParse(data);
+      const text = (parsed.text || '').trim();
+      if (text.length < 20) {
+        return { type: 'pdf', filename: attachment.filename, size: data.length, text: '', preview: '(pusty lub skan — wymaga OCR)' };
+      }
+      return { type: 'pdf', filename: attachment.filename, size: data.length, text, preview: text.substring(0, 500) };
+    }
+
+    if (filename.endsWith('.xml') || mimeType.includes('xml')) {
+      const text = data.toString('utf-8');
+      return { type: 'xml', filename: attachment.filename, size: data.length, text, preview: text.substring(0, 500) };
+    }
+
+    if (filename.endsWith('.csv') || filename.endsWith('.txt') || mimeType.includes('text')) {
+      const text = data.toString('utf-8');
+      return { type: filename.endsWith('.csv') ? 'csv' : 'txt', filename: attachment.filename, size: data.length, text, preview: text.substring(0, 500) };
+    }
+
+    if (mimeType.includes('image') || /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(filename)) {
+      return { type: 'image', filename: attachment.filename, size: data.length, text: null, preview: '(obraz — wymaga ręcznego sprawdzenia)' };
+    }
+
+    if (filename.endsWith('.xlsx') || filename.endsWith('.xls') || mimeType.includes('spreadsheet') || mimeType.includes('excel')) {
+      return { type: 'excel', filename: attachment.filename, size: data.length, text: null, preview: '(arkusz Excel)' };
+    }
+
+    return { type: 'other', filename: attachment.filename, size: data.length, text: null, preview: '(nieobsługiwany format)' };
+  } catch (err) {
+    console.log('[attachment-parse] Error parsing', attachment.filename, ':', err.message);
+    return { type: 'error', filename: attachment.filename, size: data.length, preview: 'Błąd parsowania: ' + err.message };
+  }
+}
+
+function detectOrderInText(text) {
+  if (!text || text.length < 50) return null;
+
+  const orderHints = ['zamówienie', 'zamowienie', 'order', 'commande', 'pedido', 'ordine', 'bestellung'];
+  const hasOrderHint = orderHints.some(h => text.toLowerCase().includes(h));
+
+  const items = [];
+  const lines = text.split('\n');
+  for (const line of lines) {
+    // EAN + qty + price format (Delart-style: nazwa qty.0 unit qty price total ean)
+    const eanMatch = line.match(/(.+?)\s+(\d+)[.,]?0*\s+[\d.,]+\s+\d+\s+([\d.,]+)\s+[\d.,]+\s+(\d{13})/);
+    if (eanMatch) {
+      items.push({
+        name: eanMatch[1].trim(),
+        qty: parseInt(eanMatch[2]),
+        ean: eanMatch[4],
+        priceNetto: parseFloat(eanMatch[3].replace(',', '.')),
+      });
+      continue;
+    }
+    // Simple format: nazwa qty szt cena
+    const simpleMatch = line.match(/(.+?)\s+(\d+)\s+szt\.?\s+([\d.,]+)/i);
+    if (simpleMatch) {
+      items.push({
+        name: simpleMatch[1].trim(),
+        qty: parseInt(simpleMatch[2]),
+        priceNetto: parseFloat(simpleMatch[3].replace(',', '.')),
+      });
+    }
+  }
+
+  const totalMatch = text.match(/Razem[:\s]+([\d\s.,]+)/i) || text.match(/Total[:\s]+([\d\s.,]+)/i);
+  let total = null;
+  if (totalMatch) {
+    const nums = totalMatch[1].match(/[\d.,]+/g);
+    if (nums && nums.length) total = parseFloat(nums[nums.length - 1].replace(/\s/g, '').replace(',', '.'));
+  }
+
+  const numMatch = text.match(/[Zz]am[oó]wienie[^0-9]*?(\d+[\/\w-]*)/i) || text.match(/[Oo]rder[^0-9]*#?\s*(\d+[\/\w-]*)/i);
+  const orderNumber = numMatch ? numMatch[1] : null;
+
+  if (items.length > 0 || hasOrderHint) {
+    return { isOrder: true, items, total, orderNumber, hasItems: items.length > 0 };
+  }
+  return null;
+}
+
 // ============ PROCESS ONE ACCOUNT ============
 
 async function processAccount(account) {
@@ -883,6 +974,53 @@ async function processAccount(account) {
           }
         }
 
+        // === ATTACHMENT PARSING ===
+        let attachmentInfo = '';
+        let detectedOrder = null;
+        if (mail.attachments && mail.attachments.length > 0) {
+          const dbAttachments = await prisma.emailAttachment.findMany({ where: { emailId: savedEmail.id } });
+          for (const att of dbAttachments) {
+            const parsed = await parseAttachmentContent(att);
+            if (!parsed) continue;
+            const sizeKB = Math.round((parsed.size || 0) / 1024);
+            attachmentInfo += `\n📎 ${parsed.filename} (${parsed.type}, ${sizeKB} KB)`;
+            if (parsed.preview && parsed.type !== 'image') {
+              attachmentInfo += `\n${parsed.preview.substring(0, 300)}`;
+            }
+            if (parsed.text && (parsed.type === 'pdf' || parsed.type === 'txt')) {
+              const order = detectOrderInText(parsed.text);
+              if (order && order.hasItems) detectedOrder = order;
+            }
+          }
+        }
+
+        // If order detected in attachment — special notification, skip standard
+        if (detectedOrder && detectedOrder.hasItems) {
+          const senderName = contractorName || mail.fromName || mail.fromEmail;
+          const itemsList = detectedOrder.items.map(i =>
+            `  ${i.name} × ${i.qty}${i.priceNetto ? ' @ ' + i.priceNetto.toFixed(2) : ''}${i.ean ? ' [' + i.ean + ']' : ''}`
+          ).join('\n');
+          const totalLine = detectedOrder.total ? `\nSuma: ${detectedOrder.total.toFixed(2)}` : '';
+          const orderNumLine = detectedOrder.orderNumber ? ` #${detectedOrder.orderNumber}` : '';
+          const orderMsg = `📋 ZAMÓWIENIE Z ZAŁĄCZNIKA${orderNumLine}\n` +
+            `Od: ${senderName}\nEmail: ${mail.fromEmail}\n\n` +
+            `Pozycje (${detectedOrder.items.length}):\n${itemsList}${totalLine}\n\n` +
+            `Co robimy?\n- "wystaw fv na to zamówienie"\n- "odpisz że potwierdzamy"\n- "dopytaj o szczegóły"\n\n` +
+            `[ctx: emailId=${savedEmail.id}, from=${mail.fromEmail}, lang=${effectiveLanguage || 'pl'}]`;
+
+          try {
+            await prisma.email.update({
+              where: { id: savedEmail.id },
+              data: { tags: { push: 'attachment_order' } },
+            });
+          } catch (_) {}
+
+          if (tgToken && tgChat) {
+            try { await sendTelegram(tgToken, tgChat, orderMsg); } catch (e) { console.error('[attachment-order] tg error:', e.message); }
+          }
+          continue;
+        }
+
         // Web order detection — intercept BEFORE standard notification
         if (isWebOrder(mail.subject, bodyFull, mail.inReplyTo)) {
           try {
@@ -912,7 +1050,7 @@ async function processAccount(account) {
             ? `\nKontrahent: ${contractorName}`
             : `\nNowy adres - napisz 'dodaj kontrahenta' lub 'połącz z [nazwa]'`;
           const ctxLine = `\n\n[ctx: emailId=${savedEmail.id}, from=${savedEmail.fromEmail || ''}, lang=${effectiveLanguage || 'en'}]`;
-          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}${ctxLine}`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}${attachmentInfo}${ctxLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
