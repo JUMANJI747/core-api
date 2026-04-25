@@ -664,8 +664,18 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     const { invoiceId, toEmail, emailId, subject: customSubject, body: customBody } = req.body;
     if (!invoiceId) return res.status(400).json({ error: 'invoiceId required' });
 
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice) return res.status(404).json({ error: 'invoice not found' });
+    // Try as UUID first, fallback to invoice number
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(invoiceId);
+    let invoice = isUuid
+      ? await prisma.invoice.findUnique({ where: { id: invoiceId } })
+      : null;
+    if (!invoice) {
+      invoice = await prisma.invoice.findFirst({
+        where: { number: invoiceId },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found: ' + invoiceId });
 
     const pdfBuffer = await fetchInvoicePdf(invoice.number, invoice.type);
     const filename = `faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
