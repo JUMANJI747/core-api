@@ -130,6 +130,7 @@ model Email {
   isRead       Boolean @default(false)
   isSpam       Boolean @default(false)
   tags         String[] @default([])
+  extras       Json?
 
   createdAt    DateTime @default(now())
 

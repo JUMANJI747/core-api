@@ -86,7 +86,7 @@ router.get('/emails/recent', async (req, res) => {
   const emails = await prisma.email.findMany({
     select: {
       id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true,
-      tags: true, inbox: true, createdAt: true,
+      tags: true, inbox: true, createdAt: true, extras: true,
       contractor: { select: { name: true, country: true } },
       _count: { select: { attachments: true } },
     },
@@ -97,7 +97,7 @@ router.get('/emails/recent', async (req, res) => {
   const mapped = emails.map(e => ({
     ...e,
     attachmentCount: (e._count && e._count.attachments) || 0,
-    hasOrder: Array.isArray(e.tags) && e.tags.includes('attachment_order'),
+    hasOrder: !!(e.extras && e.extras.parsedOrder) || (Array.isArray(e.tags) && e.tags.includes('attachment_order')),
     _count: undefined,
   }));
   res.json(mapped);

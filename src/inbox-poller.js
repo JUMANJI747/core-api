@@ -1011,9 +1011,14 @@ async function processAccount(account) {
           try {
             await prisma.email.update({
               where: { id: savedEmail.id },
-              data: { tags: { push: 'attachment_order' } },
+              data: {
+                extras: { parsedOrder: detectedOrder },
+                tags: { push: 'attachment_order' },
+              },
             });
-          } catch (_) {}
+          } catch (e) {
+            console.error('[attachment-order] update failed:', e.message);
+          }
 
           if (tgToken && tgChat) {
             try { await sendTelegram(tgToken, tgChat, orderMsg); } catch (e) { console.error('[attachment-order] tg error:', e.message); }
