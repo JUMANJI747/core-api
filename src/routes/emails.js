@@ -190,8 +190,9 @@ router.post('/emails/:id/parse-attachments', async (req, res) => {
 
       if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
         try {
-          const pdfParse = require('pdf-parse');
-          const parsed = await pdfParse(att.data);
+          const { PDFParse } = require('pdf-parse');
+          const parser = new PDFParse({ data: att.data });
+          const parsed = await parser.getText();
           const text = (parsed.text || '').trim();
           results.push({ filename: att.filename, type: 'pdf', size: att.data.length, preview: text.substring(0, 500) });
 
@@ -302,9 +303,10 @@ router.get('/attachment/:id/parse', async (req, res) => {
 
     if (att.contentType === 'application/pdf' || att.filename.endsWith('.pdf')) {
       try {
-        const pdfParse = require('pdf-parse');
-        const result = await pdfParse(att.data);
-        return res.json({ ok: true, filename: att.filename, size: att.size, pages: result.numpages, text: result.text });
+        const { PDFParse } = require('pdf-parse');
+        const parser = new PDFParse({ data: att.data });
+        const result = await parser.getText();
+        return res.json({ ok: true, filename: att.filename, size: att.size, pages: result.pages || result.numpages, text: result.text });
       } catch (e) {
         return res.json({ ok: false, filename: att.filename, error: 'PDF parse failed: ' + e.message });
       }

@@ -688,8 +688,9 @@ async function parseAttachmentContent(attachment) {
 
   try {
     if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
-      const pdfParse = require('pdf-parse');
-      const parsed = await pdfParse(data);
+      const { PDFParse } = require('pdf-parse');
+      const parser = new PDFParse({ data });
+      const parsed = await parser.getText();
       const text = (parsed.text || '').trim();
       if (text.length < 20) {
         return { type: 'pdf', filename: attachment.filename, size: data.length, text: '', preview: '(pusty lub skan — wymaga OCR)' };

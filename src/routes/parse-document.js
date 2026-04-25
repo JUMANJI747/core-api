@@ -59,10 +59,11 @@ function httpsGetBuffer(url) {
 async function extractTextFromPdf(buffer, filename) {
   // Try pdf-parse first (local, free)
   try {
-    const pdfParse = require('pdf-parse');
-    const result = await pdfParse(buffer);
+    const { PDFParse } = require('pdf-parse');
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
     if (result.text && result.text.trim().length > 10) {
-      console.log(`[parse-doc] pdf-parse OK: ${filename}, ${result.numpages} pages, ${result.text.length} chars`);
+      console.log(`[parse-doc] pdf-parse OK: ${filename}, ${result.pages || result.numpages} pages, ${result.text.length} chars`);
       return result.text;
     }
   } catch (e) {
