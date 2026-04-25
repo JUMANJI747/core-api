@@ -158,6 +158,120 @@ router.get('/emails/:id', async (req, res) => {
   }
 });
 
+router.post('/emails/:id/parse-attachments', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const email = await prisma.email.findUnique({
+      where: { id: req.params.id },
+      include: { attachments: true, contractor: true },
+    });
+    if (!email) return res.status(404).json({ ok: false, error: 'Email not found' });
+
+    if (email.extras && email.extras.parsedOrder) {
+      return res.json({
+        ok: true,
+        cached: true,
+        emailId: email.id,
+        contractorName: (email.contractor && email.contractor.name) || email.fromName,
+        order: email.extras.parsedOrder,
+      });
+    }
+
+    if (!email.attachments || email.attachments.length === 0) {
+      return res.json({ ok: true, attachments: 0, message: 'Brak załączników' });
+    }
+
+    const results = [];
+    let detectedOrder = null;
+
+    for (const att of email.attachments) {
+      const filename = (att.filename || '').toLowerCase();
+      const mimeType = (att.contentType || '').toLowerCase();
+
+      if (filename.endsWith('.pdf') || mimeType.includes('pdf')) {
+        try {
+          const pdfParse = require('pdf-parse');
+          const parsed = await pdfParse(att.data);
+          const text = (parsed.text || '').trim();
+          results.push({ filename: att.filename, type: 'pdf', size: att.data.length, preview: text.substring(0, 500) });
+
+          if (text.length > 50 && !detectedOrder) {
+            const items = [];
+            const lines = text.split('\n');
+            for (const line of lines) {
+              const eanMatch = line.match(/(.+?)\s+(\d+)[.,]?0*\s+[\d.,]+\s+\d+\s+([\d.,]+)\s+[\d.,]+\s+(\d{13})/);
+              if (eanMatch) {
+                items.push({
+                  name: eanMatch[1].trim(),
+                  qty: parseInt(eanMatch[2]),
+                  ean: eanMatch[4],
+                  priceNetto: parseFloat(eanMatch[3].replace(',', '.')),
+                });
+                continue;
+              }
+              const simpleMatch = line.match(/(.+?)\s+(\d+)\s+szt\.?\s+([\d.,]+)/i);
+              if (simpleMatch) {
+                items.push({
+                  name: simpleMatch[1].trim(),
+                  qty: parseInt(simpleMatch[2]),
+                  priceNetto: parseFloat(simpleMatch[3].replace(',', '.')),
+                });
+              }
+            }
+
+            const totalMatch = text.match(/Razem[:\s]+([\d\s.,]+)/i) || text.match(/Total[:\s]+([\d\s.,]+)/i);
+            let total = null;
+            if (totalMatch) {
+              const nums = totalMatch[1].match(/[\d.,]+/g);
+              if (nums && nums.length) total = parseFloat(nums[nums.length - 1].replace(/\s/g, '').replace(',', '.'));
+            }
+
+            const numMatch = text.match(/[Zz]am[oó]wienie[^0-9]*?(\d+[\/\w-]*)/i) || text.match(/[Oo]rder[^0-9]*#?\s*(\d+[\/\w-]*)/i);
+            const orderNumber = numMatch ? numMatch[1] : null;
+
+            if (items.length > 0) {
+              detectedOrder = { isOrder: true, items, total, orderNumber, hasItems: true };
+            }
+          }
+        } catch (err) {
+          results.push({ filename: att.filename, type: 'pdf', error: err.message });
+        }
+      } else if (filename.endsWith('.xml') || filename.endsWith('.csv') || filename.endsWith('.txt') || mimeType.includes('text')) {
+        const text = att.data.toString('utf-8');
+        results.push({ filename: att.filename, type: filename.split('.').pop(), size: att.data.length, preview: text.substring(0, 500) });
+      } else if (mimeType.includes('image')) {
+        results.push({ filename: att.filename, type: 'image', size: att.data.length, note: 'Obraz — wymaga OCR' });
+      } else {
+        results.push({ filename: att.filename, type: 'other', size: att.data.length });
+      }
+    }
+
+    if (detectedOrder) {
+      const currentExtras = (typeof email.extras === 'object' && email.extras) ? email.extras : {};
+      await prisma.email.update({
+        where: { id: email.id },
+        data: {
+          extras: { ...currentExtras, parsedOrder: detectedOrder },
+          tags: { push: 'attachment_order' },
+        },
+      });
+    }
+
+    res.json({
+      ok: true,
+      emailId: email.id,
+      from: email.fromEmail,
+      subject: email.subject,
+      contractorName: (email.contractor && email.contractor.name) || email.fromName,
+      attachments: results,
+      order: detectedOrder,
+    });
+  } catch (err) {
+    console.error('[parse-attachments]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 router.get('/emails/:emailId/attachments', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const attachments = await prisma.emailAttachment.findMany({
