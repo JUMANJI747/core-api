@@ -786,6 +786,9 @@ router.post('/glob/order', async (req, res) => {
     const quote = quoteStore[quoteId];
     if (!quote) return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
 
+    const deliveryType = (req.body && req.body.deliveryType) || quote.deliveryType || 'DOOR';
+    const collectionType = (req.body && req.body.collectionType) || quote.collectionType || 'PICKUP';
+
     const selectedOffer = productId
       ? quote.offers.find(o => String(o.productId) === String(productId))
       : quote.offers[0];
@@ -860,8 +863,8 @@ router.post('/glob/order', async (req, res) => {
 
     const orderPayload = {
       productId: selectedOffer.productId,
-      collectionType: 'PICKUP',
-      deliveryType: deliveryType || 'PICKUP',
+      collectionType,
+      deliveryType,
       paymentId: 9, // 9 = standardowa płatność (z istniejącego ordera GK260421002023)
       content: 'Cosmetics / Surf Stick Bell',
       pickup: {
