@@ -797,12 +797,7 @@ router.post('/glob/order', async (req, res) => {
       : quote.offers[0];
     if (!selectedOffer) return res.status(404).json({ ok: false, error: 'Nie znaleziono oferty o podanym productId' });
 
-    // Get addons and pickup times
-    const addonsData = await getAddons(selectedOffer.productId, quote.quoteParams);
-    const addons = addonsData.addons || addonsData.results || [];
-    const pickupAddon = addons.find(a => /podjazd/i.test(a.addonName || ''));
-    const deliveryAddon = addons.find(a => /doręczenie|delivery/i.test(a.addonName || ''));
-
+    // Get pickup times only — addons skipped (GlobKurier auto-adds required ones)
     const pickupData = await getPickupTimes(selectedOffer.productId, {
       ...quote.quoteParams,
       receiverCity: quote.receiver.city,
@@ -864,10 +859,6 @@ router.post('/glob/order', async (req, res) => {
     const cleanSenderPhone = sanitizePhone(senderPhone, DEFAULT_SENDER_PHONE);
     const cleanReceiverHouse = receiverHouse || (receiverStreet ? '1' : '1'); // GlobKurier wymaga niepustego
 
-    const addonsArr = [pickupAddon && pickupAddon.id, deliveryAddon && deliveryAddon.id]
-      .filter(Boolean)
-      .map(id => ({ id: parseInt(id) }));
-
     const orderPayload = {
       shipment: {
         productId: parseInt(selectedOffer.productId),
@@ -902,7 +893,7 @@ router.post('/glob/order', async (req, res) => {
         timeFrom: firstPickup.from || '09:00',
         timeTo: firstPickup.to || '17:00',
       },
-      addons: addonsArr,
+      addons: [],
       content: 'Cosmetics / Surf Stick Bell',
       collectionType,
       paymentId: 9,
@@ -920,9 +911,55 @@ router.post('/glob/order', async (req, res) => {
 
     delete quoteStore[quoteId];
 
+    // Auto-send CMR to Telegram
+    const orderHash = result && (result.hash || result.orderHash);
+    let cmrSent = false;
+    if (orderHash) {
+      try {
+        await new Promise(r => setTimeout(r, 3000));
+        const labelResult = await getOrderLabels(orderHash, 'A4');
+        const pdfBuffer = labelResult && labelResult.body;
+        if (pdfBuffer && pdfBuffer.length > 100) {
+          const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
+          const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+          if (tgToken && tgChat) {
+            const orderNum = result.number || orderHash.slice(0, 12);
+            const boundary = '----FormBoundary' + Date.now();
+            const filename = `CMR-${orderNum}.pdf`;
+            const caption = `List przewozowy ${orderNum} (${selectedOffer.carrier})`;
+            const parts = [
+              `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${tgChat}`,
+              `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
+              `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+            ];
+            const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
+            const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+            const tgBody = Buffer.concat([pre, pdfBuffer, post]);
+
+            await new Promise((resolve, reject) => {
+              const tgReq = https.request({
+                hostname: 'api.telegram.org',
+                path: `/bot${tgToken}/sendDocument`,
+                method: 'POST',
+                headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': tgBody.length },
+              }, r => { r.resume(); r.on('end', resolve); });
+              tgReq.on('error', reject);
+              tgReq.write(tgBody);
+              tgReq.end();
+            });
+            cmrSent = true;
+            console.log('[glob/order] CMR sent to Telegram:', orderNum);
+          }
+        }
+      } catch (cmrErr) {
+        console.log('[glob/order] Failed to send CMR:', cmrErr.message);
+      }
+    }
+
     res.json({
       ok: true,
       order: result,
+      cmrSent,
       carrier: selectedOffer.carrier,
       price: selectedOffer.price + ' ' + selectedOffer.currency,
       sender: { name: sender.companyName || sender.name, city: sender.city },
