@@ -481,7 +481,29 @@ router.post('/glob/quote', async (req, res) => {
   try {
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
-          weight, length, width, height, items, paczkomat, deliveryType } = req.body || {};
+          weight, length, width, height, items, paczkomat, deliveryType, pickupDate } = req.body || {};
+
+    // Resolve pickupDate
+    function nextWorkingDay(date) {
+      const d = new Date(date);
+      if (d.getDay() === 6) d.setDate(d.getDate() + 2); // sobota → pn
+      else if (d.getDay() === 0) d.setDate(d.getDate() + 1); // niedziela → pn
+      return d;
+    }
+    if (!pickupDate) {
+      const now = new Date();
+      const target = new Date(now);
+      if (now.getHours() >= 14) target.setDate(target.getDate() + 1);
+      pickupDate = nextWorkingDay(target).toISOString().split('T')[0];
+    } else if (pickupDate === 'jutro' || pickupDate === 'tomorrow') {
+      const t = new Date(); t.setDate(t.getDate() + 1);
+      pickupDate = nextWorkingDay(t).toISOString().split('T')[0];
+    } else if (pickupDate === 'pojutrze') {
+      const t = new Date(); t.setDate(t.getDate() + 2);
+      pickupDate = nextWorkingDay(t).toISOString().split('T')[0];
+    } else if (pickupDate === 'dzis' || pickupDate === 'dziś' || pickupDate === 'today') {
+      pickupDate = new Date().toISOString().split('T')[0];
+    }
 
     // 1. SENDER — search > id > default
     let sender;
@@ -711,7 +733,7 @@ router.post('/glob/quote', async (req, res) => {
 
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();
-    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, createdAt: new Date() };
+    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, createdAt: new Date() };
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
     }
@@ -724,6 +746,7 @@ router.post('/glob/quote', async (req, res) => {
       receiverSource,
       package: { weight, length, width, height },
       packageCalc,
+      pickupDate,
       paczkomatSize: paczkomatSize || null,
       offers,
       cheapest: offers[0] || null,
@@ -781,7 +804,7 @@ router.post('/glob/order', async (req, res) => {
       shipment: {
         productId: selectedOffer.productId,
         addonIds: [pickupAddon && pickupAddon.id, deliveryAddon && deliveryAddon.id].filter(Boolean),
-        collectionDate: firstPickup.date || new Date().toISOString().split('T')[0],
+        collectionDate: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
         collectionTimeFrom: firstPickup.from || '09:00',
         collectionTimeTo: firstPickup.to || '17:00',
         parcel: {
