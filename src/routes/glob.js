@@ -816,6 +816,37 @@ router.post('/glob/order', async (req, res) => {
       }, '').trim();
     }
 
+    // Required defaults (GlobKurier rejects empty required fields)
+    const DEFAULT_SENDER_PHONE = '+48502189886';
+    const DEFAULT_SENDER_EMAIL = 'delivery@surfstickbell.com';
+    const DEFAULT_RECEIVER_PHONE = '000000000';
+    const DEFAULT_RECEIVER_EMAIL = 'delivery@surfstickbell.com';
+
+    // Refresh contractor for receiver fallback if missing data
+    let contractorForReceiver = null;
+    if (receiver.contractorId) {
+      try { contractorForReceiver = await prisma.contractor.findUnique({ where: { id: receiver.contractorId } }); } catch (_) {}
+    }
+    const cExtras = (contractorForReceiver && typeof contractorForReceiver.extras === 'object' && contractorForReceiver.extras) || {};
+    const cBilling = cExtras.billingAddress || {};
+    const cGkData = cExtras.globKurierReceiverData || {};
+
+    const senderName = trimName(senderExtras.name || sender.companyName || sender.name || 'Surf Stick Bell');
+    const senderStreet = senderExtras.street || sender.street || '';
+    const senderHouse = senderExtras.houseNumber || sender.houseNumber || '';
+    const senderPostCode = sender.postCode || senderExtras.postCode || '';
+    const senderCity = sender.city || senderExtras.city || '';
+    const senderPhone = senderExtras.phone || sender.phone || DEFAULT_SENDER_PHONE;
+    const senderEmail = senderExtras.email || sender.email || DEFAULT_SENDER_EMAIL;
+
+    const receiverName = trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || 'Receiver');
+    const receiverStreet = receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || '';
+    const receiverHouse = receiver.houseNumber || cGkData.houseNumber || '';
+    const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || '';
+    const receiverCity = receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || '';
+    const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
+    const receiverEmail = receiver.email || cGkData.email || (contractorForReceiver && contractorForReceiver.email) || DEFAULT_RECEIVER_EMAIL;
+
     const orderPayload = {
       shipment: {
         productId: selectedOffer.productId,
@@ -824,52 +855,46 @@ router.post('/glob/order', async (req, res) => {
         collectionTimeFrom: firstPickup.from || '09:00',
         collectionTimeTo: firstPickup.to || '17:00',
         parcel: {
-          weight: quote.quoteParams.weight,
-          length: quote.quoteParams.length,
-          width: quote.quoteParams.width,
-          height: quote.quoteParams.height,
+          weight: quote.quoteParams.weight || 1,
+          length: quote.quoteParams.length || 20,
+          width: quote.quoteParams.width || 20,
+          height: quote.quoteParams.height || 10,
           quantity: 1,
           contents: 'Cosmetics / Surf Stick Bell',
         },
       },
       senderAddress: {
-        name: trimName(senderExtras.name || sender.companyName || sender.name),
-        street: senderExtras.street || sender.street || '',
-        houseNumber: senderExtras.houseNumber || sender.houseNumber || '',
-        postCode: sender.postCode || '',
-        city: sender.city || '',
+        name: senderName,
+        street: senderStreet,
+        houseNumber: senderHouse,
+        postCode: senderPostCode,
+        city: senderCity,
         countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
-        phone: senderExtras.phone || sender.phone || '',
-        email: senderExtras.email || sender.email || 'delivery@surfstickbell.com',
+        phone: senderPhone,
+        email: senderEmail,
       },
       receiverAddress: {
-        name: trimName(receiver.name),
-        street: receiver.street || '',
-        houseNumber: receiver.houseNumber || '',
-        postCode: receiver.postCode || '',
-        city: receiver.city || '',
+        name: receiverName,
+        street: receiverStreet,
+        houseNumber: receiverHouse,
+        postCode: receiverPostCode,
+        city: receiverCity,
         countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
-        phone: receiver.phone || '',
-        email: receiver.email || '',
+        phone: receiverPhone,
+        email: receiverEmail,
       },
     };
 
-    function removeNulls(obj) {
-      if (Array.isArray(obj)) return obj.map(removeNulls).filter(v => v !== null && v !== undefined && v !== '');
-      if (obj && typeof obj === 'object') {
-        const cleaned = {};
-        for (const [k, v] of Object.entries(obj)) {
-          if (v !== null && v !== undefined && v !== '' && v !== 'null') cleaned[k] = removeNulls(v);
-        }
-        return cleaned;
-      }
-      return obj;
+    console.log('[glob/order] Creating order:', JSON.stringify(orderPayload));
+
+    const result = await createOrder(orderPayload);
+    console.log('[glob/order] GlobKurier response:', JSON.stringify(result).slice(0, 500));
+
+    // Detect error response from GlobKurier
+    if (result && (result.errors || result.error || result.fields)) {
+      return res.status(400).json({ ok: false, error: 'GlobKurier validation error', details: result, payload: orderPayload });
     }
 
-    const cleanedPayload = removeNulls(orderPayload);
-    console.log('[glob/order] Creating order:', JSON.stringify(cleanedPayload));
-
-    const result = await createOrder(cleanedPayload);
     delete quoteStore[quoteId];
 
     res.json({
