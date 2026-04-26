@@ -9,10 +9,50 @@ function normalizeText(s) {
 }
 
 const PACKAGE_PRESETS = {
-  karton_stickow: { name: 'Karton 30 sticków', weight: 1, length: 30, width: 20, height: 8, qty: 30, product: 'stick' },
-  karton_mascar: { name: 'Karton 30 mascar', weight: 1, length: 30, width: 20, height: 8, qty: 30, product: 'mascara' },
-  karton_collection: { name: 'Karton collection', weight: 2, length: 35, width: 25, height: 12, qty: 30, product: 'collection' },
-  maly_karton: { name: 'Mały karton (do 10 szt)', weight: 0.5, length: 20, width: 15, height: 8, qty: 10, product: 'mix' },
+  maly_kartonik: { name: 'Mały kartonik (30 szt)', weight: 1, length: 20, width: 20, height: 10 },
+  duzy_karton: { name: 'Duży karton (40×40×40)', weight: 10, length: 40, width: 40, height: 40 },
+  paczkomat_a: { name: 'Paczkomat A (mały)', weight: 1, length: 38, width: 64, height: 8 },
+  paczkomat_b: { name: 'Paczkomat B (średni)', weight: 2, length: 38, width: 64, height: 19 },
+  paczkomat_c: { name: 'Paczkomat C (duży)', weight: 5, length: 38, width: 64, height: 41 },
+};
+
+const PRODUCT_WEIGHTS = {
+  stick: 1, mascara: 1, gel: 1, daily: 1, care: 1, lips: 0.5, collection: 2,
+};
+
+function calculatePackageFromItems(items) {
+  let totalWeight = 0;
+  let kartonikCount = 0;
+  for (const item of (items || [])) {
+    const name = (item.name || item.productEan || '').toLowerCase();
+    const qty = item.qty || item.quantity || 1;
+    let productType = 'stick';
+    if (name.includes('mascara') || name.includes('girl')) productType = 'mascara';
+    else if (name.includes('gel')) productType = 'gel';
+    else if (name.includes('daily')) productType = 'daily';
+    else if (name.includes('care')) productType = 'care';
+    else if (name.includes('lip')) productType = 'lips';
+    else if (name.includes('collection')) productType = 'collection';
+    const weightPer30 = PRODUCT_WEIGHTS[productType] || 1;
+    totalWeight += (qty / 30) * weightPer30;
+    kartonikCount += Math.ceil(qty / 30);
+  }
+  totalWeight = Math.max(1, Math.ceil(totalWeight));
+  let dimensions;
+  if (kartonikCount <= 1) dimensions = { length: 20, width: 20, height: 10 };
+  else if (kartonikCount <= 2) dimensions = { length: 20, width: 20, height: 20 };
+  else if (kartonikCount <= 4) dimensions = { length: 40, width: 20, height: 20 };
+  else dimensions = { length: 40, width: 40, height: 40 };
+  return {
+    weight: totalWeight, ...dimensions, kartonikCount,
+    description: kartonikCount <= 4 ? `${kartonikCount} kartonik(ów) foliowanych` : 'Duży karton 40×40×40',
+  };
+}
+
+const PACZKOMAT_SIZES = {
+  A: { maxHeight: 8, maxWidth: 38, maxLength: 64 },
+  B: { maxHeight: 19, maxWidth: 38, maxLength: 64 },
+  C: { maxHeight: 41, maxWidth: 38, maxLength: 64 },
 };
 
 // GlobKurier countryId mapping (verified from real API data)
@@ -407,26 +447,36 @@ router.get('/glob/presets', (req, res) => {
 
 // ============ QUOTE ============
 
+// ============ CALCULATE PACKAGE ============
+
+router.post('/glob/calculate-package', async (req, res) => {
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, error: 'Podaj items z qty i name' });
+  const result = calculatePackageFromItems(items);
+  res.json({ ok: true, ...result });
+});
+
 router.post('/glob/quote', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    let { preset, receiverSearch, senderId, weight, length, width, height } = req.body || {};
+    let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
+          receiverSearch, senderSearch, senderId,
+          weight, length, width, height, items, paczkomat, deliveryType } = req.body || {};
 
-    if (preset && PACKAGE_PRESETS[preset]) {
-      const p = PACKAGE_PRESETS[preset];
-      weight = weight || p.weight;
-      length = length || p.length;
-      width = width || p.width;
-      height = height || p.height;
-    }
-
-    if (!weight || !length || !width || !height) {
-      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj preset lub weight/length/width/height' });
-    }
-
-    // Sender
+    // 1. SENDER — search > id > default
     let sender;
-    if (senderId) {
+    if (senderSearch) {
+      sender = await prisma.sender.findFirst({
+        where: {
+          OR: [
+            { name: { contains: senderSearch, mode: 'insensitive' } },
+            { companyName: { contains: senderSearch, mode: 'insensitive' } },
+            { city: { contains: senderSearch, mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (!sender) return res.status(404).json({ ok: false, error: 'Nie znaleziono nadawcy: ' + senderSearch });
+    } else if (senderId) {
       sender = await prisma.sender.findUnique({ where: { id: senderId } });
     } else {
       sender = await prisma.sender.findFirst({ where: { isDefault: true } });
@@ -434,7 +484,76 @@ router.post('/glob/quote', async (req, res) => {
     }
     if (!sender) return res.status(400).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
 
-    // Receiver via Contractor search
+    // 2A. PACZKA — z faktury
+    if (invoiceNumber) {
+      const invoice = await prisma.invoice.findFirst({
+        where: { number: invoiceNumber },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (invoice && invoice.extras && Array.isArray(invoice.extras.items)) {
+        const calc = calculatePackageFromItems(invoice.extras.items);
+        weight = weight || calc.weight;
+        length = length || calc.length;
+        width = width || calc.width;
+        height = height || calc.height;
+      } else if (invoice) {
+        weight = weight || 1;
+        length = length || 20; width = width || 20; height = height || 10;
+      }
+    }
+
+    // 2B. PRESET × quantity
+    if (packageType && PACKAGE_PRESETS[packageType]) {
+      const p = PACKAGE_PRESETS[packageType];
+      const qty = quantity || 1;
+      weight = (weightPerPackage || p.weight) * qty;
+      length = p.length;
+      width = p.width;
+      height = qty === 1 ? p.height : Math.min(p.height * qty, 60);
+    }
+
+    // 2C. Auto-kalkulacja z items
+    if (items && Array.isArray(items) && items.length > 0 && !weight) {
+      const calc = calculatePackageFromItems(items);
+      weight = calc.weight;
+      length = calc.length;
+      width = calc.width;
+      height = calc.height;
+    }
+
+    // Legacy preset support
+    if (preset && PACKAGE_PRESETS[preset] && !weight) {
+      const p = PACKAGE_PRESETS[preset];
+      weight = p.weight; length = p.length; width = p.width; height = p.height;
+    }
+
+    if (!weight || !length || !width || !height) {
+      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height' });
+    }
+
+    // 3. PACZKOMAT — fit dimensions
+    let paczkomatSize = null;
+    if (paczkomat) {
+      const dims = [length, width, height].sort((a, b) => a - b);
+      for (const [size, lim] of Object.entries(PACZKOMAT_SIZES)) {
+        if (dims[0] <= lim.maxHeight && dims[1] <= lim.maxWidth && dims[2] <= lim.maxLength) {
+          paczkomatSize = size;
+          height = Math.min(dims[0], lim.maxHeight);
+          width = Math.min(dims[1], lim.maxWidth);
+          length = Math.min(dims[2], lim.maxLength);
+          break;
+        }
+      }
+      if (!paczkomatSize) {
+        return res.json({
+          ok: true, offers: [],
+          warning: 'Paczka za duża na paczkomat InPost (max C: 41×38×64). Użyj kuriera do drzwi.',
+          package: { weight, length, width, height },
+        });
+      }
+    }
+
+    // 4. RECEIVER
     if (!receiverSearch) return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta)' });
 
     const contractor = await prisma.contractor.findFirst({
@@ -515,7 +634,8 @@ router.post('/glob/quote', async (req, res) => {
       quoteId,
       sender: { name: sender.companyName || sender.name, city: sender.city },
       receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
-      package: { weight, length, width, height, preset: preset || 'custom' },
+      package: { weight, length, width, height },
+      paczkomatSize: paczkomatSize || null,
       offers,
       cheapest: offers[0] || null,
       note: 'Wybierz ofertę: POST /api/glob/order { quoteId, productId }',
