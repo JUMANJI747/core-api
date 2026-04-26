@@ -553,9 +553,14 @@ router.post('/glob/quote', async (req, res) => {
       }
     }
 
-    // 4. RECEIVER
+    // 4. RECEIVER — Contractor → GlobKurier API → Sender table
     if (!receiverSearch) return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta)' });
 
+    let receiver = null;
+    let receiverSource = null;
+    let gkData = {};
+
+    // Step 1: Contractor (local DB)
     const contractor = await prisma.contractor.findFirst({
       where: {
         OR: [
@@ -565,28 +570,89 @@ router.post('/glob/quote', async (req, res) => {
         ],
       },
     });
-    if (!contractor) return res.status(404).json({ ok: false, error: 'Nie znaleziono kontrahenta: ' + receiverSearch });
 
-    const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
-    const gkData = cExtras.globKurierReceiverData || {};
-    const billing = cExtras.billingAddress || {};
-    const receiver = {
-      name: contractor.name,
-      contractorId: contractor.id,
-      city: gkData.city || billing.city || contractor.city || '',
-      postCode: gkData.postCode || billing.postCode || '',
-      country: gkData.country || billing.country || contractor.country || 'PL',
-      countryId: gkData.countryId || null,
-      phone: gkData.phone || contractor.phone || '',
-      email: gkData.email || contractor.email || '',
-      street: gkData.street || billing.street || contractor.address || '',
-      houseNumber: gkData.houseNumber || '',
-      apartmentNumber: gkData.apartmentNumber || '',
-      contactPerson: gkData.contactPerson || null,
-    };
+    if (contractor) {
+      const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
+      gkData = cExtras.globKurierReceiverData || {};
+      const billing = cExtras.billingAddress || {};
+      receiver = {
+        name: contractor.name,
+        contractorId: contractor.id,
+        city: gkData.city || billing.city || contractor.city || '',
+        postCode: gkData.postCode || billing.postCode || '',
+        country: gkData.country || billing.country || contractor.country || 'PL',
+        countryId: gkData.countryId || null,
+        phone: gkData.phone || contractor.phone || '',
+        email: gkData.email || contractor.email || '',
+        street: gkData.street || billing.street || contractor.address || '',
+        houseNumber: gkData.houseNumber || '',
+        apartmentNumber: gkData.apartmentNumber || '',
+        contactPerson: gkData.contactPerson || null,
+      };
+      receiverSource = 'contractor';
+    }
+
+    // Step 2: GlobKurier address book (API search)
+    if (!receiver) {
+      try {
+        const gkRes = await getReceivers(0, 20, receiverSearch);
+        const results = gkRes.results || gkRes.items || gkRes.data || (Array.isArray(gkRes) ? gkRes : []);
+        if (results.length > 0) {
+          const r = results[0];
+          receiver = {
+            name: r.companyName || r.name || r.contactPerson || receiverSearch,
+            city: r.city || '',
+            postCode: r.postCode || r.zipCode || '',
+            country: r.countryCode || r.country || 'PL',
+            countryId: r.countryId || null,
+            phone: r.phone || '',
+            email: r.email || '',
+            street: r.street || '',
+            houseNumber: r.houseNumber || '',
+            apartmentNumber: r.apartmentNumber || '',
+            contactPerson: r.contactPerson || null,
+            globKurierId: r.id,
+          };
+          receiverSource = 'globkurier';
+        }
+      } catch (err) {
+        console.log('[glob/quote] GlobKurier receiver search failed:', err.message);
+      }
+    }
+
+    // Step 3: Sender table (in case user mixed up sender/receiver names)
+    if (!receiver) {
+      const senderAsReceiver = await prisma.sender.findFirst({
+        where: {
+          OR: [
+            { name: { contains: receiverSearch, mode: 'insensitive' } },
+            { companyName: { contains: receiverSearch, mode: 'insensitive' } },
+            { city: { contains: receiverSearch, mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (senderAsReceiver) {
+        receiver = {
+          name: senderAsReceiver.companyName || senderAsReceiver.name,
+          city: senderAsReceiver.city || '',
+          postCode: senderAsReceiver.postCode || '',
+          country: senderAsReceiver.country || 'PL',
+          countryId: senderAsReceiver.countryId || null,
+          phone: senderAsReceiver.phone || '',
+          email: senderAsReceiver.email || '',
+          street: senderAsReceiver.street || '',
+          houseNumber: senderAsReceiver.houseNumber || '',
+        };
+        receiverSource = 'sender_table';
+      }
+    }
+
+    if (!receiver) {
+      return res.status(404).json({ ok: false, error: 'Nie znaleziono odbiorcy: ' + receiverSearch + '. Sprawdź kontrahentów, książkę adresową GlobKurier lub nadawców.' });
+    }
 
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
-    const receiverCountryId = gkData.countryId || COUNTRY_IDS[receiver.country] || 1;
+    const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
 
     const quoteParams = {
       weight, length, width, height,
@@ -634,6 +700,7 @@ router.post('/glob/quote', async (req, res) => {
       quoteId,
       sender: { name: sender.companyName || sender.name, city: sender.city },
       receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
+      receiverSource,
       package: { weight, length, width, height },
       paczkomatSize: paczkomatSize || null,
       offers,
