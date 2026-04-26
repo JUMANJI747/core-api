@@ -847,40 +847,54 @@ router.post('/glob/order', async (req, res) => {
     const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
     const receiverEmail = receiver.email || cGkData.email || (contractorForReceiver && contractorForReceiver.email) || DEFAULT_RECEIVER_EMAIL;
 
+    // Sanitize phone — must contain digits, no leading zeros only
+    function sanitizePhone(phone, fallback) {
+      if (!phone) return fallback;
+      const cleaned = String(phone).replace(/[^\d+]/g, '');
+      if (cleaned.length < 7 || /^0+$/.test(cleaned)) return fallback;
+      return cleaned;
+    }
+    const cleanReceiverPhone = sanitizePhone(receiverPhone, DEFAULT_SENDER_PHONE);
+    const cleanSenderPhone = sanitizePhone(senderPhone, DEFAULT_SENDER_PHONE);
+    const cleanReceiverHouse = receiverHouse || (receiverStreet ? '1' : '1'); // GlobKurier wymaga niepustego
+
     const orderPayload = {
-      shipment: {
-        productId: selectedOffer.productId,
-        addonIds: [pickupAddon && pickupAddon.id, deliveryAddon && deliveryAddon.id].filter(Boolean),
-        collectionDate: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
-        collectionTimeFrom: firstPickup.from || '09:00',
-        collectionTimeTo: firstPickup.to || '17:00',
-        parcel: {
-          weight: quote.quoteParams.weight || 1,
-          length: quote.quoteParams.length || 20,
-          width: quote.quoteParams.width || 20,
-          height: quote.quoteParams.height || 10,
-          quantity: 1,
-          contents: 'Cosmetics / Surf Stick Bell',
-        },
+      productId: selectedOffer.productId,
+      collectionType: 'PICKUP',
+      deliveryType: deliveryType || 'PICKUP',
+      paymentId: 9, // 9 = standardowa płatność (z istniejącego ordera GK260421002023)
+      content: 'Cosmetics / Surf Stick Bell',
+      pickup: {
+        date: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
+        timeFrom: firstPickup.from || '09:00',
+        timeTo: firstPickup.to || '17:00',
       },
+      shipment: {
+        weight: quote.quoteParams.weight || 1,
+        length: quote.quoteParams.length || 20,
+        width: quote.quoteParams.width || 20,
+        height: quote.quoteParams.height || 10,
+        quantity: 1,
+      },
+      addonIds: [pickupAddon && pickupAddon.id, deliveryAddon && deliveryAddon.id].filter(Boolean),
       senderAddress: {
         name: senderName,
         street: senderStreet,
-        houseNumber: senderHouse,
+        houseNumber: senderHouse || '1',
         postCode: senderPostCode,
         city: senderCity,
         countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
-        phone: senderPhone,
+        phone: cleanSenderPhone,
         email: senderEmail,
       },
       receiverAddress: {
         name: receiverName,
         street: receiverStreet,
-        houseNumber: receiverHouse,
+        houseNumber: cleanReceiverHouse,
         postCode: receiverPostCode,
         city: receiverCity,
         countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
-        phone: receiverPhone,
+        phone: cleanReceiverPhone,
         email: receiverEmail,
       },
     };
