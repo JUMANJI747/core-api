@@ -866,42 +866,43 @@ router.post('/glob/order', async (req, res) => {
       .map(id => ({ id: parseInt(id) }));
 
     const orderPayload = {
-      order: {
-        shipment: {
-          productId: parseInt(selectedOffer.productId),
-          weight: quote.quoteParams.weight || 1,
-          length: quote.quoteParams.length || 20,
-          width: quote.quoteParams.width || 20,
-          height: quote.quoteParams.height || 10,
-          quantity: 1,
-        },
-        senderAddress: {
-          name: senderName,
-          street: senderStreet,
-          houseNumber: senderHouse || '1',
-          postCode: senderPostCode,
-          city: senderCity,
-          countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
-          phone: cleanSenderPhone,
-          email: senderEmail,
-        },
-        receiverAddress: {
-          name: receiverName,
-          street: receiverStreet,
-          houseNumber: cleanReceiverHouse,
-          postCode: receiverPostCode,
-          city: receiverCity,
-          countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
-          phone: cleanReceiverPhone,
-          email: receiverEmail,
-        },
-        pickup: {
-          date: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
-          timeFrom: firstPickup.from || '09:00',
-          timeTo: firstPickup.to || '17:00',
-        },
-        addons: addonsArr,
+      shipment: {
+        productId: parseInt(selectedOffer.productId),
+        weight: quote.quoteParams.weight || 1,
+        length: quote.quoteParams.length || 20,
+        width: quote.quoteParams.width || 20,
+        height: quote.quoteParams.height || 10,
+        quantity: 1,
       },
+      senderAddress: {
+        name: senderName,
+        street: senderStreet,
+        houseNumber: senderHouse || '1',
+        postCode: senderPostCode,
+        city: senderCity,
+        countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
+        phone: cleanSenderPhone,
+        email: senderEmail,
+      },
+      receiverAddress: {
+        name: receiverName,
+        street: receiverStreet,
+        houseNumber: cleanReceiverHouse,
+        postCode: receiverPostCode,
+        city: receiverCity,
+        countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
+        phone: cleanReceiverPhone,
+        email: receiverEmail,
+      },
+      pickup: {
+        date: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
+        timeFrom: firstPickup.from || '09:00',
+        timeTo: firstPickup.to || '17:00',
+      },
+      addons: addonsArr,
+      content: 'Cosmetics / Surf Stick Bell',
+      collectionType,
+      paymentId: 9,
     };
 
     console.log('[glob/order] Creating order:', JSON.stringify(orderPayload));
