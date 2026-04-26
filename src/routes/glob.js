@@ -697,12 +697,16 @@ router.post('/glob/quote', async (req, res) => {
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
     const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
 
+    const collectionType = req.body.collectionType || 'PICKUP';
+    const deliveryType = req.body.deliveryType || 'DOOR';
     const quoteParams = {
       weight, length, width, height,
       senderCountryId,
       senderPostCode: sender.postCode || '',
       receiverCountryId,
       receiverPostCode: receiver.postCode || '',
+      collectionType,
+      deliveryType,
     };
 
     const productsData = await getQuote(quoteParams);
@@ -718,14 +722,13 @@ router.post('/glob/quote', async (req, res) => {
         const carrier = (p.carrierName || '').toLowerCase();
         return !name.includes('pocztex') && !carrier.includes('pocztex');
       })
-      .sort((a, b) => (parseFloat(a.netPrice) || 999) - (parseFloat(b.netPrice) || 999));
+      .sort((a, b) => (parseFloat(a.grossPrice) || 999) - (parseFloat(b.grossPrice) || 999));
 
     const offers = filtered.slice(0, 10).map(p => ({
       productId: p.id,
       carrier: p.carrierName,
       name: p.name,
-      netPrice: parseFloat(p.netPrice),
-      grossPrice: parseFloat(p.grossPrice),
+      price: parseFloat(p.grossPrice),
       currency: p.currency || 'PLN',
       deliveryTime: p.deliveryTime || p.transitTime,
       maxWeight: p.maxWeight,
@@ -733,7 +736,7 @@ router.post('/glob/quote', async (req, res) => {
 
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();
-    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, createdAt: new Date() };
+    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, createdAt: new Date() };
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
     }
@@ -749,7 +752,7 @@ router.post('/glob/quote', async (req, res) => {
       pickupDate,
       paczkomatSize: paczkomatSize || null,
       offers,
-      cheapest: offers[0] || null,
+      cheapest: offers[0] ? { carrier: offers[0].carrier, price: offers[0].price, currency: offers[0].currency } : null,
       note: 'Wybierz ofertę: POST /api/glob/order { quoteId, productId }',
     });
   } catch (err) {
@@ -921,7 +924,7 @@ router.post('/glob/order', async (req, res) => {
       ok: true,
       order: result,
       carrier: selectedOffer.carrier,
-      price: selectedOffer.netPrice + ' ' + selectedOffer.currency,
+      price: selectedOffer.price + ' ' + selectedOffer.currency,
       sender: { name: sender.companyName || sender.name, city: sender.city },
       receiver: { name: receiver.name, city: receiver.city },
     });
