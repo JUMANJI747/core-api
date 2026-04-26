@@ -482,7 +482,10 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         paidAmount: 0,
         status: 'unpaid',
         type: rodzaj,
-        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })) },
+        extras: {
+          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })),
+          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: p.cena })),
+        },
       },
     });
 
@@ -597,7 +600,10 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
         paidAmount: 0,
         status: 'unpaid',
         type: rodzaj,
-        extras: { pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })) },
+        extras: {
+          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })),
+          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: p.cena })),
+        },
       },
     });
 

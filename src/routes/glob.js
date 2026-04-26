@@ -24,7 +24,7 @@ function calculatePackageFromItems(items) {
   let totalWeight = 0;
   let kartonikCount = 0;
   for (const item of (items || [])) {
-    const name = (item.name || item.productEan || '').toLowerCase();
+    const name = (item.name || item.productName || item.productEan || '').toLowerCase();
     const qty = item.qty || item.quantity || 1;
     let productType = 'stick';
     if (name.includes('mascara') || name.includes('girl')) productType = 'mascara';
@@ -32,20 +32,40 @@ function calculatePackageFromItems(items) {
     else if (name.includes('daily')) productType = 'daily';
     else if (name.includes('care')) productType = 'care';
     else if (name.includes('lip')) productType = 'lips';
-    else if (name.includes('collection')) productType = 'collection';
+    else if (name.includes('collection') || name.includes('box')) productType = 'collection';
     const weightPer30 = PRODUCT_WEIGHTS[productType] || 1;
     totalWeight += (qty / 30) * weightPer30;
-    kartonikCount += Math.ceil(qty / 30);
+    kartonikCount += Math.ceil(qty / 36);
   }
   totalWeight = Math.max(1, Math.ceil(totalWeight));
+
+  // Box single: 10×20×20 (h×w×l)
+  const BOX = { h: 10, w: 20, l: 20 };
   let dimensions;
-  if (kartonikCount <= 1) dimensions = { length: 20, width: 20, height: 10 };
-  else if (kartonikCount <= 2) dimensions = { length: 20, width: 20, height: 20 };
-  else if (kartonikCount <= 4) dimensions = { length: 40, width: 20, height: 20 };
-  else dimensions = { length: 40, width: 40, height: 40 };
+  if (kartonikCount <= 1) {
+    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h };
+  } else if (kartonikCount <= 2) {
+    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h * 2 }; // 20×20×20
+  } else if (kartonikCount <= 4) {
+    dimensions = { length: BOX.l * 2, width: BOX.w, height: BOX.h * 2 }; // 40×20×20
+  } else if (kartonikCount <= 6) {
+    dimensions = { length: BOX.l * 2, width: BOX.w, height: BOX.h * 3 }; // 40×20×30
+  } else if (kartonikCount <= 8) {
+    dimensions = { length: BOX.l * 2, width: BOX.w * 2, height: BOX.h * 2 }; // 40×40×20
+  } else if (kartonikCount <= 12) {
+    dimensions = { length: BOX.l * 2, width: BOX.w * 2, height: BOX.h * 3 }; // 40×40×30
+  } else {
+    dimensions = { length: 40, width: 40, height: 40 };
+    if (kartonikCount > 16) {
+      dimensions.height = Math.min(60, Math.ceil(kartonikCount / 4) * BOX.h);
+    }
+  }
+
   return {
-    weight: totalWeight, ...dimensions, kartonikCount,
-    description: kartonikCount <= 4 ? `${kartonikCount} kartonik(ów) foliowanych` : 'Duży karton 40×40×40',
+    weight: totalWeight,
+    ...dimensions,
+    kartonikCount,
+    description: `${kartonikCount} kartonik(ów) ${dimensions.length}×${dimensions.width}×${dimensions.height} cm, ${totalWeight} kg`,
   };
 }
 
@@ -513,12 +533,13 @@ router.post('/glob/quote', async (req, res) => {
     }
 
     // 2C. Auto-kalkulacja z items
+    let packageCalc = null;
     if (items && Array.isArray(items) && items.length > 0 && !weight) {
-      const calc = calculatePackageFromItems(items);
-      weight = calc.weight;
-      length = calc.length;
-      width = calc.width;
-      height = calc.height;
+      packageCalc = calculatePackageFromItems(items);
+      weight = packageCalc.weight;
+      length = packageCalc.length;
+      width = packageCalc.width;
+      height = packageCalc.height;
     }
 
     // Legacy preset support
@@ -702,6 +723,7 @@ router.post('/glob/quote', async (req, res) => {
       receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
       receiverSource,
       package: { weight, length, width, height },
+      packageCalc,
       paczkomatSize: paczkomatSize || null,
       offers,
       cheapest: offers[0] || null,
