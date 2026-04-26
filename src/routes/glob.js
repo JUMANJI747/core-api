@@ -763,10 +763,26 @@ router.post('/glob/quote', async (req, res) => {
 router.post('/glob/order', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { quoteId, productId } = req.body || {};
+    let { quoteId, productId } = req.body || {};
+    const quoteStore = req.app.locals.quoteStore || {};
+
+    // Fallback 1: extract quoteId from free-text query
+    if (!quoteId && req.body && req.body.query) {
+      const m = String(req.body.query).match(/quoteId[=:\s]+(\d+)/i);
+      if (m) quoteId = m[1];
+    }
+
+    // Fallback 2: use latest quote in store
+    if (!quoteId) {
+      const keys = Object.keys(quoteStore).sort((a, b) => b - a);
+      if (keys.length > 0) {
+        quoteId = keys[0];
+        console.log('[glob/order] Using latest quoteId:', quoteId);
+      }
+    }
+
     if (!quoteId) return res.status(400).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
 
-    const quoteStore = req.app.locals.quoteStore || {};
     const quote = quoteStore[quoteId];
     if (!quote) return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
 
