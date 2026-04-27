@@ -527,9 +527,11 @@ router.post('/glob/quote', async (req, res) => {
     if (!sender) return res.status(400).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
 
     // 2A. PACZKA — z faktury (po numerze lub "latest"/"ostatnia"/"last" dla danego kontrahenta)
+    let foundInvoice = null;
     if (invoiceNumber) {
       const isLatest = ['latest', 'ostatnia', 'last'].includes(String(invoiceNumber).toLowerCase());
       let invoice = null;
+      let invoiceContractorName = null;
 
       if (isLatest && receiverSearch) {
         const ctr = await prisma.contractor.findFirst({
@@ -544,14 +546,29 @@ router.post('/glob/quote', async (req, res) => {
           invoice = await prisma.invoice.findFirst({
             where: { contractorId: ctr.id },
             orderBy: { createdAt: 'desc' },
+            include: { contractor: { select: { name: true } } },
           });
+          invoiceContractorName = ctr.name;
           if (invoice) console.log(`[glob/quote] Latest invoice ${invoice.number} for ${ctr.name}`);
         }
       } else if (!isLatest) {
         invoice = await prisma.invoice.findFirst({
           where: { number: invoiceNumber },
           orderBy: { createdAt: 'desc' },
+          include: { contractor: { select: { name: true } } },
         });
+        invoiceContractorName = invoice && invoice.contractor && invoice.contractor.name;
+      }
+
+      if (invoice) {
+        foundInvoice = {
+          number: invoice.number,
+          contractorName: invoiceContractorName || (invoice.extras && invoice.extras.kontrahentNazwa) || null,
+          issueDate: invoice.issueDate,
+          grossAmount: invoice.grossAmount,
+          currency: invoice.currency,
+          itemsCount: (invoice.extras && Array.isArray(invoice.extras.items)) ? invoice.extras.items.length : 0,
+        };
       }
 
       if (invoice && invoice.extras && Array.isArray(invoice.extras.items) && invoice.extras.items.length > 0) {
@@ -769,6 +786,7 @@ router.post('/glob/quote', async (req, res) => {
       sender: { name: sender.companyName || sender.name, city: sender.city },
       receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
       receiverSource,
+      invoice: foundInvoice,
       package: { weight, length, width, height },
       packageCalc,
       pickupDate,
