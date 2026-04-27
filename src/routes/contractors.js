@@ -140,7 +140,18 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
             ifirmaType: inv.Rodzaj || null,
             source: 'ifirma_sync',
             ifirmaContractorId: inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null,
-            extras: { kontrahentNazwa: inv.NazwaKontrahenta || inv.KontrahentNazwa || '' },
+            extras: (() => {
+              const e = { kontrahentNazwa: inv.NazwaKontrahenta || inv.KontrahentNazwa || '' };
+              const positions = inv.Pozycje || inv.Positions || inv.Items;
+              if (Array.isArray(positions) && positions.length) {
+                e.items = positions.map(p => ({
+                  name: p.NazwaPelna || p.Nazwa || p.name || '',
+                  qty: parseFloat(p.Ilosc || p.qty || p.quantity || 1),
+                  productEan: p.EAN || p.productEan || null,
+                }));
+              }
+              return e;
+            })(),
           },
         });
       }
