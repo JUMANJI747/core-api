@@ -698,7 +698,7 @@ router.post('/glob/quote', async (req, res) => {
     const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
 
     const collectionType = req.body.collectionType || 'PICKUP';
-    const deliveryType = req.body.deliveryType || 'DOOR';
+    if (!deliveryType) deliveryType = 'DOOR';
     const quoteParams = {
       weight, length, width, height,
       senderCountryId,
