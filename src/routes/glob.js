@@ -526,13 +526,35 @@ router.post('/glob/quote', async (req, res) => {
     }
     if (!sender) return res.status(400).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
 
-    // 2A. PACZKA — z faktury
+    // 2A. PACZKA — z faktury (po numerze lub "latest"/"ostatnia"/"last" dla danego kontrahenta)
     if (invoiceNumber) {
-      const invoice = await prisma.invoice.findFirst({
-        where: { number: invoiceNumber },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (invoice && invoice.extras && Array.isArray(invoice.extras.items)) {
+      const isLatest = ['latest', 'ostatnia', 'last'].includes(String(invoiceNumber).toLowerCase());
+      let invoice = null;
+
+      if (isLatest && receiverSearch) {
+        const ctr = await prisma.contractor.findFirst({
+          where: {
+            OR: [
+              { name: { contains: receiverSearch, mode: 'insensitive' } },
+              { email: { contains: receiverSearch, mode: 'insensitive' } },
+            ],
+          },
+        });
+        if (ctr) {
+          invoice = await prisma.invoice.findFirst({
+            where: { contractorId: ctr.id },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (invoice) console.log(`[glob/quote] Latest invoice ${invoice.number} for ${ctr.name}`);
+        }
+      } else if (!isLatest) {
+        invoice = await prisma.invoice.findFirst({
+          where: { number: invoiceNumber },
+          orderBy: { createdAt: 'desc' },
+        });
+      }
+
+      if (invoice && invoice.extras && Array.isArray(invoice.extras.items) && invoice.extras.items.length > 0) {
         const calc = calculatePackageFromItems(invoice.extras.items);
         weight = weight || calc.weight;
         length = length || calc.length;
@@ -570,31 +592,9 @@ router.post('/glob/quote', async (req, res) => {
       weight = p.weight; length = p.length; width = p.width; height = p.height;
     }
 
-    // 2D. Auto-find latest invoice for this contractor when nothing else specified
-    if (!invoiceNumber && !packageType && !preset && !items && !weight && receiverSearch) {
-      const ctr = await prisma.contractor.findFirst({
-        where: {
-          OR: [
-            { name: { contains: receiverSearch, mode: 'insensitive' } },
-            { email: { contains: receiverSearch, mode: 'insensitive' } },
-          ],
-        },
-      });
-      if (ctr) {
-        const latestInvoice = await prisma.invoice.findFirst({
-          where: { contractorId: ctr.id },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (latestInvoice && latestInvoice.extras && Array.isArray(latestInvoice.extras.items) && latestInvoice.extras.items.length > 0) {
-          const calc = calculatePackageFromItems(latestInvoice.extras.items);
-          weight = calc.weight; length = calc.length; width = calc.width; height = calc.height;
-          console.log(`[glob/quote] Auto-found invoice ${latestInvoice.number} for ${ctr.name}: ${calc.description}`);
-        }
-      }
+    if (!weight || !length || !width || !height) {
+      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
     }
-
-    // Default fallback if still no dimensions
-    if (!weight) { weight = 1; length = 20; width = 20; height = 10; }
 
     // 3. PACZKOMAT — fit dimensions
     let paczkomatSize = null;
