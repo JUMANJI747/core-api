@@ -698,7 +698,7 @@ router.post('/glob/quote', async (req, res) => {
     const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
 
     const collectionType = req.body.collectionType || 'PICKUP';
-    if (!deliveryType) deliveryType = 'DOOR';
+    if (!deliveryType) deliveryType = 'PICKUP';
     const quoteParams = {
       weight, length, width, height,
       senderCountryId,
@@ -789,7 +789,7 @@ router.post('/glob/order', async (req, res) => {
     const quote = quoteStore[quoteId];
     if (!quote) return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
 
-    const deliveryType = (req.body && req.body.deliveryType) || quote.deliveryType || 'DOOR';
+    const deliveryType = (req.body && req.body.deliveryType) || quote.deliveryType || 'PICKUP';
     const collectionType = (req.body && req.body.collectionType) || quote.collectionType || 'PICKUP';
 
     const selectedOffer = productId

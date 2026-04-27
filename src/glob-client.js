@@ -138,7 +138,7 @@ async function getQuote(params) {
   query.set('packageType', 'PARCEL');
   query.set('transportType', 'ROAD');
   query.append('collectionTypes[]', params.collectionType || 'PICKUP');
-  query.append('deliveryTypes[]', params.deliveryType || 'DOOR');
+  query.append('deliveryTypes[]', params.deliveryType || 'PICKUP');
   query.set('flatList', 'true');
 
   const url = `https://api.globkurier.pl/v1/products?${query.toString()}`;
