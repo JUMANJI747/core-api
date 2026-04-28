@@ -187,42 +187,7 @@ router.post('/glob/quote', async (req, res) => {
       weight = p.weight; length = p.length; width = p.width; height = p.height;
     }
 
-    if (!weight && !length && !width && !height) {
-      const defaultPreset = PACKAGE_PRESETS['maly_kartonik'];
-      weight = defaultPreset.weight;
-      length = defaultPreset.length;
-      width = defaultPreset.width;
-      height = defaultPreset.height;
-      console.log('[glob/quote] Fallback to maly_kartonik');
-    }
-
-    if (!weight || !length || !width || !height) {
-      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
-    }
-
-    // 3. PACZKOMAT
-    let paczkomatSize = null;
-    if (paczkomat) {
-      const dims = [length, width, height].sort((a, b) => a - b);
-      for (const [size, lim] of Object.entries(PACZKOMAT_SIZES)) {
-        if (dims[0] <= lim.maxHeight && dims[1] <= lim.maxWidth && dims[2] <= lim.maxLength) {
-          paczkomatSize = size;
-          height = Math.min(dims[0], lim.maxHeight);
-          width = Math.min(dims[1], lim.maxWidth);
-          length = Math.min(dims[2], lim.maxLength);
-          break;
-        }
-      }
-      if (!paczkomatSize) {
-        return res.json({
-          ok: true, offers: [],
-          warning: 'Paczka za duża na paczkomat InPost (max C: 41×38×64). Użyj kuriera do drzwi.',
-          package: { weight, length, width, height },
-        });
-      }
-    }
-
-    // 4. RECEIVER
+    // 4. RECEIVER (resolved before final dimension fallbacks so we can auto-lookup latest invoice for the contractor)
     if (!receiverSearch) return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta)' });
 
     let receiver = null;
@@ -315,6 +280,97 @@ router.post('/glob/quote', async (req, res) => {
 
     if (!receiver) {
       return res.status(404).json({ ok: false, error: 'Nie znaleziono odbiorcy: ' + receiverSearch + '. Sprawdź kontrahentów, książkę adresową GlobKurier lub nadawców.' });
+    }
+
+    // Auto-lookup latest invoice if no dimensions and we have a contractor
+    if (!weight && !length && !width && !height && receiver && receiver.contractorId) {
+      const latestInvoice = await prisma.invoice.findFirst({
+        where: { contractorId: receiver.contractorId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (latestInvoice) {
+        foundInvoice = {
+          number: latestInvoice.number,
+          contractorName: (latestInvoice.extras && latestInvoice.extras.kontrahentNazwa) || receiver.name,
+          issueDate: latestInvoice.issueDate,
+          grossAmount: latestInvoice.grossAmount,
+          currency: latestInvoice.currency,
+        };
+
+        if ((!latestInvoice.extras || !Array.isArray(latestInvoice.extras.items) || latestInvoice.extras.items.length === 0) && latestInvoice.ifirmaId) {
+          try {
+            const { fetchInvoiceDetails } = require('../ifirma-client');
+            const details = await fetchInvoiceDetails(latestInvoice.ifirmaId, latestInvoice.ifirmaType || 'fakturakraj');
+            const positions = details && (details.Pozycje || details.pozycje);
+            if (Array.isArray(positions) && positions.length > 0) {
+              const items = positions.map(p => ({
+                name: p.NazwaPelna || p.Nazwa || '',
+                qty: parseInt(p.Ilosc) || 1,
+                priceNetto: parseFloat(p.CenaJednostkowa) || 0,
+                ean: p.KodKreskowy || p.EAN || null,
+              }));
+              const currentExtras = (typeof latestInvoice.extras === 'object' && latestInvoice.extras) ? latestInvoice.extras : {};
+              await prisma.invoice.update({
+                where: { id: latestInvoice.id },
+                data: { extras: { ...currentExtras, items } },
+              });
+              const calc = calculatePackageFromItems(items);
+              weight = calc.weight;
+              length = calc.length;
+              width = calc.width;
+              height = calc.height;
+              foundInvoice.itemsCount = items.length;
+              console.log(`[glob/quote] Auto-loaded from latest invoice ${latestInvoice.number}: ${calc.description}`);
+            }
+          } catch (err) {
+            console.log('[glob/quote] iFirma lazy-load failed:', err.message);
+          }
+        } else if (latestInvoice.extras && Array.isArray(latestInvoice.extras.items) && latestInvoice.extras.items.length > 0) {
+          const calc = calculatePackageFromItems(latestInvoice.extras.items);
+          weight = calc.weight;
+          length = calc.length;
+          width = calc.width;
+          height = calc.height;
+          foundInvoice.itemsCount = latestInvoice.extras.items.length;
+          console.log(`[glob/quote] Auto-loaded from cached items of invoice ${latestInvoice.number}: ${calc.description}`);
+        }
+      }
+    }
+
+    if (!weight && !length && !width && !height) {
+      const defaultPreset = PACKAGE_PRESETS['maly_kartonik'];
+      weight = defaultPreset.weight;
+      length = defaultPreset.length;
+      width = defaultPreset.width;
+      height = defaultPreset.height;
+      console.log('[glob/quote] Fallback to maly_kartonik');
+    }
+
+    if (!weight || !length || !width || !height) {
+      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
+    }
+
+    // PACZKOMAT — fit dimensions
+    let paczkomatSize = null;
+    if (paczkomat) {
+      const dims = [length, width, height].sort((a, b) => a - b);
+      for (const [size, lim] of Object.entries(PACZKOMAT_SIZES)) {
+        if (dims[0] <= lim.maxHeight && dims[1] <= lim.maxWidth && dims[2] <= lim.maxLength) {
+          paczkomatSize = size;
+          height = Math.min(dims[0], lim.maxHeight);
+          width = Math.min(dims[1], lim.maxWidth);
+          length = Math.min(dims[2], lim.maxLength);
+          break;
+        }
+      }
+      if (!paczkomatSize) {
+        return res.json({
+          ok: true, offers: [],
+          warning: 'Paczka za duża na paczkomat InPost (max C: 41×38×64). Użyj kuriera do drzwi.',
+          package: { weight, length, width, height },
+        });
+      }
     }
 
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
