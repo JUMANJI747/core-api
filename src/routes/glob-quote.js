@@ -636,7 +636,47 @@ router.post('/glob/order', async (req, res) => {
     console.log('[glob/order] GlobKurier response:', JSON.stringify(result).slice(0, 500));
 
     if (result && (result.errors || result.error || result.fields)) {
-      return res.status(400).json({ ok: false, error: 'GlobKurier validation error', details: result, payload: orderPayload });
+      const fields = result.fields || (result.errors && result.errors.fields) || {};
+      const pickupError = fields['pickup[date]'] || fields['pickup.date'] || '';
+
+      if (pickupError && /nie jest możliwe|niemożliw/i.test(pickupError)) {
+        console.log('[glob/order] Pickup date rejected, advancing to next working day');
+
+        const d = new Date(orderPayload.pickup.date);
+        d.setDate(d.getDate() + 1);
+        if (d.getDay() === 0) d.setDate(d.getDate() + 1);
+        if (d.getDay() === 6) d.setDate(d.getDate() + 2);
+        orderPayload.pickup.date = d.toISOString().split('T')[0];
+
+        try {
+          const retryTimes = await getPickupTimes(parseInt(selectedOffer.productId), {
+            ...quote.quoteParams,
+            receiverCity: (receiver && receiver.city) || '',
+            date: orderPayload.pickup.date,
+          });
+          const retryList = Array.isArray(retryTimes)
+            ? retryTimes
+            : (retryTimes && (retryTimes.results || retryTimes.items || retryTimes.data)) || [];
+          if (retryList.length > 0) {
+            orderPayload.pickup.timeFrom = retryList[0].from || '09:00';
+            orderPayload.pickup.timeTo = retryList[0].to || '17:00';
+          }
+        } catch (err) {
+          console.log('[glob/order] Retry pickup times failed:', err.message);
+        }
+
+        console.log('[glob/order] Retrying with pickup date:', orderPayload.pickup.date);
+        const retryResult = await createOrder(orderPayload);
+        console.log('[glob/order] Retry response:', JSON.stringify(retryResult).slice(0, 500));
+
+        if (retryResult && (retryResult.hash || retryResult.orderHash || retryResult.number)) {
+          Object.assign(result, retryResult);
+        } else {
+          return res.status(400).json({ ok: false, error: 'GlobKurier validation error after retry', details: retryResult, payload: orderPayload });
+        }
+      } else {
+        return res.status(400).json({ ok: false, error: 'GlobKurier validation error', details: result, payload: orderPayload });
+      }
     }
 
     delete quoteStore[quoteId];
