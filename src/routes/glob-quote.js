@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, getOrderLabels, createOrder } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS } = require('./glob-helpers');
 
 // ============ PRESETS ============
@@ -475,12 +475,69 @@ router.post('/glob/order', async (req, res) => {
       : quote.offers[0];
     if (!selectedOffer) return res.status(404).json({ ok: false, error: 'Nie znaleziono oferty o podanym productId' });
 
-    const pickupData = await getPickupTimes(selectedOffer.productId, {
-      ...quote.quoteParams,
-      receiverCity: quote.receiver.city,
-    });
-    const pickupList = pickupData.results || pickupData.items || (Array.isArray(pickupData) ? pickupData : []);
-    const firstPickup = pickupList[0] || {};
+    let pickupDate = quote.pickupDate || new Date().toISOString().split('T')[0];
+    let pickupTimeFrom = '09:00';
+    let pickupTimeTo = '17:00';
+
+    function nextWorkingDay(dateStr) {
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() + 1);
+      if (d.getDay() === 0) d.setDate(d.getDate() + 1);
+      if (d.getDay() === 6) d.setDate(d.getDate() + 2);
+      return d.toISOString().split('T')[0];
+    }
+
+    function extractPickupList(data) {
+      if (!data) return [];
+      if (Array.isArray(data)) return data;
+      return data.results || data.items || data.data || [];
+    }
+
+    try {
+      const pickupData = await getPickupTimes(selectedOffer.productId, {
+        ...quote.quoteParams,
+        receiverCity: (quote.receiver && quote.receiver.city) || '',
+        date: pickupDate,
+      });
+      let pickupList = extractPickupList(pickupData);
+
+      if (pickupList.length === 0) {
+        pickupDate = nextWorkingDay(pickupDate);
+        const retry = await getPickupTimes(selectedOffer.productId, {
+          ...quote.quoteParams,
+          receiverCity: (quote.receiver && quote.receiver.city) || '',
+          date: pickupDate,
+        });
+        pickupList = extractPickupList(retry);
+      }
+
+      if (pickupList.length > 0) {
+        pickupDate = pickupList[0].date || pickupDate;
+        pickupTimeFrom = pickupList[0].from || pickupTimeFrom;
+        pickupTimeTo = pickupList[0].to || pickupTimeTo;
+      }
+    } catch (err) {
+      console.log('[glob/order] getPickupTimes failed:', err.message);
+    }
+
+    let requiredAddons = [];
+    try {
+      const addonsData = await getAddons(selectedOffer.productId, quote.quoteParams);
+      const addonsList = (addonsData && (addonsData.addons || addonsData.results || addonsData.items)) || (Array.isArray(addonsData) ? addonsData : []);
+      if (Array.isArray(addonsList)) {
+        requiredAddons = addonsList
+          .filter(a => a.isRequired || a.required)
+          .map(a => ({ id: parseInt(a.id) }));
+        console.log('[glob/order] Required addons from API:', JSON.stringify(requiredAddons));
+      }
+    } catch (err) {
+      console.log('[glob/order] getAddons failed:', err.message);
+    }
+
+    if (requiredAddons.length === 0 && (collectionType === 'PICKUP' || !collectionType)) {
+      requiredAddons = [{ id: 1341 }];
+      console.log('[glob/order] Using fallback addon 1341 (Zamawiam podjazd kuriera)');
+    }
 
     const sender = quote.sender;
     const receiver = quote.receiver;
@@ -563,11 +620,11 @@ router.post('/glob/order', async (req, res) => {
         email: receiverEmail,
       },
       pickup: {
-        date: quote.pickupDate || firstPickup.date || new Date().toISOString().split('T')[0],
-        timeFrom: firstPickup.from || '09:00',
-        timeTo: firstPickup.to || '17:00',
+        date: pickupDate,
+        timeFrom: pickupTimeFrom,
+        timeTo: pickupTimeTo,
       },
-      addons: [],
+      addons: requiredAddons,
       content: 'Cosmetics / Surf Stick Bell',
       collectionType,
       paymentId: 9,
