@@ -639,40 +639,66 @@ router.post('/glob/order', async (req, res) => {
       const fields = result.fields || (result.errors && result.errors.fields) || {};
       const pickupError = fields['pickup[date]'] || fields['pickup.date'] || '';
 
-      if (pickupError && /nie jest możliwe|niemożliw/i.test(pickupError)) {
-        console.log('[glob/order] Pickup date rejected, advancing to next working day');
+      if (pickupError) {
+        console.log('[glob/order] Pickup date rejected, trying next 7 days');
 
-        const d = new Date(orderPayload.pickup.date);
-        d.setDate(d.getDate() + 1);
-        if (d.getDay() === 0) d.setDate(d.getDate() + 1);
-        if (d.getDay() === 6) d.setDate(d.getDate() + 2);
-        orderPayload.pickup.date = d.toISOString().split('T')[0];
+        let retrySuccess = false;
+        const baseDate = quote.pickupDate || new Date().toISOString().split('T')[0];
 
-        try {
-          const retryTimes = await getPickupTimes(parseInt(selectedOffer.productId), {
-            ...quote.quoteParams,
-            receiverCity: (receiver && receiver.city) || '',
-            date: orderPayload.pickup.date,
-          });
-          const retryList = Array.isArray(retryTimes)
-            ? retryTimes
-            : (retryTimes && (retryTimes.results || retryTimes.items || retryTimes.data)) || [];
-          if (retryList.length > 0) {
-            orderPayload.pickup.timeFrom = retryList[0].from || '09:00';
-            orderPayload.pickup.timeTo = retryList[0].to || '17:00';
+        for (let dayOffset = 1; dayOffset <= 7; dayOffset++) {
+          const d = new Date(baseDate);
+          d.setDate(d.getDate() + dayOffset);
+          if (d.getDay() === 0 || d.getDay() === 6) continue;
+
+          const tryDate = d.toISOString().split('T')[0];
+
+          let timeFrom = null, timeTo = null;
+          try {
+            const times = await getPickupTimes(parseInt(selectedOffer.productId), {
+              ...quote.quoteParams,
+              receiverCity: (receiver && receiver.city) || '',
+              date: tryDate,
+            });
+            const list = Array.isArray(times)
+              ? times
+              : (times && (times.results || times.items || times.data)) || [];
+            if (list.length > 0) {
+              timeFrom = list[0].from;
+              timeTo = list[0].to;
+            }
+          } catch (err) {
+            console.log('[glob/order] getPickupTimes failed for', tryDate, err.message);
           }
-        } catch (err) {
-          console.log('[glob/order] Retry pickup times failed:', err.message);
+
+          if (!timeFrom || !timeTo) {
+            console.log('[glob/order] No pickup slots for', tryDate, '- skipping');
+            continue;
+          }
+
+          orderPayload.pickup.date = tryDate;
+          orderPayload.pickup.timeFrom = timeFrom;
+          orderPayload.pickup.timeTo = timeTo;
+
+          console.log('[glob/order] Retrying with', tryDate, timeFrom, '-', timeTo);
+          const retryResult = await createOrder(orderPayload);
+
+          if (retryResult && (retryResult.hash || retryResult.orderHash || retryResult.number)) {
+            Object.assign(result, retryResult);
+            retrySuccess = true;
+            console.log('[glob/order] Success on', tryDate);
+            break;
+          }
+
+          const retryFields = (retryResult && (retryResult.fields || (retryResult.errors && retryResult.errors.fields))) || {};
+          const retryPickupError = retryFields['pickup[date]'] || retryFields['pickup.date'] || '';
+          if (!retryPickupError) {
+            console.log('[glob/order] Non-pickup error on', tryDate, ':', JSON.stringify(retryResult).slice(0, 300));
+            return res.status(400).json({ ok: false, error: 'GlobKurier error', details: retryResult, payload: orderPayload });
+          }
         }
 
-        console.log('[glob/order] Retrying with pickup date:', orderPayload.pickup.date);
-        const retryResult = await createOrder(orderPayload);
-        console.log('[glob/order] Retry response:', JSON.stringify(retryResult).slice(0, 500));
-
-        if (retryResult && (retryResult.hash || retryResult.orderHash || retryResult.number)) {
-          Object.assign(result, retryResult);
-        } else {
-          return res.status(400).json({ ok: false, error: 'GlobKurier validation error after retry', details: retryResult, payload: orderPayload });
+        if (!retrySuccess) {
+          return res.status(400).json({ ok: false, error: 'Nie znaleziono dostępnego terminu odbioru w ciągu 7 dni. Spróbuj później lub zmień kuriera.' });
         }
       } else {
         return res.status(400).json({ ok: false, error: 'GlobKurier validation error', details: result, payload: orderPayload });
