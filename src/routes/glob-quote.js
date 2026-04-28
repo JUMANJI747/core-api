@@ -116,6 +116,33 @@ router.post('/glob/quote', async (req, res) => {
         };
       }
 
+      // Lazy-load items from iFirma if missing in extras
+      if (invoice && !weight && (!invoice.extras || !Array.isArray(invoice.extras.items) || invoice.extras.items.length === 0) && invoice.ifirmaId) {
+        try {
+          const { fetchInvoiceDetails } = require('../ifirma-client');
+          const details = await fetchInvoiceDetails(invoice.ifirmaId, invoice.ifirmaType || invoice.type);
+          const positions = details && (details.Pozycje || details.pozycje);
+          if (Array.isArray(positions) && positions.length > 0) {
+            const items = positions.map(p => ({
+              name: p.NazwaPelna || p.Nazwa || p.StawkaNazwa || '',
+              qty: parseInt(p.Ilosc) || 1,
+              priceNetto: parseFloat(p.CenaJednostkowa) || 0,
+              ean: p.KodKreskowy || p.EAN || null,
+            }));
+            const currentExtras = (typeof invoice.extras === 'object' && invoice.extras) ? invoice.extras : {};
+            await prisma.invoice.update({
+              where: { id: invoice.id },
+              data: { extras: { ...currentExtras, items } },
+            });
+            invoice.extras = { ...currentExtras, items };
+            if (foundInvoice) foundInvoice.itemsCount = items.length;
+            console.log(`[glob/quote] Lazy-loaded ${items.length} items from iFirma for invoice ${invoice.number}`);
+          }
+        } catch (err) {
+          console.log('[glob/quote] iFirma lazy-load failed:', err.message);
+        }
+      }
+
       if (invoice && invoice.extras && Array.isArray(invoice.extras.items) && invoice.extras.items.length > 0) {
         const calc = calculatePackageFromItems(invoice.extras.items);
         weight = weight || calc.weight;
