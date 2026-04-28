@@ -104,6 +104,38 @@ router.get('/emails/recent', async (req, res) => {
   res.json(mapped);
 });
 
+router.get('/emails/check-sent', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { invoiceNumber, to } = req.query;
+
+  if (!invoiceNumber) return res.status(400).json({ ok: false, error: 'Podaj invoiceNumber' });
+
+  const where = {
+    direction: 'OUTBOUND',
+    subject: { contains: invoiceNumber },
+  };
+  if (to) where.toEmail = { contains: to, mode: 'insensitive' };
+
+  const emails = await prisma.email.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: { id: true, toEmail: true, subject: true, createdAt: true, messageId: true },
+  });
+
+  res.json({
+    ok: true,
+    sent: emails.length > 0,
+    count: emails.length,
+    emails: emails.map(e => ({
+      to: e.toEmail,
+      subject: e.subject,
+      date: e.createdAt,
+      messageId: e.messageId,
+    })),
+  });
+});
+
 router.get('/emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { inbox, direction, isRead, limit, fromEmail, search, contractorId } = req.query;
