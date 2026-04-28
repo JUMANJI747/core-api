@@ -658,6 +658,31 @@ router.post('/glob/order', async (req, res) => {
 
     console.log('[glob/order] Creating order:', JSON.stringify(orderPayload));
 
+    function humanizeGkErrors(errResult) {
+      const errFields = (errResult && (errResult.fields || (errResult.errors && errResult.errors.fields) || errResult.errors)) || {};
+      const problems = [];
+      for (const [field, raw] of Object.entries(errFields)) {
+        const msg = String(raw || '');
+        if (field.includes('pickup') && /nie jest możliwe|niemożliw/i.test(msg)) {
+          problems.push('Brak dostępnych terminów odbioru dla tego kuriera. Spróbuj innego (np. DPD zamiast InPost).');
+        } else if (field.toLowerCase().includes('phone') || /phone|telefon/i.test(msg)) {
+          problems.push('Brakuje telefonu odbiorcy. Podaj numer telefonu dla ' + ((receiver && receiver.name) || 'odbiorcy') + '.');
+        } else if (field.toLowerCase().includes('street') || field.toLowerCase().includes('housenumber') || field.toLowerCase().includes('address')) {
+          problems.push('Niepełny adres odbiorcy. Sprawdź ulicę i numer domu dla ' + ((receiver && receiver.name) || 'odbiorcy') + '.');
+        } else if (field.toLowerCase().includes('email')) {
+          problems.push('Brakuje emaila odbiorcy.');
+        } else if (field.toLowerCase().includes('postcode')) {
+          problems.push('Brakuje kodu pocztowego odbiorcy.');
+        } else if (field.toLowerCase().includes('addon')) {
+          continue;
+        } else {
+          problems.push(field + ': ' + msg);
+        }
+      }
+      if (problems.length === 0) problems.push('Nieznany błąd GlobKurier. Spróbuj ponownie.');
+      return problems.join('\n');
+    }
+
     const result = await createOrderWithAddonRetry(orderPayload);
     console.log('[glob/order] GlobKurier response:', JSON.stringify(result).slice(0, 500));
 
@@ -719,15 +744,29 @@ router.post('/glob/order', async (req, res) => {
           const retryPickupError = retryFields['pickup[date]'] || retryFields['pickup.date'] || '';
           if (!retryPickupError) {
             console.log('[glob/order] Non-pickup error on', tryDate, ':', JSON.stringify(retryResult).slice(0, 300));
-            return res.status(400).json({ ok: false, error: 'GlobKurier error', details: retryResult, payload: orderPayload });
+            return res.status(400).json({
+              ok: false,
+              error: humanizeGkErrors(retryResult),
+              carrier: selectedOffer && selectedOffer.carrier,
+              receiverName: receiver && receiver.name,
+            });
           }
         }
 
         if (!retrySuccess) {
-          return res.status(400).json({ ok: false, error: 'Nie znaleziono dostępnego terminu odbioru w ciągu 7 dni. Spróbuj później lub zmień kuriera.' });
+          return res.status(400).json({
+            ok: false,
+            error: 'Brak dostępnych terminów odbioru dla ' + ((selectedOffer && selectedOffer.carrier) || 'tego kuriera') + ' w ciągu 7 dni (możliwe święta/długi weekend). Spróbuj innego kuriera (np. DPD) lub późniejszy termin.',
+            carrier: selectedOffer && selectedOffer.carrier,
+          });
         }
       } else {
-        return res.status(400).json({ ok: false, error: 'GlobKurier validation error', details: result, payload: orderPayload });
+        return res.status(400).json({
+          ok: false,
+          error: humanizeGkErrors(result),
+          carrier: selectedOffer && selectedOffer.carrier,
+          receiverName: receiver && receiver.name,
+        });
       }
     }
 
