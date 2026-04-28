@@ -6,6 +6,7 @@ const https = require('https');
 const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const { parseOrderWithLLM } = require('./order-llm-parser');
+const { fetchWithTimeout } = require('./http');
 
 // ============ CONFIG ============
 
@@ -538,11 +539,11 @@ async function processWebOrder(prisma, savedEmail, parsed) {
     if (m && m[1] !== 'PL') {
       try {
         const viesUrl = 'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number';
-        const viesRes = await fetch(viesUrl, {
+        const viesRes = await fetchWithTimeout(viesUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ countryCode: m[1], vatNumber: m[2] }),
-        });
+        }, 20000);
         const viesData = await viesRes.json();
         result.viesValid = viesData.valid === true;
         result.viesName = viesData.name || null;
@@ -1138,13 +1139,27 @@ async function pollAll() {
 function startPolling() {
   console.log(`[inbox-poller] Starting, interval=${POLL_INTERVAL_MS / 1000}s`);
   // Initial run after 10s delay (let server start first)
-  setTimeout(() => {
+  pollStartTimeout = setTimeout(() => {
+    pollStartTimeout = null;
+    if (isStopping) return;
     pollAll().catch(e => console.error('[inbox-poller] poll error:', e.message));
-    setInterval(() => {
+    pollInterval = setInterval(() => {
+      if (isStopping) return;
       pollAll().catch(e => console.error('[inbox-poller] poll error:', e.message));
     }, POLL_INTERVAL_MS);
   }, 10000);
 }
 
+let pollStartTimeout = null;
+let pollInterval = null;
+let isStopping = false;
+
+function stopPolling() {
+  isStopping = true;
+  if (pollStartTimeout) { clearTimeout(pollStartTimeout); pollStartTimeout = null; }
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  console.log('[inbox-poller] Stopped');
+}
+
 startPolling();
-module.exports = { pollAll };
+module.exports = { pollAll, stopPolling };

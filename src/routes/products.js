@@ -1,6 +1,7 @@
 'use strict';
 
 const router = require('express').Router();
+const asyncHandler = require('../asyncHandler');
 
 const SEED_PRODUCTS = [
   {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
@@ -24,40 +25,36 @@ const SEED_PRODUCTS = [
   {ean:"BOX-COLLECTION-30", name:"Surf Collection Box", category:"template", capacity:"30 szt", variant:"mixed", pricePLN:540, priceEUR:135, unit:"box", extras:{isTemplate:true, composition:[{ean:"5902082579052",variant:"Lip Balm",qty:12},{ean:"5902082579021",variant:"Gel SPF50+",qty:6},{ean:"5902082579045",variant:"Daily UV SPF50+",qty:6},{ean:"5902082579014",variant:"Hydrating Cream",qty:6}],totalQty:30}},
 ];
 
-router.get('/expand-box', async (req, res) => {
+router.get('/expand-box', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  try {
-    const { ean, qty } = req.query;
-    if (!ean) return res.status(400).json({ error: 'ean required' });
-    const multiplier = Math.max(1, parseInt(qty) || 1);
+  const { ean, qty } = req.query;
+  if (!ean) return res.status(400).json({ error: 'ean required' });
+  const multiplier = Math.max(1, parseInt(qty) || 1);
 
-    const template = await prisma.product.findUnique({ where: { ean } });
-    if (!template) return res.status(404).json({ error: 'product not found' });
+  const template = await prisma.product.findUnique({ where: { ean } });
+  if (!template) return res.status(404).json({ error: 'product not found' });
 
-    const composition = template.extras && template.extras.composition;
-    if (!composition || !Array.isArray(composition)) return res.status(400).json({ error: 'product has no composition' });
+  const composition = template.extras && template.extras.composition;
+  if (!composition || !Array.isArray(composition)) return res.status(400).json({ error: 'product has no composition' });
 
-    const eans = composition.map(c => c.ean);
-    const products = await prisma.product.findMany({ where: { ean: { in: eans } } });
-    const byEan = Object.fromEntries(products.map(p => [p.ean, p]));
+  const eans = composition.map(c => c.ean);
+  const products = await prisma.product.findMany({ where: { ean: { in: eans } } });
+  const byEan = Object.fromEntries(products.map(p => [p.ean, p]));
 
-    const lines = composition.map(c => {
-      const p = byEan[c.ean] || {};
-      return {
-        ean: c.ean,
-        name: p.name || null,
-        variant: c.variant || p.variant || null,
-        qty: c.qty * multiplier,
-        pricePLN: p.pricePLN ?? null,
-        priceEUR: p.priceEUR ?? null,
-      };
-    });
+  const lines = composition.map(c => {
+    const p = byEan[c.ean] || {};
+    return {
+      ean: c.ean,
+      name: p.name || null,
+      variant: c.variant || p.variant || null,
+      qty: c.qty * multiplier,
+      pricePLN: p.pricePLN ?? null,
+      priceEUR: p.priceEUR ?? null,
+    };
+  });
 
-    res.json(lines);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+  res.json(lines);
+}));
 
 router.get('/', async (req, res) => {
   const prisma = req.app.locals.prisma;
@@ -69,25 +66,21 @@ router.get('/', async (req, res) => {
   res.json(products);
 });
 
-router.post('/seed', async (req, res) => {
+router.post('/seed', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  try {
-    let created = 0, updated = 0;
-    for (const p of SEED_PRODUCTS) {
-      const data = { ...p, extras: p.extras || {} };
-      const existing = await prisma.product.findUnique({ where: { ean: p.ean } });
-      if (existing) {
-        await prisma.product.update({ where: { ean: p.ean }, data: { name: p.name, variant: p.variant ?? null, category: p.category, capacity: p.capacity ?? null, pricePLN: p.pricePLN, priceEUR: p.priceEUR } });
-        updated++;
-      } else {
-        await prisma.product.create({ data });
-        created++;
-      }
+  let created = 0, updated = 0;
+  for (const p of SEED_PRODUCTS) {
+    const data = { ...p, extras: p.extras || {} };
+    const existing = await prisma.product.findUnique({ where: { ean: p.ean } });
+    if (existing) {
+      await prisma.product.update({ where: { ean: p.ean }, data: { name: p.name, variant: p.variant ?? null, category: p.category, capacity: p.capacity ?? null, pricePLN: p.pricePLN, priceEUR: p.priceEUR } });
+      updated++;
+    } else {
+      await prisma.product.create({ data });
+      created++;
     }
-    res.json({ ok: true, created, updated, total: SEED_PRODUCTS.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+  res.json({ ok: true, created, updated, total: SEED_PRODUCTS.length });
+}));
 
 module.exports = router;

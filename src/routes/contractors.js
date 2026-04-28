@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
+const { fetchWithTimeout } = require('../http');
 
 // ============ ROUTES ============
 
@@ -128,7 +129,7 @@ router.post('/verify-nip', async (req, res) => {
       const nipNum = nip.slice(2);
       const today = new Date().toISOString().slice(0, 10);
 
-      const mfRes = await fetch(`https://wl-api.mf.gov.pl/api/search/nip/${nipNum}?date=${today}`);
+      const mfRes = await fetchWithTimeout(`https://wl-api.mf.gov.pl/api/search/nip/${nipNum}?date=${today}`, {}, 10000);
       if (mfRes.status === 404) return res.status(404).json({ error: 'Company not found' });
       if (!mfRes.ok) return res.status(502).json({ error: 'MF API error', status: mfRes.status });
 
@@ -141,11 +142,11 @@ router.post('/verify-nip', async (req, res) => {
       const countryCode = nip.slice(0, 2);
       const vatNumber = nip.slice(2);
 
-      const viesRes = await fetch('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
+      const viesRes = await fetchWithTimeout('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ countryCode, vatNumber }),
-      });
+      }, 20000);
 
       if (!viesRes.ok) return res.status(502).json({ error: 'VIES API error', status: viesRes.status });
       const data = await viesRes.json();

@@ -45,10 +45,50 @@ app.use('/api', require('./routes/parse-document'));
 app.use('/api', require('./routes/analytics'));
 app.use('/api', require('./routes/glob'));
 
+// ============ ERROR MIDDLEWARE ============
+// Catches errors thrown from any route handler wrapped in asyncHandler,
+// or passed via next(err). Must be registered AFTER all routes.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error(`[error] ${req.method} ${req.url}:`, err.stack || err.message || err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
+
 // ============ START ============
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Core API running on port ${PORT}`);
 });
 
 // ============ INBOX POLLER ============
-require('./inbox-poller');
+const { stopPolling } = require('./inbox-poller');
+
+// ============ GRACEFUL SHUTDOWN ============
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received, draining...`);
+
+  stopPolling();
+
+  // Force-exit fallback if drain hangs
+  const forceExitTimer = setTimeout(() => {
+    console.error('[shutdown] forced exit after 30s timeout');
+    process.exit(1);
+  }, 30000);
+  forceExitTimer.unref();
+
+  server.close(async () => {
+    console.log('[shutdown] HTTP server closed');
+    try {
+      await prisma.$disconnect();
+      console.log('[shutdown] Prisma disconnected');
+    } catch (e) {
+      console.error('[shutdown] Prisma disconnect error:', e.message);
+    }
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

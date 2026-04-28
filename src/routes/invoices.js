@@ -7,6 +7,7 @@ const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { scoreContractor } = require('../services/contractor-match');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
+const { fetchWithTimeout } = require('../http');
 
 const CENNIK = {
   PLN: {
@@ -214,11 +215,11 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
           const countryCode = m ? m[1] : (contractor.country || 'PL');
           const vatNumber = m ? m[2] : clean;
 
-          const viesRes = await fetch('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
+          const viesRes = await fetchWithTimeout('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ countryCode, vatNumber }),
-          });
+          }, 20000);
           const viesData = await viesRes.json();
 
           if (viesData.valid && viesData.address) {
