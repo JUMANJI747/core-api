@@ -3,10 +3,33 @@
 const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
+const { validateBody, z } = require('../validate');
+
+// ============ SCHEMAS ============
+
+const upsertContractorSchema = z.object({
+  name: z.string().min(1, 'name required'),
+  nip: z.string().optional(),
+  type: z.string().optional(),
+  phone: z.string().optional(),
+  email: z.string().optional(),
+  country: z.string().optional(),
+  city: z.string().optional(),
+  address: z.string().optional(),
+  notes: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  source: z.string().optional(),
+  extras: z.record(z.string(), z.any()).optional(),
+});
+
+const verifyNipSchema = z.object({
+  nip: z.string().min(1, 'nip required'),
+  country: z.string().optional(),
+});
 
 // ============ ROUTES ============
 
-router.post('/upsert', async (req, res) => {
+router.post('/upsert', validateBody(upsertContractorSchema), async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const body = req.body;
@@ -105,10 +128,9 @@ router.post('/import-ifirma', async (req, res) => {
   }
 });
 
-router.post('/verify-nip', async (req, res) => {
+router.post('/verify-nip', validateBody(verifyNipSchema), async (req, res) => {
   try {
     let { nip, country } = req.body;
-    if (!nip) return res.status(400).json({ error: 'nip required' });
     nip = nip.trim().replace(/[\s\-]/g, '').toUpperCase();
     if (country) country = country.trim().toUpperCase();
 

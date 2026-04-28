@@ -48,8 +48,28 @@ app.use('/api', require('./routes/glob'));
 // ============ ERROR MIDDLEWARE ============
 // Catches errors thrown from any route handler wrapped in asyncHandler,
 // or passed via next(err). Must be registered AFTER all routes.
+const { ZodError } = require('zod');
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
+
+  // Validation errors → 400 with structured field-level details.
+  // The shape is tailored for LLM tool callers: `message` is a one-liner the
+  // agent can show the user, `issues` is the machine-readable breakdown.
+  if (err instanceof ZodError) {
+    const issues = err.issues.map(i => ({
+      field: i.path.length ? i.path.join('.') : '(root)',
+      problem: i.message,
+      code: i.code,
+    }));
+    const fieldList = issues.map(i => i.field).join(', ');
+    return res.status(400).json({
+      ok: false,
+      error: 'Validation failed',
+      message: `Invalid input. Check: ${fieldList}`,
+      issues,
+    });
+  }
+
   console.error(`[error] ${req.method} ${req.url}:`, err.stack || err.message || err);
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });

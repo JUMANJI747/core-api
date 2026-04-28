@@ -7,6 +7,35 @@ const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-se
 const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');
+const { validateBody, z } = require('../validate');
+
+// ============ SCHEMAS ============
+
+// send-email accepts two flows:
+//   1. New mail:   from + to + subject + body
+//   2. Reply:      emailId (auto-fills from/to/subject)
+const sendEmailSchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  replyTo: z.string().optional(),
+  emailId: z.string().optional(),
+  draft: z.coerce.boolean().optional(),
+});
+
+const sendOfferSchema = z.object({
+  to: z.string().optional(),
+  language: z.string().optional(),
+  contractorSearch: z.string().optional(),
+  from: z.string().optional(),
+  // Master agent's tool description uses `from_addr`; accept it as alias.
+  from_addr: z.string().optional(),
+}).transform(d => ({ ...d, from: d.from || d.from_addr, from_addr: undefined }))
+  .refine(d => d.to || d.contractorSearch, {
+    message: 'Provide to or contractorSearch',
+    path: ['to'],
+  });
 
 const OFFER_PDFS = {
   FR: { fileId: '112mOTMThWgaCAoy70E6JMG-dAnPYetqx', filename: 'Offre_SurfStickBell.pdf' },
@@ -340,7 +369,7 @@ router.get('/attachment/:id/parse', async (req, res) => {
 
 // ============ SEND EMAIL (HITL) ============
 
-router.post('/send-email', async (req, res) => {
+router.post('/send-email', validateBody(sendEmailSchema), async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     let { from, to, subject, body, replyTo, emailId: replyToEmailId, draft = true } = req.body;
@@ -543,7 +572,7 @@ router.post('/send-email/:id/confirm', async (req, res) => {
 
 // ============ SEND OFFER ============
 
-router.post('/send-offer', async (req, res) => {
+router.post('/send-offer', validateBody(sendOfferSchema), async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     let { to, language, contractorSearch, from } = req.body;

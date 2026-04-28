@@ -8,6 +8,32 @@ const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { scoreContractor } = require('../services/contractor-match');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
+const { validateBody, z } = require('../validate');
+
+// ============ SCHEMAS ============
+
+const ifirmaSyncSchema = z.object({
+  year: z.coerce.number().int().optional(),
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  dryRun: z.coerce.boolean().optional(),
+});
+
+// invoice-preview accepts either contractorId or contractorSearch.
+// items can come as a JSON string (n8n sometimes serializes arrays) or array.
+const invoicePreviewSchema = z.object({
+  contractorId: z.string().optional(),
+  contractorSearch: z.string().optional(),
+  items: z.union([z.array(z.any()), z.string()]),
+  globalPriceNetto: z.coerce.number().optional(),
+  globalPriceBrutto: z.coerce.number().optional(),
+  // Pass-through extras the legacy code reads from req.body
+  waluta: z.string().optional(),
+  rodzaj: z.string().optional(),
+  priceMode: z.string().optional(),
+}).refine(d => d.contractorId || d.contractorSearch, {
+  message: 'Provide contractorId or contractorSearch',
+  path: ['contractorId'],
+});
 
 const CENNIK = {
   PLN: {
@@ -28,10 +54,10 @@ const CENNIK = {
 
 // ============ IFIRMA SYNC ============
 
-router.post('/ifirma/sync', async (req, res) => {
+router.post('/ifirma/sync', validateBody(ifirmaSyncSchema), async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    let { year, month, dryRun } = req.body || {};
+    let { year, month, dryRun } = req.body;
     const now = new Date();
 
     // Reject hallucinated year values (agent sometimes sends 2024 when current is 2026)
@@ -145,7 +171,7 @@ function findProductFuzzy(catalog, query) {
 
 // ============ INVOICE PREVIEW ============
 
-router.post('/ifirma/invoice-preview', async (req, res) => {
+router.post('/ifirma/invoice-preview', validateBody(invoicePreviewSchema), async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { contractorId, contractorSearch, items, globalPriceNetto, globalPriceBrutto } = req.body;
