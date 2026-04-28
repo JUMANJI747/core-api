@@ -5,10 +5,12 @@ const asyncHandler = require('../asyncHandler');
 
 router.post('/', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { contractorId, status, language, campaign, value, currency, notes, nextAction, nextActionDate } = req.body;
+  // n8n agent tool sends `title`; Deal has no title column, so map it to notes when notes is empty.
+  const { contractorId, status, language, campaign, value, currency, notes, title, nextAction, nextActionDate } = req.body;
   if (!contractorId) return res.status(400).json({ error: 'contractorId required' });
+  const dealNotes = notes || title || null;
   const deal = await prisma.deal.create({
-    data: { contractorId, status: status || 'LEAD', language, campaign, value, currency, notes, nextAction, nextActionDate: nextActionDate ? new Date(nextActionDate) : null },
+    data: { contractorId, status: status || 'LEAD', language, campaign, value, currency, notes: dealNotes, nextAction, nextActionDate: nextActionDate ? new Date(nextActionDate) : null },
   });
   await prisma.activity.create({ data: { dealId: deal.id, type: 'STATUS_CHANGE', note: `Created as ${deal.status}`, actor: 'system' } });
   res.json(deal);

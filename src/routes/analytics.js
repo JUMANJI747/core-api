@@ -160,8 +160,8 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
 
     const sql = (sqlResp.body.content[0].text || '').replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
 
-    // 2. Validate — only SELECT allowed
-    const forbidden = /\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|EXEC|VACUUM|ANALYZE|COPY)\b/i;
+    // 2. Validate — only SELECT allowed (regex blacklist; DB-level READ ONLY below catches the rest)
+    const forbidden = /\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|EXEC|VACUUM|ANALYZE|COPY|LOAD|LISTEN|NOTIFY|LOCK|RESET|CALL|DO|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|pg_terminate_backend|pg_sleep|pg_read_file|pg_ls_dir|pg_advisory_lock)\b/i;
     if (forbidden.test(sql)) {
       return res.status(400).json({ ok: false, error: 'Only SELECT queries allowed', sql });
     }
@@ -169,11 +169,16 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
       return res.status(400).json({ ok: false, error: 'Query must start with SELECT or WITH', sql });
     }
 
-    // 3. Execute with timeout
+    // 3. Execute inside a READ ONLY transaction with statement timeout.
+    // Defense in depth: if the regex above misses something destructive,
+    // Postgres rejects writes at the DB layer ("cannot execute X in a read-only transaction").
     let results;
     try {
-      await prisma.$executeRawUnsafe('SET statement_timeout = 10000');
-      results = await prisma.$queryRawUnsafe(sql);
+      results = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+        await tx.$executeRawUnsafe('SET LOCAL statement_timeout = 10000');
+        return await tx.$queryRawUnsafe(sql);
+      });
     } catch (err) {
       return res.status(400).json({ ok: false, error: 'SQL error: ' + err.message, sql });
     }
