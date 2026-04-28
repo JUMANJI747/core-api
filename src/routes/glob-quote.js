@@ -31,9 +31,6 @@ router.post('/glob/quote', async (req, res) => {
         delete req.body[key];
       }
     }
-    if (!req.body.packageType && !req.body.invoiceNumber && !req.body.items && !req.body.weight) {
-      req.body.packageType = 'maly_kartonik';
-    }
 
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
@@ -188,6 +185,15 @@ router.post('/glob/quote', async (req, res) => {
     if (preset && PACKAGE_PRESETS[preset] && !weight) {
       const p = PACKAGE_PRESETS[preset];
       weight = p.weight; length = p.length; width = p.width; height = p.height;
+    }
+
+    if (!weight && !length && !width && !height) {
+      const defaultPreset = PACKAGE_PRESETS['maly_kartonik'];
+      weight = defaultPreset.weight;
+      length = defaultPreset.length;
+      width = defaultPreset.width;
+      height = defaultPreset.height;
+      console.log('[glob/quote] Fallback to maly_kartonik');
     }
 
     if (!weight || !length || !width || !height) {
