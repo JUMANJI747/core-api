@@ -4,7 +4,7 @@ const https = require('https');
 const crypto = require('crypto');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
-const { scoreContractor } = require('./contractors');
+const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');
 

@@ -3,11 +3,9 @@
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 const https = require('https');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const { parseOrderWithLLM } = require('./order-llm-parser');
-
-const prisma = new PrismaClient();
 
 // ============ CONFIG ============
 

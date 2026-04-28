@@ -45,9 +45,9 @@ model Invoice {
   number             String
   issueDate          DateTime
   dueDate            DateTime?
-  grossAmount        Float
+  grossAmount        Decimal     @db.Decimal(12, 2)
   currency           String      @default("PLN")
-  paidAmount         Float       @default(0)
+  paidAmount         Decimal     @default(0) @db.Decimal(12, 2)
   status             String      @default("unpaid")
   type               String?
   ifirmaContractorId String?
@@ -75,7 +75,7 @@ model Deal {
   
   language     String?  // fr, de, es, pt, en
   campaign     String?  // "francja surf", "niemcy apteki"
-  value        Float?   // wartość deala
+  value        Decimal? @db.Decimal(12, 2) // wartość deala
   currency     String   @default("EUR")
   notes        String?
   
@@ -180,7 +180,7 @@ model ConsignmentItem {
   consignment    Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
   
   name           String
-  unitPrice      Float
+  unitPrice      Decimal @db.Decimal(12, 2)
   qtyReceived    Int    @default(0)
   
   createdAt      DateTime @default(now())
@@ -270,8 +270,8 @@ model Product {
   category  String
   variant   String?
   capacity  String?
-  pricePLN  Float    @default(18)
-  priceEUR  Float    @default(4.5)
+  pricePLN  Decimal  @default(18) @db.Decimal(12, 2)
+  priceEUR  Decimal  @default(4.5) @db.Decimal(12, 2)
   unit      String   @default("szt")
   active    Boolean  @default(true)
   extras    Json     @default("{}")

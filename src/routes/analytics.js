@@ -57,8 +57,8 @@ const SCHEMA_DESCRIPTION = `SCHEMA BAZY DANYCH SurfStickBell:
 Table: Invoice
 - id (UUID), number (String, np "25/2026"), contractorId (UUID FK),
 - ifirmaId (Int), issueDate (DateTime), dueDate (DateTime),
-- grossAmount (Float), currency (String: "EUR"/"PLN"),
-- paidAmount (Float), status (String: "paid"/"unpaid"/"partial"),
+- grossAmount (Decimal(12,2)), currency (String: "EUR"/"PLN"),
+- paidAmount (Decimal(12,2)), status (String: "paid"/"unpaid"/"partial"),
 - type (String), ifirmaType (String, np "prz_dostawa_ue_towarow" = WDT),
 - source (String: "system"/"ifirma_sync"), bankReference (String),
 - extras (JSONB: matchedOrder, kontrahentNazwa, ...)

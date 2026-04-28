@@ -5,7 +5,8 @@ const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetc
 const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
-const { scoreContractor, processIfirmaInvoices } = require('./contractors');
+const { scoreContractor } = require('../services/contractor-match');
+const { processIfirmaInvoices } = require('../services/ifirma-sync');
 
 const CENNIK = {
   PLN: {
@@ -852,9 +853,9 @@ router.get('/invoices/unpaid', async (req, res) => {
       id: inv.id,
       number: inv.number,
       contractor: inv.contractor ? { name: inv.contractor.name, nip: inv.contractor.nip, country: inv.contractor.country } : null,
-      grossAmount: inv.grossAmount,
+      grossAmount: Number(inv.grossAmount),
       currency: inv.currency,
-      paidAmount: inv.paidAmount,
+      paidAmount: Number(inv.paidAmount),
       status: inv.status,
       issueDate: inv.issueDate,
       dueDate: inv.dueDate,
@@ -910,8 +911,9 @@ router.post('/payments/match', async (req, res) => {
     let bestInvoice = null;
     let bestDiff = Infinity;
     for (const inv of invoices) {
-      const diff = Math.abs(inv.grossAmount - amount);
-      const tolerance = inv.grossAmount * 0.01;
+      const gross = Number(inv.grossAmount);
+      const diff = Math.abs(gross - amount);
+      const tolerance = gross * 0.01;
       if (diff <= tolerance && diff < bestDiff) {
         bestDiff = diff;
         bestInvoice = inv;

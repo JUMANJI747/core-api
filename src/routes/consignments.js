@@ -81,9 +81,10 @@ router.get('/:id/summary', async (req, res) => {
     const lines = consignment.items.map((item) => {
       const returned = item.returns.reduce((s, r) => s + r.qty, 0);
       const sold = item.qtyReceived - returned;
-      const value = sold * item.unitPrice;
+      const unitPrice = Number(item.unitPrice);
+      const value = sold * unitPrice;
       totalValue += value;
-      return { name: item.name, unitPrice: item.unitPrice, received: item.qtyReceived, returned, sold, value };
+      return { name: item.name, unitPrice, received: item.qtyReceived, returned, sold, value };
     });
 
     res.json({

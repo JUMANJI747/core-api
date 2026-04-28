@@ -117,7 +117,7 @@ router.post('/glob/quote', async (req, res) => {
           number: invoice.number,
           contractorName: invoiceContractorName || (invoice.extras && invoice.extras.kontrahentNazwa) || null,
           issueDate: invoice.issueDate,
-          grossAmount: invoice.grossAmount,
+          grossAmount: Number(invoice.grossAmount),
           currency: invoice.currency,
           itemsCount: (invoice.extras && Array.isArray(invoice.extras.items)) ? invoice.extras.items.length : 0,
         };
@@ -294,7 +294,7 @@ router.post('/glob/quote', async (req, res) => {
           number: latestInvoice.number,
           contractorName: (latestInvoice.extras && latestInvoice.extras.kontrahentNazwa) || receiver.name,
           issueDate: latestInvoice.issueDate,
-          grossAmount: latestInvoice.grossAmount,
+          grossAmount: Number(latestInvoice.grossAmount),
           currency: latestInvoice.currency,
         };
 

@@ -1,9 +1,7 @@
 'use strict';
 
 const nodemailer = require('nodemailer');
-const { PrismaClient } = require('@prisma/client');
-
-const prisma = new PrismaClient();
+const prisma = require('./db');
 
 const SMTP_HOST = process.env.SMTP_HOST || 'h22.seohost.pl';
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465');

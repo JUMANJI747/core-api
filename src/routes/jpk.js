@@ -325,7 +325,7 @@ async function performWdtMatching(prisma, y, m) {
       contractorNip: ifirmaNip,
       tradeName: contractorExtras.tradeName || '',
       locations: contractorExtras.locations || [],
-      grossAmount: inv.grossAmount,
+      grossAmount: Number(inv.grossAmount),
       currency: inv.currency,
       issueDate: inv.issueDate,
       ifirmaId: inv.ifirmaId,
@@ -518,10 +518,10 @@ async function getUnpaidInvoices(prisma, year, month) {
       number: inv.number,
       ifirmaId: inv.ifirmaId,
       contractor,
-      grossAmount: inv.grossAmount,
+      grossAmount: Number(inv.grossAmount),
       currency: inv.currency,
       status: inv.status,
-      paidAmount: inv.paidAmount,
+      paidAmount: Number(inv.paidAmount),
       issueDate: inv.issueDate,
       dueDate: inv.dueDate,
       isOverdue: inv.dueDate ? new Date(inv.dueDate) < today : false,
@@ -611,7 +611,7 @@ router.post('/start-monthly-review', async (req, res) => {
 
 async function runSyncAndMatching(prisma, y, m, tgToken, tgChat) {
   const { fetchInvoices: fetchIfirmaInvoices } = require('../ifirma-client');
-  const { processIfirmaInvoices } = require('./contractors');
+  const { processIfirmaInvoices } = require('../services/ifirma-sync');
 
   // 1. Sync
   const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
@@ -629,7 +629,7 @@ async function runSyncAndMatching(prisma, y, m, tgToken, tgChat) {
   const matchedLines = matchResult.matched.map((p, i) =>
     `${i + 1}. ${p.invoice.number} (${p.invoice.contractor}) ↔ ${p.order.number} (${p.order.receiverName})`
   );
-  const unmatchedInvLines = matchResult.unmatchedInvoices.map(i => `• ${i.number} — ${i.contractor} — ${i.grossAmount} ${i.currency}`);
+  const unmatchedInvLines = matchResult.unmatchedInvoices.map(i => `• ${i.number} — ${i.contractor} — ${Number(i.grossAmount).toFixed(2)} ${i.currency}`);
   const unmatchedOrdLines = matchResult.unmatchedOrders.map(o => `• ${o.number} → ${o.receiverName}`);
 
   let tgReport = `📊 Rozliczenie za ${period}:\n\n`;
@@ -710,7 +710,7 @@ router.post('/delete-invoices', async (req, res) => {
       // Delete from local DB
       try {
         await prisma.invoice.delete({ where: { id: inv.id } });
-        deleted.push({ id: inv.id, number: inv.number, ifirmaId: inv.ifirmaId, grossAmount: inv.grossAmount });
+        deleted.push({ id: inv.id, number: inv.number, ifirmaId: inv.ifirmaId, grossAmount: Number(inv.grossAmount) });
       } catch (e) {
         console.error(`[jpk] DB delete failed for ${inv.number}:`, e.message);
         errors.push({ number: inv.number, error: e.message });

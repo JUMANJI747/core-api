@@ -1,9 +1,8 @@
 'use strict';
 
 const express = require('express');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('./db');
 
-const prisma = new PrismaClient();
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
@@ -32,8 +31,7 @@ app.get('/health', async (req, res) => {
 });
 
 // ============ ROUTES ============
-const { router: contractorsRouter } = require('./routes/contractors');
-app.use('/api/contractors', contractorsRouter);
+app.use('/api/contractors', require('./routes/contractors'));
 app.use('/api/deals', require('./routes/deals'));
 app.use('/api/consignments', require('./routes/consignments'));
 app.use('/api', require('./routes/emails'));
