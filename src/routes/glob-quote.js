@@ -534,9 +534,35 @@ router.post('/glob/order', async (req, res) => {
       console.log('[glob/order] getAddons failed:', err.message);
     }
 
-    if (requiredAddons.length === 0 && (collectionType === 'PICKUP' || !collectionType)) {
-      requiredAddons = [{ id: 1341 }];
-      console.log('[glob/order] Using fallback addon 1341 (Zamawiam podjazd kuriera)');
+    function extractRequiredAddonIds(errorResult) {
+      const fields = (errorResult && (errorResult.fields || (errorResult.errors && errorResult.errors.fields))) || {};
+      const ids = new Set();
+      for (const [key, val] of Object.entries(fields)) {
+        if (typeof val !== 'string') continue;
+        if (!key.toLowerCase().includes('addon') && !val.toLowerCase().includes('dodatk')) continue;
+        const matches = val.matchAll(/\(id\s+(\d+)\)/gi);
+        for (const m of matches) ids.add(parseInt(m[1]));
+      }
+      return Array.from(ids);
+    }
+
+    async function createOrderWithAddonRetry(payload) {
+      let r = await createOrder(payload);
+      for (let i = 0; i < 2; i++) {
+        if (!r || !(r.errors || r.error || r.fields)) break;
+        const newIds = extractRequiredAddonIds(r);
+        if (newIds.length === 0) break;
+        const existing = new Set((payload.addons || []).map(a => parseInt(a.id)));
+        let added = false;
+        payload.addons = payload.addons || [];
+        for (const id of newIds) {
+          if (!existing.has(id)) { payload.addons.push({ id }); existing.add(id); added = true; }
+        }
+        if (!added) break;
+        console.log('[glob/order] Auto-fixing addons from error, retrying with:', JSON.stringify(payload.addons));
+        r = await createOrder(payload);
+      }
+      return r;
     }
 
     const sender = quote.sender;
@@ -632,7 +658,7 @@ router.post('/glob/order', async (req, res) => {
 
     console.log('[glob/order] Creating order:', JSON.stringify(orderPayload));
 
-    const result = await createOrder(orderPayload);
+    const result = await createOrderWithAddonRetry(orderPayload);
     console.log('[glob/order] GlobKurier response:', JSON.stringify(result).slice(0, 500));
 
     if (result && (result.errors || result.error || result.fields)) {
@@ -680,7 +706,7 @@ router.post('/glob/order', async (req, res) => {
           orderPayload.pickup.timeTo = timeTo;
 
           console.log('[glob/order] Retrying with', tryDate, timeFrom, '-', timeTo);
-          const retryResult = await createOrder(orderPayload);
+          const retryResult = await createOrderWithAddonRetry(orderPayload);
 
           if (retryResult && (retryResult.hash || retryResult.orderHash || retryResult.number)) {
             Object.assign(result, retryResult);
