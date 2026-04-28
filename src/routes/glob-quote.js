@@ -208,6 +208,8 @@ router.post('/glob/quote', async (req, res) => {
       const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
       gkData = cExtras.globKurierReceiverData || {};
       const billing = cExtras.billingAddress || {};
+      const locations = Array.isArray(cExtras.locations) ? cExtras.locations : [];
+
       receiver = {
         name: contractor.name,
         contractorId: contractor.id,
@@ -223,6 +225,44 @@ router.post('/glob/quote', async (req, res) => {
         contactPerson: gkData.contactPerson || null,
       };
       receiverSource = 'contractor';
+
+      // If we found the contractor but have no usable delivery address,
+      // surface a structured response so the agent can ask the user where
+      // to look (VIES / GK address book / orders history / mails / manual).
+      // A single known delivery location is auto-applied; multiple force a choice.
+      const hasUsableAddress = receiver.city || receiver.street;
+      if (!hasUsableAddress) {
+        if (locations.length === 1) {
+          const loc = locations[0] || {};
+          receiver.city = loc.city || receiver.city;
+          receiver.postCode = loc.postCode || receiver.postCode;
+          receiver.country = loc.country || receiver.country;
+          receiver.street = loc.street || receiver.street;
+          if (loc.houseNumber) receiver.houseNumber = loc.houseNumber;
+          console.log(`[glob/quote] Using sole known location for ${contractor.name}: ${receiver.city}`);
+        } else if (locations.length > 1) {
+          return res.json({
+            ok: false,
+            needsAddress: true,
+            reason: 'multiple_locations',
+            contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country || null },
+            knownLocations: locations,
+            message: `Kontrahent ${contractor.name} ma ${locations.length} zapisanych adresów dostawy. Który użyć? ` +
+              locations.map((l, i) => `${i + 1}. ${[l.street, l.city, l.postCode, l.country].filter(Boolean).join(', ')}`).join(' | '),
+          });
+        } else {
+          return res.json({
+            ok: false,
+            needsAddress: true,
+            reason: 'no_address',
+            contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country || null },
+            knownLocations: [],
+            options: ['manual', 'vies', 'receivers_book', 'orders_history', 'emails'],
+            message: `Znaleziono kontrahenta ${contractor.name}` + (contractor.country ? ` (${contractor.country})` : '') +
+              `, ale brak adresu dostawy w bazie. Skąd wziąć: podaj ręcznie, VIES (adres rejestrowy), książka GlobKurier, historia wysyłek GK, albo maile od kontrahenta.`,
+          });
+        }
+      }
     }
 
     if (!receiver) {
