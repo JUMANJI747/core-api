@@ -4,41 +4,6 @@ const router = require('express').Router();
 const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS } = require('./glob-helpers');
-const { validateBody, z } = require('../validate');
-
-// ============ SCHEMAS ============
-// LLM tools often send numeric fields as strings (e.g. "30" from $fromAI),
-// hence z.coerce.number() throughout. Empty strings are stripped by the
-// existing pre-cleaning step inside the handler.
-
-const quoteSchema = z.object({
-  preset: z.string().optional(),
-  packageType: z.string().optional(),
-  quantity: z.coerce.number().int().optional(),
-  weightPerPackage: z.coerce.number().optional(),
-  invoiceNumber: z.string().optional(),
-  receiverSearch: z.string().optional(),
-  senderSearch: z.string().optional(),
-  senderId: z.string().optional(),
-  weight: z.coerce.number().optional(),
-  length: z.coerce.number().optional(),
-  width: z.coerce.number().optional(),
-  height: z.coerce.number().optional(),
-  items: z.array(z.any()).optional(),
-  paczkomat: z.coerce.boolean().optional(),
-  collectionType: z.string().optional(),
-  deliveryType: z.string().optional(),
-  pickupDate: z.string().optional(),
-});
-
-const orderSchema = z.object({
-  quoteId: z.union([z.string(), z.number()]).optional(),
-  productId: z.union([z.string(), z.number()]).optional(),
-  deliveryType: z.string().optional(),
-  collectionType: z.string().optional(),
-  // Allow `query` as fallback (legacy: agent sometimes packs quoteId in a sentence)
-  query: z.string().optional(),
-});
 
 // ============ PRESETS ============
 
@@ -57,9 +22,15 @@ router.post('/glob/calculate-package', async (req, res) => {
 
 // ============ QUOTE ============
 
-router.post('/glob/quote', validateBody(quoteSchema), async (req, res) => {
+router.post('/glob/quote', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
+    req.body = req.body || {};
+    for (const key of Object.keys(req.body)) {
+      if (req.body[key] === '' || req.body[key] === 'undefined' || req.body[key] === 'null') {
+        delete req.body[key];
+      }
+    }
 
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
@@ -472,10 +443,10 @@ router.post('/glob/quote', validateBody(quoteSchema), async (req, res) => {
 
 // ============ ORDER ============
 
-router.post('/glob/order', validateBody(orderSchema), async (req, res) => {
+router.post('/glob/order', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    let { quoteId, productId } = req.body;
+    let { quoteId, productId } = req.body || {};
     const quoteStore = req.app.locals.quoteStore || {};
 
     if (!quoteId && req.body && req.body.query) {

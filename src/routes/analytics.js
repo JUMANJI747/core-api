@@ -2,11 +2,6 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { validateBody, z } = require('../validate');
-
-const analyticsSchema = z.object({
-  question: z.string().min(1, 'question required'),
-});
 
 // ============ HELPER ============
 
@@ -128,10 +123,12 @@ function serializeForJson(obj) {
 
 // ============ ENDPOINT ============
 
-router.post('/analytics', validateBody(analyticsSchema), async (req, res) => {
+router.post('/analytics', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { question } = req.body;
+    if (!question) return res.status(400).json({ error: 'question required' });
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 

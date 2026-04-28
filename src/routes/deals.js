@@ -2,28 +2,15 @@
 
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
-const { validateBody, z } = require('../validate');
 
-const createDealSchema = z.object({
-  contractorId: z.string().min(1),
-  status: z.string().optional(),
-  language: z.string().optional(),
-  campaign: z.string().optional(),
-  value: z.coerce.number().optional(),
-  currency: z.string().optional(),
-  notes: z.string().optional(),
-  // n8n Master agent tool sends `title`; Deal has no title column.
-  // Treat as alias for notes when notes is empty.
-  title: z.string().optional(),
-  nextAction: z.string().optional(),
-  nextActionDate: z.string().optional(),
-}).transform(d => ({ ...d, notes: d.notes || d.title, title: undefined }));
-
-router.post('/', validateBody(createDealSchema), asyncHandler(async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { contractorId, status, language, campaign, value, currency, notes, nextAction, nextActionDate } = req.body;
+  // n8n agent tool sends `title`; Deal has no title column, so map it to notes when notes is empty.
+  const { contractorId, status, language, campaign, value, currency, notes, title, nextAction, nextActionDate } = req.body;
+  if (!contractorId) return res.status(400).json({ error: 'contractorId required' });
+  const dealNotes = notes || title || null;
   const deal = await prisma.deal.create({
-    data: { contractorId, status: status || 'LEAD', language, campaign, value, currency, notes, nextAction, nextActionDate: nextActionDate ? new Date(nextActionDate) : null },
+    data: { contractorId, status: status || 'LEAD', language, campaign, value, currency, notes: dealNotes, nextAction, nextActionDate: nextActionDate ? new Date(nextActionDate) : null },
   });
   await prisma.activity.create({ data: { dealId: deal.id, type: 'STATUS_CHANGE', note: `Created as ${deal.status}`, actor: 'system' } });
   res.json(deal);
