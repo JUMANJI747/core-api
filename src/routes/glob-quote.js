@@ -25,9 +25,19 @@ router.post('/glob/calculate-package', async (req, res) => {
 router.post('/glob/quote', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
+    req.body = req.body || {};
+    for (const key of Object.keys(req.body)) {
+      if (req.body[key] === '' || req.body[key] === 'undefined' || req.body[key] === 'null') {
+        delete req.body[key];
+      }
+    }
+    if (!req.body.packageType && !req.body.invoiceNumber && !req.body.items && !req.body.weight) {
+      req.body.packageType = 'maly_kartonik';
+    }
+
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
-          weight, length, width, height, items, paczkomat, deliveryType, pickupDate } = req.body || {};
+          weight, length, width, height, items, paczkomat, deliveryType, pickupDate } = req.body;
 
     function nextWorkingDay(date) {
       const d = new Date(date);
