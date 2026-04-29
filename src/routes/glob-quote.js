@@ -255,28 +255,58 @@ router.post('/glob/quote', async (req, res) => {
     // also given so we keep contractorId for invoice auto-lookups.
     if (deliveryAddress && (deliveryAddress.city || deliveryAddress.street)) {
       if (receiverSearch) {
-        contractor = await prisma.contractor.findFirst({
-          where: {
-            OR: [
-              { name: { contains: receiverSearch, mode: 'insensitive' } },
-              { email: { contains: receiverSearch, mode: 'insensitive' } },
-            ],
-          },
+        // Use the same fuzzy logic as the regular contractor lookup so
+        // typo/spelling variants ("HolaOla" vs "HOLA OLA RIBADEO SLU") still
+        // bind the contractor — needed below to backfill missing fields
+        // (postCode, phone, email) from extras.locations.
+        const tokens = receiverSearch.toLowerCase().split(/\s+/).filter(t => t.length >= 3).slice(0, 4);
+        const orFilters = [
+          { name: { contains: receiverSearch, mode: 'insensitive' } },
+          { email: { contains: receiverSearch, mode: 'insensitive' } },
+          ...tokens.map(t => ({ name: { contains: t, mode: 'insensitive' } })),
+        ];
+        let candidates = await prisma.contractor.findMany({
+          where: { OR: orFilters },
+          select: { id: true, name: true, nip: true, country: true, email: true, city: true, address: true, phone: true, extras: true },
+          take: 50,
         });
+        if (candidates.length === 0) {
+          candidates = await prisma.contractor.findMany({
+            select: { id: true, name: true, nip: true, country: true, email: true, city: true, address: true, phone: true, extras: true },
+            take: 500,
+          });
+        }
+        const scored = candidates
+          .map(c => ({ c, score: scoreContractor(c, receiverSearch) }))
+          .filter(x => x.score >= 50)
+          .sort((a, b) => b.score - a.score);
+        if (scored.length) contractor = scored[0].c;
       }
+
+      // Backfill missing deliveryAddress fields from contractor's saved
+      // delivery locations (extras.locations[]). Pick the location whose
+      // street/city best matches the inline values; fall back to the first.
+      const cExtras = (contractor && typeof contractor.extras === 'object' && contractor.extras) || {};
+      const savedLocs = Array.isArray(cExtras.locations) ? cExtras.locations : [];
+      const norm = s => (s || '').toString().toLowerCase().trim();
+      const matchedLoc = savedLocs.find(l =>
+        (deliveryAddress.street && norm(l.street).includes(norm(deliveryAddress.street).slice(0, 15))) ||
+        (deliveryAddress.city && norm(l.city) === norm(deliveryAddress.city))
+      ) || savedLocs[0] || {};
+
       receiver = {
         name: (contractor && contractor.name) || receiverSearch || 'Receiver',
         contractorId: contractor ? contractor.id : null,
-        city: deliveryAddress.city || '',
-        postCode: deliveryAddress.postCode || '',
-        country: deliveryAddress.country || (contractor && contractor.country) || 'PL',
+        city: deliveryAddress.city || matchedLoc.city || (contractor && contractor.city) || '',
+        postCode: deliveryAddress.postCode || matchedLoc.postCode || '',
+        country: deliveryAddress.country || matchedLoc.country || (contractor && contractor.country) || 'PL',
         countryId: deliveryAddress.countryId || null,
-        phone: deliveryAddress.phone || (contractor && contractor.phone) || '',
-        email: deliveryAddress.email || (contractor && contractor.email) || '',
-        street: deliveryAddress.street || '',
-        houseNumber: deliveryAddress.houseNumber || '',
+        phone: deliveryAddress.phone || matchedLoc.phone || (contractor && contractor.phone) || '',
+        email: deliveryAddress.email || matchedLoc.email || (contractor && contractor.email) || '',
+        street: deliveryAddress.street || matchedLoc.street || '',
+        houseNumber: deliveryAddress.houseNumber || matchedLoc.houseNumber || '',
         apartmentNumber: deliveryAddress.apartmentNumber || '',
-        contactPerson: deliveryAddress.contactPerson || null,
+        contactPerson: deliveryAddress.contactPerson || matchedLoc.contactPerson || null,
       };
       receiverSource = 'inline_address';
     }
