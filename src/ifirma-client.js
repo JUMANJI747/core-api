@@ -275,9 +275,18 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     throw Object.assign(new Error('iFirma error: ' + fullResp), { ifirmaRaw: resp });
   }
 
-  const wynik = resp.response && resp.response.Wynik;
-  const invoiceNumber = wynik && (wynik.PelnyNumer || wynik.Numer) || null;
-  return { ok: true, invoiceNumber, ifirmaRaw: resp };
+  // iFirma response shape varies — try a few paths.
+  // Observed: { response: { Wynik: { PelnyNumer, FakturaId } } }
+  // Also seen: { response: { Identyfikator: <id>, Informacja: "...wystawiono..." } }
+  // Defensively read from all of them.
+  const r1 = resp.response || {};
+  const wynik = r1.Wynik || resp.Wynik || {};
+  const invoiceNumber = wynik.PelnyNumer || wynik.Numer || r1.PelnyNumer || r1.Numer || null;
+  const ifirmaId = wynik.FakturaId || wynik.Identyfikator || r1.Identyfikator || r1.FakturaId || null;
+  if (!invoiceNumber || !ifirmaId) {
+    console.log('[ifirma] createInvoice: missing fields after parse — invoiceNumber=' + invoiceNumber + ', ifirmaId=' + ifirmaId + ', raw=', JSON.stringify(resp).slice(0, 1000));
+  }
+  return { ok: true, invoiceNumber, ifirmaId, ifirmaRaw: resp };
 }
 
 // ============ FETCH PDF ============

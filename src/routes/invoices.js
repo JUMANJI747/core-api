@@ -452,22 +452,37 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     }
 
     const ifirmaRaw = ifirmaResult.ifirmaRaw;
-    const fakturaId = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Identyfikator || null;
-    const ifirmaIdNum = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId || fakturaId || null;
+    // Prefer values already extracted by ifirma-client (which now parses
+    // multiple shapes); only fall back to raw if missing.
+    const fakturaId = ifirmaResult.ifirmaId
+      || (ifirmaRaw && ifirmaRaw.response && (ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId))
+      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Identyfikator)
+      || null;
+    const ifirmaIdNum = fakturaId;
 
-    let pelnyNumer = ifirmaResult.invoiceNumber || 'UNKNOWN';
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const todayInvoices = await fetchIfirmaInvoices({ dataOd: today, dataDo: today });
-      const matched = todayInvoices.find(inv => String(inv.FakturaId) === String(ifirmaIdNum));
-      if (matched) {
-        pelnyNumer = matched.PelnyNumer || matched.Numer || pelnyNumer;
-        console.log(`[invoice-confirm] found invoice: PelnyNumer=${pelnyNumer}, FakturaId=${ifirmaIdNum}`);
-      } else {
-        console.log(`[invoice-confirm] invoice not found in today list, using: ${pelnyNumer}`);
+    let pelnyNumer = ifirmaResult.invoiceNumber || null;
+    // If we still don't have a real number, retry the iFirma list lookup
+    // a few times — sometimes the just-issued invoice takes a moment to
+    // show up in the daily list.
+    if (!pelnyNumer && ifirmaIdNum) {
+      for (let attempt = 1; attempt <= 3 && !pelnyNumer; attempt++) {
+        try {
+          if (attempt > 1) await new Promise(r => setTimeout(r, 1500));
+          const today = new Date().toISOString().slice(0, 10);
+          const todayInvoices = await fetchIfirmaInvoices({ dataOd: today, dataDo: today });
+          const matched = todayInvoices.find(inv => String(inv.FakturaId) === String(ifirmaIdNum));
+          if (matched) {
+            pelnyNumer = matched.PelnyNumer || matched.Numer || null;
+            console.log(`[invoice-confirm] recovered number on attempt ${attempt}: ${pelnyNumer}`);
+          }
+        } catch (lookupErr) {
+          console.error(`[invoice-confirm] lookup attempt ${attempt} error:`, lookupErr.message);
+        }
       }
-    } catch (lookupErr) {
-      console.error('[invoice-confirm] invoice lookup error:', lookupErr.message);
+    }
+    if (!pelnyNumer) {
+      pelnyNumer = 'UNKNOWN';
+      console.error('[invoice-confirm] FAILED to resolve invoice number after retries — saving UNKNOWN. ifirmaId=' + ifirmaIdNum);
     }
 
     const brutto = stored.preview.suma.brutto;
