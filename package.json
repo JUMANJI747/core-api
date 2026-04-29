@@ -11,6 +11,7 @@
     "db:studio": "npx prisma studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@prisma/client": "^6.5.0",
     "express": "^4.21.0",
     "imap": "^0.8.19",

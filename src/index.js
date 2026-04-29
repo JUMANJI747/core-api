@@ -44,6 +44,7 @@ app.use('/api/jpk', require('./routes/jpk-package'));
 app.use('/api', require('./routes/parse-document'));
 app.use('/api', require('./routes/analytics'));
 app.use('/api', require('./routes/glob'));
+app.use('/api', require('./routes/agent'));
 
 // ============ ERROR MIDDLEWARE ============
 // Catches errors thrown from any route handler wrapped in asyncHandler,
