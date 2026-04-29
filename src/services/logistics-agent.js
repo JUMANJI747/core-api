@@ -165,14 +165,15 @@ async function executeTool(name, input) {
   }
 }
 
-// Heuristic: a *fresh* quote intent forces a quote_shipping call so the LLM
-// can't return a hallucinated quote from conversation memory. We deliberately
-// EXCLUDE order/search/label intents — those have their own dedicated tools
-// and forcing quote_shipping would be wrong.
-const QUOTE_INTENT = /\b(wycen|wycena|ile kosztuje|policz|sprawdź cenę)/i;
-const ORDER_INTENT = /\b(zam[oó]w|potwier|tak,? wyślij|tak,? zam[oó]w)/i;
-const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|szukaj wysy[lł]k|histori|lista paczek)/i;
-const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj list|pdf paczki)/i;
+// Heuristic: a *fresh* shipping intent forces a quote_shipping call so the LLM
+// can't return a hallucinated quote from conversation memory. ORDER_INTENT is
+// matched ONLY for short confirmations or specific carrier picks ("tak",
+// "potwierdzam", "zamów DPD", "zamów najtańszą") — phrases like "zamów paczkę"
+// / "wyślij paczkę" are still quote intents because they require pricing first.
+const QUOTE_INTENT = /\b(wyce[nń]|wycena|ile kosztuje|policz|sprawd[zź] cen[eę]|wy[sś]lij paczk|zam[oó]w paczk|zam[oó]w wysy[lł]k|zam[oó]w kurier)/iu;
+const ORDER_INTENT = /^\s*(tak|ok|potwierd|akceptu|zgadzam|jasne|dobra)|\bzam[oó]w (t[ąa] |t[eę] |najta[nń]sz|drug|trzeci|konkretn|inn[ąa]|innego|dpd|fedex|ups|gls|inpost|dhl)/iu;
+const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|szukaj wysy[lł]k|histori|lista paczek)/iu;
+const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj list|pdf paczki)/iu;
 
 async function processLogisticsQuery(query) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -183,13 +184,14 @@ async function processLogisticsQuery(query) {
   }
 
   const messages = [{ role: 'user', content: query }];
-  // Force a specific tool when the intent is unambiguous to suppress
-  // memory-based hallucination. Order/search/label outrank quote because
-  // "zamów" usually follows a quote and shouldn't re-quote.
+  // Order/search/label intents outrank quote because they're more specific.
+  // ORDER_INTENT matches only confirmations ("tak", "zamów najtańszą") and
+  // carrier-specific picks ("zamów DPD"). Phrases like "zamów paczkę do X"
+  // fall under QUOTE_INTENT — they need pricing first, then a separate "tak".
   let forcedTool = null;
-  if (ORDER_INTENT.test(query)) forcedTool = 'order_shipping';
-  else if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
+  if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
   else if (SEARCH_INTENT.test(query)) forcedTool = 'search_shipments';
+  else if (ORDER_INTENT.test(query)) forcedTool = 'order_shipping';
   else if (QUOTE_INTENT.test(query)) forcedTool = 'quote_shipping';
 
   let response = await anthropic.messages.create({
