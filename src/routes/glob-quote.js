@@ -75,6 +75,11 @@ router.post('/glob/quote', async (req, res) => {
       });
     }
 
+    // Track which source set the package dimensions — surfaced in response
+    // so the agent / user know whether values came from invoice, items
+    // smart-packing, manual input, preset, or the default fallback.
+    let dimensionsSource = (weight || length || width || height) ? 'manual' : null;
+
     function nextWorkingDay(date) {
       const d = new Date(date);
       if (d.getDay() === 6) d.setDate(d.getDate() + 2);
@@ -195,9 +200,11 @@ router.post('/glob/quote', async (req, res) => {
         length = length || calc.length;
         width = width || calc.width;
         height = height || calc.height;
+        dimensionsSource = `invoice ${invoice.number} (smart packing z items faktury)`;
       } else if (invoice) {
         weight = weight || 1;
         length = length || 20; width = width || 20; height = height || 10;
+        dimensionsSource = `invoice ${invoice.number} (brak items na fakturze — wymiary domyślne 1 kartonik)`;
       }
     }
 
@@ -218,6 +225,7 @@ router.post('/glob/quote', async (req, res) => {
       length = p.length;
       width = p.width;
       height = qty === 1 ? p.height : Math.min(p.height * qty, 60);
+      dimensionsSource = `preset ${packageType}${qty > 1 ? ` × ${qty}` : ''}`;
     }
 
     // 2C. Auto-kalkulacja z items — items wygrywa nad manual dims (LLM
@@ -232,6 +240,8 @@ router.post('/glob/quote', async (req, res) => {
       length = packageCalc.length;
       width = packageCalc.width;
       height = packageCalc.height;
+      const itemsSummary = items.map(i => `${i.qty}× ${i.name || i.ean || '?'}`).join(', ');
+      dimensionsSource = `items smart-packing: ${itemsSummary} → ${packageCalc.kartonikCount} kartonik(ów)`;
     }
 
     if (preset && PACKAGE_PRESETS[preset] && !weight) {
@@ -569,6 +579,7 @@ router.post('/glob/quote', async (req, res) => {
       length = defaultPreset.length;
       width = defaultPreset.width;
       height = defaultPreset.height;
+      dimensionsSource = 'default (maly_kartonik fallback — brak items/preset/faktury)';
       console.log('[glob/quote] Fallback to maly_kartonik');
       warnings.push('UŻYTO DOMYŚLNYCH WYMIARÓW (mały kartonik 20×20×10 cm, 1 kg) — żadne wymiary nie zostały podane w request. Wycena prawdopodobnie zaniżona dla większej paczki.');
     }
@@ -694,8 +705,10 @@ router.post('/glob/quote', async (req, res) => {
       sender: { name: sender.companyName || sender.name, city: sender.city, country: sender.country },
       receiver: { name: receiver.name, city: receiver.city, country: receiver.country, postCode: receiver.postCode },
       receiverSource,
+      receiverAddressFrom: receiverSource,
       invoice: foundInvoice,
       package: { weight, length, width, height },
+      dimensionsSource,
       packageCalc,
       pickupDate,
       paczkomatSize: paczkomatSize || null,
