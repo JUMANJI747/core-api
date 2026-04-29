@@ -3,7 +3,7 @@
 const router = require('express').Router();
 const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder } = require('../glob-client');
-const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS } = require('./glob-helpers');
+const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { scoreContractor } = require('../services/contractor-match');
 
 // ============ PRESETS ============
@@ -484,8 +484,15 @@ router.post('/glob/quote', async (req, res) => {
       }
     }
 
+    // Normalize country to ISO-2 — LLMs sometimes pass "Hiszpania"/"Spain"
+    // instead of "ES", which silently fell back to PL via COUNTRY_IDS lookup.
+    sender.country = normalizeCountry(sender.country) || sender.country;
+    receiver.country = normalizeCountry(receiver.country) || receiver.country;
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
     const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
+    if (receiverCountryId === 1 && receiver.country !== 'PL') {
+      warnings.push(`KRAJ ODBIORCY "${receiver.country}" NIE MA ZNANEGO countryId w GlobKurier — wycena leci jako PL→PL. Sprawdź czy to obsługiwany kraj.`);
+    }
 
     const collectionType = req.body.collectionType || 'PICKUP';
     if (!deliveryType) deliveryType = 'PICKUP';

@@ -66,4 +66,47 @@ const COUNTRY_IDS = {
   PL: 1, BE: 5, CZ: 8, DK: 9, GR: 13, ES: 14, PT: 24, HU: 32, HR: 131, MT: 206, AE: 293,
 };
 
-module.exports = { normalizeText, PACKAGE_PRESETS, PRODUCT_WEIGHTS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS };
+// LLM agents tend to fill `country` with the Polish name ("Hiszpania")
+// instead of the ISO-2 code ("ES"). Normalize before mapping to countryId
+// so quotes don't silently fall back to PL.
+const COUNTRY_NAME_TO_ISO = {
+  'polska': 'PL', 'poland': 'PL',
+  'hiszpania': 'ES', 'spain': 'ES', 'espana': 'ES', 'españa': 'ES',
+  'francja': 'FR', 'france': 'FR',
+  'niemcy': 'DE', 'germany': 'DE', 'deutschland': 'DE',
+  'wlochy': 'IT', 'włochy': 'IT', 'italy': 'IT', 'italia': 'IT',
+  'portugalia': 'PT', 'portugal': 'PT',
+  'belgia': 'BE', 'belgium': 'BE',
+  'czechy': 'CZ', 'czech republic': 'CZ', 'czechia': 'CZ',
+  'dania': 'DK', 'denmark': 'DK',
+  'grecja': 'GR', 'greece': 'GR',
+  'wegry': 'HU', 'węgry': 'HU', 'hungary': 'HU',
+  'chorwacja': 'HR', 'croatia': 'HR',
+  'malta': 'MT',
+  'wielka brytania': 'GB', 'uk': 'GB', 'united kingdom': 'GB', 'anglia': 'GB',
+  'irlandia': 'IE', 'ireland': 'IE',
+  'holandia': 'NL', 'netherlands': 'NL',
+  'austria': 'AT',
+  'szwecja': 'SE', 'sweden': 'SE',
+  'finlandia': 'FI', 'finland': 'FI',
+  'norwegia': 'NO', 'norway': 'NO',
+  'szwajcaria': 'CH', 'switzerland': 'CH',
+  'rumunia': 'RO', 'romania': 'RO',
+  'slowacja': 'SK', 'słowacja': 'SK', 'slovakia': 'SK',
+  'slowenia': 'SI', 'słowenia': 'SI', 'slovenia': 'SI',
+  'litwa': 'LT', 'lithuania': 'LT',
+  'lotwa': 'LV', 'łotwa': 'LV', 'latvia': 'LV',
+  'estonia': 'EE',
+  'bulgaria': 'BG', 'bułgaria': 'BG',
+};
+
+function normalizeCountry(input) {
+  if (!input) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
+  const key = s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return COUNTRY_NAME_TO_ISO[key] || s.toUpperCase().slice(0, 2);
+}
+
+module.exports = { normalizeText, PACKAGE_PRESETS, PRODUCT_WEIGHTS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry };
