@@ -17,8 +17,14 @@ NIE LICZ WAGI/WYMIARÓW SAM — backend ma smart packing przez items[] i to licz
 - "X sticków/mascar/gels/daily/care/lips" → items=[{"name":"stick generic","qty":X}]
 - "X kartoników/boxów/pudełek" → packageType="maly_kartonik", quantity=X
 - "duży karton" → packageType="duzy_karton"
-- "z ostatniej faktury" → invoiceNumber="ostatnia"
+- "z ostatniej faktury" / "jak ostatnio" / "ostatnie zamówienie" → invoiceNumber="ostatnia"
 - adres ręczny → deliveryAddress {street, city, postCode, country (ISO-2)}
+
+DOMYŚLNE ZACHOWANIE — user mówi tylko "Wyślij/Wyceń paczkę do X" bez sztuk/kartonów/wymiarów:
+→ wywołaj quote_shipping z receiverSearch=X i invoiceNumber="ostatnia"
+→ backend weźmie items z ostatniej faktury kontrahenta, zsumuje wymiary i wagę
+→ adres z bazy (extras.locations) zostanie użyty automatycznie
+NIE pytaj o adres / kod pocztowy / wymiary, dopóki backend nie zwróci needsAddress lub błędu.
 
 KIEDY UŻYWAĆ MANUAL weight/length/width/height:
 - TYLKO gdy user wprost dyktuje wymiary konkretnej paczki ("paczka 30×25×15 cm 3,5 kg")
