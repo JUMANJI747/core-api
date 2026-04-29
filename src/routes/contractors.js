@@ -34,8 +34,19 @@ router.post('/upsert', async (req, res) => {
     // Optional delivery address — appended to extras.locations[] (idempotent).
     // This is the shipping address; distinct from the billing/main address
     // on the contractor row. A contractor can have many delivery locations.
-    const deliveryAddress = body.deliveryAddress && typeof body.deliveryAddress === 'object'
-      ? body.deliveryAddress : null;
+    // n8n LLM tools sometimes serialize objects as JSON strings — accept both.
+    let deliveryAddress = null;
+    if (body.deliveryAddress) {
+      if (typeof body.deliveryAddress === 'object' && !Array.isArray(body.deliveryAddress)) {
+        deliveryAddress = body.deliveryAddress;
+      } else if (typeof body.deliveryAddress === 'string' && body.deliveryAddress.trim()) {
+        try { deliveryAddress = JSON.parse(body.deliveryAddress); }
+        catch (_) { /* invalid JSON / plain text — silently ignore */ }
+      }
+      if (deliveryAddress && (typeof deliveryAddress !== 'object' || Array.isArray(deliveryAddress))) {
+        deliveryAddress = null;
+      }
+    }
 
     function appendLocation(locations, addr, fallbackCountry) {
       const list = Array.isArray(locations) ? [...locations] : [];

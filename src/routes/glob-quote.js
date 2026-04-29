@@ -38,6 +38,16 @@ router.post('/glob/quote', async (req, res) => {
           weight, length, width, height, items, paczkomat, deliveryType, pickupDate,
           deliveryAddress } = req.body;
 
+    // Accept deliveryAddress as object OR JSON string (n8n LLM tools sometimes
+    // serialize objects). Silently ignore unparseable input.
+    if (typeof deliveryAddress === 'string' && deliveryAddress.trim()) {
+      try { deliveryAddress = JSON.parse(deliveryAddress); }
+      catch (_) { deliveryAddress = null; }
+    }
+    if (deliveryAddress && (typeof deliveryAddress !== 'object' || Array.isArray(deliveryAddress))) {
+      deliveryAddress = null;
+    }
+
     function nextWorkingDay(date) {
       const d = new Date(date);
       if (d.getDay() === 6) d.setDate(d.getDate() + 2);
