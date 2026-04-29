@@ -220,16 +220,18 @@ router.post('/glob/quote', async (req, res) => {
       height = qty === 1 ? p.height : Math.min(p.height * qty, 60);
     }
 
-    // 2C. Auto-kalkulacja z items
+    // 2C. Auto-kalkulacja z items — items wygrywa nad manual dims (LLM
+    // agents tend to hallucinate dims; trust items if they're present).
     let packageCalc = null;
-    if (items && Array.isArray(items) && items.length > 0 && !weight) {
+    if (items && Array.isArray(items) && items.length > 0) {
+      if (weight || length || width || height) {
+        warnings.push('POMINIĘTO RĘCZNE WYMIARY — wykryto items, użyto smart packing (calculatePackageFromItems). Aby użyć ręcznych wymiarów, NIE podawaj items.');
+      }
       packageCalc = calculatePackageFromItems(items);
       weight = packageCalc.weight;
       length = packageCalc.length;
       width = packageCalc.width;
       height = packageCalc.height;
-    } else if (items && Array.isArray(items) && items.length > 0 && weight) {
-      warnings.push('POMINIĘTO items — wykryto ręczną wagę, więc smart packing dla items nie zadziałał. Jeśli chcesz auto-kalkulacji z items, NIE podawaj weight/length/width/height.');
     }
 
     if (preset && PACKAGE_PRESETS[preset] && !weight) {
