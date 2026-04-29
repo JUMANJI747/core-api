@@ -291,7 +291,16 @@ router.post('/confirm-latest', async (req, res) => {
     }
 
     if (!invoiceTimestamp && !emailTimestamp) {
-      return res.json({ ok: false, error: 'Nic do potwierdzenia' });
+      const lastAction = agentCtx && agentCtx.data && agentCtx.data.lastAction;
+      const why = lastAction === 'confirmed'
+        ? 'Ostatnia akcja została już potwierdzona — nie ma świeżego podglądu/draftu do zatwierdzenia.'
+        : 'Brak aktywnego podglądu faktury ani draftu maila do zatwierdzenia.';
+      return res.status(400).json({
+        ok: false,
+        error: 'Nic do potwierdzenia',
+        reason: why,
+        hint: 'To narzędzie służy WYŁĄCZNIE do zatwierdzenia świeżego podglądu (do 30 min). Aby wystawić nową fakturę albo wysłać nowego maila — użyj Sub-agent Księgowość lub Sub-agent Komunikacja, NIE tego narzędzia. NIE retryuj — wybierz inny tool.',
+      });
     }
 
     const apiKey = req.headers['x-api-key'] || '';
