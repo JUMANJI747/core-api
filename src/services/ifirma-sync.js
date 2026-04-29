@@ -73,6 +73,12 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
       if (!dryRun) {
         const updateData = { paidAmount, status };
         if (!existing.ifirmaType && inv.Rodzaj) updateData.ifirmaType = inv.Rodzaj;
+        // Backfill missing/placeholder number from iFirma (covers cases where
+        // invoice-confirm parsed iFirma response into 'UNKNOWN' fallback).
+        const realNumber = inv.PelnyNumer || '';
+        if (realNumber && (!existing.number || existing.number === 'UNKNOWN' || existing.number === '')) {
+          updateData.number = realNumber;
+        }
         await prisma.invoice.update({ where: { ifirmaId }, data: updateData });
       }
       invoicesUpdated++;

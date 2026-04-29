@@ -955,4 +955,81 @@ router.post('/payments/match', async (req, res) => {
   }
 });
 
+// Pobierz PDF z iFirma + wyślij na Telegram (do recovery gdy automatyczna
+// wysyłka po confirm nie zadziałała — np. faktura w bazie miała "UNKNOWN"
+// jako number, lub Telegram chatId/token były niedostępne w momencie confirm).
+router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    let { invoiceId, invoiceNumber, ifirmaId } = req.body || {};
+    let invoice = null;
+    if (invoiceId) invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice && invoiceNumber) invoice = await prisma.invoice.findFirst({ where: { number: invoiceNumber }, orderBy: { createdAt: 'desc' } });
+    if (!invoice && ifirmaId) invoice = await prisma.invoice.findUnique({ where: { ifirmaId: parseInt(ifirmaId) } });
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found. Provide invoiceId, invoiceNumber, or ifirmaId.' });
+
+    // If number is the placeholder, try to recover the real one from iFirma details.
+    let realNumber = invoice.number;
+    if ((!realNumber || realNumber === 'UNKNOWN') && invoice.ifirmaId) {
+      try {
+        const details = await fetchInvoiceDetails(invoice.ifirmaId, invoice.ifirmaType || invoice.type || 'wdt');
+        const fromDetails = details && (details.PelnyNumer || details.Numer || (details.Wynik && (details.Wynik.PelnyNumer || details.Wynik.Numer)));
+        if (fromDetails) {
+          realNumber = fromDetails;
+          await prisma.invoice.update({ where: { id: invoice.id }, data: { number: realNumber } });
+          console.log(`[resend-pdf] Recovered real number ${realNumber} for invoice ${invoice.id} (was UNKNOWN)`);
+        }
+      } catch (e) {
+        console.error('[resend-pdf] Failed to fetch iFirma details:', e.message);
+      }
+    }
+    if (!realNumber || realNumber === 'UNKNOWN') {
+      return res.status(400).json({ error: 'Cannot resolve real invoice number from iFirma. Try /api/ifirma/sync first.' });
+    }
+
+    const rodzaj = invoice.ifirmaType || invoice.type || 'wdt';
+    const pdfBuffer = await fetchInvoicePdf(realNumber, rodzaj, invoice.ifirmaId);
+
+    const [tgTokenCfg, tgChatCfg] = await Promise.all([
+      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
+      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
+    ]);
+    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgChat = (req.body && req.body.chatId) || (tgChatCfg && tgChatCfg.value);
+    if (!tgToken || !tgChat) {
+      return res.status(500).json({ error: 'Brak telegram_bot_token lub telegram_chat_id w konfiguracji.' });
+    }
+
+    const boundary = '----FormBoundary' + Date.now();
+    const filename = `faktura_${realNumber.replace(/\//g, '_')}.pdf`;
+    const caption = `Faktura ${realNumber}`;
+    const parts = [
+      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${tgChat}`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
+    ];
+    const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
+    const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const tgBody = Buffer.concat([pre, pdfBuffer, post]);
+
+    await new Promise((resolve, reject) => {
+      const tgUrl = new URL(`https://api.telegram.org/bot${tgToken}/sendDocument`);
+      const r = require('https').request({
+        hostname: tgUrl.hostname,
+        path: tgUrl.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': tgBody.length },
+      }, resp => { resp.resume(); resolve(); });
+      r.on('error', reject);
+      r.write(tgBody);
+      r.end();
+    });
+
+    res.json({ ok: true, sent: true, invoiceNumber: realNumber, invoiceId: invoice.id });
+  } catch (e) {
+    console.error('[resend-pdf-telegram] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
