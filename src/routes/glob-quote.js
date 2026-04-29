@@ -34,7 +34,8 @@ router.post('/glob/quote', async (req, res) => {
 
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
-          weight, length, width, height, items, paczkomat, deliveryType, pickupDate } = req.body;
+          weight, length, width, height, items, paczkomat, deliveryType, pickupDate,
+          deliveryAddress } = req.body;
 
     function nextWorkingDay(date) {
       const d = new Date(date);
@@ -188,23 +189,60 @@ router.post('/glob/quote', async (req, res) => {
     }
 
     // 4. RECEIVER (resolved before final dimension fallbacks so we can auto-lookup latest invoice for the contractor)
-    if (!receiverSearch) return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta)' });
+    if (!receiverSearch && !(deliveryAddress && (deliveryAddress.city || deliveryAddress.street))) {
+      return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta) lub deliveryAddress' });
+    }
 
     let receiver = null;
     let receiverSource = null;
     let gkData = {};
+    let contractor = null;
 
-    const contractor = await prisma.contractor.findFirst({
-      where: {
-        OR: [
-          { name: { contains: receiverSearch, mode: 'insensitive' } },
-          { city: { contains: receiverSearch, mode: 'insensitive' } },
-          { email: { contains: receiverSearch, mode: 'insensitive' } },
-        ],
-      },
-    });
+    // 4A. Inline deliveryAddress override — agent supplied an address directly
+    // (e.g. user typed it, or pulled from VIES / GK history). Skip the lookup
+    // chain entirely; only resolve the contractor binding if receiverSearch is
+    // also given so we keep contractorId for invoice auto-lookups.
+    if (deliveryAddress && (deliveryAddress.city || deliveryAddress.street)) {
+      if (receiverSearch) {
+        contractor = await prisma.contractor.findFirst({
+          where: {
+            OR: [
+              { name: { contains: receiverSearch, mode: 'insensitive' } },
+              { email: { contains: receiverSearch, mode: 'insensitive' } },
+            ],
+          },
+        });
+      }
+      receiver = {
+        name: (contractor && contractor.name) || receiverSearch || 'Receiver',
+        contractorId: contractor ? contractor.id : null,
+        city: deliveryAddress.city || '',
+        postCode: deliveryAddress.postCode || '',
+        country: deliveryAddress.country || (contractor && contractor.country) || 'PL',
+        countryId: deliveryAddress.countryId || null,
+        phone: deliveryAddress.phone || (contractor && contractor.phone) || '',
+        email: deliveryAddress.email || (contractor && contractor.email) || '',
+        street: deliveryAddress.street || '',
+        houseNumber: deliveryAddress.houseNumber || '',
+        apartmentNumber: deliveryAddress.apartmentNumber || '',
+        contactPerson: deliveryAddress.contactPerson || null,
+      };
+      receiverSource = 'inline_address';
+    }
 
-    if (contractor) {
+    if (!contractor && !receiver && receiverSearch) {
+      contractor = await prisma.contractor.findFirst({
+        where: {
+          OR: [
+            { name: { contains: receiverSearch, mode: 'insensitive' } },
+            { city: { contains: receiverSearch, mode: 'insensitive' } },
+            { email: { contains: receiverSearch, mode: 'insensitive' } },
+          ],
+        },
+      });
+    }
+
+    if (contractor && !receiver) {
       const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
       gkData = cExtras.globKurierReceiverData || {};
       const billing = cExtras.billingAddress || {};
@@ -428,11 +466,39 @@ router.post('/glob/quote', async (req, res) => {
       deliveryType,
     };
 
-    const productsData = await getQuote(quoteParams);
+    console.log(`[glob/quote] params: ${sender.country || sender.countryId}/${sender.postCode} → ${receiver.country || receiverCountryId}/${receiver.postCode}, ${weight}kg ${length}×${width}×${height}cm, ${collectionType}/${deliveryType}`);
+
+    let productsData;
+    try {
+      productsData = await getQuote(quoteParams);
+    } catch (gkErr) {
+      console.error('[glob/quote] GlobKurier getQuote failed:', gkErr.message);
+      return res.status(502).json({
+        ok: false,
+        error: 'GlobKurier API error: ' + gkErr.message,
+        sentParams: {
+          from: { country: sender.country, postCode: sender.postCode },
+          to: { country: receiver.country, postCode: receiver.postCode, countryId: receiverCountryId },
+          dimensions: { weight, length, width, height },
+          collectionType, deliveryType,
+        },
+      });
+    }
     const products = productsData.standard || productsData.results || productsData.items || (Array.isArray(productsData) ? productsData : []);
 
     if (!Array.isArray(products) || products.length === 0) {
-      return res.json({ ok: true, offers: [], note: 'Brak ofert dla tej trasy', rawResponse: productsData });
+      return res.json({
+        ok: false,
+        offers: [],
+        message: `Brak ofert dla trasy ${sender.country || '?'} → ${receiver.country || '?'} ${weight}kg ${length}×${width}×${height}cm. Sprawdź czy adres odbiorcy jest kompletny (kraj, kod pocztowy) i czy wymiary mieszczą się w limitach kuriera.`,
+        sentParams: {
+          from: { country: sender.country, postCode: sender.postCode },
+          to: { country: receiver.country, postCode: receiver.postCode, countryId: receiverCountryId },
+          dimensions: { weight, length, width, height },
+          collectionType, deliveryType,
+        },
+        rawResponse: productsData,
+      });
     }
 
     const filtered = products

@@ -196,6 +196,56 @@ router.post('/:id/alias', async (req, res) => {
   }
 });
 
+// Append a delivery address to extras.locations[] (idempotent on
+// street+city+postCode). Body fields are all optional individually but at
+// least street or city must be present. Used by the agent after pulling
+// an address from VIES / GK history / mails / user input.
+router.post('/:id/delivery-address', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { street, city, postCode, country, houseNumber, contactPerson, phone, email, source } = req.body || {};
+    if (!street && !city) return res.status(400).json({ error: 'Provide at least street or city' });
+
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    const extras = (typeof c.extras === 'object' && c.extras) || {};
+    const locations = Array.isArray(extras.locations) ? [...extras.locations] : [];
+    const norm = (s) => (s || '').toString().toLowerCase().trim();
+
+    const newLoc = {
+      street: street || null,
+      houseNumber: houseNumber || null,
+      city: city || null,
+      postCode: postCode || null,
+      country: country || c.country || null,
+      contactPerson: contactPerson || null,
+      phone: phone || null,
+      email: email || null,
+      source: source || 'manual',
+      addedAt: new Date().toISOString(),
+    };
+
+    const dup = locations.find(l =>
+      norm(l.street) === norm(newLoc.street) &&
+      norm(l.city) === norm(newLoc.city) &&
+      norm(l.postCode) === norm(newLoc.postCode)
+    );
+    if (dup) {
+      return res.json({ ok: true, deduplicated: true, location: dup, totalLocations: locations.length });
+    }
+
+    locations.push(newLoc);
+    await prisma.contractor.update({
+      where: { id: req.params.id },
+      data: { extras: { ...extras, locations } },
+    });
+    res.json({ ok: true, location: newLoc, totalLocations: locations.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.put('/:id/price', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
