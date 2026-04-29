@@ -439,6 +439,8 @@ router.post('/glob/quote', async (req, res) => {
       }
     }
 
+    const warnings = [];
+
     if (!weight && !length && !width && !height) {
       const defaultPreset = PACKAGE_PRESETS['maly_kartonik'];
       weight = defaultPreset.weight;
@@ -446,10 +448,18 @@ router.post('/glob/quote', async (req, res) => {
       width = defaultPreset.width;
       height = defaultPreset.height;
       console.log('[glob/quote] Fallback to maly_kartonik');
+      warnings.push('UŻYTO DOMYŚLNYCH WYMIARÓW (mały kartonik 20×20×10 cm, 1 kg) — żadne wymiary nie zostały podane w request. Wycena prawdopodobnie zaniżona dla większej paczki.');
     }
 
     if (!weight || !length || !width || !height) {
       return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
+    }
+
+    // Detect country fallback to PL — happens when contractor exists but
+    // has no country and no inline deliveryAddress.country was provided.
+    if (receiver.country === 'PL' && contractor && !contractor.country &&
+        !(deliveryAddress && deliveryAddress.country)) {
+      warnings.push('KRAJ ODBIORCY USTAWIONY NA PL DOMYŚLNIE — kontrahent nie ma zapisanego kraju. Wycena dotyczy trasy krajowej; jeśli odbiorca jest za granicą, podaj deliveryAddress.country.');
     }
 
     // PACZKOMAT — fit dimensions
@@ -552,8 +562,8 @@ router.post('/glob/quote', async (req, res) => {
     res.json({
       ok: true,
       quoteId,
-      sender: { name: sender.companyName || sender.name, city: sender.city },
-      receiver: { name: receiver.name, city: receiver.city, country: receiver.country },
+      sender: { name: sender.companyName || sender.name, city: sender.city, country: sender.country },
+      receiver: { name: receiver.name, city: receiver.city, country: receiver.country, postCode: receiver.postCode },
       receiverSource,
       invoice: foundInvoice,
       package: { weight, length, width, height },
@@ -562,6 +572,7 @@ router.post('/glob/quote', async (req, res) => {
       paczkomatSize: paczkomatSize || null,
       offers,
       cheapest: offers[0] ? { carrier: offers[0].carrier, price: offers[0].price, currency: offers[0].currency } : null,
+      warnings: warnings.length ? warnings : undefined,
       note: 'Wybierz ofertę: POST /api/glob/order { quoteId, productId }',
     });
   } catch (err) {
