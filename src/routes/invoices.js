@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment, searchContractor } = require('../ifirma-client');
+const { backfillInvoiceItems } = require('../services/invoice-backfill');
 const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
@@ -1043,6 +1044,19 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
     res.json({ ok: true, sent: true, invoiceNumber: realNumber, invoiceId: invoice.id });
   } catch (e) {
     console.error('[resend-pdf-telegram] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/invoices/:id/backfill-items', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id } });
+    if (!invoice) return res.status(404).json({ error: 'invoice not found' });
+    const result = await backfillInvoiceItems(prisma, invoice);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[backfill-items] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

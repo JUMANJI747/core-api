@@ -167,30 +167,23 @@ router.post('/glob/quote', async (req, res) => {
         };
       }
 
-      // Lazy-load items from iFirma if missing in extras
+      // Lazy-load items from iFirma PDF if missing in extras.
+      // iFirma's GET endpoint returns header only — items must be parsed
+      // from the PDF (which we generate at confirm time and can re-fetch).
+      let itemsFromPdf = false;
       if (invoice && !weight && (!invoice.extras || !Array.isArray(invoice.extras.items) || invoice.extras.items.length === 0) && invoice.ifirmaId) {
         try {
-          const { fetchInvoiceDetails } = require('../ifirma-client');
-          const details = await fetchInvoiceDetails(invoice.ifirmaId, invoice.ifirmaType || invoice.type);
-          const positions = details && (details.Pozycje || details.pozycje);
-          if (Array.isArray(positions) && positions.length > 0) {
-            const items = positions.map(p => ({
-              name: p.NazwaPelna || p.Nazwa || p.StawkaNazwa || '',
-              qty: parseInt(p.Ilosc) || 1,
-              priceNetto: parseFloat(p.CenaJednostkowa) || 0,
-              ean: p.KodKreskowy || p.EAN || null,
-            }));
+          const { backfillInvoiceItems } = require('../services/invoice-backfill');
+          const result = await backfillInvoiceItems(prisma, invoice);
+          if (result.items && result.items.length > 0) {
             const currentExtras = (typeof invoice.extras === 'object' && invoice.extras) ? invoice.extras : {};
-            await prisma.invoice.update({
-              where: { id: invoice.id },
-              data: { extras: { ...currentExtras, items } },
-            });
-            invoice.extras = { ...currentExtras, items };
-            if (foundInvoice) foundInvoice.itemsCount = items.length;
-            console.log(`[glob/quote] Lazy-loaded ${items.length} items from iFirma for invoice ${invoice.number}`);
+            invoice.extras = { ...currentExtras, items: result.items, itemsSource: 'pdf-parse' };
+            if (foundInvoice) foundInvoice.itemsCount = result.items.length;
+            itemsFromPdf = true;
+            console.log(`[glob/quote] Backfilled ${result.items.length} items from PDF for invoice ${invoice.number}`);
           }
         } catch (err) {
-          console.log('[glob/quote] iFirma lazy-load failed:', err.message);
+          console.log('[glob/quote] PDF backfill failed:', err.message);
         }
       }
 
@@ -200,7 +193,8 @@ router.post('/glob/quote', async (req, res) => {
         length = length || calc.length;
         width = width || calc.width;
         height = height || calc.height;
-        dimensionsSource = `invoice ${invoice.number} (smart packing z items faktury)`;
+        const sourceSuffix = itemsFromPdf ? ', items odzyskane z PDF' : '';
+        dimensionsSource = `invoice ${invoice.number} (smart packing z items faktury${sourceSuffix})`;
       } else if (invoice) {
         weight = weight || 1;
         length = length || 20; width = width || 20; height = height || 10;
@@ -535,31 +529,20 @@ router.post('/glob/quote', async (req, res) => {
 
         if ((!latestInvoice.extras || !Array.isArray(latestInvoice.extras.items) || latestInvoice.extras.items.length === 0) && latestInvoice.ifirmaId) {
           try {
-            const { fetchInvoiceDetails } = require('../ifirma-client');
-            const details = await fetchInvoiceDetails(latestInvoice.ifirmaId, latestInvoice.ifirmaType || 'fakturakraj');
-            const positions = details && (details.Pozycje || details.pozycje);
-            if (Array.isArray(positions) && positions.length > 0) {
-              const items = positions.map(p => ({
-                name: p.NazwaPelna || p.Nazwa || '',
-                qty: parseInt(p.Ilosc) || 1,
-                priceNetto: parseFloat(p.CenaJednostkowa) || 0,
-                ean: p.KodKreskowy || p.EAN || null,
-              }));
-              const currentExtras = (typeof latestInvoice.extras === 'object' && latestInvoice.extras) ? latestInvoice.extras : {};
-              await prisma.invoice.update({
-                where: { id: latestInvoice.id },
-                data: { extras: { ...currentExtras, items } },
-              });
-              const calc = calculatePackageFromItems(items);
+            const { backfillInvoiceItems } = require('../services/invoice-backfill');
+            const result = await backfillInvoiceItems(prisma, latestInvoice);
+            if (result.items && result.items.length > 0) {
+              const calc = calculatePackageFromItems(result.items);
               weight = calc.weight;
               length = calc.length;
               width = calc.width;
               height = calc.height;
-              foundInvoice.itemsCount = items.length;
-              console.log(`[glob/quote] Auto-loaded from latest invoice ${latestInvoice.number}: ${calc.description}`);
+              foundInvoice.itemsCount = result.items.length;
+              dimensionsSource = `invoice ${latestInvoice.number} (smart packing, items odzyskane z PDF)`;
+              console.log(`[glob/quote] Auto-loaded from latest invoice ${latestInvoice.number} (PDF): ${calc.description}`);
             }
           } catch (err) {
-            console.log('[glob/quote] iFirma lazy-load failed:', err.message);
+            console.log('[glob/quote] PDF backfill failed:', err.message);
           }
         } else if (latestInvoice.extras && Array.isArray(latestInvoice.extras.items) && latestInvoice.extras.items.length > 0) {
           const calc = calculatePackageFromItems(latestInvoice.extras.items);
@@ -568,6 +551,7 @@ router.post('/glob/quote', async (req, res) => {
           width = calc.width;
           height = calc.height;
           foundInvoice.itemsCount = latestInvoice.extras.items.length;
+          dimensionsSource = `invoice ${latestInvoice.number} (smart packing z items faktury)`;
           console.log(`[glob/quote] Auto-loaded from cached items of invoice ${latestInvoice.number}: ${calc.description}`);
         }
       }
