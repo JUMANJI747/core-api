@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
+const { scoreContractor } = require('../services/contractor-match');
 
 // ============ ROUTES ============
 
@@ -208,11 +209,32 @@ router.post('/verify-nip', async (req, res) => {
 router.get('/', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { search, country, tag, limit } = req.query;
+  const take = parseInt(limit) || 50;
   const where = {};
   if (search) where.name = { contains: search, mode: 'insensitive' };
   if (country) where.country = { equals: country, mode: 'insensitive' };
   if (tag) where.tags = { has: tag };
-  const contractors = await prisma.contractor.findMany({ where, take: parseInt(limit) || 50, orderBy: { updatedAt: 'desc' } });
+  const contractors = await prisma.contractor.findMany({ where, take, orderBy: { updatedAt: 'desc' } });
+
+  // Fuzzy fallback: if naive `name contains` failed (e.g. "holaola" vs
+  // "Hola Ola" — spacing differs) and no other filter narrowed the set,
+  // load all contractors and score them against the search term.
+  if (search && contractors.length === 0 && !country && !tag) {
+    const all = await prisma.contractor.findMany({
+      select: { id: true, name: true, nip: true, country: true, email: true, phone: true, city: true, address: true, tags: true, source: true, extras: true, createdAt: true, updatedAt: true },
+      take: 500,
+    });
+    const scored = all
+      .map(c => ({ c, score: scoreContractor(c, search) }))
+      .filter(x => x.score >= 50)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, take);
+    if (scored.length) {
+      console.log(`[contractors/search] fuzzy fallback: "${search}" → ${scored.length} match(es), top: "${scored[0].c.name}" (score ${scored[0].score})`);
+      return res.json(scored.map(x => x.c));
+    }
+  }
+
   res.json(contractors);
 });
 

@@ -242,11 +242,19 @@ router.post('/glob/quote', async (req, res) => {
         { email: { contains: receiverSearch, mode: 'insensitive' } },
         ...tokens.map(t => ({ name: { contains: t, mode: 'insensitive' } })),
       ];
-      const candidates = await prisma.contractor.findMany({
+      let candidates = await prisma.contractor.findMany({
         where: { OR: orFilters },
         select: { id: true, name: true, nip: true, country: true, email: true, city: true, address: true, phone: true, extras: true },
         take: 50,
       });
+      // Fallback: if SQL prefilter found nothing (e.g. "holaola" vs "Hola Ola"
+      // — different whitespace), load a wider set and rely on the fuzzy score.
+      if (candidates.length === 0) {
+        candidates = await prisma.contractor.findMany({
+          select: { id: true, name: true, nip: true, country: true, email: true, city: true, address: true, phone: true, extras: true },
+          take: 500,
+        });
+      }
       const scored = candidates
         .map(c => ({ c, score: scoreContractor(c, receiverSearch) }))
         .filter(x => x.score >= 50)
