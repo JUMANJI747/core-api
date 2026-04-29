@@ -3,15 +3,26 @@
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
 const { processLogisticsQuery } = require('../services/logistics-agent');
+const { processAccountingQuery } = require('../services/accounting-agent');
 
-// Stateless agent endpoint. Master agent (n8n) sends a self-contained query
+// Stateless agent endpoints. Master agent (n8n) sends a self-contained query
 // (with any context it wants the sub-agent to see), gets back a text reply.
+
 router.post('/agent/logistics', asyncHandler(async (req, res) => {
   const { query } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
   const result = await processLogisticsQuery(query);
+  res.json(result);
+}));
+
+router.post('/agent/accounting', asyncHandler(async (req, res) => {
+  const { query } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'query (string) required' });
+  }
+  const result = await processAccountingQuery(query);
   res.json(result);
 }));
 
