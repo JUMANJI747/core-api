@@ -30,6 +30,38 @@ router.post('/upsert', async (req, res) => {
 
     if (!n.name) return res.status(400).json({ error: 'name required' });
 
+    // Optional delivery address — appended to extras.locations[] (idempotent).
+    // This is the shipping address; distinct from the billing/main address
+    // on the contractor row. A contractor can have many delivery locations.
+    const deliveryAddress = body.deliveryAddress && typeof body.deliveryAddress === 'object'
+      ? body.deliveryAddress : null;
+
+    function appendLocation(locations, addr, fallbackCountry) {
+      const list = Array.isArray(locations) ? [...locations] : [];
+      if (!addr || (!addr.street && !addr.city)) return { list, added: false };
+      const norm = (s) => (s || '').toString().toLowerCase().trim();
+      const newLoc = {
+        street: addr.street || null,
+        houseNumber: addr.houseNumber || null,
+        city: addr.city || null,
+        postCode: addr.postCode || null,
+        country: addr.country || fallbackCountry || null,
+        contactPerson: addr.contactPerson || null,
+        phone: addr.phone || null,
+        email: addr.email || null,
+        source: addr.source || 'upsert',
+        addedAt: new Date().toISOString(),
+      };
+      const dup = list.find(l =>
+        norm(l.street) === norm(newLoc.street) &&
+        norm(l.city) === norm(newLoc.city) &&
+        norm(l.postCode) === norm(newLoc.postCode)
+      );
+      if (dup) return { list, added: false };
+      list.push(newLoc);
+      return { list, added: true };
+    }
+
     // Find existing: by NIP, then by email, then by exact name
     let existing = null;
     if (n.nip) existing = await prisma.contractor.findUnique({ where: { nip: n.nip } });
@@ -37,6 +69,7 @@ router.post('/upsert', async (req, res) => {
     if (!existing && !n.nip) existing = await prisma.contractor.findFirst({ where: { name: { equals: n.name, mode: 'insensitive' } } });
 
     let contractor;
+    let deliveryAddressAdded = false;
     if (existing) {
       const mergedExtras = { ...(existing.extras || {}), ...n.extras };
 
@@ -48,6 +81,12 @@ router.post('/upsert', async (req, res) => {
       }
       if (n.email && existing.email && n.email.toLowerCase() !== existing.email.toLowerCase()) {
         mergedExtras.emailList = Array.from(new Set([existing.email, n.email, ...(mergedExtras.emailList || [])]));
+      }
+
+      if (deliveryAddress) {
+        const { list, added } = appendLocation(mergedExtras.locations, deliveryAddress, n.country || existing.country);
+        mergedExtras.locations = list;
+        deliveryAddressAdded = added;
       }
 
       const mergedTags = Array.from(new Set([...(existing.tags || []), ...n.tags]));
@@ -70,6 +109,12 @@ router.post('/upsert', async (req, res) => {
         },
       });
     } else {
+      const createExtras = { ...n.extras };
+      if (deliveryAddress) {
+        const { list, added } = appendLocation(createExtras.locations, deliveryAddress, n.country);
+        createExtras.locations = list;
+        deliveryAddressAdded = added;
+      }
       contractor = await prisma.contractor.create({
         data: {
           name: n.name,
@@ -81,13 +126,13 @@ router.post('/upsert', async (req, res) => {
           city: n.city,
           address: n.address,
           notes: n.notes,
-          extras: n.extras,
+          extras: createExtras,
           tags: n.tags,
           source: n.source,
         },
       });
     }
-    res.json(contractor);
+    res.json(deliveryAddress ? { ...contractor, deliveryAddressAdded } : contractor);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

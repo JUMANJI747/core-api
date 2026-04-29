@@ -4,6 +4,7 @@ const router = require('express').Router();
 const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS } = require('./glob-helpers');
+const { scoreContractor } = require('../services/contractor-match');
 
 // ============ PRESETS ============
 
@@ -231,15 +232,29 @@ router.post('/glob/quote', async (req, res) => {
     }
 
     if (!contractor && !receiver && receiverSearch) {
-      contractor = await prisma.contractor.findFirst({
-        where: {
-          OR: [
-            { name: { contains: receiverSearch, mode: 'insensitive' } },
-            { city: { contains: receiverSearch, mode: 'insensitive' } },
-            { email: { contains: receiverSearch, mode: 'insensitive' } },
-          ],
-        },
+      // Fuzzy match contractors by name (handles e.g. "ocean republic" → "OCEAN REPUBLIK SOCIETY S.L").
+      // First narrow with a token-based SQL prefilter so we don't load every
+      // contractor in memory; then score the candidates and pick the best one
+      // with score >= 50 (same threshold as invoice-preview).
+      const tokens = receiverSearch.toLowerCase().split(/\s+/).filter(t => t.length >= 3).slice(0, 4);
+      const orFilters = [
+        { name: { contains: receiverSearch, mode: 'insensitive' } },
+        { email: { contains: receiverSearch, mode: 'insensitive' } },
+        ...tokens.map(t => ({ name: { contains: t, mode: 'insensitive' } })),
+      ];
+      const candidates = await prisma.contractor.findMany({
+        where: { OR: orFilters },
+        select: { id: true, name: true, nip: true, country: true, email: true, city: true, address: true, phone: true, extras: true },
+        take: 50,
       });
+      const scored = candidates
+        .map(c => ({ c, score: scoreContractor(c, receiverSearch) }))
+        .filter(x => x.score >= 50)
+        .sort((a, b) => b.score - a.score);
+      if (scored.length) {
+        contractor = scored[0].c;
+        console.log(`[glob/quote] fuzzy match: "${receiverSearch}" → "${contractor.name}" (score ${scored[0].score})`);
+      }
     }
 
     if (contractor && !receiver) {
