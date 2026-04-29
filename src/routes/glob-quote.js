@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder, getOrders } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { scoreContractor } = require('../services/contractor-match');
 
@@ -456,6 +456,50 @@ router.post('/glob/quote', async (req, res) => {
           houseNumber: senderAsReceiver.houseNumber || '',
         };
         receiverSource = 'sender_table';
+      }
+    }
+
+    // 6. GK ORDERS HISTORY — szukamy w wysłanych paczkach po nazwie kontrahenta.
+    //    Jeśli klient był w przeszłości obsługiwany, mamy jego adres dostawy
+    //    z najświeższej wysyłki. Zwykle aktualne i kompletne (GK wymaga
+    //    pełnych danych do nadania).
+    if (!receiver && receiverSearch) {
+      try {
+        const ordersData = await getOrders({ limit: 100 });
+        const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
+          || (Array.isArray(ordersData) ? ordersData : []);
+        const norm = s => (s || '').toString().toLowerCase().trim();
+        const q = norm(receiverSearch);
+        const tokens = q.split(/\s+/).filter(t => t.length >= 3);
+        const matchOrders = orders.filter(o => {
+          const r = o.receiverAddress || o.receiver || {};
+          const name = norm(r.name || '') + ' ' + norm(r.contactPerson || '');
+          if (q && name.includes(q)) return true;
+          if (tokens.length && tokens.every(t => name.includes(t))) return true;
+          return false;
+        });
+        matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
+        if (matchOrders.length) {
+          const r = matchOrders[0].receiverAddress || matchOrders[0].receiver || {};
+          receiver = {
+            name: r.name || receiverSearch,
+            contractorId: contractor ? contractor.id : null,
+            city: r.city || '',
+            postCode: r.postCode || r.zipCode || '',
+            country: r.countryCode || r.country || 'PL',
+            countryId: r.countryId || null,
+            phone: r.phone || '',
+            email: r.email || '',
+            street: r.street || '',
+            houseNumber: r.houseNumber || '',
+            apartmentNumber: r.apartmentNumber || '',
+            contactPerson: r.contactPerson || null,
+          };
+          receiverSource = 'gk_orders_history';
+          console.log(`[glob/quote] adres z historii GK orders: ${receiver.city}, ${receiver.country} (${matchOrders.length} matched)`);
+        }
+      } catch (err) {
+        console.log('[glob/quote] GK orders history lookup failed:', err.message);
       }
     }
 
