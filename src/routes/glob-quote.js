@@ -48,6 +48,33 @@ router.post('/glob/quote', async (req, res) => {
       deliveryAddress = null;
     }
 
+    // Hard validation of dimensions — LLM agents have been observed to
+    // hallucinate values like length=180 cm for what should be 30×20×20.
+    // Reject obviously impossible dimensions instead of forwarding garbage
+    // to GlobKurier (which prices it as oversized and returns 200+ PLN).
+    // Limits: courier max length is typically 175 cm, max girth 360 cm,
+    // max weight ~30 kg. We allow some slack but block clearly bogus values.
+    const validateDim = (val, name, max) => {
+      if (val == null || val === '') return null;
+      const n = Number(val);
+      if (Number.isNaN(n) || n <= 0) return `${name} musi być liczbą dodatnią (dostałem: ${JSON.stringify(val)})`;
+      if (n > max) return `${name}=${n} przekracza limit ${max} ${name === 'weight' ? 'kg' : 'cm'} — typowa paczka kurierska to max 100 cm. Sprawdź czy nie pomyliłeś jednostek lub pomnożyłeś przez quantity.`;
+      return null;
+    };
+    const dimErrors = [
+      validateDim(weight, 'weight', 50),
+      validateDim(length, 'length', 175),
+      validateDim(width, 'width', 175),
+      validateDim(height, 'height', 175),
+    ].filter(Boolean);
+    if (dimErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Niepoprawne wymiary paczki',
+        issues: dimErrors,
+      });
+    }
+
     function nextWorkingDay(date) {
       const d = new Date(date);
       if (d.getDay() === 6) d.setDate(d.getDate() + 2);
@@ -174,11 +201,20 @@ router.post('/glob/quote', async (req, res) => {
       }
     }
 
+    // Collect non-fatal hints to surface in the response. Used by the agent
+    // to give the user a truthful explanation instead of fabricating one.
+    const warnings = [];
+
     // 2B. PRESET × quantity
+    const hadManualDims = Boolean(weight || length || width || height);
     if (packageType && PACKAGE_PRESETS[packageType]) {
+      if (hadManualDims) {
+        warnings.push(`POMINIĘTO RĘCZNE WYMIARY — użyto preseta "${packageType}". Aby wycenić ręczne wymiary, NIE podawaj packageType.`);
+        weight = null; length = null; width = null; height = null;
+      }
       const p = PACKAGE_PRESETS[packageType];
-      const qty = quantity || 1;
-      weight = (weightPerPackage || p.weight) * qty;
+      const qty = Number(quantity) || 1;
+      weight = (Number(weightPerPackage) || p.weight) * qty;
       length = p.length;
       width = p.width;
       height = qty === 1 ? p.height : Math.min(p.height * qty, 60);
@@ -192,6 +228,8 @@ router.post('/glob/quote', async (req, res) => {
       length = packageCalc.length;
       width = packageCalc.width;
       height = packageCalc.height;
+    } else if (items && Array.isArray(items) && items.length > 0 && weight) {
+      warnings.push('POMINIĘTO items — wykryto ręczną wagę, więc smart packing dla items nie zadziałał. Jeśli chcesz auto-kalkulacji z items, NIE podawaj weight/length/width/height.');
     }
 
     if (preset && PACKAGE_PRESETS[preset] && !weight) {
@@ -448,8 +486,6 @@ router.post('/glob/quote', async (req, res) => {
         }
       }
     }
-
-    const warnings = [];
 
     if (!weight && !length && !width && !height) {
       const defaultPreset = PACKAGE_PRESETS['maly_kartonik'];
