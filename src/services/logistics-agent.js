@@ -33,6 +33,12 @@ ZASADY:
 - response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
 - "tak"/"zamów" po wycenie → order_shipping z quoteId
 
+GDY ORDER_SHIPPING zwraca błąd typu "brak terminów odbioru" / "no pickup":
+- NIE pytaj usera ponownie — automatycznie spróbuj order_shipping z DRUGĄ ofertą z poprzedniej wyceny (productId tej drugiej)
+- Jeśli druga też zawiedzie, spróbuj trzecią
+- Wyjaśnij userowi dosłownie co padło: "FedEx odrzucił (brak terminów), zamówiłem DPD za 66,43 zł"
+- NIGDY nie używaj wygasłego quoteId — jeśli wygasł, zrób nowy quote przez quote_shipping
+
 NIE ZMYŚLAJ wartości w odpowiedzi — wszystko pokazuj z response.package i response.offers.
 Country ZAWSZE jako ISO-2 (PL, ES, FR, DE, PT, IT, GB).`;
 
