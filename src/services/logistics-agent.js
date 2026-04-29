@@ -51,7 +51,8 @@ KIEDY UŻYWAĆ MANUAL weight/length/width/height:
 ZASADY:
 - ZAWSZE wywołuj tool dla nowej wiadomości
 - response.warnings[] → POKAŻ DOSŁOWNIE
-- response.needsAddress → message + options[] DOSŁOWNIE
+- response.needsAddress → POKAŻ message + opcje DOSŁOWNIE i czekaj na decyzję usera. NIE szukaj sam — koszt token. Opcje typowo: 1) szukaj w mailach, 2) podaj ręcznie, 3) VIES, 4) książka GK. User wybiera.
+- gdy user wybierze "szukaj w mailach" / "spróbuj z maili" → wywołaj find_delivery_address_in_emails z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping z tymi samymi parametrami (adres jest zapisany, wycena teraz powinna pójść). Jeśli found=false → poinformuj usera czego nie znaleziono i zaproponuj inne źródła (VIES, manual).
 - response.error → DOSŁOWNIE, NIE zgaduj
 - response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
 - "tak"/"zamów" po wycenie → order_shipping z quoteId
@@ -135,6 +136,17 @@ const tools = [
       required: ['hash'],
     },
   },
+  {
+    name: 'find_delivery_address_in_emails',
+    description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach od kontrahenta — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Znaleziony adres zostaje zapisany do bazy — nie trzeba go potem podawać ręcznie.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress' },
+      },
+      required: ['contractorId'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -142,6 +154,7 @@ const ENDPOINT_MAP = {
   order_shipping: ['POST', '/api/glob/order'],
   search_shipments: ['POST', '/api/glob/orders'],
   send_label: ['POST', '/api/glob/send-label'],
+  find_delivery_address_in_emails: ['POST', '/api/contractors/:contractorId/find-address-in-emails'],
 };
 
 function selfCall(method, path, body) {
@@ -178,9 +191,18 @@ function selfCall(method, path, body) {
 async function executeTool(name, input) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
-  const [method, path] = ep;
+  const [method, pathTemplate] = ep;
+  // Expand :param placeholders from input and strip those keys from the body
+  // so they don't double up as form/JSON fields.
+  let path = pathTemplate;
+  const body = { ...(input || {}) };
+  path = path.replace(/:([a-zA-Z]+)/g, (_, key) => {
+    const val = body[key];
+    delete body[key];
+    return encodeURIComponent(val || '');
+  });
   try {
-    const resp = await selfCall(method, path, input);
+    const resp = await selfCall(method, path, body);
     return resp.body;
   } catch (err) {
     console.error(`[logistics-agent] tool ${name} error:`, err.message);

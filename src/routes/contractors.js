@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
+const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { scoreContractor } = require('../services/contractor-match');
 
 // ============ ROUTES ============
@@ -320,6 +321,30 @@ router.post('/:id/delivery-address', async (req, res) => {
     });
     res.json({ ok: true, location: newLoc, totalLocations: locations.length });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Search contractor's INBOUND emails for a delivery address (signature /
+// "ship to" / "dostawa" lines). Calls Claude (Haiku 4.5) — has a token
+// cost, so it's a separate endpoint that the agent invokes only when the
+// user explicitly chooses "szukaj w mailach". On hit, the address is
+// persisted to extras.locations[] so future quotes don't re-pay.
+router.post('/:id/find-address-in-emails', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    const limit = (req.body && Number(req.body.limit)) || 10;
+    const result = await findAddressInContractorEmails(prisma, c.id, { limit });
+    if (!result.found) {
+      return res.json({ ok: false, found: false, reason: result.reason || 'not_found' });
+    }
+    const saved = await saveAddressToContractorLocations(prisma, c.id, result.address);
+    res.json({ ok: true, found: true, address: result.address, savedToLocations: saved, contractor: { id: c.id, name: c.name } });
+  } catch (e) {
+    console.error('[find-address-in-emails] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

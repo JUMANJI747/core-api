@@ -397,35 +397,7 @@ router.post('/glob/quote', async (req, res) => {
       // Couriers (DPD, FedEx, DHL) require street for international shipments.
       // Treat the address as usable only when we have at least a street; city
       // alone is not enough.
-      let hasUsableAddress = !!receiver.street && (!!receiver.city || !!receiver.postCode);
-
-      // Auto-search delivery address in INBOUND emails from this contractor —
-      // last resort before bothering the user. Often the courier address
-      // (warehouse, shop) lives in the email signature, while iFirma /
-      // VIES only know the billing/registered address.
-      if (!hasUsableAddress) {
-        try {
-          const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
-          const found = await findAddressInContractorEmails(prisma, contractor.id, { limit: 10 });
-          if (found.found && found.address && found.address.street) {
-            const a = found.address;
-            receiver.street = receiver.street || a.street || '';
-            receiver.houseNumber = receiver.houseNumber || a.houseNumber || '';
-            receiver.city = receiver.city || a.city || '';
-            receiver.postCode = receiver.postCode || a.postCode || '';
-            receiver.country = receiver.country || a.country || receiver.country;
-            receiver.contactPerson = receiver.contactPerson || a.contactPerson || null;
-            receiver.phone = receiver.phone || a.phone || receiver.phone;
-            receiverSource = 'contractor + email signature';
-            await saveAddressToContractorLocations(prisma, contractor.id, a);
-            hasUsableAddress = !!receiver.street && (!!receiver.city || !!receiver.postCode);
-            console.log(`[glob/quote] Found address in emails for ${contractor.name}: ${a.street} ${a.houseNumber || ''}, ${a.city}, ${a.country} (saved to extras.locations)`);
-          }
-        } catch (err) {
-          console.log('[glob/quote] email address search failed:', err.message);
-        }
-      }
-
+      const hasUsableAddress = !!receiver.street && (!!receiver.city || !!receiver.postCode);
       if (!hasUsableAddress) {
         if (locations.length > 1) {
           return res.json({
