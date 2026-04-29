@@ -371,21 +371,35 @@ router.post('/glob/quote', async (req, res) => {
       };
       receiverSource = 'contractor';
 
-      // If we found the contractor but have no usable delivery address,
-      // surface a structured response so the agent can ask the user where
-      // to look (VIES / GK address book / orders history / mails / manual).
-      // A single known delivery location is auto-applied; multiple force a choice.
-      const hasUsableAddress = receiver.city || receiver.street;
+      // ALWAYS try to backfill from extras.locations[] — gkData / contractor.city
+      // often has only city without street, and the user has manually saved
+      // full delivery addresses to locations[]. Pick best match by city,
+      // fall back to single/first.
+      if (locations.length > 0) {
+        const norm = (s) => (s || '').toString().toLowerCase().trim();
+        const matched =
+          locations.find(l => receiver.city && norm(l.city) === norm(receiver.city)) ||
+          (locations.length === 1 ? locations[0] : null);
+        if (matched) {
+          receiver.street = receiver.street || matched.street || '';
+          receiver.houseNumber = receiver.houseNumber || matched.houseNumber || '';
+          receiver.city = receiver.city || matched.city || '';
+          receiver.postCode = receiver.postCode || matched.postCode || '';
+          receiver.country = receiver.country || matched.country || receiver.country;
+          receiver.contactPerson = receiver.contactPerson || matched.contactPerson || null;
+          receiver.phone = receiver.phone || matched.phone || receiver.phone;
+          receiver.email = receiver.email || matched.email || receiver.email;
+          receiverSource = 'contractor + extras.locations';
+          console.log(`[glob/quote] Backfilled address from extras.locations for ${contractor.name}: street="${receiver.street}" houseNumber="${receiver.houseNumber}" city="${receiver.city}"`);
+        }
+      }
+
+      // Couriers (DPD, FedEx, DHL) require street for international shipments.
+      // Treat the address as usable only when we have at least a street; city
+      // alone is not enough.
+      const hasUsableAddress = !!receiver.street && (!!receiver.city || !!receiver.postCode);
       if (!hasUsableAddress) {
-        if (locations.length === 1) {
-          const loc = locations[0] || {};
-          receiver.city = loc.city || receiver.city;
-          receiver.postCode = loc.postCode || receiver.postCode;
-          receiver.country = loc.country || receiver.country;
-          receiver.street = loc.street || receiver.street;
-          if (loc.houseNumber) receiver.houseNumber = loc.houseNumber;
-          console.log(`[glob/quote] Using sole known location for ${contractor.name}: ${receiver.city}`);
-        } else if (locations.length > 1) {
+        if (locations.length > 1) {
           return res.json({
             ok: false,
             needsAddress: true,
@@ -401,10 +415,13 @@ router.post('/glob/quote', async (req, res) => {
             needsAddress: true,
             reason: 'no_address',
             contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country || null },
-            knownLocations: [],
+            knownLocations: locations,
+            partialAddress: { city: receiver.city || null, postCode: receiver.postCode || null, country: receiver.country || null },
             options: ['manual', 'vies', 'receivers_book', 'orders_history', 'emails'],
             message: `Znaleziono kontrahenta ${contractor.name}` + (contractor.country ? ` (${contractor.country})` : '') +
-              `, ale brak adresu dostawy w bazie. Skąd wziąć: podaj ręcznie, VIES (adres rejestrowy), książka GlobKurier, historia wysyłek GK, albo maile od kontrahenta.`,
+              `, ale brak ulicy w adresie dostawy. ` +
+              (receiver.city ? `Mamy: ${[receiver.city, receiver.postCode, receiver.country].filter(Boolean).join(', ')}. ` : '') +
+              `Brakuje ulicy + numeru. Skąd wziąć: podaj ręcznie, VIES, książka GlobKurier, historia wysyłek, maile.`,
           });
         }
       }
