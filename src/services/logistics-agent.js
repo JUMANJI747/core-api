@@ -153,9 +153,14 @@ async function executeTool(name, input) {
   }
 }
 
-// Heuristic: shipping intents force a quote_shipping call so the LLM
-// can't return a hallucinated quote from conversation memory.
-const SHIPPING_INTENT = /\b(wycen|wycena|zam[oó]w|paczk|wysy[lł]k|kurier|wyślij)/i;
+// Heuristic: a *fresh* quote intent forces a quote_shipping call so the LLM
+// can't return a hallucinated quote from conversation memory. We deliberately
+// EXCLUDE order/search/label intents — those have their own dedicated tools
+// and forcing quote_shipping would be wrong.
+const QUOTE_INTENT = /\b(wycen|wycena|ile kosztuje|policz|sprawdź cenę)/i;
+const ORDER_INTENT = /\b(zam[oó]w|potwier|tak,? wyślij|tak,? zam[oó]w)/i;
+const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|szukaj wysy[lł]k|histori|lista paczek)/i;
+const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj list|pdf paczki)/i;
 
 async function processLogisticsQuery(query) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -166,14 +171,21 @@ async function processLogisticsQuery(query) {
   }
 
   const messages = [{ role: 'user', content: query }];
-  const forceQuote = SHIPPING_INTENT.test(query);
+  // Force a specific tool when the intent is unambiguous to suppress
+  // memory-based hallucination. Order/search/label outrank quote because
+  // "zamów" usually follows a quote and shouldn't re-quote.
+  let forcedTool = null;
+  if (ORDER_INTENT.test(query)) forcedTool = 'order_shipping';
+  else if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
+  else if (SEARCH_INTENT.test(query)) forcedTool = 'search_shipments';
+  else if (QUOTE_INTENT.test(query)) forcedTool = 'quote_shipping';
 
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
     system: SYSTEM_PROMPT,
     tools,
-    tool_choice: forceQuote ? { type: 'tool', name: 'quote_shipping' } : { type: 'auto' },
+    tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
   });
 
