@@ -4,7 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const http = require('http');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-4-20250514';
+const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
 const SYSTEM_PROMPT = `Jesteś sub-agentem LOGISTYKA SurfStickBell. Plain text, krótko, ceny brutto.
 
@@ -49,10 +49,9 @@ const tools = [
           description: 'Lista produktów [{name, qty}] — backend kalkuluje wymiary i wagę przez smart packing. Użyj dla "X sticków/mascar".',
           items: { type: 'object', properties: { name: { type: 'string' }, qty: { type: 'number' } } },
         },
-        packageType: { type: 'string', enum: ['maly_kartonik', 'duzy_karton'], description: 'Preset paczki' },
+        packageType: { type: 'string', enum: ['maly_kartonik', 'duzy_karton'], description: 'Preset paczki — backend sam ustawia wagę z PRODUCT_WEIGHTS (1 kg per kartonik dla sticków/mascar)' },
         quantity: { type: 'number', description: 'Liczba paczek dla preseta (mnoży)' },
-        weightPerPackage: { type: 'number', description: 'Waga per paczka w kg dla preseta' },
-        weight: { type: 'number', description: 'Waga ręczna w kg — TYLKO gdy user wprost dyktuje wymiary' },
+        weight: { type: 'number', description: 'Waga ręczna w kg — TYLKO gdy user wprost dyktuje konkrety paczki ("paczka 30×25×15 cm 3,5 kg"). NIE używaj dla X sztuk produktu!' },
         length: { type: 'number', description: 'Długość ręczna w cm — TYLKO gdy user wprost dyktuje' },
         width: { type: 'number', description: 'Szerokość w cm' },
         height: { type: 'number', description: 'Wysokość w cm' },
