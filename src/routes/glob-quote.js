@@ -412,7 +412,10 @@ router.post('/glob/quote', async (req, res) => {
       // extras.locations[] so future quotes hit the cached path.
       if (contractor && !receiver.street) {
         try {
-          const ordersData = await getOrders({ limit: 100 });
+          // Pull 200 — cache (extras.locations) handles recent shipments,
+          // so the orders fallback typically resolves OLD clients we
+          // haven't shipped to in a while. Need depth, not breadth.
+          const ordersData = await getOrders({ limit: 200 });
           const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
             || (Array.isArray(ordersData) ? ordersData : []);
           const norm = (s) => (s || '').toString().toLowerCase().trim();

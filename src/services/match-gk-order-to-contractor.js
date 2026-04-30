@@ -20,7 +20,12 @@ async function matchGkOrderToContractor(contractor, orders) {
     return { matched: false, reason: 'empty_input' };
   }
 
-  const SCAN_LIMIT = 30;
+  // Scan deep — recent shipments are usually already in extras.locations
+  // (auto-saved on first hit), so this fallback fires for OLD clients we
+  // haven't shipped to in a while; they may sit far down the timeline.
+  // 150 candidates × ~10 fields ≈ 15-20K input tokens for Haiku, which
+  // is well within sane cost (~$0.02 per miss).
+  const SCAN_LIMIT = 150;
   const candidates = orders.slice(0, SCAN_LIMIT).map((o, idx) => {
     const r = o.receiverAddress || o.receiver || {};
     return {
@@ -73,9 +78,10 @@ albo
 {"matched": false, "reason": "krótkie wyjaśnienie czemu żaden nie pasuje"}
 
 ZASADY:
-- jeśli niepewny → matched=false
+- jeśli niepewny → matched=false (lepiej zapytać usera niż zgadnąć)
 - nie dopasowuj na samej country (PL i PL to za mało)
-- preferuj najświeższe zamówienie gdy kilka kandydatów wygląda podobnie`;
+- gdy kilka kandydatów wygląda podobnie → preferuj zamówienie z najsilniejszymi sygnałami (email/nip > telefon > nazwa+miasto), a dopiero potem najnowsze
+- klient może być z kwartału / pół roku temu (głębsza historia) — nie odrzucaj automatycznie starych orderów`;
 
   let resp;
   try {
