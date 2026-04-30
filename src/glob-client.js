@@ -165,8 +165,17 @@ async function getAddons(productId, params) {
   return resp.body;
 }
 
+// Try several known shapes returned by GK pickupTimeRanges. The OpenAPI
+// example shows {} so we don't know the exact key — observed in the wild:
+// top-level array, `results`, `items`, `data`, `pickupRanges`, `ranges`,
+// `slots`. Cover all so a working API response isn't dropped on the floor.
+function extractPickupSlots(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
+}
+
 async function getPickupTimes(productId, params) {
-  const token = await getToken();
   const query = new URLSearchParams();
   query.set('productId', String(productId));
   query.set('senderCountryId', String(params.senderCountryId));
@@ -187,26 +196,24 @@ async function getPickupTimes(productId, params) {
   query.set('quantity', '1');
 
   const url = `https://api.globkurier.pl/v1/order/pickupTimeRanges?${query.toString()}`;
-  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  // Auth-Token intentionally omitted — the working n8n workflow calls this
+  // endpoint anonymously and gets non-empty results; with a token GK has
+  // been seen to return empty on cross-border DPD routes (wrong account
+  // contract scope?). Fall back to anonymous call.
+  const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' });
   return resp.body;
 }
 
 // Walk forward day by day from `startDate` (default today) and return the
-// first day that has at least one pickup window. GlobKurier's API only
-// answers per-date — there's no "soonest" endpoint — so we iterate. Skips
-// weekends/holidays automatically because GK returns an empty list on
-// those days. Stops after `maxDays` to bound the call count when the
-// carrier has no slots at all.
+// first day that has at least one pickup window. GK's documented endpoint
+// answers per-date — but in practice we've seen responses where the slot
+// `.date` differs from the requested date (i.e. GK already returned the
+// nearest available). So we still iterate as a fallback, but a single
+// call is often enough.
 //
 // Returns: { date, timeFrom, timeTo, daysAhead } or null.
 async function findNearestPickupDate(productId, params, maxDays = 10) {
   const start = params.date ? new Date(params.date) : new Date();
-
-  function extractList(data) {
-    if (!data) return [];
-    if (Array.isArray(data)) return data;
-    return data.results || data.items || data.data || [];
-  }
 
   for (let i = 0; i < maxDays; i++) {
     const d = new Date(start);
@@ -219,15 +226,26 @@ async function findNearestPickupDate(productId, params, maxDays = 10) {
       console.log('[glob-client] findNearestPickupDate iter', dateStr, 'error:', e.message);
       continue;
     }
-    const list = extractList(resp);
+    const list = extractPickupSlots(resp);
     if (list.length > 0) {
       const slot = list[0];
+      // Slot.date may differ from requested date — GK can return the
+      // soonest available date even when asked about today.
+      const resolvedDate = slot.date || dateStr;
+      const requestedAhead = i;
+      const actualDaysAhead = Math.max(0, Math.round((new Date(resolvedDate) - start) / 86400000));
       return {
-        date: slot.date || dateStr,
+        date: resolvedDate,
         timeFrom: slot.from || slot.timeFrom || null,
         timeTo: slot.to || slot.timeTo || null,
-        daysAhead: i,
+        daysAhead: actualDaysAhead || requestedAhead,
       };
+    }
+    // First iteration with empty result — log raw shape so we can see
+    // what GK actually returned (helps diagnose schema drift / auth issues).
+    if (i === 0) {
+      const sample = JSON.stringify(resp || {}).slice(0, 300);
+      console.log(`[glob-client] pickupTimeRanges productId=${productId} date=${dateStr} returned no slots; raw sample: ${sample}`);
     }
   }
   return null;

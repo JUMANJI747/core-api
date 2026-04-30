@@ -849,7 +849,7 @@ router.post('/glob/order', async (req, res) => {
     function extractPickupList(data) {
       if (!data) return [];
       if (Array.isArray(data)) return data;
-      return data.results || data.items || data.data || [];
+      return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
     }
 
     // Prefer the pickup slot already resolved by quote_shipping for this
