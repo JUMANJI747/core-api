@@ -33,16 +33,31 @@ async function handleSearchOrders(req, res) {
     }
 
     if (search) {
+      // Three-tier match (most permissive last):
+      //   1. exact substring on normalized text — "holaola" in "hola ola" fails,
+      //      but "calle" in "calle cavite 167" passes.
+      //   2. spaces-collapsed substring — "holaola" matches "hola ola ribadeo
+      //      slu" because both collapse to "holaolaribadeoslu".
+      //   3. all-tokens (≥3 chars) present — "ocean republik" hits a record
+      //      named "Ocean Republik School" even when there's a third word.
       const q = normalizeText(search);
+      const qCollapsed = q.replace(/\s+/g, '');
+      const qTokens = q.split(/\s+/).filter(t => t.length >= 3);
       orders = orders.filter(o => {
         const recv = o.receiverAddress || o.receiver || {};
         const send = o.senderAddress || o.sender || {};
         const fields = [
           o.orderNumber, o.number, o.hash, o.trackingNumber, o.tracking,
-          recv.name, recv.companyName, recv.city, recv.country,
+          recv.name, recv.companyName, recv.contactPerson, recv.city, recv.country,
           send.name, send.companyName, send.city,
         ].filter(Boolean).map(normalizeText);
-        return fields.some(f => f.includes(q));
+        if (fields.some(f => f.includes(q))) return true;
+        if (qCollapsed.length >= 4 && fields.some(f => f.replace(/\s+/g, '').includes(qCollapsed))) return true;
+        if (qTokens.length >= 1) {
+          const haystack = fields.join(' ');
+          if (qTokens.every(t => haystack.includes(t))) return true;
+        }
+        return false;
       });
     }
 
