@@ -1237,6 +1237,36 @@ router.post('/glob/order', async (req, res) => {
     delete quoteStore[quoteId];
 
     const orderHash = result && (result.hash || result.orderHash);
+
+    // Operations tracker — link to existing Transaction (matched against an
+    // earlier-created invoice) or open a new one. Best-effort.
+    if (orderHash) {
+      try {
+        const { trackShipment } = require('../services/transaction-tracker');
+        const itemsForSummary = (quote.quoteParams && quote.quoteParams.items) || quote.items || null;
+        const summary = Array.isArray(itemsForSummary) && itemsForSummary.length
+          ? itemsForSummary.map(it => `${it.qty}× ${it.name || it.ean || '?'}`).slice(0, 3).join(', ') + (itemsForSummary.length > 3 ? `, +${itemsForSummary.length - 3}` : '')
+          : null;
+        const fakeOrder = {
+          hash: orderHash,
+          number: result.number || null,
+          trackingNumber: result.trackingNumber || null,
+          creationDate: new Date(),
+          receiverAddress: receiver,
+          pricing: { priceGross: selectedOffer.price, currency: selectedOffer.currency || 'PLN' },
+          status: 'IN_PROGRESS',
+        };
+        await trackShipment(prisma, fakeOrder, {
+          source: 'glob/order',
+          contractor: contractor || null,
+          itemsSummary: summary,
+          itemsDetails: itemsForSummary,
+        });
+      } catch (e) {
+        console.error('[glob/order] tracker error:', e.message);
+      }
+    }
+
     let cmrSent = false;
     if (orderHash) {
       try {

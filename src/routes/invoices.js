@@ -507,6 +507,23 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       },
     });
 
+    // Operations tracker — link to existing Transaction (matched against an
+    // already-created shipment) or open a new one. Best-effort, never fail
+    // the request because of it.
+    try {
+      const { trackInvoice } = require('../services/transaction-tracker');
+      await trackInvoice(prisma, invoice, {
+        source: 'invoice-confirm-latest',
+        contractorName: contractor.name,
+        itemsSummary: pozycje && pozycje.length
+          ? pozycje.map(p => `${p.ilosc}× ${p.nazwa}${p.wariant ? ' ' + p.wariant : ''}`).slice(0, 3).join(', ') + (pozycje.length > 3 ? `, +${pozycje.length - 3}` : '')
+          : null,
+        itemsDetails: pozycje && pozycje.length ? pozycje.map(p => ({ name: p.nazwa, variant: p.wariant, qty: p.ilosc, priceNetto: p.cena })) : null,
+      });
+    } catch (e) {
+      console.error('[invoice-confirm] tracker error:', e.message);
+    }
+
     console.log('[invoice-confirm] sending iFirma response to Telegram');
     if (tgToken && tgChat) {
       const info = ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Informacja || '';

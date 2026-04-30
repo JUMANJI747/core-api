@@ -22,7 +22,7 @@ model Contractor {
   notes     String?
   extras    Json     @default("{}")
   tags      String[] @default([])
-  source    String?  // mailing, scraping, manual, referral
+  source    String? // mailing, scraping, manual, referral
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -30,6 +30,7 @@ model Contractor {
   consignments Consignment[]
   emails       Email[]
   invoices     Invoice[]
+  transactions Transaction[]
 
   @@index([country])
   @@index([tags])
@@ -52,7 +53,7 @@ model Invoice {
   type               String?
   ifirmaContractorId String?
   extras             Json        @default("{}")
-  source             String?   @default("system")
+  source             String?     @default("system")
   ifirmaType         String?
   bankReference      String?
   bankDate           DateTime?
@@ -66,26 +67,26 @@ model Invoice {
 // ============ PIPELINE (STATUSY KLIENTÓW) ============
 
 model Deal {
-  id           String   @id @default(uuid())
+  id           String     @id @default(uuid())
   contractorId String
   contractor   Contractor @relation(fields: [contractorId], references: [id])
-  
-  status       String   @default("LEAD")
-  // LEAD → CONVERSATION → OFFER_SENT → SAMPLES_SENT → INVOICE_SENT → PAID → CLIENT → LOST
-  
-  language     String?  // fr, de, es, pt, en
-  campaign     String?  // "francja surf", "niemcy apteki"
-  value        Decimal? @db.Decimal(12, 2) // wartość deala
-  currency     String   @default("EUR")
-  notes        String?
-  
-  nextAction     String?   // "follow up", "send samples", "wait for payment"
-  nextActionDate DateTime?
-  
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
 
-  activities   Activity[]
+  status String @default("LEAD")
+  // LEAD → CONVERSATION → OFFER_SENT → SAMPLES_SENT → INVOICE_SENT → PAID → CLIENT → LOST
+
+  language String? // fr, de, es, pt, en
+  campaign String? // "francja surf", "niemcy apteki"
+  value    Decimal? @db.Decimal(12, 2) // wartość deala
+  currency String   @default("EUR")
+  notes    String?
+
+  nextAction     String? // "follow up", "send samples", "wait for payment"
+  nextActionDate DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activities Activity[]
 
   @@index([status])
   @@index([campaign])
@@ -96,12 +97,12 @@ model Activity {
   id     String @id @default(uuid())
   dealId String
   deal   Deal   @relation(fields: [dealId], references: [id])
-  
-  type   String // EMAIL_SENT, EMAIL_RECEIVED, NOTE, STATUS_CHANGE, OFFER, SAMPLES, INVOICE, PAYMENT, CALL
-  note   String?
-  data   Json   @default("{}")
-  actor  String @default("system") // user, ai, system, mailing
-  
+
+  type  String // EMAIL_SENT, EMAIL_RECEIVED, NOTE, STATUS_CHANGE, OFFER, SAMPLES, INVOICE, PAYMENT, CALL
+  note  String?
+  data  Json    @default("{}")
+  actor String  @default("system") // user, ai, system, mailing
+
   createdAt DateTime @default(now())
 
   @@index([dealId])
@@ -111,30 +112,30 @@ model Activity {
 // ============ INBOX (MAILE) ============
 
 model Email {
-  id           String  @id @default(uuid())
+  id           String      @id @default(uuid())
   contractorId String?
   contractor   Contractor? @relation(fields: [contractorId], references: [id])
-  
-  direction    String  // INBOUND | OUTBOUND
-  inbox        String  // info, niko, delivery, etc.
-  fromEmail    String
-  fromName     String?
-  toEmail      String
-  subject      String?
-  bodyPreview  String?
-  bodyFull     String?
-  messageId    String? @unique
-  inReplyTo    String? // threading
-  references   String? // full thread chain
-  
-  isRead       Boolean @default(false)
-  isSpam       Boolean @default(false)
-  tags         String[] @default([])
-  extras       Json?
 
-  createdAt    DateTime @default(now())
+  direction   String // INBOUND | OUTBOUND
+  inbox       String // info, niko, delivery, etc.
+  fromEmail   String
+  fromName    String?
+  toEmail     String
+  subject     String?
+  bodyPreview String?
+  bodyFull    String?
+  messageId   String? @unique
+  inReplyTo   String? // threading
+  references  String? // full thread chain
 
-  attachments  EmailAttachment[]
+  isRead Boolean  @default(false)
+  isSpam Boolean  @default(false)
+  tags   String[] @default([])
+  extras Json?
+
+  createdAt DateTime @default(now())
+
+  attachments EmailAttachment[]
 
   @@index([contractorId])
   @@index([inbox])
@@ -158,43 +159,43 @@ model EmailAttachment {
 // ============ KOMIS ============
 
 model Consignment {
-  id           String   @id @default(uuid())
+  id           String     @id @default(uuid())
   contractorId String
   contractor   Contractor @relation(fields: [contractorId], references: [id])
-  
-  status       String   @default("OPEN") // OPEN | SETTLED
-  notes        String?
-  
-  createdAt    DateTime @default(now())
-  settledAt    DateTime?
-  
-  items        ConsignmentItem[]
+
+  status String  @default("OPEN") // OPEN | SETTLED
+  notes  String?
+
+  createdAt DateTime  @default(now())
+  settledAt DateTime?
+
+  items ConsignmentItem[]
 
   @@index([contractorId])
   @@index([status])
 }
 
 model ConsignmentItem {
-  id             String @id @default(uuid())
-  consignmentId  String
-  consignment    Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
-  
-  name           String
-  unitPrice      Decimal @db.Decimal(12, 2)
-  qtyReceived    Int    @default(0)
-  
-  createdAt      DateTime @default(now())
-  
-  returns        ConsignmentReturn[]
+  id            String      @id @default(uuid())
+  consignmentId String
+  consignment   Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
+
+  name        String
+  unitPrice   Decimal @db.Decimal(12, 2)
+  qtyReceived Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  returns ConsignmentReturn[]
 
   @@unique([consignmentId, name])
 }
 
 model ConsignmentReturn {
-  id        String @id @default(uuid())
-  itemId    String
-  item      ConsignmentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  
+  id     String          @id @default(uuid())
+  itemId String
+  item   ConsignmentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
   qty       Int
   note      String?
   createdAt DateTime @default(now())
@@ -205,25 +206,25 @@ model ConsignmentReturn {
 // ============ MAILING ============
 
 model MailingContact {
-  id         String  @id @default(uuid())
-  email      String
-  name       String?
-  website    String?
-  phone      String?
-  region     String?
-  country    String?
-  campaign   String? // "francja surf"
-  
-  status     String  @default("PENDING") // PENDING | SENT | REPLIED | BOUNCED | UNSUBSCRIBED | CLIENT
-  sentAt     DateTime?
-  sentFrom   String?  // info@, niko@, etc.
-  sentVariant Int?    // which template variant
-  
-  source     String?  // apify, scraping, manual
-  extras     Json    @default("{}")
-  
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id       String  @id @default(uuid())
+  email    String
+  name     String?
+  website  String?
+  phone    String?
+  region   String?
+  country  String?
+  campaign String? // "francja surf"
+
+  status      String    @default("PENDING") // PENDING | SENT | REPLIED | BOUNCED | UNSUBSCRIBED | CLIENT
+  sentAt      DateTime?
+  sentFrom    String? // info@, niko@, etc.
+  sentVariant Int? // which template variant
+
+  source String? // apify, scraping, manual
+  extras Json    @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([email, campaign])
   @@index([campaign])
@@ -244,7 +245,7 @@ model Config {
 model Memory {
   id        String   @id @default(uuid())
   chatId    String?
-  role      String   // user | assistant
+  role      String // user | assistant
   content   String
   createdAt DateTime @default(now())
 
@@ -308,22 +309,22 @@ model AgentContext {
 // ============ SENDERS (GlobKurier) ============
 
 model Sender {
-  id            String   @id @default(uuid())
-  globKurierId  String?  @unique
-  name          String
-  companyName   String?
-  street        String?
-  houseNumber   String?
-  postCode      String?
-  city          String?
-  country       String?  @default("PL")
-  countryId     Int?
-  phone         String?
-  email         String?
-  isDefault     Boolean  @default(false)
-  extras        Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(uuid())
+  globKurierId String?  @unique
+  name         String
+  companyName  String?
+  street       String?
+  houseNumber  String?
+  postCode     String?
+  city         String?
+  country      String?  @default("PL")
+  countryId    Int?
+  phone        String?
+  email        String?
+  isDefault    Boolean  @default(false)
+  extras       Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([name])
 }
@@ -355,15 +356,15 @@ model Document {
   size          Int
   createdAt     DateTime       @default(now())
 
-  @@index([packageId, type])
   @@unique([packageId, filename])
+  @@index([packageId, type])
 }
 
 // ============ AUDIT LOG ============
 
 model AuditLog {
   id         String   @id @default(uuid())
-  actor      String   // user, ai, system, n8n
+  actor      String // user, ai, system, n8n
   action     String
   entityType String
   entityId   String?
@@ -372,4 +373,69 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// ============ TRANSACTIONS (Operations Tracker) ============
+//
+// Glues together a single business deal: order-mail → invoice → shipment →
+// delivery → payment. Auto-matched by contractor + amount±1% + date (with
+// exponential decay weighting). Synced to Google Sheets with checkboxes
+// for at-a-glance status of every active deal.
+
+model Transaction {
+  id String @id @default(uuid())
+
+  // contractor anchor — strongest match signal
+  contractorId   String?
+  contractor     Contractor? @relation(fields: [contractorId], references: [id])
+  contractorName String? // denormalized for fast GS sync without join
+
+  // linked records (any can be null when stage hasn't happened yet)
+  emailId        String? // order email
+  invoiceId      String? // FV in our DB
+  invoiceNumber  String? // denormalized
+  shipmentHash   String? // GK order hash
+  shipmentNumber String? // GK260... human number
+  trackingNumber String? // courier tracking number (for delivery polling)
+  paymentRef     String? // bank reference / iFirma payment id
+
+  // financials (denormalized for GS)
+  amount   Decimal? @db.Decimal(12, 2)
+  currency String?
+
+  // deal date — used by matcher; usually invoice.issueDate or shipment.creationDate
+  occurredAt DateTime @default(now())
+
+  // 5-stage checkboxes synced with Google Sheets
+  hasOrder     Boolean   @default(false) // order email arrived / manually noted
+  hasInvoice   Boolean   @default(false)
+  hasShipped   Boolean   @default(false) // GK order created
+  hasDelivered Boolean   @default(false) // courier delivery confirmation
+  hasPayment   Boolean   @default(false)
+  deliveredAt  DateTime?
+  paidAt       DateTime?
+
+  // contents of the package (for "what to pack today" briefing + GS column)
+  itemsSummary String? // short, fits in GS row: "60× stick generic"
+  itemsDetails Json? // full list, surfaces as GS cell note (hover)
+
+  // Google Sheets sync state
+  sheetRowId    Int? // current row in the spreadsheet (1-based)
+  sheetSyncedAt DateTime?
+
+  // free-form notes — user-editable in GS, app preserves
+  notes String?
+
+  source      String // 'email' | 'invoice' | 'shipment' | 'manual' | 'bootstrap'
+  matchScore  Float? // last matcher confidence 0..1 (for review/debug)
+  matchReason String? // human-readable: "contractor + 2 days + 0% Δ"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contractorId])
+  @@index([occurredAt])
+  @@index([invoiceId])
+  @@index([shipmentHash])
+  @@index([hasShipped, hasDelivered])
 }
