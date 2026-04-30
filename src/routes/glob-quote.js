@@ -813,11 +813,24 @@ router.post('/glob/order', async (req, res) => {
       if (m) quoteId = m[1];
     }
 
-    if (!quoteId) {
+    // Stateless sub-agents call order without remembering the quoteId from
+    // the previous turn — they tend to either omit it, send "latest", or
+    // hallucinate placeholders ("UNKNOWN", "64/2026_holaola"). Treat all
+    // of these as "use the most recent quote in the store" so we don't
+    // bounce the agent into a retry loop. Real quoteIds are 13-digit
+    // timestamps (Date.now()), so anything that's clearly not numeric is
+    // treated as a sentinel.
+    const isLatestSentinel = !quoteId
+      || ['latest', 'ostatnia', 'last', 'unknown', 'newest'].includes(String(quoteId).toLowerCase())
+      || !/^\d{10,}$/.test(String(quoteId));
+    if (isLatestSentinel) {
       const keys = Object.keys(quoteStore).sort((a, b) => b - a);
       if (keys.length > 0) {
-        quoteId = keys[0];
-        console.log('[glob/order] Using latest quoteId:', quoteId);
+        const fallback = keys[0];
+        console.log(`[glob/order] quoteId "${quoteId}" treated as "latest" → ${fallback}`);
+        quoteId = fallback;
+      } else {
+        quoteId = null;
       }
     }
 

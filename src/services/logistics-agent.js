@@ -58,7 +58,7 @@ ZASADY:
 - gdy user wybierze "szukaj w mailach" / "spróbuj z maili" → wywołaj find_delivery_address_in_emails z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping z tymi samymi parametrami (adres jest zapisany, wycena teraz powinna pójść). Jeśli found=false → poinformuj usera czego nie znaleziono i zaproponuj inne źródła (VIES, manual).
 - response.error → DOSŁOWNIE, NIE zgaduj
 - response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
-- "tak"/"zamów" po wycenie → order_shipping z quoteId
+- "tak"/"zamów" po wycenie → order_shipping z quoteId. JEŚLI nie znasz dokładnego quoteId z poprzedniej tury (sub-agent jest stateless, pamięć ograniczona), wyślij quoteId="latest" — backend automatycznie weźmie najnowszy quote ze store. NIGDY nie zmyślaj quoteId z numerów faktury / nazwy kontrahenta ("64/2026_holaola", "UNKNOWN" itp.) — to się nie odnajdzie i polecisz w pętlę.
 
 KAŻDA OFERTA Z QUOTE_SHIPPING ZAWIERA nearestPickup — realny termin odbioru
 zarezerwowany przez backend: {date, timeFrom, timeTo, daysAhead}.
