@@ -754,9 +754,9 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       FR: { subject: 'Facture {n} - Surf Stick Bell', body: 'Bonjour,\n\nVeuillez trouver la facture en pièce jointe.\n\nCordialement,\nMichał Pałyska\nSurf Stick Bell', html: 'Bonjour,<br><br>Veuillez trouver la facture en pièce jointe.<br><br>Cordialement,<br>Michał Pałyska<br>Surf Stick Bell' },
       EN: { subject: 'Invoice {n} - Surf Stick Bell', body: 'Hello,\n\nPlease find the invoice attached.\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell', html: 'Hello,<br><br>Please find the invoice attached.<br><br>Best regards,<br>Michał Pałyska<br>Surf Stick Bell' },
     };
-    const ENGLISH_FALLBACK_COUNTRIES = new Set(['GB', 'IE', 'US', 'CA', 'AU', 'NZ', 'NL', 'DK', 'SE', 'NO', 'FI']);
-    const lang = TEMPLATES[country] ? country
-      : (ENGLISH_FALLBACK_COUNTRIES.has(country) ? 'EN' : 'EN');
+    // Fall back to English for any country we don't have a template for
+    // (CZ, EE, GB, IE, NL, …) — universal & safe.
+    const lang = TEMPLATES[country] ? country : 'EN';
     const tpl = TEMPLATES[lang];
     const defaultBody = tpl.body;
     const defaultHtml = tpl.html;
