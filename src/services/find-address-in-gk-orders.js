@@ -14,10 +14,30 @@ const { matchGkOrderToContractor } = require('./match-gk-order-to-contractor');
 async function findAddressInGkOrders(prisma, contractor, opts = {}) {
   if (!contractor) return { found: false, reason: 'no_contractor' };
 
-  const limit = opts.limit || 200;
-  const ordersData = await getOrders({ limit });
-  const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
-    || (Array.isArray(ordersData) ? ordersData : []);
+  // GK /orders has a per-page cap (~100 in practice — limit=200 returns
+  // empty in production logs while limit=50 works elsewhere). Paginate
+  // in batches up to opts.limit total.
+  const targetTotal = opts.limit || 200;
+  const pageSize = 100;
+  const orders = [];
+  for (let offset = 0; offset < targetTotal; offset += pageSize) {
+    const batchSize = Math.min(pageSize, targetTotal - offset);
+    let ordersData;
+    try {
+      ordersData = await getOrders({ limit: batchSize, offset });
+    } catch (e) {
+      console.log(`[find-address-in-gk-orders] page offset=${offset} error: ${e.message}`);
+      break;
+    }
+    const batch = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
+      || (Array.isArray(ordersData) ? ordersData : []);
+    if (offset === 0) {
+      console.log(`[find-address-in-gk-orders] first page raw keys: ${ordersData ? Object.keys(ordersData).join(',') : 'null'}, batch=${batch.length}`);
+    }
+    if (batch.length === 0) break;
+    orders.push(...batch);
+    if (batch.length < batchSize) break; // no more pages
+  }
 
   console.log(`[find-address-in-gk-orders] contractor="${contractor.name}" id=${contractor.id}, scanned=${orders.length}`);
 
