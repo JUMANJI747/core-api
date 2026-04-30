@@ -334,13 +334,13 @@ router.post('/:id/delivery-address', async (req, res) => {
 router.post('/:id/find-address-in-emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
-    if (!c) return res.status(404).json({ error: 'contractor not found' });
+    const c = await resolveContractorFromRequest(prisma, req);
+    if (!c) return res.status(404).json({ error: 'contractor not found (provide :id or body.contractorName)' });
 
     const limit = (req.body && Number(req.body.limit)) || 10;
     const result = await findAddressInContractorEmails(prisma, c.id, { limit });
     if (!result.found) {
-      return res.json({ ok: false, found: false, reason: result.reason || 'not_found' });
+      return res.json({ ok: false, found: false, reason: result.reason || 'not_found', contractor: { id: c.id, name: c.name } });
     }
     const saved = await saveAddressToContractorLocations(prisma, c.id, result.address);
     res.json({ ok: true, found: true, address: result.address, savedToLocations: saved, contractor: { id: c.id, name: c.name } });
@@ -354,16 +354,40 @@ router.post('/:id/find-address-in-emails', async (req, res) => {
 // contractor (token match + LLM fuzzy fallback). Opt-in because the
 // LLM call costs ~$0.02 per miss; the agent invokes only when the
 // user explicitly asks for "szukaj w starych wysyłkach".
+// Resolve a contractor from path :id or, if id == '_' (sentinel for "lookup
+// by name"), from request body.contractorName via fuzzy match. Lets the
+// stateless logistics agent invoke the tool with just a name when it
+// doesn't have the UUID from a previous turn.
+async function resolveContractorFromRequest(prisma, req) {
+  const id = req.params.id;
+  if (id && id !== '_' && id !== 'lookup') {
+    const byId = await prisma.contractor.findUnique({ where: { id } });
+    if (byId) return byId;
+  }
+  const name = (req.body && (req.body.contractorName || req.body.contractor_name || req.body.name)) || null;
+  if (!name) return null;
+
+  const all = await prisma.contractor.findMany({
+    select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
+  });
+  const scored = all
+    .map(c => ({ contractor: c, score: scoreContractor(c, name) }))
+    .filter(x => x.score >= 50)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length === 0) return null;
+  return prisma.contractor.findUnique({ where: { id: scored[0].contractor.id } });
+}
+
 router.post('/:id/find-address-in-gk-orders', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
-    if (!c) return res.status(404).json({ error: 'contractor not found' });
+    const c = await resolveContractorFromRequest(prisma, req);
+    if (!c) return res.status(404).json({ error: 'contractor not found (provide :id or body.contractorName)' });
 
     const limit = (req.body && Number(req.body.limit)) || 200;
     const result = await findAddressInGkOrders(prisma, c, { limit });
     if (!result.found) {
-      return res.json({ ok: false, found: false, reason: result.reason, scanned: result.scanned || 0 });
+      return res.json({ ok: false, found: false, reason: result.reason, scanned: result.scanned || 0, contractor: { id: c.id, name: c.name } });
     }
     res.json({ ok: true, found: true, ...result, contractor: { id: c.id, name: c.name } });
   } catch (e) {

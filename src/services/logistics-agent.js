@@ -55,8 +55,14 @@ ZASADY:
 - response.needsItems → backend nie wie co jest w paczce (faktura bez pozycji). POKAŻ message DOSŁOWNIE i pytaj usera ("co było w paczce?"). Po odpowiedzi user-a — np. "60 sticków" — ponów quote_shipping z items=[{"name":"stick generic","qty":60}] i tymi samymi parametrami (receiverSearch + invoiceNumber pomijasz, bo user już doprecyzował).
 - response.noPickupAnyOffer → ŻADEN przewoźnik nie ma terminów odbioru w 14 dni. POKAŻ message DOSŁOWNIE. NIE wywołuj order_shipping. Zaproponuj user-owi: 1) spróbować za parę dni, 2) podać konkretną pickupDate ręcznie (np. "wycen na 6 maja"), 3) zmienić odbiorcę.
 - response.needsAddress → POKAŻ message + opcje DOSŁOWNIE i czekaj na decyzję usera. NIE szukaj sam — koszt token. Opcje typowo: 1) szukaj w mailach, 2) podaj ręcznie, 3) VIES, 4) książka GK. User wybiera.
-- gdy user wybierze "szukaj w mailach" / "spróbuj z maili" → wywołaj find_delivery_address_in_emails z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping z tymi samymi parametrami (adres jest zapisany, wycena teraz powinna pójść). Jeśli found=false → poinformuj usera czego nie znaleziono i zaproponuj inne źródła (VIES, manual).
-- gdy user wybierze "z poprzednich wysyłek" / "z historii GK" / "stare paczki" → wywołaj find_delivery_address_in_gk_orders z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping. Jeśli found=false → poinformuj usera (matchMethod, scanned).
+- gdy user wybierze opcję dotyczącą szukania adresu (cyfra "1"/"2"/.../ słowo "maile"/"poprzednie wysyłki"/"VIES"/"ręcznie"):
+  KROK 1: zidentyfikuj NAZWĘ KONTRAHENTA z poprzedniego query w tej rozmowie ("Wycen paczkę do X" → contractorName="X"). Master agent powinien przekazywać kontekst.
+  KROK 2: wywołaj odpowiedni tool — preferowane z contractorId, ale jeśli go nie znasz, podaj contractorName (backend zrobi fuzzy lookup):
+    - "z maili" → find_delivery_address_in_emails {"contractorName": "X"}
+    - "z poprzednich wysyłek" / "historii GK" → find_delivery_address_in_gk_orders {"contractorName": "X"}
+  KROK 3: jeśli found=true → ponów quote_shipping z tymi samymi parametrami; adres jest zapisany w bazie.
+  KROK 4: jeśli found=false → pokaż user-owi reason + matchMethod + scanned. Zaproponuj kolejną opcję.
+- NIE odpowiadaj samym powtórzeniem listy opcji bez wywołania tool — to wieczna pętla. Zawsze próbuj wywołać tool.
 - response.error → DOSŁOWNIE, NIE zgaduj
 - response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
 - "tak"/"zamów" po wycenie → order_shipping z quoteId. JEŚLI nie znasz dokładnego quoteId z poprzedniej tury (sub-agent jest stateless, pamięć ograniczona), wyślij quoteId="latest" — backend automatycznie weźmie najnowszy quote ze store. NIGDY nie zmyślaj quoteId z numerów faktury / nazwy kontrahenta ("64/2026_holaola", "UNKNOWN" itp.) — to się nie odnajdzie i polecisz w pętlę.
@@ -149,13 +155,13 @@ const tools = [
   },
   {
     name: 'find_delivery_address_in_emails',
-    description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach od kontrahenta — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Znaleziony adres zostaje zapisany do bazy — nie trzeba go potem podawać ręcznie.',
+    description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach od kontrahenta — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Znaleziony adres zostaje zapisany do bazy.',
     input_schema: {
       type: 'object',
       properties: {
-        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress' },
+        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress (preferowane gdy znane)' },
+        contractorName: { type: 'string', description: 'Nazwa kontrahenta (alternatywa gdy nie znasz ID — backend zrobi fuzzy lookup po nazwie)' },
       },
-      required: ['contractorId'],
     },
   },
   {
@@ -164,9 +170,9 @@ const tools = [
     input_schema: {
       type: 'object',
       properties: {
-        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress' },
+        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress (preferowane gdy znane)' },
+        contractorName: { type: 'string', description: 'Nazwa kontrahenta (alternatywa gdy nie znasz ID — backend zrobi fuzzy lookup po nazwie)' },
       },
-      required: ['contractorId'],
     },
   },
 ];
@@ -222,7 +228,11 @@ async function executeTool(name, input) {
   path = path.replace(/:([a-zA-Z]+)/g, (_, key) => {
     const val = body[key];
     delete body[key];
-    return encodeURIComponent(val || '');
+    // "_" is the backend sentinel for "lookup by name from body" — keeps
+    // the route registered with a path param while letting the agent omit
+    // the ID when it doesn't have one (stateless turn).
+    if (!val) return '_';
+    return encodeURIComponent(val);
   });
   try {
     const resp = await selfCall(method, path, body);
