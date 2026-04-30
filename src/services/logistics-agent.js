@@ -135,7 +135,7 @@ const tools = [
   },
   {
     name: 'search_shipments',
-    description: 'Szukaj wysyłek w historii GlobKurier po nazwie odbiorcy/mieście/numerze GK.',
+    description: 'Szukaj KONKRETNYCH wysyłek w historii GlobKurier po nazwie/mieście/numerze GK — żeby zwrócić listę paczek z hash-em (np. "co z paczką do X", "pokaż wysyłki do Y", "tracking", "status paczki", "daj mi numer GK"). NIE używaj tego do szukania adresu dostawy — do tego jest find_delivery_address_in_gk_orders, który robi LLM fuzzy match i zapisuje adres do bazy.',
     input_schema: {
       type: 'object',
       properties: {
@@ -250,8 +250,14 @@ async function executeTool(name, input) {
 // / "wyślij paczkę" are still quote intents because they require pricing first.
 const QUOTE_INTENT = /\b(wyce[nń]|wycena|ile kosztuje|policz|sprawd[zź] cen[eę]|wy[sś]lij paczk|zam[oó]w paczk|zam[oó]w wysy[lł]k|zam[oó]w kurier)/iu;
 const ORDER_INTENT = /^\s*(tak|ok|potwierd|akceptu|zgadzam|jasne|dobra)|\bzam[oó]w (t[ąa] |t[eę] |najta[nń]sz|drug|trzeci|konkretn|inn[ąa]|innego|dpd|fedex|ups|gls|inpost|dhl)/iu;
-const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|szukaj wysy[lł]k|histori|lista paczek)/iu;
+const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|tracking|track|lista paczek|pokaż wysy[lł]k)/iu;
 const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj list|pdf paczki)/iu;
+// Triggered when the user (via Master) asks to look up a delivery ADDRESS
+// in past GK shipments — distinct from search_shipments which returns the
+// shipment list itself. Phrases: "szukaj adresu w wysyłkach", "z poprzednich
+// wysyłek", "z historii GK" (after needsAddress).
+const ADDRESS_FROM_ORDERS_INTENT = /\b(adres\w*\s+(z|w|po)\s+(poprzedni|histori|wysy[lł]\w*|paczk))|\b(z\s+(poprzedni\w*|histori\w*)\s+(wysy[lł]\w*|gk|paczek|paczk))|\bz\s+histori[ai]\s+gk|\bszukaj\s+(adres\w*\s+)?(w|z)\s+(wysy[lł]\w*|histori\w*|paczk\w*)|\bz\s+poprzedni\w*\s+wysy[lł]\w*/iu;
+const ADDRESS_FROM_EMAILS_INTENT = /\b(adres\w*\s+(z|w)\s+mail)|\bszukaj\s+(adres\w*\s+)?(w|z)\s+mail/iu;
 
 async function processLogisticsQuery(query) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -268,6 +274,11 @@ async function processLogisticsQuery(query) {
   // fall under QUOTE_INTENT — they need pricing first, then a separate "tak".
   let forcedTool = null;
   if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
+  // Address-lookup intents must beat plain SEARCH_INTENT — agent kept
+  // picking search_shipments for "szukaj adresu w wysyłkach" because of
+  // the shared "szukaj"/"wysyłki" tokens; explicit phrase tests fix it.
+  else if (ADDRESS_FROM_ORDERS_INTENT.test(query)) forcedTool = 'find_delivery_address_in_gk_orders';
+  else if (ADDRESS_FROM_EMAILS_INTENT.test(query)) forcedTool = 'find_delivery_address_in_emails';
   else if (SEARCH_INTENT.test(query)) forcedTool = 'search_shipments';
   else if (ORDER_INTENT.test(query)) forcedTool = 'order_shipping';
   else if (QUOTE_INTENT.test(query)) forcedTool = 'quote_shipping';
