@@ -440,6 +440,26 @@ router.post('/glob/quote', async (req, res) => {
           });
           matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
           console.log(`[glob/quote] GK orders history fallback: searched="${searchSource}", scanned=${orders.length}, matched=${matchOrders.length}`);
+
+          // LLM fallback: token-based matching catches typos and prefix
+          // variants but fails when the GK shipping name is semantically
+          // different from the billing name ("Society S.L" vs "School").
+          // If we have a contractor and zero token hits, ask Haiku to pick
+          // by combining all signals (name + nip + email + phone + city +
+          // country). One call (~$0.01), result cached to extras.locations.
+          if (matchOrders.length === 0 && contractor && orders.length > 0) {
+            try {
+              const { matchGkOrderToContractor } = require('../services/match-gk-order-to-contractor');
+              const llmMatch = await matchGkOrderToContractor(contractor, orders);
+              console.log(`[glob/quote] LLM GK matcher: ${llmMatch.matched ? 'matched idx=' + llmMatch.index : 'no_match'} — ${llmMatch.reason || ''}`);
+              if (llmMatch.matched) {
+                matchOrders.push(orders[llmMatch.index]);
+              }
+            } catch (e) {
+              console.log('[glob/quote] LLM GK matcher failed:', e.message);
+            }
+          }
+
           if (matchOrders.length) {
             const r = matchOrders[0].receiverAddress || matchOrders[0].receiver || {};
             receiver.street = receiver.street || r.street || '';
