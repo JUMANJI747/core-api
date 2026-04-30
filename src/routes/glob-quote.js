@@ -834,18 +834,40 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
-    if (!quoteId) return res.status(400).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
+    if (!quoteId) {
+      console.log('[glob/order] No quoteId and store empty — abort');
+      return res.status(400).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
+    }
 
     const quote = quoteStore[quoteId];
-    if (!quote) return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
+    if (!quote) {
+      console.log(`[glob/order] Quote ${quoteId} not in store (expired/wrong id) — abort`);
+      return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
+    }
+
+    console.log(`[glob/order] Quote resolved: id=${quoteId}, offers=${(quote.offers || []).length}, productIdRequested=${JSON.stringify(productId)}`);
 
     const deliveryType = (req.body && req.body.deliveryType) || quote.deliveryType || 'PICKUP';
     const collectionType = (req.body && req.body.collectionType) || quote.collectionType || 'PICKUP';
 
-    const selectedOffer = productId
-      ? quote.offers.find(o => String(o.productId) === String(productId))
-      : quote.offers[0];
-    if (!selectedOffer) return res.status(404).json({ ok: false, error: 'Nie znaleziono oferty o podanym productId' });
+    // Agent sometimes sends productId as the carrier NAME ("FedEx Regional
+    // Economy") instead of the numeric id. Match by name as a fallback so
+    // we don't 404 just because of that.
+    let selectedOffer = null;
+    if (productId) {
+      const pidStr = String(productId).trim();
+      selectedOffer = quote.offers.find(o => String(o.productId) === pidStr)
+        || quote.offers.find(o => (o.carrier || '').toLowerCase() === pidStr.toLowerCase())
+        || quote.offers.find(o => (o.name || '').toLowerCase() === pidStr.toLowerCase())
+        || quote.offers.find(o => (o.carrier || '').toLowerCase().includes(pidStr.toLowerCase()))
+        || quote.offers.find(o => (o.name || '').toLowerCase().includes(pidStr.toLowerCase()));
+    }
+    if (!selectedOffer) selectedOffer = quote.offers[0];
+    if (!selectedOffer) {
+      console.log(`[glob/order] No offers in quote ${quoteId} — quote likely failed earlier`);
+      return res.status(404).json({ ok: false, error: 'Quote nie zawiera ofert. Wygeneruj nowy.' });
+    }
+    console.log(`[glob/order] Selected offer: productId=${selectedOffer.productId}, carrier=${selectedOffer.carrier}, name=${selectedOffer.name}, price=${selectedOffer.price}`);
 
     let pickupDate = quote.pickupDate || new Date().toISOString().split('T')[0];
     let pickupTimeFrom = '09:00';
