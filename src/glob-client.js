@@ -183,6 +183,48 @@ async function getPickupTimes(productId, params) {
   return resp.body;
 }
 
+// Walk forward day by day from `startDate` (default today) and return the
+// first day that has at least one pickup window. GlobKurier's API only
+// answers per-date — there's no "soonest" endpoint — so we iterate. Skips
+// weekends/holidays automatically because GK returns an empty list on
+// those days. Stops after `maxDays` to bound the call count when the
+// carrier has no slots at all.
+//
+// Returns: { date, timeFrom, timeTo, daysAhead } or null.
+async function findNearestPickupDate(productId, params, maxDays = 10) {
+  const start = params.date ? new Date(params.date) : new Date();
+
+  function extractList(data) {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    return data.results || data.items || data.data || [];
+  }
+
+  for (let i = 0; i < maxDays; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().split('T')[0];
+    let resp;
+    try {
+      resp = await getPickupTimes(productId, { ...params, date: dateStr });
+    } catch (e) {
+      console.log('[glob-client] findNearestPickupDate iter', dateStr, 'error:', e.message);
+      continue;
+    }
+    const list = extractList(resp);
+    if (list.length > 0) {
+      const slot = list[0];
+      return {
+        date: slot.date || dateStr,
+        timeFrom: slot.from || slot.timeFrom || null,
+        timeTo: slot.to || slot.timeTo || null,
+        daysAhead: i,
+      };
+    }
+  }
+  return null;
+}
+
 async function getCustomRequiredFields(productId, senderCountryId, receiverCountryId) {
   const token = await getToken();
   const query = new URLSearchParams();
@@ -196,4 +238,4 @@ async function getCustomRequiredFields(productId, senderCountryId, receiverCount
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, getQuote, getAddons, getPickupTimes, getCustomRequiredFields };
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields };

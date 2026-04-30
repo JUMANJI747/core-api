@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, getAddons, getOrderLabels, createOrder, getOrders } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, getAddons, getOrderLabels, createOrder, getOrders } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { scoreContractor } = require('../services/contractor-match');
 
@@ -693,6 +693,30 @@ router.post('/glob/quote', async (req, res) => {
       maxWeight: p.maxWeight,
     }));
 
+    // Resolve realistic pickup date per top-5 offer (parallel). GlobKurier
+    // returns no terms on weekends/holidays/before cutoff, so the requested
+    // pickupDate often isn't actually bookable — checking up front lets us
+    // show the user the soonest realistic date and keeps order_shipping
+    // from blindly retrying carriers in a loop.
+    const TOP_OFFERS_TO_PROBE = 5;
+    const pickupParamsBase = {
+      senderCountryId,
+      senderPostCode: sender.postCode || '',
+      receiverCountryId,
+      receiverPostCode: receiver.postCode || '',
+      receiverCity: receiver.city || '',
+      weight,
+      date: pickupDate,
+    };
+    await Promise.all(offers.slice(0, TOP_OFFERS_TO_PROBE).map(async (o) => {
+      try {
+        const nearest = await findNearestPickupDate(o.productId, pickupParamsBase, 7);
+        o.nearestPickup = nearest; // { date, timeFrom, timeTo, daysAhead } or null
+      } catch (e) {
+        o.nearestPickup = null;
+      }
+    }));
+
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();
     quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, createdAt: new Date() };
@@ -776,7 +800,17 @@ router.post('/glob/order', async (req, res) => {
       return data.results || data.items || data.data || [];
     }
 
-    try {
+    // Prefer the pickup slot already resolved by quote_shipping for this
+    // offer — saves an API roundtrip and guarantees we use a date the
+    // carrier actually accepts. Fall back to live lookup only when the
+    // quote didn't probe this offer (e.g. it was beyond TOP_OFFERS_TO_PROBE).
+    if (selectedOffer.nearestPickup && selectedOffer.nearestPickup.date) {
+      pickupDate = selectedOffer.nearestPickup.date;
+      pickupTimeFrom = selectedOffer.nearestPickup.timeFrom || pickupTimeFrom;
+      pickupTimeTo = selectedOffer.nearestPickup.timeTo || pickupTimeTo;
+      console.log('[glob/order] Using pre-resolved pickup from quote:', pickupDate, pickupTimeFrom, '-', pickupTimeTo);
+    } else {
+     try {
       const pickupData = await getPickupTimes(selectedOffer.productId, {
         ...quote.quoteParams,
         receiverCity: (quote.receiver && quote.receiver.city) || '',
@@ -801,6 +835,7 @@ router.post('/glob/order', async (req, res) => {
       }
     } catch (err) {
       console.log('[glob/order] getPickupTimes failed:', err.message);
+    }
     }
 
     let requiredAddons = [];
