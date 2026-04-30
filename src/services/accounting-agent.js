@@ -50,6 +50,16 @@ ZASADY:
 - response.error → pokaż DOSŁOWNIE, NIE zgaduj przyczyn
 - response.ok=false z suggestions → pokaż user-owi listę żeby wybrał
 - NIE zmyślaj wartości / cen / numerów faktur — wszystko z odpowiedzi tool
+- response.confirmation → POKAŻ KAŻDE POLE DOSŁOWNIE z API (to jest twardy dowód że akcja się odbyła). Po invoice_send_email pokaż blok z faktycznymi wartościami:
+  "Wysłane ✓
+   - Numer: <invoiceNumber>
+   - Z: <from>
+   - Do: <to>
+   - Temat: <subject>
+   - PDF: <attachmentFilename> (<attachmentSizeKB> KB)
+   - MessageId: <messageId>
+   - Wysłano: <sentAt>"
+  NIE pisz "wysłałem" bez bloku confirmation. NIE wymyślaj messageId / sizeKB / sentAt. Jeśli messageId=null napisz "MessageId: brak (SMTP nie zwrócił)".
 - Plain text, listy z "-", krótko bez wstępów`;
 
 const tools = [

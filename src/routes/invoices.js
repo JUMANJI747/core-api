@@ -741,18 +741,40 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     const defaultBody = 'Dzień dobry,\n\nFaktura w załączniku.\n\nPozdrawiam,\nMichał Pałyska\nSurf Stick Bell';
     const defaultHtml = 'Dzień dobry,<br><br>Faktura w załączniku.<br><br>Pozdrawiam,<br>Michał Pałyska<br>Surf Stick Bell';
 
-    await sendMail({
+    const sentBody = customBody || defaultBody;
+    const savedEmail = await sendMail({
       from,
       to,
       subject,
-      body: customBody || defaultBody,
+      body: sentBody,
       html: customBody ? undefined : defaultHtml,
       inReplyTo,
       references,
       attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
-    res.json({ ok: true, sent: true, invoiceNumber: invoice.number, to, subject, replyToThread: !!inReplyTo });
+    // Verbatim confirmation block — agents tend to claim "sent" without
+    // proof, so surface every fact the SMTP server gave us. The agent is
+    // instructed to display this block as-is to the user.
+    res.json({
+      ok: true,
+      sent: true,
+      confirmation: {
+        invoiceNumber: invoice.number,
+        from,
+        to,
+        subject,
+        bodyPreview: (sentBody || '').slice(0, 200),
+        attachmentFilename: filename,
+        attachmentSizeBytes: pdfBuffer.length,
+        attachmentSizeKB: Math.round(pdfBuffer.length / 102.4) / 10,
+        messageId: (savedEmail && savedEmail.messageId) || null,
+        savedEmailId: savedEmail && savedEmail.id,
+        sentAt: (savedEmail && savedEmail.createdAt) || new Date().toISOString(),
+        replyToThread: !!inReplyTo,
+        inReplyTo: inReplyTo || null,
+      },
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
