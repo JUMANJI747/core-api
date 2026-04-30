@@ -423,12 +423,20 @@ router.post('/glob/quote', async (req, res) => {
             const r = o.receiverAddress || o.receiver || {};
             const name = norm(r.name || '') + ' ' + norm(r.contactPerson || '');
             if (q && name.includes(q)) return true;
-            if (tokens.length && tokens.every(t => {
+            if (!tokens.length) return false;
+            // Count how many tokens (or their first-5-char prefix) appear
+            // in the candidate name. Require at least 2 hits so different
+            // wordings of the same client match (e.g. "Ocean Republik
+            // Society S.L" in DB vs "Ocean Republik School" in GK panel —
+            // shared "ocean" + "republik" is enough).
+            const hits = tokens.filter(t => {
               if (name.includes(t)) return true;
               const prefix = t.slice(0, Math.min(5, t.length));
               return prefix.length >= 4 && name.includes(prefix);
-            })) return true;
-            return false;
+            }).length;
+            // 1-token names need an exact include; 2+ token names need ≥2 hits.
+            const minHits = tokens.length === 1 ? 1 : 2;
+            return hits >= minHits;
           });
           matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
           console.log(`[glob/quote] GK orders history fallback: searched="${searchSource}", scanned=${orders.length}, matched=${matchOrders.length}`);
