@@ -1,6 +1,46 @@
 'use strict';
 
 const { scoreContractor } = require('./contractor-match');
+const sheetsSync = require('./sheets-sync');
+
+// Best-effort GS sync after a tracker write. Never throws — sheets being
+// down should not break invoice / shipment flow. Updates sheetRowId in DB
+// when a new row was inserted so future updates target the right cell.
+async function maybeSyncToSheet(prisma, tx, action) {
+  if (!sheetsSync.isConfigured()) return;
+  try {
+    if (action === 'create') {
+      const rowId = await sheetsSync.insertTopRow(tx);
+      if (rowId) {
+        // Other rows shifted down; bump sheetRowId on every existing tx.
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Transaction" SET "sheetRowId" = "sheetRowId" + 1 WHERE "sheetRowId" IS NOT NULL AND "sheetRowId" >= ${rowId} AND id != $1`,
+          tx.id
+        );
+        await prisma.transaction.update({ where: { id: tx.id }, data: { sheetRowId: rowId, sheetSyncedAt: new Date() } });
+      }
+    } else if (action === 'update') {
+      const result = await sheetsSync.updateRowById(tx);
+      if (result && result.drifted) {
+        // Row moved — reinsert at top
+        const rowId = await sheetsSync.insertTopRow(tx);
+        if (rowId) {
+          await prisma.$executeRawUnsafe(
+            `UPDATE "Transaction" SET "sheetRowId" = "sheetRowId" + 1 WHERE "sheetRowId" IS NOT NULL AND "sheetRowId" >= ${rowId} AND id != $1`,
+            tx.id
+          );
+          await prisma.transaction.update({ where: { id: tx.id }, data: { sheetRowId: rowId, sheetSyncedAt: new Date() } });
+        }
+      } else if (result) {
+        await prisma.transaction.update({ where: { id: tx.id }, data: { sheetSyncedAt: new Date() } });
+      }
+    } else if (action === 'delete') {
+      if (tx.sheetRowId) await sheetsSync.deleteRowById(tx.sheetRowId);
+    }
+  } catch (e) {
+    console.error('[transaction-tracker] sheets sync failed:', e.message);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transaction tracker — glues order email → invoice → shipment → delivery →
@@ -158,7 +198,7 @@ async function trackInvoice(prisma, invoice, opts = {}) {
 
   const match = await findOpenTransactionForInvoice(prisma, invoice);
   if (match) {
-    return prisma.transaction.update({
+    const updated = await prisma.transaction.update({
       where: { id: match.transaction.id },
       data: {
         invoiceId: invoice.id,
@@ -171,10 +211,12 @@ async function trackInvoice(prisma, invoice, opts = {}) {
         matchReason: 'merged with shipment: ' + match.reason,
       },
     });
+    await maybeSyncToSheet(prisma, updated, 'update');
+    return updated;
   }
 
   // No match — open a new transaction anchored on this invoice.
-  return prisma.transaction.create({
+  const created = await prisma.transaction.create({
     data: {
       contractorId: invoice.contractorId,
       contractorName: opts.contractorName || null,
@@ -193,6 +235,8 @@ async function trackInvoice(prisma, invoice, opts = {}) {
       matchReason: 'opened from invoice (no matching shipment yet)',
     },
   });
+  await maybeSyncToSheet(prisma, created, 'create');
+  return created;
 }
 
 async function trackShipment(prisma, gkOrder, opts = {}) {
@@ -208,7 +252,7 @@ async function trackShipment(prisma, gkOrder, opts = {}) {
 
   const match = contractor ? await findOpenTransactionForShipment(prisma, gkOrder, contractor) : null;
   if (match) {
-    return prisma.transaction.update({
+    const updated = await prisma.transaction.update({
       where: { id: match.transaction.id },
       data: {
         shipmentHash: gkOrder.hash || gkOrder.orderHash,
@@ -221,9 +265,11 @@ async function trackShipment(prisma, gkOrder, opts = {}) {
         matchReason: 'merged with invoice: ' + match.reason,
       },
     });
+    await maybeSyncToSheet(prisma, updated, 'update');
+    return updated;
   }
 
-  return prisma.transaction.create({
+  const createdShipment = await prisma.transaction.create({
     data: {
       contractorId: contractor ? contractor.id : null,
       contractorName: contractor ? contractor.name : recvName,
@@ -243,6 +289,8 @@ async function trackShipment(prisma, gkOrder, opts = {}) {
       matchReason: contractor ? 'opened from shipment (no matching invoice yet)' : 'orphan: contractor not resolved from receiver',
     },
   });
+  await maybeSyncToSheet(prisma, createdShipment, 'create');
+  return createdShipment;
 }
 
 async function trackOrderEmail(prisma, email, opts = {}) {
@@ -270,14 +318,16 @@ async function trackOrderEmail(prisma, email, opts = {}) {
     const s = dateScore(email.createdAt, c.occurredAt);
     if (s > bestScore) { best = c; bestScore = s; }
   }
-  return prisma.transaction.update({
+  const updatedEmail = await prisma.transaction.update({
     where: { id: best.id },
     data: { emailId: email.id, hasOrder: true },
   });
+  await maybeSyncToSheet(prisma, updatedEmail, 'update');
+  return updatedEmail;
 }
 
 async function addManualEntry(prisma, data) {
-  return prisma.transaction.create({
+  const createdManual = await prisma.transaction.create({
     data: {
       contractorId: data.contractorId || null,
       contractorName: data.contractorName || null,
@@ -292,6 +342,8 @@ async function addManualEntry(prisma, data) {
       matchReason: 'manual entry',
     },
   });
+  await maybeSyncToSheet(prisma, createdManual, 'create');
+  return createdManual;
 }
 
 module.exports = {

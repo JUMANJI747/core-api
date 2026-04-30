@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const { trackInvoice, trackShipment, addManualEntry, resolveContractorFromShipment } = require('../services/transaction-tracker');
+const sheetsSync = require('../services/sheets-sync');
 const { getOrders } = require('../glob-client');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,6 +216,24 @@ router.post('/transactions/merge', async (req, res) => {
     const merged = await prisma.transaction.update({ where: { id: primary.id }, data: update });
     await prisma.transaction.delete({ where: { id: secondary.id } });
 
+    // Sheets: drop secondary's row, refresh primary's row in place
+    if (sheetsSync.isConfigured()) {
+      try {
+        if (secondary.sheetRowId) await sheetsSync.deleteRowById(secondary.sheetRowId);
+        // Adjust sheetRowId of every tx after the deleted row (-1)
+        if (secondary.sheetRowId) {
+          await prisma.$executeRawUnsafe(
+            `UPDATE "Transaction" SET "sheetRowId" = "sheetRowId" - 1 WHERE "sheetRowId" IS NOT NULL AND "sheetRowId" > ${secondary.sheetRowId}`
+          );
+        }
+        // Re-fetch merged to get current sheetRowId after shifts
+        const fresh = await prisma.transaction.findUnique({ where: { id: merged.id } });
+        if (fresh && fresh.sheetRowId) await sheetsSync.updateRowById(fresh);
+      } catch (e) {
+        console.error('[transactions/merge] sheets sync failed:', e.message);
+      }
+    }
+
     res.json({
       ok: true,
       merged,
@@ -249,6 +268,52 @@ router.post('/transactions/:id/split', async (req, res) => {
     res.json({ ok: true, detached: detach, transaction: updated });
   } catch (e) {
     console.error('[transactions/split]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// One-time setup: write headers, freeze header row, mark reserved rows
+// (yellow), hide id/gs_modified columns. Call once after the spreadsheet
+// is created and shared with the Service Account.
+router.post('/transactions/sync-sheets/init', async (req, res) => {
+  try {
+    if (!sheetsSync.isConfigured()) return res.status(400).json({ ok: false, error: 'Google Sheets not configured (missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SHEETS_SPREADSHEET_ID)' });
+    const result = await sheetsSync.initSheet();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[sync-sheets/init]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Bulk sync — push every transaction in DB to the spreadsheet, oldest at
+// the bottom. Use after bootstrap (or to recover from a wiped sheet).
+// Cleans the data area first (rows FIRST_DATA_ROW+) and reinserts from DB.
+router.post('/transactions/sync-sheets/all', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    if (!sheetsSync.isConfigured()) return res.status(400).json({ ok: false, error: 'Google Sheets not configured' });
+
+    const transactions = await prisma.transaction.findMany({
+      orderBy: { occurredAt: 'asc' }, // insert oldest first → newest ends up on top
+    });
+
+    let inserted = 0;
+    for (const tx of transactions) {
+      const rowId = await sheetsSync.insertTopRow(tx);
+      if (rowId) {
+        // Bump every other tx's sheetRowId by 1 (rows shifted)
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Transaction" SET "sheetRowId" = "sheetRowId" + 1 WHERE "sheetRowId" IS NOT NULL AND "sheetRowId" >= ${rowId} AND id != $1`,
+          tx.id
+        );
+        await prisma.transaction.update({ where: { id: tx.id }, data: { sheetRowId: rowId, sheetSyncedAt: new Date() } });
+        inserted++;
+      }
+    }
+    res.json({ ok: true, inserted, total: transactions.length });
+  } catch (e) {
+    console.error('[sync-sheets/all]', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
