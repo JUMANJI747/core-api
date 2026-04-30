@@ -19,7 +19,9 @@ async function findAddressInGkOrders(prisma, contractor, opts = {}) {
   const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
     || (Array.isArray(ordersData) ? ordersData : []);
 
-  if (!orders.length) return { found: false, reason: 'no_orders' };
+  console.log(`[find-address-in-gk-orders] contractor="${contractor.name}" id=${contractor.id}, scanned=${orders.length}`);
+
+  if (!orders.length) return { found: false, reason: 'no_orders', scanned: 0 };
 
   // 1. Token / prefix match.
   const norm = (s) => (s || '').toString().toLowerCase().trim();
@@ -40,12 +42,16 @@ async function findAddressInGkOrders(prisma, contractor, opts = {}) {
   });
   matched.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
 
+  console.log(`[find-address-in-gk-orders] token-match: q="${q}", tokens=[${tokens.join(',')}], matched=${matched.length}`);
+
   let chosen = matched[0] || null;
   let matchMethod = chosen ? 'token' : null;
 
   // 2. LLM fuzzy match.
   if (!chosen) {
+    console.log('[find-address-in-gk-orders] token miss → calling LLM matcher');
     const llmMatch = await matchGkOrderToContractor(contractor, orders);
+    console.log(`[find-address-in-gk-orders] LLM result: matched=${llmMatch.matched} index=${llmMatch.index} reason="${(llmMatch.reason || '').slice(0, 200)}"`);
     if (llmMatch.matched) {
       chosen = orders[llmMatch.index];
       matchMethod = 'llm';

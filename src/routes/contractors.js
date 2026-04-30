@@ -381,11 +381,17 @@ async function resolveContractorFromRequest(prisma, req) {
 router.post('/:id/find-address-in-gk-orders', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
+    console.log(`[find-address-in-gk-orders] req: id=${req.params.id}, body=${JSON.stringify(req.body || {}).slice(0, 200)}`);
     const c = await resolveContractorFromRequest(prisma, req);
-    if (!c) return res.status(404).json({ error: 'contractor not found (provide :id or body.contractorName)' });
+    if (!c) {
+      console.log('[find-address-in-gk-orders] contractor not resolved');
+      return res.status(404).json({ error: 'contractor not found (provide :id or body.contractorName)' });
+    }
+    console.log(`[find-address-in-gk-orders] resolved contractor: ${c.name} (id=${c.id})`);
 
     const limit = (req.body && Number(req.body.limit)) || 200;
     const result = await findAddressInGkOrders(prisma, c, { limit });
+    console.log(`[find-address-in-gk-orders] result: found=${result.found}, matchMethod=${result.matchMethod || 'n/a'}, reason="${(result.reason || '').slice(0, 150)}"`);
     if (!result.found) {
       return res.json({ ok: false, found: false, reason: result.reason, scanned: result.scanned || 0, contractor: { id: c.id, name: c.name } });
     }

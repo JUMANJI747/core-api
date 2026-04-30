@@ -83,6 +83,7 @@ ZASADY:
 - gdy kilka kandydatów wygląda podobnie → preferuj zamówienie z najsilniejszymi sygnałami (email/nip > telefon > nazwa+miasto), a dopiero potem najnowsze
 - klient może być z kwartału / pół roku temu (głębsza historia) — nie odrzucaj automatycznie starych orderów`;
 
+  console.log(`[match-gk-order-to-contractor] calling ${MODEL}, candidates=${candidates.length}, prompt_chars=${prompt.length}`);
   let resp;
   try {
     resp = await anthropic.messages.create({
@@ -91,6 +92,7 @@ ZASADY:
       messages: [{ role: 'user', content: prompt }],
     });
   } catch (e) {
+    console.log('[match-gk-order-to-contractor] claude error:', e.message);
     return { matched: false, reason: 'claude_error: ' + e.message };
   }
 
