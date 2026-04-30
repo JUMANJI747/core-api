@@ -784,13 +784,56 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       FR: { subject: 'Facture {n} - Surf Stick Bell', body: 'Bonjour,\n\nVeuillez trouver la facture en pièce jointe.\n\nCordialement,\nMichał Pałyska\nSurf Stick Bell', html: 'Bonjour,<br><br>Veuillez trouver la facture en pièce jointe.<br><br>Cordialement,<br>Michał Pałyska<br>Surf Stick Bell' },
       EN: { subject: 'Invoice {n} - Surf Stick Bell', body: 'Hello,\n\nPlease find the invoice attached.\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell', html: 'Hello,<br><br>Please find the invoice attached.<br><br>Best regards,<br>Michał Pałyska<br>Surf Stick Bell' },
     };
-    // Fall back to English for any country we don't have a template for
-    // (CZ, EE, GB, IE, NL, …) — universal & safe.
-    const lang = TEMPLATES[country] ? country : 'EN';
+    // Resolve language with cascade priority:
+    //   1. recipient email TLD (.fr/.es/.de/.it/.pt/.pl) — strongest signal
+    //   2. contractor.country (DB)
+    //   3. detect from original email body when reply-in-thread
+    //   4. EN fallback
+    function tldToLang(email) {
+      if (!email) return null;
+      const m = String(email).toLowerCase().match(/@[^@\s]+\.([a-z]{2,3})$/);
+      if (!m) return null;
+      const tld = m[1];
+      const map = { fr: 'FR', es: 'ES', de: 'DE', it: 'IT', pt: 'PT', pl: 'PL' };
+      return map[tld] || null;
+    }
+    function detectLangFromBody(text) {
+      if (!text) return null;
+      const t = String(text).toLowerCase();
+      const patterns = [
+        { lang: 'FR', words: ['bonjour', 'cordialement', 'merci', 'votre', 'pouvez', 'nous sommes'] },
+        { lang: 'ES', words: ['hola', 'saludos', 'gracias', 'buenos días', 'buenas tardes', 'estaríamos', 'estamos', 'somos'] },
+        { lang: 'IT', words: ['buongiorno', 'grazie', 'cordiali saluti', 'siamo', 'vorrei'] },
+        { lang: 'PT', words: ['olá', 'obrigado', 'cumprimentos', 'estamos', 'somos'] },
+        { lang: 'DE', words: ['guten tag', 'mit freundlichen', 'danke', 'wir sind', 'ihre'] },
+        { lang: 'PL', words: ['dzień dobry', 'pozdrawiam', 'dziękuję', 'jesteśmy'] },
+      ];
+      let best = null, bestScore = 0;
+      for (const p of patterns) {
+        const score = p.words.filter(w => t.includes(w)).length;
+        if (score > bestScore) { bestScore = score; best = p.lang; }
+      }
+      // Require ≥2 hits to avoid false positives (single common word like "merci"
+      // could appear in any language email).
+      return bestScore >= 2 ? best : null;
+    }
+
+    let lang = tldToLang(to);
+    let langSource = lang ? 'tld' : null;
+    if (!lang && TEMPLATES[country]) { lang = country; langSource = 'contractor.country'; }
+    if (!lang && emailId) {
+      try {
+        const orig = await prisma.email.findUnique({ where: { id: emailId }, select: { bodyFull: true, bodyPreview: true } });
+        const detected = detectLangFromBody((orig && (orig.bodyFull || orig.bodyPreview)) || '');
+        if (detected && TEMPLATES[detected]) { lang = detected; langSource = 'email_body'; }
+      } catch (_) { /* ignore */ }
+    }
+    if (!lang) { lang = 'EN'; langSource = 'fallback'; }
     const tpl = TEMPLATES[lang];
     const defaultBody = tpl.body;
     const defaultHtml = tpl.html;
     if (!customSubject) subject = tpl.subject.replace('{n}', invoice.number);
+    console.log(`[send-invoice-email] language: ${lang} (source=${langSource}, to=${to}, country=${country || 'null'})`);
 
     const sentBody = customBody || defaultBody;
     const savedEmail = await sendMail({
@@ -813,6 +856,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       confirmation: {
         invoiceNumber: invoice.number,
         language: lang,
+        languageSource: langSource,
         contractorCountry: country || null,
         from,
         to,
