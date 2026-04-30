@@ -1102,11 +1102,43 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     let { invoiceId, invoiceNumber, ifirmaId } = req.body || {};
+
+    // Same fuzzy normalization as send-invoice-email: "65" → "65/2026"
+    // (current year), "FV 65" / "Faktura 65" / "65/26" all collapse to
+    // canonical form. Tries normalized first, falls back to raw.
+    function normalizeInvoiceQuery(input) {
+      if (!input) return null;
+      const stripped = String(input).trim()
+        .replace(/^(?:fv|faktura|faktur[aęoy])\s*\/?\s*/i, '')
+        .replace(/^nr\s*/i, '').trim();
+      if (/^\d+\/\d{4}$/.test(stripped)) return stripped;
+      if (/^\d+\/\d{2}$/.test(stripped)) {
+        const [n, yy] = stripped.split('/');
+        return n + '/20' + yy;
+      }
+      if (/^\d+$/.test(stripped)) return stripped + '/' + new Date().getFullYear();
+      return stripped;
+    }
+
     let invoice = null;
     if (invoiceId) invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice && invoiceNumber) invoice = await prisma.invoice.findFirst({ where: { number: invoiceNumber }, orderBy: { createdAt: 'desc' } });
+    if (!invoice && invoiceNumber) {
+      const candidates = [normalizeInvoiceQuery(invoiceNumber), invoiceNumber].filter(Boolean);
+      const seen = new Set();
+      for (const q of candidates) {
+        if (seen.has(q)) continue; seen.add(q);
+        invoice = await prisma.invoice.findFirst({
+          where: { number: { equals: q, mode: 'insensitive' } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (invoice) {
+          console.log(`[resend-pdf] resolved "${invoiceNumber}" → "${q}" → ${invoice.id} (${invoice.number})`);
+          break;
+        }
+      }
+    }
     if (!invoice && ifirmaId) invoice = await prisma.invoice.findUnique({ where: { ifirmaId: parseInt(ifirmaId) } });
-    if (!invoice) return res.status(404).json({ error: 'Invoice not found. Provide invoiceId, invoiceNumber, or ifirmaId.' });
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found. Provide invoiceId, invoiceNumber (e.g. "65/2026" or just "65" for current year), or ifirmaId.' });
 
     // If number is the placeholder, try to recover the real one from iFirma details.
     let realNumber = invoice.number;

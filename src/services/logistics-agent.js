@@ -155,7 +155,7 @@ const tools = [
   },
   {
     name: 'send_label',
-    description: 'Wysyła PDF list przewozowy na Telegram. WYMAGA hash zamówienia z search_shipments.',
+    description: 'Wysyła PDF list przewozowy na Telegram. Akceptuje hash (długi alfanumeryczny ~64 znaki) ALBO numer GK (np. "GK260430978072") — backend sam zresolvuje numer na hash. Gdy user mówi "daj list do <nazwa>" i nie masz numeru/hasha, NAJPIERW wywołaj search_shipments z nazwą żeby pobrać hash, potem send_label.',
     input_schema: {
       type: 'object',
       properties: { hash: { type: 'string', description: 'hash zamówienia GlobKurier' } },
@@ -260,7 +260,9 @@ async function executeTool(name, input) {
 const QUOTE_INTENT = /\b(wyce[nń]|wycena|ile kosztuje|policz|sprawd[zź] cen[eę]|wy[sś]lij paczk|zam[oó]w paczk|zam[oó]w wysy[lł]k|zam[oó]w kurier)/iu;
 const ORDER_INTENT = /^\s*(tak|ok|potwierd|akceptu|zgadzam|jasne|dobra)|\bzam[oó]w (t[ąa] |t[eę] |najta[nń]sz|drug|trzeci|konkretn|inn[ąa]|innego|dpd|fedex|ups|gls|inpost|dhl)/iu;
 const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|tracking|track|lista paczek|pokaż wysy[lł]k)/iu;
-const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj list|pdf paczki)/iu;
+// "Daj list do X" / "daj cmr X" → list przewozowy PDF na Telegrama (NIE
+// listę paczek). User feedback: "daj" zawsze = "wyślij PDF tu na Telegram".
+const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj\s+(?:mi\s+)?(?:list|etykiet|cmr|pdf\s+(?:paczki|listu))|pdf\s+paczki)\b/iu;
 // Triggered when the user (via Master) asks to look up a delivery ADDRESS
 // in past GK shipments — distinct from search_shipments which returns the
 // shipment list itself. Phrases: "szukaj adresu w wysyłkach", "z poprzednich

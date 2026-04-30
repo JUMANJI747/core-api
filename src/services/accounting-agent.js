@@ -47,9 +47,15 @@ FLOW WYSTAWIENIA FV:
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
 
 PONOWNE WYSŁANIE PDF FAKTURY NA TELEGRAM:
-- "daj mi pdf faktury 64/2026 na telegram" / "ponownie pdf FV X" / "przyślij tu fakturę X"
-  → send_invoice_pdf_telegram z invoiceNumber: "64/2026" (lub invoiceId / ifirmaId jak znamy)
-- Wysłanie mailem (do klienta) to invoice_send_email — nie myl ich.
+SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest list/search/preview.
+- "daj fv 65" / "daj fakturę 65/2026" / "przyślij fv 65" / "ponownie pdf 64/2026"
+  / "wyślij fv 65 tu" / "daj mi pdf faktury X"
+  → send_invoice_pdf_telegram z invoiceNumber: "65" (backend automatycznie
+    rozszerzy do "65/2026", bieżący rok)
+- NIE rób disambiguacji ("Znalazłem 3 faktury z '65'") — backend bierze
+  najświeższą z bieżącego roku. Jeśli user wprost chce inną ("daj 65/2025"),
+  poda pełen numer.
+- Wysłanie mailem do klienta to invoice_send_email — różne od "daj".
 
 ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj odpowiedzi z historii
@@ -261,7 +267,14 @@ async function executeTool(name, input) {
 const PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj) (fakt|fv)|\b(faktur|fv) (dla|na)/i;
 const CONFIRM_INTENT = /^\s*(tak|ok|potwierdz|akceptu|zgadzam|jasne|dobra)\b|\bpotwierd[zź] fakt/i;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv) (mailem|mejlem|do)|\bfakt\w* mailem\b/i;
-const PDF_TELEGRAM_INTENT = /\btelegram\w*\b[\s\S]*\b(pdf|fakt\w*|fv)\b|\b(pdf|fakt\w*|fv)\b[\s\S]*\btelegram\w*\b/i;
+const PDF_TELEGRAM_INTENT =
+  /\btelegram\w*\b[\s\S]*\b(pdf|fakt\w*|fv)\b/i      // explicit "telegram" + invoice keyword
+  .source + '|' +
+  /\b(pdf|fakt\w*|fv)\b[\s\S]*\btelegram\w*\b/i.source + '|' +
+  // "daj fv X" / "daj fakturę X" / "daj mi fv X" — short user phrase meaning
+  // "send the invoice PDF here on Telegram" (NOT search, NOT email).
+  /\bdaj\s+(?:mi\s+)?(?:pdf\s+)?(?:fv|fakt\w*)\b/i.source;
+const PDF_TELEGRAM_INTENT_RE = new RegExp(PDF_TELEGRAM_INTENT, 'i');
 const SYNC_INTENT = /\bsynchron|\bsync\b|zsynchronizuj/i;
 const ANALYTICS_INTENT = /\bobr[oó]t|przetermin|statystyk|raport|ile (mam|jest|wystawiono)|suma fakt/i;
 
@@ -278,7 +291,7 @@ async function processAccountingQuery(query) {
   // Order matters: confirm beats preview when both could match (e.g. "tak wystaw fakturę"
   // is rare; but typical "tak" alone is confirm).
   if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query)) forcedTool = 'invoice_confirm';
-  else if (PDF_TELEGRAM_INTENT.test(query)) forcedTool = 'send_invoice_pdf_telegram';
+  else if (PDF_TELEGRAM_INTENT_RE.test(query)) forcedTool = 'send_invoice_pdf_telegram';
   else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'invoice_send_email';
   else if (SYNC_INTENT.test(query)) forcedTool = 'ifirma_sync';
   else if (ANALYTICS_INTENT.test(query)) forcedTool = 'analytics';
