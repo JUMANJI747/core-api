@@ -52,6 +52,7 @@ Tłumacz receiverSource na czytelnie:
 ZASADY:
 - ZAWSZE wywołuj tool dla nowej wiadomości
 - response.warnings[] → POKAŻ DOSŁOWNIE
+- response.needsItems → backend nie wie co jest w paczce (faktura bez pozycji). POKAŻ message DOSŁOWNIE i pytaj usera ("co było w paczce?"). Po odpowiedzi user-a — np. "60 sticków" — ponów quote_shipping z items=[{"name":"stick generic","qty":60}] i tymi samymi parametrami (receiverSearch + invoiceNumber pomijasz, bo user już doprecyzował).
 - response.needsAddress → POKAŻ message + opcje DOSŁOWNIE i czekaj na decyzję usera. NIE szukaj sam — koszt token. Opcje typowo: 1) szukaj w mailach, 2) podaj ręcznie, 3) VIES, 4) książka GK. User wybiera.
 - gdy user wybierze "szukaj w mailach" / "spróbuj z maili" → wywołaj find_delivery_address_in_emails z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping z tymi samymi parametrami (adres jest zapisany, wycena teraz powinna pójść). Jeśli found=false → poinformuj usera czego nie znaleziono i zaproponuj inne źródła (VIES, manual).
 - response.error → DOSŁOWNIE, NIE zgaduj

@@ -195,6 +195,16 @@ router.post('/glob/quote', async (req, res) => {
         height = height || calc.height;
         const sourceSuffix = itemsFromPdf ? ', items odzyskane z PDF' : '';
         dimensionsSource = `invoice ${invoice.number} (smart packing z items faktury${sourceSuffix})`;
+      } else if (invoice && !weight && !packageType && !preset && !(items && items.length > 0)) {
+        // Invoice exists but has no items, and PDF backfill couldn't recover
+        // them, and the agent didn't supply alternative dims — ask the user
+        // instead of silently shipping a fake "1 kartonik 1 kg" weight.
+        return res.json({
+          ok: false,
+          needsItems: true,
+          invoice: { number: invoice.number, contractorName: invoiceContractorName, ifirmaId: invoice.ifirmaId, grossAmount: Number(invoice.grossAmount), currency: invoice.currency },
+          message: `Faktura ${invoice.number} nie ma zapisanych pozycji w bazie i nie udało się odzyskać ich z PDF. Powiedz co było w paczce — np. "60 sticków" / "30 mascar" / "2 boxy MIX" — wtedy policzę wymiary i wagę.`,
+        });
       } else if (invoice) {
         weight = weight || 1;
         length = length || 20; width = width || 20; height = height || 10;
