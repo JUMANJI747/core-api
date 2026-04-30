@@ -27,6 +27,7 @@ async function handleSearchOrders(req, res) {
     const { search, status, limit = 50, offset = 0 } = params;
     const data = await getOrders({ limit: Math.min(parseInt(limit) || 50, 100), offset: parseInt(offset) || 0, status });
     let orders = extractOrdersResults(data);
+    const allOrders = Array.isArray(orders) ? orders.slice() : [];
 
     if (!Array.isArray(orders)) {
       return res.json({ ok: true, orders: [], total: 0, note: 'Unexpected response from GlobKurier' });
@@ -59,6 +60,23 @@ async function handleSearchOrders(req, res) {
         }
         return false;
       });
+
+      // LLM fallback for fuzzy matches the deterministic filter missed —
+      // typical case is a voice-transcription typo ("Okean Republik" vs
+      // "Ocean Republik School", "Olaola" vs "HOLA OLA"). Costs ~$0.02
+      // per call; only fires when the simpler tiers returned nothing.
+      if (orders.length === 0 && allOrders.length > 0) {
+        try {
+          const { matchShipmentsByQuery } = require('../services/match-shipments-by-query');
+          const llm = await matchShipmentsByQuery(search, allOrders, { scanLimit: 150, maxHits: 5 });
+          console.log(`[glob/orders] LLM fallback: ${llm.matched ? 'matched [' + llm.indices.join(',') + ']' : 'no_match'} — ${(llm.reason || '').slice(0, 200)}`);
+          if (llm.matched && llm.indices.length) {
+            orders = llm.indices.map(i => allOrders[i]).filter(Boolean);
+          }
+        } catch (e) {
+          console.log('[glob/orders] LLM fallback error:', e.message);
+        }
+      }
     }
 
     const mapped = orders.map(o => {
