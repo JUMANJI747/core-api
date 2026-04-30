@@ -109,12 +109,32 @@ router.get('/glob/labels/:hash', async (req, res) => {
 
 router.post('/glob/send-label', async (req, res) => {
   try {
-    const { hash, chatId, caption } = req.body || {};
-    if (!hash) return res.status(400).json({ ok: false, error: 'Brak hash zamówienia' });
+    const { hash: hashOrNumber, chatId, caption } = req.body || {};
+    if (!hashOrNumber) return res.status(400).json({ ok: false, error: 'Brak hash / numeru zamówienia' });
 
     const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
     const tgChat = chatId || process.env.TELEGRAM_CHAT_ID || '8164528644';
     if (!tgToken || !tgChat) return res.status(500).json({ ok: false, error: 'Brak konfiguracji Telegram' });
+
+    // Resolve hash from order number if needed. Real GK hashes are long
+    // alphanumeric strings (~64 chars); human-readable numbers like
+    // "GK260430978072" are short and prefixed. The agent often passes the
+    // number it just got from order_shipping — translate it here.
+    const looksLikeNumber = /^GK\d+$/i.test(hashOrNumber) || hashOrNumber.length < 30;
+    let hash = hashOrNumber;
+    if (looksLikeNumber) {
+      console.log(`[glob/send-label] Looking up hash for number ${hashOrNumber}`);
+      const ordersResp = await getOrders({ limit: 50 });
+      const list = ordersResp.results || ordersResp.items || ordersResp.data || (Array.isArray(ordersResp) ? ordersResp : []);
+      const match = list.find(o => String(o.number || '').toLowerCase() === hashOrNumber.toLowerCase());
+      if (match && (match.hash || match.orderHash)) {
+        hash = match.hash || match.orderHash;
+        console.log(`[glob/send-label] Resolved ${hashOrNumber} → ${hash.slice(0, 12)}...`);
+      } else {
+        console.log(`[glob/send-label] Could not resolve number ${hashOrNumber} from last ${list.length} orders`);
+        return res.status(404).json({ ok: false, error: `Nie znaleziono zamówienia ${hashOrNumber} w historii GK (sprawdzono ostatnich ${list.length}).` });
+      }
+    }
 
     const result = await getOrderLabels(hash, 'A4');
     if (result.status !== 200 || !result.body || result.body.length === 0) {
