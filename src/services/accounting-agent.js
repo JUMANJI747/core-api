@@ -47,7 +47,7 @@ FLOW WYSTAWIENIA FV:
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
 
 PONOWNE WYSŁANIE PDF FAKTURY NA TELEGRAM:
-SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest list/search/preview.
+SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest listing/search/preview.
 - "daj fv 65" / "daj fakturę 65/2026" / "przyślij fv 65" / "ponownie pdf 64/2026"
   / "wyślij fv 65 tu" / "daj mi pdf faktury X"
   → send_invoice_pdf_telegram z invoiceNumber: "65" (backend automatycznie
