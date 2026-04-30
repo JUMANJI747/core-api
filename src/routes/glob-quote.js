@@ -708,10 +708,20 @@ router.post('/glob/quote', async (req, res) => {
     // pickupDate often isn't actually bookable — checking up front lets us
     // show the user the soonest realistic date and keeps order_shipping
     // from blindly retrying carriers in a loop.
+    //
+    // Send the full sender address to /pickupTimeRanges (GK doc: "providing
+    // as much data as possible allows for better matching of shipping dates
+    // for a given location"). DPD especially can flip a "no slots" answer
+    // to "available" when given the actual city / street, not just postcode.
     const TOP_OFFERS_TO_PROBE = 5;
+    const PROBE_MAX_DAYS = 14;
+    const senderExtras = (typeof sender.extras === 'object' && sender.extras) || {};
     const pickupParamsBase = {
       senderCountryId,
       senderPostCode: sender.postCode || '',
+      senderCity: sender.city || senderExtras.city || '',
+      senderStreet: senderExtras.street || sender.street || '',
+      senderHouseNumber: senderExtras.houseNumber || sender.houseNumber || '',
       receiverCountryId,
       receiverPostCode: receiver.postCode || '',
       receiverCity: receiver.city || '',
@@ -720,12 +730,27 @@ router.post('/glob/quote', async (req, res) => {
     };
     await Promise.all(offers.slice(0, TOP_OFFERS_TO_PROBE).map(async (o) => {
       try {
-        const nearest = await findNearestPickupDate(o.productId, pickupParamsBase, 7);
+        const nearest = await findNearestPickupDate(o.productId, pickupParamsBase, PROBE_MAX_DAYS);
         o.nearestPickup = nearest; // { date, timeFrom, timeTo, daysAhead } or null
       } catch (e) {
         o.nearestPickup = null;
       }
     }));
+
+    // If every probed offer came back with no slots, surface a clear
+    // message to the agent instead of letting it blindly propose an order.
+    const probedOffers = offers.slice(0, TOP_OFFERS_TO_PROBE);
+    const allNoSlots = probedOffers.length > 0 && probedOffers.every(o => o.nearestPickup === null);
+    if (allNoSlots) {
+      return res.json({
+        ok: false,
+        noPickupAnyOffer: true,
+        offers, // include offers so agent can describe what was tried
+        sender: { name: sender.companyName || sender.name, city: sender.city, country: sender.country },
+        receiver: { name: receiver.name, city: receiver.city, country: receiver.country, postCode: receiver.postCode },
+        message: `GlobKurier nie ma dostępnych terminów odbioru dla żadnej z ${probedOffers.length} ofert na trasie ${sender.country || '?'} → ${receiver.country || '?'} w ciągu ${PROBE_MAX_DAYS} dni — najpewniej długi weekend / święto. Spróbuj ponownie za parę dni albo zmień datę odbioru ręcznie (parametr pickupDate).`,
+      });
+    }
 
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();

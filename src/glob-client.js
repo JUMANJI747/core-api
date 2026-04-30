@@ -171,9 +171,17 @@ async function getPickupTimes(productId, params) {
   query.set('productId', String(productId));
   query.set('senderCountryId', String(params.senderCountryId));
   query.set('senderPostCode', String(params.senderPostCode || ''));
+  // GK doc: "providing as much data as possible allows for better matching
+  // of shipping dates for a given location" — for DPD specifically the
+  // city / street can flip a "no slots" answer to "available".
+  if (params.senderCity) query.set('senderCity', String(params.senderCity));
+  if (params.senderStreet) query.set('senderStreet', String(params.senderStreet));
+  if (params.senderHouseNumber) query.set('senderHouseNumber', String(params.senderHouseNumber));
+  if (params.senderState) query.set('senderState', String(params.senderState));
   query.set('receiverCountryId', String(params.receiverCountryId));
   query.set('receiverPostCode', String(params.receiverPostCode || ''));
   query.set('receiverCity', String(params.receiverCity || ''));
+  if (params.receiverState) query.set('receiverState', String(params.receiverState));
   query.set('date', params.date || new Date().toISOString().split('T')[0]);
   query.set('weight', String(params.weight));
   query.set('quantity', '1');
