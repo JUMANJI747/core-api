@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const https = require('https');
 const { getOrders, getOrderTracking, getOrderLabels, getReceivers } = require('../glob-client');
+const { buildTrackingUrl } = require('../services/tracking-urls');
 const { normalizeText } = require('./glob-helpers');
 
 // ============ ORDERS ============
@@ -50,6 +51,8 @@ async function handleSearchOrders(req, res) {
       const send = o.senderAddress || o.sender || {};
       const pricing = o.pricing || {};
       const carrier = o.carrier || {};
+      const trackingNumber = o.trackingNumber || o.tracking;
+      const carrierName = typeof carrier === 'object' ? (carrier.name || '') : carrier;
       return {
         id: o.id,
         hash: o.hash || o.orderHash,
@@ -71,9 +74,10 @@ async function handleSearchOrders(req, res) {
           city: send.city,
           countryId: send.countryId || null,
         },
-        tracking: o.trackingNumber || o.tracking,
+        tracking: trackingNumber,
+        trackingUrl: buildTrackingUrl(carrierName, trackingNumber),
         product: o.productName || (o.product && o.product.name),
-        carrier: typeof carrier === 'object' ? (carrier.name || '') : carrier,
+        carrier: carrierName,
         priceGross: pricing.priceGross || o.priceGross || null,
         priceNet: pricing.priceNet || o.priceNet || null,
         currency: pricing.currency || o.currency || 'PLN',

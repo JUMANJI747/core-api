@@ -80,7 +80,16 @@ ORDER_SHIPPING — JEDNA PRÓBA, BEZ PĘTLI:
 - NIGDY nie używaj wygasłego quoteId — jeśli wygasł, zrób nowy quote przez quote_shipping.
 
 NIE ZMYŚLAJ wartości w odpowiedzi — wszystko pokazuj z response.package i response.offers.
-Country ZAWSZE jako ISO-2 (PL, ES, FR, DE, PT, IT, GB).`;
+Country ZAWSZE jako ISO-2 (PL, ES, FR, DE, PT, IT, GB).
+
+TRACKING / STATUS PACZKI:
+W odpowiedzi search_shipments każda paczka ma pole trackingUrl (gotowy link do
+strony kuriera) oprócz tracking (sam numer). Gdy pokazujesz user-owi paczkę,
+ZAWSZE dawaj URL gołym tekstem — Telegram automatycznie zrobi z niego klikalny
+link. Format:
+  Tracking: <trackingNumber>
+  Sledzenie: <trackingUrl>
+Jeśli trackingUrl jest null (kurier nieobsługiwany), pokaż sam numer.`;
 
 const tools = [
   {
