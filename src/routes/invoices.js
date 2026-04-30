@@ -688,18 +688,48 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     const { invoiceId, toEmail, emailId, subject: customSubject, body: customBody } = req.body;
     if (!invoiceId) return res.status(400).json({ error: 'invoiceId required' });
 
-    // Try as UUID first, fallback to invoice number
+    // Accept fuzzy invoice references — agents and humans rarely type the
+    // canonical "65/2026" form. Strip prefixes ("FV 65", "Faktura 65"),
+    // normalize 2-digit year ("65/26" → "65/2026"), and append the current
+    // year when only a number is given ("65" → "65/2026"). Keep the raw
+    // input as a fallback search so explicit forms still work.
+    function normalizeInvoiceQuery(input) {
+      if (!input) return null;
+      const stripped = String(input).trim()
+        .replace(/^(?:fv|faktura|faktur[aęoy])\s*\/?\s*/i, '')
+        .replace(/^nr\s*/i, '')
+        .trim();
+      if (/^\d+\/\d{4}$/.test(stripped)) return stripped;
+      if (/^\d+\/\d{2}$/.test(stripped)) {
+        const [n, yy] = stripped.split('/');
+        return n + '/20' + yy;
+      }
+      if (/^\d+$/.test(stripped)) return stripped + '/' + new Date().getFullYear();
+      return stripped;
+    }
+
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(invoiceId);
     let invoice = isUuid
       ? await prisma.invoice.findUnique({ where: { id: invoiceId } })
       : null;
+
+    const queries = [];
     if (!invoice) {
-      invoice = await prisma.invoice.findFirst({
-        where: { number: invoiceId },
-        orderBy: { createdAt: 'desc' },
-      });
+      const normalized = normalizeInvoiceQuery(invoiceId);
+      if (normalized && normalized !== invoiceId) queries.push(normalized);
+      queries.push(invoiceId);
+      for (const q of queries) {
+        invoice = await prisma.invoice.findFirst({
+          where: { number: { equals: q, mode: 'insensitive' } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (invoice) {
+          console.log(`[send-invoice-email] resolved "${invoiceId}" → "${q}" → invoiceId=${invoice.id}, number=${invoice.number}`);
+          break;
+        }
+      }
     }
-    if (!invoice) return res.status(404).json({ error: 'Invoice not found: ' + invoiceId });
+    if (!invoice) return res.status(404).json({ error: `Invoice not found: tried ${[invoiceId, ...queries.filter(q => q !== invoiceId)].map(q => '"' + q + '"').join(', ')}` });
 
     const pdfBuffer = await fetchInvoicePdf(invoice.number, invoice.type);
     const filename = `faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
