@@ -1,6 +1,6 @@
 'use strict';
 
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 
 // Parse iFirma invoice PDF text into items. The layout pdf-parse extracts
 // is column-interleaved and inconsistent across invoice types (krajowa, WDT,
@@ -14,8 +14,9 @@ const pdfParse = require('pdf-parse');
 //
 // Returns: { items: [{ name, qty, priceNetto, currency, vatRate }], rawText }
 async function parseIfirmaPdfItems(pdfBytes) {
-  const data = await pdfParse(pdfBytes);
-  const text = data.text || '';
+  const parser = new PDFParse({ data: pdfBytes });
+  const result = await parser.getText();
+  const text = (result && result.text) || '';
 
   let items = parseFormatA(text);
   if (items.length === 0) items = parseFormatB(text);
