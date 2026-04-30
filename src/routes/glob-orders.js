@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getOrders, getOrderTracking, getOrderLabels, getReceivers } = require('../glob-client');
+const { getOrders, getOrderTracking, getOrderLabels, getReceivers, deleteOrder } = require('../glob-client');
 const { buildTrackingUrl } = require('../services/tracking-urls');
 const { normalizeText } = require('./glob-helpers');
 
@@ -266,6 +266,51 @@ router.get('/glob/debug/raw-order', async (req, res) => {
     res.json({ ok: true, firstItemKeys: items[0] ? Object.keys(items[0]) : [], sample: items[0] || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel / delete a GK shipment. Accepts a real hash (long alphanumeric)
+// or a human-readable number (GK260...) — same resolution path as
+// /glob/send-label. Destructive operation: caller is responsible for
+// confirming with the user before invoking.
+router.post('/glob/delete-order', async (req, res) => {
+  try {
+    const { hash: hashOrNumber } = req.body || {};
+    if (!hashOrNumber) return res.status(400).json({ ok: false, error: 'Brak hash / numeru zamówienia' });
+
+    const looksLikeNumber = /^GK\d+$/i.test(hashOrNumber) || hashOrNumber.length < 30;
+    let hash = hashOrNumber;
+    let resolvedFrom = null;
+    if (looksLikeNumber) {
+      const ordersResp = await getOrders({ limit: 100 });
+      const list = extractOrdersResults(ordersResp);
+      const match = list.find(o => String(o.number || '').toLowerCase() === hashOrNumber.toLowerCase());
+      if (match && (match.hash || match.orderHash)) {
+        hash = match.hash || match.orderHash;
+        resolvedFrom = hashOrNumber;
+        console.log(`[glob/delete-order] Resolved ${hashOrNumber} → ${hash.slice(0, 12)}...`);
+      } else {
+        return res.status(404).json({ ok: false, error: `Nie znaleziono zamówienia ${hashOrNumber} w historii GK (sprawdzono ostatnich ${list.length}).` });
+      }
+    }
+
+    const result = await deleteOrder(hash);
+    const success = result.status === 200 || result.status === 204;
+    if (!success) {
+      console.log(`[glob/delete-order] GK rejected: status=${result.status}, body=${JSON.stringify(result.body).slice(0, 300)}`);
+      return res.status(400).json({
+        ok: false,
+        error: 'GlobKurier odrzucił anulację (paczka mogła być już w transporcie / odebrana).',
+        gkStatus: result.status,
+        gkResponse: result.body,
+        hash,
+        resolvedFrom,
+      });
+    }
+    res.json({ ok: true, deleted: true, hash, resolvedFrom, gkStatus: result.status });
+  } catch (e) {
+    console.error('[glob/delete-order]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

@@ -89,6 +89,11 @@ SŁOWNICTWO USERA:
 - "mail" / "wiadomość" / "email" — to robota Komunikacji, nie Logistyki.
   Master już to rozgranicza — Logistyka nie powinna dostać takiej query.
 
+ANULOWANIE PACZKI (delete_shipment):
+- "anuluj paczkę GK..." / "skasuj zamówienie X" → delete_shipment z hash lub numerem GK.
+- Jeśli user dał tylko nazwę kontrahenta (np. "anuluj paczkę do Karola") — najpierw search_shipments, POKAŻ user-owi szczegóły (numer, kwota, status, data) + zapytaj "Anulować TĘ paczkę?". DOPIERO po "tak" wywołaj delete_shipment.
+- response.ok=false → pokaż gkResponse DOSŁOWNIE (paczka mogła już być w transporcie; GK odmówi).
+
 TRACKING / STATUS PACZKI:
 W odpowiedzi search_shipments każda paczka ma pole trackingUrl (gotowy link do
 strony kuriera) oprócz tracking (sam numer). Gdy pokazujesz user-owi paczkę,
@@ -170,6 +175,15 @@ const tools = [
     },
   },
   {
+    name: 'delete_shipment',
+    description: 'Anuluj/usuń zamówienie kurierskie w GlobKurier. Akceptuje hash lub numer GK (GK260...). DESTRUKTYWNA AKCJA — wywołuj TYLKO po wyraźnej zgodzie user-a ("anuluj paczkę X", "usuń zamówienie Y", "skasuj GK260..."). Gdy user nie podał hasha/numeru, najpierw search_shipments żeby znaleźć właściwą paczkę i POKAŻ szczegóły do potwierdzenia. GK może odrzucić jeśli paczka już w transporcie.',
+    input_schema: {
+      type: 'object',
+      properties: { hash: { type: 'string', description: 'hash zamówienia GlobKurier lub numer GK260...' } },
+      required: ['hash'],
+    },
+  },
+  {
     name: 'find_delivery_address_in_emails',
     description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach od kontrahenta — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Znaleziony adres zostaje zapisany do bazy.',
     input_schema: {
@@ -198,6 +212,7 @@ const ENDPOINT_MAP = {
   order_shipping: ['POST', '/api/glob/order'],
   search_shipments: ['POST', '/api/glob/orders'],
   send_label: ['POST', '/api/glob/send-label'],
+  delete_shipment: ['POST', '/api/glob/delete-order'],
   find_delivery_address_in_emails: ['POST', '/api/contractors/:contractorId/find-address-in-emails'],
   find_delivery_address_in_gk_orders: ['POST', '/api/contractors/:contractorId/find-address-in-gk-orders'],
 };
@@ -270,6 +285,10 @@ const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|tracking|track|lista pacz
 // "Daj list do X" / "daj cmr X" → list przewozowy PDF na Telegrama (NIE
 // listę paczek). User feedback: "daj" zawsze = "wyślij PDF tu na Telegram".
 const LABEL_INTENT = /\b(list przewozowy|cmr|etykiet|daj\s+(?:mi\s+)?(?:list|etykiet|cmr|pdf\s+(?:paczki|listu))|pdf\s+paczki)\b/iu;
+// Destructive: matches "usuń/anuluj/skasuj <paczka|wysyłka|zamówienie|GK...>".
+// Forced tool wins over LABEL/SEARCH so an unambiguous "anuluj paczkę X"
+// goes straight to delete_shipment without extra search round.
+const DELETE_INTENT = /\b(usu[nń]|anuluj|skasuj|skasować|delete)\s+(?:t[aęą]\s+)?(?:paczk\w*|wysy[lł]k\w*|zam[oó]w\w*|order|gk\d+)/iu;
 // Triggered when the user (via Master) asks to look up a delivery ADDRESS
 // in past GK shipments — distinct from search_shipments which returns the
 // shipment list itself. Phrases: "szukaj adresu w wysyłkach", "z poprzednich
@@ -291,7 +310,8 @@ async function processLogisticsQuery(query) {
   // carrier-specific picks ("zamów DPD"). Phrases like "zamów paczkę do X"
   // fall under QUOTE_INTENT — they need pricing first, then a separate "tak".
   let forcedTool = null;
-  if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
+  if (DELETE_INTENT.test(query)) forcedTool = 'delete_shipment';
+  else if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
   // Address-lookup intents must beat plain SEARCH_INTENT — agent kept
   // picking search_shipments for "szukaj adresu w wysyłkach" because of
   // the shared "szukaj"/"wysyłki" tokens; explicit phrase tests fix it.

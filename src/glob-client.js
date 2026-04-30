@@ -123,6 +123,16 @@ async function createOrder(orderData) {
   return resp.body;
 }
 
+// Cancel / delete a shipment in GK. Body: {orderHash}. GK responds 200
+// on success and an error structure (similar to createOrder rejections)
+// when the order can't be cancelled (e.g. already in transit).
+async function deleteOrder(orderHash) {
+  if (!orderHash) throw new Error('orderHash required');
+  const token = await getToken();
+  const resp = await httpsRequest('https://api.globkurier.pl/v1/order', 'DELETE', { 'X-Auth-Token': token }, { orderHash });
+  return { status: resp.status, body: resp.body };
+}
+
 async function getQuote(params) {
   const token = await getToken();
   const query = new URLSearchParams();
@@ -264,4 +274,4 @@ async function getCustomRequiredFields(productId, senderCountryId, receiverCount
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields };
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields };
