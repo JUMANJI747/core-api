@@ -31,6 +31,9 @@ function calculatePackageFromItems(items) {
     else if (name.includes('collection') || name.includes('box')) productType = 'collection';
     const weightPer30 = PRODUCT_WEIGHTS[productType] || 1;
     totalWeight += (qty / 30) * weightPer30;
+    // Kartonik mieści standardowo 30 szt, ale upycha się do 36 (świadoma
+    // optymalizacja by zaoszczędzić jeden karton — np. 125 szt = 4 zatłoczone
+    // kartoniki, nie 5 luźnych).
     kartonikCount += Math.ceil(qty / 36);
   }
   totalWeight = Math.max(1, Math.ceil(totalWeight));
