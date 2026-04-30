@@ -994,7 +994,6 @@ router.post('/glob/order', async (req, res) => {
         width: quote.quoteParams.width || 20,
         height: quote.quoteParams.height || 10,
         quantity: 1,
-        declaredValue: quote.declaredValue || 100,
       },
       senderAddress: {
         name: senderName,
@@ -1024,6 +1023,11 @@ router.post('/glob/order', async (req, res) => {
       addons: requiredAddons,
       content: 'Cosmetics / Surf Stick Bell',
       collectionType,
+      // Top-level customs/insurance fields. GK rejects shipment.declaredValue
+      // as "Nadmiarowe pole" (e.g. FedEx productId 3562) but accepts it at
+      // root level for cross-border carriers that need customs declaration.
+      declaredValue: quote.declaredValue || 100,
+      purpose: 'SOLD',
       paymentId: 9,
     };
 
