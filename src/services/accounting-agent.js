@@ -34,6 +34,12 @@ WDT vs KRAJOWA:
 - WDT (UE) — domyślnie NETTO w EUR, VAT 0%
 - System sam dobiera typ na podstawie kontrahenta
 
+KRÓTKIE POLECENIA UŻYTKOWNIKA (tak/ok/wyślij/potwierdź) — bez konkretów:
+Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastInvoiceId, lastContractorId).
+- lastAction="preview" + user "tak" → invoice_confirm
+- lastAction="confirmed" + user "wyślij" → invoice_send_email z lastInvoiceId
+- brak kontekstu → zapytaj usera co konkretnie chce
+
 FLOW WYSTAWIENIA FV:
 1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma
 2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId
@@ -185,6 +191,11 @@ const tools = [
       },
     },
   },
+  {
+    name: 'get_context',
+    description: 'Pobierz kontekst poprzedniej operacji księgowej (lastAction, lastInvoiceId, lastContractorId itp.). Wywołaj gdy dostajesz krótkie polecenie bez konkretu (tak/ok/wyślij/potwierdź) — żeby wiedzieć do czego się odnosi. Wraca {lastAction, savedAt, ...szczegóły}.',
+    input_schema: { type: 'object', properties: {} },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -198,6 +209,7 @@ const ENDPOINT_MAP = {
   create_deal: ['POST', '/api/deals'],
   open_consignment: ['POST', '/api/consignments/open'],
   send_invoice_pdf_telegram: ['POST', '/api/ifirma/resend-pdf-telegram'],
+  get_context: ['GET', '/api/agent-context/ksiegowosc'],
 };
 
 function selfCall(method, path, body) {
