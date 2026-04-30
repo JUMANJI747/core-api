@@ -56,6 +56,7 @@ ZASADY:
 - response.noPickupAnyOffer → ŻADEN przewoźnik nie ma terminów odbioru w 14 dni. POKAŻ message DOSŁOWNIE. NIE wywołuj order_shipping. Zaproponuj user-owi: 1) spróbować za parę dni, 2) podać konkretną pickupDate ręcznie (np. "wycen na 6 maja"), 3) zmienić odbiorcę.
 - response.needsAddress → POKAŻ message + opcje DOSŁOWNIE i czekaj na decyzję usera. NIE szukaj sam — koszt token. Opcje typowo: 1) szukaj w mailach, 2) podaj ręcznie, 3) VIES, 4) książka GK. User wybiera.
 - gdy user wybierze "szukaj w mailach" / "spróbuj z maili" → wywołaj find_delivery_address_in_emails z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping z tymi samymi parametrami (adres jest zapisany, wycena teraz powinna pójść). Jeśli found=false → poinformuj usera czego nie znaleziono i zaproponuj inne źródła (VIES, manual).
+- gdy user wybierze "z poprzednich wysyłek" / "z historii GK" / "stare paczki" → wywołaj find_delivery_address_in_gk_orders z contractorId z poprzedniego needsAddress; jeśli found=true → ponów quote_shipping. Jeśli found=false → poinformuj usera (matchMethod, scanned).
 - response.error → DOSŁOWNIE, NIE zgaduj
 - response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
 - "tak"/"zamów" po wycenie → order_shipping z quoteId. JEŚLI nie znasz dokładnego quoteId z poprzedniej tury (sub-agent jest stateless, pamięć ograniczona), wyślij quoteId="latest" — backend automatycznie weźmie najnowszy quote ze store. NIGDY nie zmyślaj quoteId z numerów faktury / nazwy kontrahenta ("64/2026_holaola", "UNKNOWN" itp.) — to się nie odnajdzie i polecisz w pętlę.
@@ -157,6 +158,17 @@ const tools = [
       required: ['contractorId'],
     },
   },
+  {
+    name: 'find_delivery_address_in_gk_orders',
+    description: 'Skanuje 200 ostatnich wysyłek GlobKurier szukając paczek wysłanych do tego kontrahenta — najpierw token match po nazwie, potem fuzzy LLM gdy nazwa różni się od billingowej (np. "Society S.L" vs "School"). Kosztuje token Haiku ~$0.02 gdy LLM się odpala. Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z poprzednich wysyłek" / "z historii GK" / "szukaj w starych paczkach". Znaleziony adres zapisuje do bazy.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress' },
+      },
+      required: ['contractorId'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -165,6 +177,7 @@ const ENDPOINT_MAP = {
   search_shipments: ['POST', '/api/glob/orders'],
   send_label: ['POST', '/api/glob/send-label'],
   find_delivery_address_in_emails: ['POST', '/api/contractors/:contractorId/find-address-in-emails'],
+  find_delivery_address_in_gk_orders: ['POST', '/api/contractors/:contractorId/find-address-in-gk-orders'],
 };
 
 function selfCall(method, path, body) {

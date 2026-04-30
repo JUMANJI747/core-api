@@ -4,6 +4,7 @@ const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
+const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { scoreContractor } = require('../services/contractor-match');
 
 // ============ ROUTES ============
@@ -345,6 +346,28 @@ router.post('/:id/find-address-in-emails', async (req, res) => {
     res.json({ ok: true, found: true, address: result.address, savedToLocations: saved, contractor: { id: c.id, name: c.name } });
   } catch (e) {
     console.error('[find-address-in-emails] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Search recent GK shipments for a delivery address matching this
+// contractor (token match + LLM fuzzy fallback). Opt-in because the
+// LLM call costs ~$0.02 per miss; the agent invokes only when the
+// user explicitly asks for "szukaj w starych wysyłkach".
+router.post('/:id/find-address-in-gk-orders', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    const limit = (req.body && Number(req.body.limit)) || 200;
+    const result = await findAddressInGkOrders(prisma, c, { limit });
+    if (!result.found) {
+      return res.json({ ok: false, found: false, reason: result.reason, scanned: result.scanned || 0 });
+    }
+    res.json({ ok: true, found: true, ...result, contractor: { id: c.id, name: c.name } });
+  } catch (e) {
+    console.error('[find-address-in-gk-orders] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

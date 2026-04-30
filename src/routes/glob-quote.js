@@ -491,105 +491,11 @@ router.post('/glob/quote', async (req, res) => {
         }
       }
 
-      // GK ORDERS HISTORY fallback — deeper scan when receivers book misses.
-      // The receivers book holds curated entries the user explicitly added;
-      // orders covers everything ever shipped (incl. one-offs the user never
-      // saved as a contact). Same token + LLM matching pattern.
-      if (contractor && !receiver.street) {
-        try {
-          // Pull 200 — cache (extras.locations) handles recent shipments,
-          // so the orders fallback typically resolves OLD clients we
-          // haven't shipped to in a while. Need depth, not breadth.
-          const ordersData = await getOrders({ limit: 200 });
-          const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
-            || (Array.isArray(ordersData) ? ordersData : []);
-          const norm = (s) => (s || '').toString().toLowerCase().trim();
-          const searchSource = contractor.name || receiverSearch;
-          const q = norm(searchSource);
-          const tokens = q.split(/\s+/).filter(t => t.length >= 4);
-          const matchOrders = orders.filter(o => {
-            const r = o.receiverAddress || o.receiver || {};
-            const name = norm(r.name || '') + ' ' + norm(r.contactPerson || '');
-            if (q && name.includes(q)) return true;
-            if (!tokens.length) return false;
-            // Count how many tokens (or their first-5-char prefix) appear
-            // in the candidate name. Require at least 2 hits so different
-            // wordings of the same client match (e.g. "Ocean Republik
-            // Society S.L" in DB vs "Ocean Republik School" in GK panel —
-            // shared "ocean" + "republik" is enough).
-            const hits = tokens.filter(t => {
-              if (name.includes(t)) return true;
-              const prefix = t.slice(0, Math.min(5, t.length));
-              return prefix.length >= 4 && name.includes(prefix);
-            }).length;
-            // 1-token names need an exact include; 2+ token names need ≥2 hits.
-            const minHits = tokens.length === 1 ? 1 : 2;
-            return hits >= minHits;
-          });
-          matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
-          console.log(`[glob/quote] GK orders history fallback: searched="${searchSource}", scanned=${orders.length}, matched=${matchOrders.length}`);
-
-          // LLM fallback: token-based matching catches typos and prefix
-          // variants but fails when the GK shipping name is semantically
-          // different from the billing name ("Society S.L" vs "School").
-          // If we have a contractor and zero token hits, ask Haiku to pick
-          // by combining all signals (name + nip + email + phone + city +
-          // country). One call (~$0.01), result cached to extras.locations.
-          if (matchOrders.length === 0 && contractor && orders.length > 0) {
-            try {
-              const { matchGkOrderToContractor } = require('../services/match-gk-order-to-contractor');
-              const llmMatch = await matchGkOrderToContractor(contractor, orders);
-              console.log(`[glob/quote] LLM GK matcher: ${llmMatch.matched ? 'matched idx=' + llmMatch.index : 'no_match'} — ${llmMatch.reason || ''}`);
-              if (llmMatch.matched) {
-                matchOrders.push(orders[llmMatch.index]);
-              }
-            } catch (e) {
-              console.log('[glob/quote] LLM GK matcher failed:', e.message);
-            }
-          }
-
-          if (matchOrders.length) {
-            const r = matchOrders[0].receiverAddress || matchOrders[0].receiver || {};
-            receiver.street = receiver.street || r.street || '';
-            receiver.houseNumber = receiver.houseNumber || r.houseNumber || '';
-            receiver.city = receiver.city || r.city || '';
-            receiver.postCode = receiver.postCode || r.postCode || r.zipCode || '';
-            receiver.country = receiver.country || r.countryCode || r.country || receiver.country;
-            receiver.phone = receiver.phone || r.phone || receiver.phone;
-            receiver.email = receiver.email || r.email || receiver.email;
-            receiver.contactPerson = receiver.contactPerson || r.contactPerson || null;
-            receiverSource = (receiverSource || 'contractor') + ' + gk_orders_history';
-            console.log(`[glob/quote] adres z historii GK: ${receiver.street}, ${receiver.city}, ${receiver.country}`);
-
-            if (receiver.street) {
-              try {
-                const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
-                const locs = Array.isArray(cExtras.locations) ? [...cExtras.locations] : [];
-                const normL = (s) => (s || '').toString().toLowerCase().trim();
-                const dup = locs.find(l =>
-                  normL(l.street) === normL(receiver.street) &&
-                  normL(l.city) === normL(receiver.city) &&
-                  normL(l.postCode) === normL(receiver.postCode)
-                );
-                if (!dup) {
-                  locs.push({
-                    street: receiver.street, houseNumber: receiver.houseNumber, city: receiver.city,
-                    postCode: receiver.postCode, country: receiver.country, contactPerson: receiver.contactPerson,
-                    phone: receiver.phone, email: receiver.email,
-                    source: 'gk_orders_history', addedAt: new Date().toISOString(),
-                  });
-                  await prisma.contractor.update({ where: { id: contractor.id }, data: { extras: { ...cExtras, locations: locs } } });
-                  console.log(`[glob/quote] saved address from GK history to contractor.extras.locations`);
-                }
-              } catch (e) {
-                console.log('[glob/quote] failed to persist address:', e.message);
-              }
-            }
-          }
-        } catch (err) {
-          console.log('[glob/quote] GK orders history lookup failed:', err.message);
-        }
-      }
+      // Note: GK orders history scan was previously here as auto-cascade
+      // but moved to opt-in endpoint /api/contractors/:id/find-address-in-gk-orders
+      // because the LLM matcher costs ~$0.02 per miss and the user
+      // prefers to control when it runs. Receivers book stays auto
+      // because GK API itself is free and clean (curated entries).
 
       // Couriers (DPD, FedEx, DHL) require street for international shipments.
       // Treat the address as usable only when we have at least a street; city
@@ -614,11 +520,11 @@ router.post('/glob/quote', async (req, res) => {
             contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country || null },
             knownLocations: locations,
             partialAddress: { city: receiver.city || null, postCode: receiver.postCode || null, country: receiver.country || null },
-            options: ['manual', 'vies', 'emails'],
+            options: ['orders_history', 'emails', 'vies', 'manual'],
             message: `Znaleziono kontrahenta ${contractor.name}` + (contractor.country ? ` (${contractor.country})` : '') +
               `, ale brak ulicy w adresie dostawy. ` +
               (receiver.city ? `Mamy: ${[receiver.city, receiver.postCode, receiver.country].filter(Boolean).join(', ')}. ` : '') +
-              `Brakuje ulicy + numeru. Sprawdziłem już: cache lokalny, książka adresowa GlobKurier, historia wysyłek (200 ostatnich, z fuzzy LLM matchingiem) — bez trafienia. Skąd wziąć: podaj ręcznie, VIES (adres rejestrowy), albo szukać w mailach.`,
+              `Brakuje ulicy + numeru. Sprawdziłem już: cache lokalny + książka adresowa GlobKurier — bez trafienia. Skąd szukać dalej: 1) z poprzednich wysyłek (200 ostatnich, fuzzy LLM ~$0.02), 2) z maili od kontrahenta, 3) VIES (adres rejestrowy), 4) podaj ręcznie.`,
           });
         }
       }
