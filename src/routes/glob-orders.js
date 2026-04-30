@@ -7,12 +7,25 @@ const { normalizeText } = require('./glob-helpers');
 
 // ============ ORDERS ============
 
+// GK /v1/orders sometimes wraps the page in `[{offset, total, limit, results}]`
+// (one-element array containing a paging object) and sometimes returns the
+// flat object. Accept both observed shapes — earlier we treated the wrapper
+// as a 1-element list and silently dropped 100 records.
+function extractOrdersResults(data) {
+  if (!data) return [];
+  if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+    return data[0].results;
+  }
+  if (Array.isArray(data)) return data;
+  return data.results || data.items || data.data || [];
+}
+
 async function handleSearchOrders(req, res) {
   try {
     const params = { ...req.query, ...(req.body || {}) };
     const { search, status, limit = 50, offset = 0 } = params;
     const data = await getOrders({ limit: Math.min(parseInt(limit) || 50, 100), offset: parseInt(offset) || 0, status });
-    let orders = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+    let orders = extractOrdersResults(data);
 
     if (!Array.isArray(orders)) {
       return res.json({ ok: true, orders: [], total: 0, note: 'Unexpected response from GlobKurier' });
@@ -125,7 +138,7 @@ router.post('/glob/send-label', async (req, res) => {
     if (looksLikeNumber) {
       console.log(`[glob/send-label] Looking up hash for number ${hashOrNumber}`);
       const ordersResp = await getOrders({ limit: 50 });
-      const list = ordersResp.results || ordersResp.items || ordersResp.data || (Array.isArray(ordersResp) ? ordersResp : []);
+      const list = extractOrdersResults(ordersResp);
       const match = list.find(o => String(o.number || '').toLowerCase() === hashOrNumber.toLowerCase());
       if (match && (match.hash || match.orderHash)) {
         hash = match.hash || match.orderHash;
@@ -202,7 +215,7 @@ router.post('/glob/send-label', async (req, res) => {
 router.get('/glob/debug/raw-receiver', async (req, res) => {
   try {
     const data = await getReceivers(0, 3);
-    const items = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+    const items = extractOrdersResults(data);
     res.json({ ok: true, firstItemKeys: items[0] ? Object.keys(items[0]) : [], sample: items[0] || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -212,7 +225,7 @@ router.get('/glob/debug/raw-receiver', async (req, res) => {
 router.get('/glob/debug/raw-order', async (req, res) => {
   try {
     const data = await getOrders({ limit: 1 });
-    const items = data.results || data.items || data.data || (Array.isArray(data) ? data : []);
+    const items = extractOrdersResults(data);
     res.json({ ok: true, firstItemKeys: items[0] ? Object.keys(items[0]) : [], sample: items[0] || null });
   } catch (err) {
     res.status(500).json({ error: err.message });

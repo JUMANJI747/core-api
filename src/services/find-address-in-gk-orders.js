@@ -14,9 +14,19 @@ const { matchGkOrderToContractor } = require('./match-gk-order-to-contractor');
 async function findAddressInGkOrders(prisma, contractor, opts = {}) {
   if (!contractor) return { found: false, reason: 'no_contractor' };
 
-  // GK /orders has a per-page cap (~100 in practice — limit=200 returns
-  // empty in production logs while limit=50 works elsewhere). Paginate
-  // in batches up to opts.limit total.
+  // GK /orders has a per-page cap (~100). The response is also wrapped:
+  //   [{ offset, total, limit, results: [...] }]
+  // i.e. a one-element array containing a paging wrapper. Earlier we
+  // assumed a flat shape and dropped 100 records as "1 wrapper item".
+  function extractOrders(data) {
+    if (!data) return [];
+    if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+      return data[0].results;
+    }
+    if (Array.isArray(data)) return data;
+    return data.results || data.items || data.data || [];
+  }
+
   const targetTotal = opts.limit || 200;
   const pageSize = 100;
   const orders = [];
@@ -29,14 +39,16 @@ async function findAddressInGkOrders(prisma, contractor, opts = {}) {
       console.log(`[find-address-in-gk-orders] page offset=${offset} error: ${e.message}`);
       break;
     }
-    const batch = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
-      || (Array.isArray(ordersData) ? ordersData : []);
+    const batch = extractOrders(ordersData);
     if (offset === 0) {
-      console.log(`[find-address-in-gk-orders] first page raw keys: ${ordersData ? Object.keys(ordersData).join(',') : 'null'}, batch=${batch.length}`);
+      const sampleShape = ordersData ? (Array.isArray(ordersData)
+        ? `array(len=${ordersData.length}, [0]keys=${ordersData[0] ? Object.keys(ordersData[0]).join(',') : 'null'})`
+        : `object(keys=${Object.keys(ordersData).join(',')})`) : 'null';
+      console.log(`[find-address-in-gk-orders] first page raw shape: ${sampleShape}, batch=${batch.length}`);
     }
     if (batch.length === 0) break;
     orders.push(...batch);
-    if (batch.length < batchSize) break; // no more pages
+    if (batch.length < batchSize) break;
   }
 
   console.log(`[find-address-in-gk-orders] contractor="${contractor.name}" id=${contractor.id}, scanned=${orders.length}`);
