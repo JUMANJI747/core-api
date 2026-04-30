@@ -155,4 +155,102 @@ router.post('/transactions/manual', async (req, res) => {
   }
 });
 
+// POST /api/transactions/merge — manual merge two transactions into one.
+// Body accepts EITHER UUIDs (primaryId/secondaryId) OR Sheet row numbers
+// (primaryRow/secondaryRow). The "primary" survives and adopts every
+// non-empty field from the secondary that it didn't already have.
+// Stage flags are OR-ed together. Items summary/details from secondary
+// merge in only if primary had none. Notes are concatenated. Secondary
+// is deleted. Returns the merged transaction + a list of fields actually
+// copied so the user can sanity-check.
+router.post('/transactions/merge', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    let { primaryId, secondaryId, primaryRow, secondaryRow } = req.body || {};
+
+    async function resolve(id, row) {
+      if (id) return prisma.transaction.findUnique({ where: { id } });
+      if (row != null) return prisma.transaction.findFirst({ where: { sheetRowId: parseInt(row) } });
+      return null;
+    }
+    const primary = await resolve(primaryId, primaryRow);
+    const secondary = await resolve(secondaryId, secondaryRow);
+    if (!primary) return res.status(404).json({ ok: false, error: 'primary transaction not found (provide primaryId or primaryRow)' });
+    if (!secondary) return res.status(404).json({ ok: false, error: 'secondary transaction not found' });
+    if (primary.id === secondary.id) return res.status(400).json({ ok: false, error: 'primary and secondary are the same transaction' });
+
+    // Adopt fields the primary doesn't have
+    const copied = [];
+    const update = {};
+    const adoptIfEmpty = (key) => {
+      if (primary[key] == null && secondary[key] != null) { update[key] = secondary[key]; copied.push(key); }
+    };
+    [
+      'contractorId', 'contractorName', 'emailId',
+      'invoiceId', 'invoiceNumber',
+      'shipmentHash', 'shipmentNumber', 'trackingNumber',
+      'paymentRef', 'amount', 'currency',
+      'itemsSummary', 'itemsDetails', 'deliveredAt', 'paidAt',
+    ].forEach(adoptIfEmpty);
+
+    // Earliest occurredAt wins (deal "happened" at first event)
+    if (secondary.occurredAt && (!primary.occurredAt || new Date(secondary.occurredAt) < new Date(primary.occurredAt))) {
+      update.occurredAt = secondary.occurredAt;
+      copied.push('occurredAt');
+    }
+
+    // Stage flags: OR-merge
+    ['hasOrder', 'hasInvoice', 'hasShipped', 'hasDelivered', 'hasPayment'].forEach((k) => {
+      if (!primary[k] && secondary[k]) { update[k] = true; copied.push(k); }
+    });
+
+    // Notes concatenation (preserve user-edited text from both)
+    if (secondary.notes) {
+      const combined = [primary.notes, secondary.notes].filter(Boolean).join(' | ');
+      if (combined !== primary.notes) { update.notes = combined; copied.push('notes'); }
+    }
+
+    update.matchReason = `manual merge: adopted [${copied.join(',') || 'none'}] from ${secondaryId ? 'tx ' + secondary.id.slice(0, 8) : 'row ' + secondary.sheetRowId}`;
+
+    const merged = await prisma.transaction.update({ where: { id: primary.id }, data: update });
+    await prisma.transaction.delete({ where: { id: secondary.id } });
+
+    res.json({
+      ok: true,
+      merged,
+      copied,
+      removedSecondary: { id: secondary.id, sheetRowId: secondary.sheetRowId, contractorName: secondary.contractorName },
+    });
+  } catch (e) {
+    console.error('[transactions/merge]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/transactions/:id/split — undo a wrong merge by detaching one
+// of the linked records (e.g. unlink invoice that shouldn't have been
+// matched). Doesn't delete data — just clears the linkage so a new
+// auto-match can happen.
+router.post('/transactions/:id/split', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { detach } = req.body || {};   // 'invoice' | 'shipment' | 'order' | 'payment'
+    const tx = await prisma.transaction.findUnique({ where: { id: req.params.id } });
+    if (!tx) return res.status(404).json({ ok: false, error: 'transaction not found' });
+
+    const data = {};
+    if (detach === 'invoice') { data.invoiceId = null; data.invoiceNumber = null; data.hasInvoice = false; }
+    if (detach === 'shipment') { data.shipmentHash = null; data.shipmentNumber = null; data.trackingNumber = null; data.hasShipped = false; data.hasDelivered = false; data.deliveredAt = null; }
+    if (detach === 'order') { data.emailId = null; data.hasOrder = false; }
+    if (detach === 'payment') { data.paymentRef = null; data.hasPayment = false; data.paidAt = null; }
+    if (Object.keys(data).length === 0) return res.status(400).json({ ok: false, error: 'detach must be one of: invoice, shipment, order, payment' });
+
+    const updated = await prisma.transaction.update({ where: { id: tx.id }, data });
+    res.json({ ok: true, detached: detach, transaction: updated });
+  } catch (e) {
+    console.error('[transactions/split]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
