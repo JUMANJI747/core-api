@@ -107,6 +107,7 @@ const tools = [
         },
         collectionType: { type: 'string', enum: ['PICKUP', 'POINT'], description: 'PICKUP (drzwi) / POINT (paczkomat/punkt)' },
         deliveryType: { type: 'string', enum: ['PICKUP', 'POINT'] },
+        declaredValue: { type: 'number', description: 'Wartość paczki w PLN — opcjonalne; backend automatycznie weźmie z faktury (grossAmount). Podaj TYLKO gdy user wprost mówi "wartość X zł".' },
         paczkomat: { type: 'boolean' },
         pickupDate: { type: 'string', description: '"jutro" / "pojutrze" / YYYY-MM-DD' },
       },

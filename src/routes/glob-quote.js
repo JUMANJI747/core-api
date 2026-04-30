@@ -36,7 +36,7 @@ router.post('/glob/quote', async (req, res) => {
     let { preset, packageType, quantity, weightPerPackage, invoiceNumber,
           receiverSearch, senderSearch, senderId,
           weight, length, width, height, items, paczkomat, deliveryType, pickupDate,
-          deliveryAddress } = req.body;
+          deliveryAddress, declaredValue } = req.body;
 
     // Accept deliveryAddress as object OR JSON string (n8n LLM tools sometimes
     // serialize objects). Silently ignore unparseable input.
@@ -752,9 +752,26 @@ router.post('/glob/quote', async (req, res) => {
       });
     }
 
+    // declaredValue — required by some carriers (esp. cross-border FedEx)
+    // for customs/insurance. Priority: explicit user input → sum(items)
+    // → matched invoice.grossAmount → fallback 100.
+    let resolvedDeclaredValue = Number(declaredValue) || 0;
+    if (!resolvedDeclaredValue && items && Array.isArray(items)) {
+      resolvedDeclaredValue = items.reduce((acc, it) => {
+        const qty = Number(it.qty || it.quantity || 0);
+        const price = Number(it.priceNetto || it.price || 0);
+        return acc + qty * price;
+      }, 0);
+    }
+    if (!resolvedDeclaredValue && foundInvoice && foundInvoice.grossAmount) {
+      resolvedDeclaredValue = Number(foundInvoice.grossAmount);
+    }
+    if (!resolvedDeclaredValue) resolvedDeclaredValue = 100;
+    resolvedDeclaredValue = Math.round(resolvedDeclaredValue * 100) / 100;
+
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();
-    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, createdAt: new Date() };
+    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, declaredValue: resolvedDeclaredValue, createdAt: new Date() };
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
     }
@@ -977,6 +994,7 @@ router.post('/glob/order', async (req, res) => {
         width: quote.quoteParams.width || 20,
         height: quote.quoteParams.height || 10,
         quantity: 1,
+        declaredValue: quote.declaredValue || 100,
       },
       senderAddress: {
         name: senderName,
