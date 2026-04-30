@@ -738,8 +738,29 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
 
     if (!to) return res.status(400).json({ error: 'toEmail required (or provide emailId to reply)' });
 
-    const defaultBody = 'Dzień dobry,\n\nFaktura w załączniku.\n\nPozdrawiam,\nMichał Pałyska\nSurf Stick Bell';
-    const defaultHtml = 'Dzień dobry,<br><br>Faktura w załączniku.<br><br>Pozdrawiam,<br>Michał Pałyska<br>Surf Stick Bell';
+    // Localize default body by recipient country. Hiszpan dostaje
+    // hiszpańską wiadomość; polski klient polską itd. Falls back to EN
+    // when we don't have a translation. Subject też lokalizujemy.
+    const contractor = invoice.contractorId
+      ? await prisma.contractor.findUnique({ where: { id: invoice.contractorId } })
+      : null;
+    const country = (contractor && contractor.country || '').toUpperCase();
+    const TEMPLATES = {
+      PL: { subject: 'Faktura {n} - Surf Stick Bell', body: 'Dzień dobry,\n\nFaktura w załączniku.\n\nPozdrawiam,\nMichał Pałyska\nSurf Stick Bell', html: 'Dzień dobry,<br><br>Faktura w załączniku.<br><br>Pozdrawiam,<br>Michał Pałyska<br>Surf Stick Bell' },
+      ES: { subject: 'Factura {n} - Surf Stick Bell', body: 'Hola,\n\nAdjunto la factura.\n\nUn saludo,\nMichał Pałyska\nSurf Stick Bell', html: 'Hola,<br><br>Adjunto la factura.<br><br>Un saludo,<br>Michał Pałyska<br>Surf Stick Bell' },
+      PT: { subject: 'Fatura {n} - Surf Stick Bell', body: 'Olá,\n\nSegue a fatura em anexo.\n\nCumprimentos,\nMichał Pałyska\nSurf Stick Bell', html: 'Olá,<br><br>Segue a fatura em anexo.<br><br>Cumprimentos,<br>Michał Pałyska<br>Surf Stick Bell' },
+      IT: { subject: 'Fattura {n} - Surf Stick Bell', body: 'Buongiorno,\n\nIn allegato la fattura.\n\nCordiali saluti,\nMichał Pałyska\nSurf Stick Bell', html: 'Buongiorno,<br><br>In allegato la fattura.<br><br>Cordiali saluti,<br>Michał Pałyska<br>Surf Stick Bell' },
+      DE: { subject: 'Rechnung {n} - Surf Stick Bell', body: 'Guten Tag,\n\nDie Rechnung im Anhang.\n\nMit freundlichen Grüßen,\nMichał Pałyska\nSurf Stick Bell', html: 'Guten Tag,<br><br>Die Rechnung im Anhang.<br><br>Mit freundlichen Grüßen,<br>Michał Pałyska<br>Surf Stick Bell' },
+      FR: { subject: 'Facture {n} - Surf Stick Bell', body: 'Bonjour,\n\nVeuillez trouver la facture en pièce jointe.\n\nCordialement,\nMichał Pałyska\nSurf Stick Bell', html: 'Bonjour,<br><br>Veuillez trouver la facture en pièce jointe.<br><br>Cordialement,<br>Michał Pałyska<br>Surf Stick Bell' },
+      EN: { subject: 'Invoice {n} - Surf Stick Bell', body: 'Hello,\n\nPlease find the invoice attached.\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell', html: 'Hello,<br><br>Please find the invoice attached.<br><br>Best regards,<br>Michał Pałyska<br>Surf Stick Bell' },
+    };
+    const ENGLISH_FALLBACK_COUNTRIES = new Set(['GB', 'IE', 'US', 'CA', 'AU', 'NZ', 'NL', 'DK', 'SE', 'NO', 'FI']);
+    const lang = TEMPLATES[country] ? country
+      : (ENGLISH_FALLBACK_COUNTRIES.has(country) ? 'EN' : 'EN');
+    const tpl = TEMPLATES[lang];
+    const defaultBody = tpl.body;
+    const defaultHtml = tpl.html;
+    if (!customSubject) subject = tpl.subject.replace('{n}', invoice.number);
 
     const sentBody = customBody || defaultBody;
     const savedEmail = await sendMail({
@@ -761,6 +782,8 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       sent: true,
       confirmation: {
         invoiceNumber: invoice.number,
+        language: lang,
+        contractorCountry: country || null,
         from,
         to,
         subject,
