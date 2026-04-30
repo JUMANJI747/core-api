@@ -737,6 +737,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     // Threading: if emailId provided, reply in same thread
     let to = toEmail;
     let from = 'info@surfstickbell.com';
+    let fromSource = 'default';
     let subject = customSubject || `Faktura ${invoice.number} - Surf Stick Bell`;
     let inReplyTo = null;
     let references = null;
@@ -750,7 +751,10 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         if (originalEmail.inbox) {
           const accounts = getAccounts();
           const matchedAccount = accounts.find(a => (a.inbox || '').toLowerCase() === originalEmail.inbox.toLowerCase());
-          from = matchedAccount ? matchedAccount.user : from;
+          if (matchedAccount) {
+            from = matchedAccount.user;
+            fromSource = `reply_inbox:${originalEmail.inbox}`;
+          }
         }
         // Threading headers
         if (originalEmail.messageId) {
@@ -762,7 +766,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
           const origSubject = originalEmail.subject || '';
           subject = origSubject.startsWith('Re:') ? origSubject : `Re: ${origSubject}`;
         }
-        console.log(`[send-invoice-email] Replying in thread: inReplyTo=${inReplyTo}, from=${from}, to=${to}`);
+        console.log(`[send-invoice-email] Replying in thread: inReplyTo=${inReplyTo}, from=${from} (${fromSource}), to=${to}`);
       }
     }
 
@@ -859,6 +863,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         languageSource: langSource,
         contractorCountry: country || null,
         from,
+        fromSource,
         to,
         subject,
         bodyPreview: (sentBody || '').slice(0, 200),
