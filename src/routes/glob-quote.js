@@ -404,6 +404,77 @@ router.post('/glob/quote', async (req, res) => {
         }
       }
 
+      // GK ORDERS HISTORY fallback — last automatic step before bothering
+      // the user. If we have a contractor but no street yet, scan the last
+      // 100 GK shipments for a match by canonical contractor.name (handles
+      // user typos like "Republic" vs "Republik" through prefix tokens),
+      // grab the most recent receiver address, and persist to
+      // extras.locations[] so future quotes hit the cached path.
+      if (contractor && !receiver.street) {
+        try {
+          const ordersData = await getOrders({ limit: 100 });
+          const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
+            || (Array.isArray(ordersData) ? ordersData : []);
+          const norm = (s) => (s || '').toString().toLowerCase().trim();
+          const searchSource = contractor.name || receiverSearch;
+          const q = norm(searchSource);
+          const tokens = q.split(/\s+/).filter(t => t.length >= 4);
+          const matchOrders = orders.filter(o => {
+            const r = o.receiverAddress || o.receiver || {};
+            const name = norm(r.name || '') + ' ' + norm(r.contactPerson || '');
+            if (q && name.includes(q)) return true;
+            if (tokens.length && tokens.every(t => {
+              if (name.includes(t)) return true;
+              const prefix = t.slice(0, Math.min(5, t.length));
+              return prefix.length >= 4 && name.includes(prefix);
+            })) return true;
+            return false;
+          });
+          matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
+          console.log(`[glob/quote] GK orders history fallback: searched="${searchSource}", scanned=${orders.length}, matched=${matchOrders.length}`);
+          if (matchOrders.length) {
+            const r = matchOrders[0].receiverAddress || matchOrders[0].receiver || {};
+            receiver.street = receiver.street || r.street || '';
+            receiver.houseNumber = receiver.houseNumber || r.houseNumber || '';
+            receiver.city = receiver.city || r.city || '';
+            receiver.postCode = receiver.postCode || r.postCode || r.zipCode || '';
+            receiver.country = receiver.country || r.countryCode || r.country || receiver.country;
+            receiver.phone = receiver.phone || r.phone || receiver.phone;
+            receiver.email = receiver.email || r.email || receiver.email;
+            receiver.contactPerson = receiver.contactPerson || r.contactPerson || null;
+            receiverSource = (receiverSource || 'contractor') + ' + gk_orders_history';
+            console.log(`[glob/quote] adres z historii GK: ${receiver.street}, ${receiver.city}, ${receiver.country}`);
+
+            if (receiver.street) {
+              try {
+                const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
+                const locs = Array.isArray(cExtras.locations) ? [...cExtras.locations] : [];
+                const normL = (s) => (s || '').toString().toLowerCase().trim();
+                const dup = locs.find(l =>
+                  normL(l.street) === normL(receiver.street) &&
+                  normL(l.city) === normL(receiver.city) &&
+                  normL(l.postCode) === normL(receiver.postCode)
+                );
+                if (!dup) {
+                  locs.push({
+                    street: receiver.street, houseNumber: receiver.houseNumber, city: receiver.city,
+                    postCode: receiver.postCode, country: receiver.country, contactPerson: receiver.contactPerson,
+                    phone: receiver.phone, email: receiver.email,
+                    source: 'gk_orders_history', addedAt: new Date().toISOString(),
+                  });
+                  await prisma.contractor.update({ where: { id: contractor.id }, data: { extras: { ...cExtras, locations: locs } } });
+                  console.log(`[glob/quote] saved address from GK history to contractor.extras.locations`);
+                }
+              } catch (e) {
+                console.log('[glob/quote] failed to persist address:', e.message);
+              }
+            }
+          }
+        } catch (err) {
+          console.log('[glob/quote] GK orders history lookup failed:', err.message);
+        }
+      }
+
       // Couriers (DPD, FedEx, DHL) require street for international shipments.
       // Treat the address as usable only when we have at least a street; city
       // alone is not enough.
@@ -490,109 +561,10 @@ router.post('/glob/quote', async (req, res) => {
       }
     }
 
-    // 6. GK ORDERS HISTORY — szukamy w wysłanych paczkach po nazwie kontrahenta.
-    //    Jeśli klient był w przeszłości obsługiwany, mamy jego adres dostawy
-    //    z najświeższej wysyłki. Zwykle aktualne i kompletne (GK wymaga
-    //    pełnych danych do nadania).
-    //    Trigger gdy: brak receivera w ogóle LUB receiver jest, ale brakuje
-    //    ulicy (typowy przypadek — kontrahent zaimportowany z iFirma ma
-    //    tylko miasto/kraj, a adres dostawy lata w panelu GK z poprzednich
-    //    wysyłek).
-    if (receiverSearch && (!receiver || !receiver.street)) {
-      try {
-        const ordersData = await getOrders({ limit: 100 });
-        const orders = (ordersData && (ordersData.results || ordersData.items || ordersData.data))
-          || (Array.isArray(ordersData) ? ordersData : []);
-        const norm = s => (s || '').toString().toLowerCase().trim();
-        // Search by contractor.name when we have one — it's the canonical
-        // form (e.g. "OCEAN REPUBLIK SOCIETY S.L"), while user input may
-        // have typos or anglicizations ("Ocean Republic" with C). Falling
-        // back to receiverSearch keeps cases where the contractor isn't in
-        // our DB yet (we still want to scan GK history).
-        const searchSource = (contractor && contractor.name) || receiverSearch;
-        const q = norm(searchSource);
-        // Tokens of length >= 4 to avoid noise; lower threshold matters here
-        // because Spanish/English variants ("Republik" / "Republic") share
-        // a 7-char prefix — token-level match catches them.
-        const tokens = q.split(/\s+/).filter(t => t.length >= 4);
-        const matchOrders = orders.filter(o => {
-          const r = o.receiverAddress || o.receiver || {};
-          const name = norm(r.name || '') + ' ' + norm(r.contactPerson || '');
-          if (q && name.includes(q)) return true;
-          // Prefix match per token — handles "republic" vs "republik" etc.
-          if (tokens.length && tokens.every(t => {
-            // exact, prefix-of-some-word, or first-5-chars match
-            if (name.includes(t)) return true;
-            const prefix = t.slice(0, Math.min(5, t.length));
-            return prefix.length >= 4 && name.includes(prefix);
-          })) return true;
-          return false;
-        });
-        matchOrders.sort((a, b) => new Date(b.creationDate || b.created_at || b.createdAt || 0) - new Date(a.creationDate || a.created_at || a.createdAt || 0));
-        console.log(`[glob/quote] GK orders history: searched="${searchSource}", scanned=${orders.length}, matched=${matchOrders.length}`);
-        if (matchOrders.length) {
-          const r = matchOrders[0].receiverAddress || matchOrders[0].receiver || {};
-          if (receiver) {
-            // Fill in only what's missing — keep existing values (e.g. contractorId)
-            receiver.street = receiver.street || r.street || '';
-            receiver.houseNumber = receiver.houseNumber || r.houseNumber || '';
-            receiver.city = receiver.city || r.city || '';
-            receiver.postCode = receiver.postCode || r.postCode || r.zipCode || '';
-            receiver.country = receiver.country || r.countryCode || r.country || 'PL';
-            receiver.phone = receiver.phone || r.phone || '';
-            receiver.email = receiver.email || r.email || '';
-            receiver.contactPerson = receiver.contactPerson || r.contactPerson || null;
-            receiverSource = (receiverSource || 'contractor') + ' + gk_orders_history';
-          } else {
-            receiver = {
-              name: r.name || receiverSearch,
-              contractorId: contractor ? contractor.id : null,
-              city: r.city || '',
-              postCode: r.postCode || r.zipCode || '',
-              country: r.countryCode || r.country || 'PL',
-              countryId: r.countryId || null,
-              phone: r.phone || '',
-              email: r.email || '',
-              street: r.street || '',
-              houseNumber: r.houseNumber || '',
-              apartmentNumber: r.apartmentNumber || '',
-              contactPerson: r.contactPerson || null,
-            };
-            receiverSource = 'gk_orders_history';
-          }
-          console.log(`[glob/quote] adres z historii GK orders: ${receiver.street || ''}, ${receiver.city || ''}, ${receiver.country || ''} (${matchOrders.length} matched)`);
-
-          // Persist newly-discovered address to contractor.extras.locations[]
-          // so subsequent quotes hit the cached path.
-          if (contractor && receiver.street) {
-            try {
-              const cExtras = (typeof contractor.extras === 'object' && contractor.extras) || {};
-              const locs = Array.isArray(cExtras.locations) ? [...cExtras.locations] : [];
-              const normL = (s) => (s || '').toString().toLowerCase().trim();
-              const dup = locs.find(l =>
-                normL(l.street) === normL(receiver.street) &&
-                normL(l.city) === normL(receiver.city) &&
-                normL(l.postCode) === normL(receiver.postCode)
-              );
-              if (!dup) {
-                locs.push({
-                  street: receiver.street, houseNumber: receiver.houseNumber, city: receiver.city,
-                  postCode: receiver.postCode, country: receiver.country, contactPerson: receiver.contactPerson,
-                  phone: receiver.phone, email: receiver.email,
-                  source: 'gk_orders_history', addedAt: new Date().toISOString(),
-                });
-                await prisma.contractor.update({ where: { id: contractor.id }, data: { extras: { ...cExtras, locations: locs } } });
-                console.log(`[glob/quote] saved address from GK history to contractor.extras.locations`);
-              }
-            } catch (e) {
-              console.log('[glob/quote] failed to persist address:', e.message);
-            }
-          }
-        }
-      } catch (err) {
-        console.log('[glob/quote] GK orders history lookup failed:', err.message);
-      }
-    }
+    // GK orders history fallback was moved to the contractor branch above
+    // (right before the hasUsableAddress check) — that's the only point
+    // where it can actually run; placing it after the contractor block
+    // returned needsAddress would have been dead code.
 
     if (!receiver) {
       return res.status(404).json({ ok: false, error: 'Nie znaleziono odbiorcy: ' + receiverSearch + '. Sprawdź kontrahentów, książkę adresową GlobKurier lub nadawców.' });
