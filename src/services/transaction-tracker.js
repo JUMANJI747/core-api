@@ -56,10 +56,19 @@ async function maybeSyncToSheet(prisma, tx, action) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Matching constants
-const HARD_AMOUNT_TOLERANCE = 0.01;   // ±1%
+const HARD_AMOUNT_TOLERANCE = 0.01;   // ±1% — used only when comparing
+                                      // amounts from the SAME domain
+                                      // (e.g. invoice gross to invoice gross
+                                      // on a manual merge). NOT used for
+                                      // invoice↔shipment matching because:
+                                      //   • invoice.grossAmount = goods value
+                                      //   • shipment.pricing.priceGross = freight cost
+                                      // These never align (270 EUR goods vs
+                                      // 56,88 PLN freight) so we'd reject
+                                      // every legitimate pair.
 const HARD_DATE_WINDOW_DAYS = 30;     // ±30 days (sanity)
 const DATE_DECAY_TAU = 5;             // exp(-days/5): 0d→1.0, 5d→0.37, 14d→0.06
-const SCORE_THRESHOLD = 0.30;         // below this we don't link, we open a new tx
+const SCORE_THRESHOLD = 0.05;         // ≈14 days; below this we open a new tx
 const SCORE_DATE_WEIGHT = 0.7;
 const SCORE_AMOUNT_WEIGHT = 0.3;
 
@@ -76,6 +85,17 @@ function amountScore(a, b) {
   const delta = Math.abs(av - bv) / Math.max(av, bv);
   if (delta > HARD_AMOUNT_TOLERANCE) return 0;
   return 1 - (delta / HARD_AMOUNT_TOLERANCE);
+}
+
+// Cross-domain score for invoice↔shipment matching: date only.
+// (See HARD_AMOUNT_TOLERANCE comment for why we don't include amount.)
+function shipmentInvoiceScore(dateA, dateB) {
+  return dateScore(dateA, dateB);
+}
+
+function describeShipmentInvoiceMatch(dateA, dateB) {
+  const days = Math.round(Math.abs(new Date(dateA) - new Date(dateB)) / 86400000);
+  return `${days}d apart (date-only match — different amount domains)`;
 }
 
 function combinedScore(dateA, dateB, amountA, amountB) {
@@ -156,11 +176,11 @@ async function findOpenTransactionForInvoice(prisma, invoice) {
 
   let best = null, bestScore = 0;
   for (const c of candidates) {
-    const s = combinedScore(invoice.issueDate, c.occurredAt, invoice.grossAmount, c.amount);
+    const s = shipmentInvoiceScore(invoice.issueDate, c.occurredAt);
     if (s > bestScore) { bestScore = s; best = c; }
   }
   if (bestScore < SCORE_THRESHOLD) return null;
-  return { transaction: best, score: bestScore, reason: describeMatch(invoice.issueDate, best.occurredAt, invoice.grossAmount, best.amount) };
+  return { transaction: best, score: bestScore, reason: describeShipmentInvoiceMatch(invoice.issueDate, best.occurredAt) };
 }
 
 async function findOpenTransactionForShipment(prisma, gkOrder, contractor) {
@@ -178,14 +198,13 @@ async function findOpenTransactionForShipment(prisma, gkOrder, contractor) {
   });
   if (candidates.length === 0) return null;
 
-  const amount = (gkOrder.pricing && gkOrder.pricing.priceGross) || gkOrder.priceGross || null;
   let best = null, bestScore = 0;
   for (const c of candidates) {
-    const s = combinedScore(occurredAt, c.occurredAt, amount, c.amount);
+    const s = shipmentInvoiceScore(occurredAt, c.occurredAt);
     if (s > bestScore) { bestScore = s; best = c; }
   }
   if (bestScore < SCORE_THRESHOLD) return null;
-  return { transaction: best, score: bestScore, reason: describeMatch(occurredAt, best.occurredAt, amount, best.amount) };
+  return { transaction: best, score: bestScore, reason: describeShipmentInvoiceMatch(occurredAt, best.occurredAt) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
