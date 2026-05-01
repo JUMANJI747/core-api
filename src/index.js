@@ -46,6 +46,7 @@ app.use('/api', require('./routes/analytics'));
 app.use('/api', require('./routes/glob'));
 app.use('/api', require('./routes/agent'));
 app.use('/api', require('./routes/transactions'));
+app.use('/api/contasimple', require('./routes/contasimple'));
 
 // ============ ERROR MIDDLEWARE ============
 // Catches errors thrown from any route handler wrapped in asyncHandler,

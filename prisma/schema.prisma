@@ -375,6 +375,73 @@ model AuditLog {
   @@index([createdAt])
 }
 
+// ============ CONTASIMPLE (ES Canarias — druga księgowość, IGIC) ============
+//
+// Druga firma na Wyspach Kanaryjskich obsługiwana przez Contasimple
+// zamiast iFirmy. Tabele całkowicie odrębne od PL Contractor/Invoice —
+// zero migracji istniejących danych, zero ryzyka regresji w iFirma flow.
+
+model EsContractor {
+  id              String  @id @default(uuid())
+  contasimpleId   Int?    @unique // ID kontrahenta po stronie Contasimple
+  type            String  @default("Issuer") // Contasimple entity type
+  organization    String? // nazwa firmy
+  firstname       String?
+  lastname        String?
+  name            String // denormalized: organization || firstname+lastname
+  nif             String? // CIF/NIF/NIE
+  email           String?
+  phone           String?
+  mobile          String?
+  address         String?
+  city            String?
+  province        String?
+  country         String?
+  countryId       Int?
+  postalCode      String?
+  documentCulture String? // es-ES | en-US | ca-ES — language for invoices to this customer
+  notes           String?
+  extras          Json    @default("{}") // customField1/2, latitude, longitude, discountPercentage, bankAccounts, ...
+
+  invoices EsInvoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([nif])
+  @@index([postalCode])
+}
+
+model EsInvoice {
+  id            String        @id @default(uuid())
+  contasimpleId Int?          @unique // ID FV po stronie Contasimple
+  contractorId  String?
+  contractor    EsContractor? @relation(fields: [contractorId], references: [id])
+
+  period             String // np. "2026-2T" (kwartał) — finalizujemy w PR #2 po smoke test
+  number             String?
+  status             String? // Pending | Incomplete | Payed
+  invoiceDate        DateTime
+  expirationDate     DateTime?
+  totalAmount        Decimal?  @db.Decimal(12, 2)
+  totalTaxableAmount Decimal?  @db.Decimal(12, 2)
+  totalVatAmount     Decimal?  @db.Decimal(12, 2)
+  totalPayedAmount   Decimal?  @default(0) @db.Decimal(12, 2)
+  currency           String    @default("EUR")
+  uiCulture          String? // es-ES | en-US | ca-ES per FV
+  numberingFormatId  Int?
+  operationType      String? // Nacional / Comunitaria / Exportacion / ...
+  extras             Json      @default("{}") // lines, payments, customer snapshot, raw response
+  source             String?   @default("contasimple")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contractorId])
+  @@index([number])
+  @@index([period])
+}
+
 // ============ TRANSACTIONS (Operations Tracker) ============
 //
 // Glues together a single business deal: order-mail → invoice → shipment →
