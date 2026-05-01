@@ -318,4 +318,27 @@ router.post('/transactions/sync-sheets/all', async (req, res) => {
   }
 });
 
+// Wipe everything — all DB transactions + sheet data rows. Headers and
+// reserved rows on the sheet are preserved. Requires {confirm: true} in
+// body to avoid accidental triggering. Use before re-running bootstrap
+// to test the matcher from a clean slate.
+router.post('/transactions/reset', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    if (!req.body || req.body.confirm !== true) {
+      return res.status(400).json({ ok: false, error: 'destructive — pass { "confirm": true } to proceed' });
+    }
+    const { count: deleted } = await prisma.transaction.deleteMany({});
+    let sheetCleared = false;
+    if (sheetsSync.isConfigured()) {
+      try { await sheetsSync.clearDataRows(); sheetCleared = true; }
+      catch (e) { console.error('[transactions/reset] sheets clear failed:', e.message); }
+    }
+    res.json({ ok: true, deletedFromDb: deleted, sheetCleared });
+  } catch (e) {
+    console.error('[transactions/reset]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

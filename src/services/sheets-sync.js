@@ -333,12 +333,38 @@ async function readAllDataRows() {
     .filter(r => r.id);
 }
 
+// Wipe every data row from the sheet (everything below row FIRST_DATA_ROW).
+// Headers + reserved rows preserved. Used by /reset and as part of
+// "clean rebuild from DB" flows. Removes both values and notes.
+async function clearDataRows(maxRows = 2000) {
+  const sheets = await getClient();
+  const gid = await getDefaultSheetGid();
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SHEET_ID,
+    range: `${COL_RANGE}${FIRST_DATA_ROW}:${FIRST_DATA_ROW + maxRows}`,
+  });
+  // Also strip cell notes from the items column
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [{
+        updateCells: {
+          range: { sheetId: gid, startRowIndex: FIRST_DATA_ROW - 1, endRowIndex: FIRST_DATA_ROW - 1 + maxRows, startColumnIndex: 4, endColumnIndex: 5 },
+          fields: 'note',
+        },
+      }],
+    },
+  });
+  return { ok: true };
+}
+
 module.exports = {
   isConfigured,
   initSheet,
   insertTopRow,
   updateRowById,
   deleteRowById,
+  clearDataRows,
   readAllDataRows,
   txToRow,
   HEADERS,
