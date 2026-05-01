@@ -18,6 +18,14 @@ const API_KEY = (process.env.CONTASIMPLE_API_KEY || '').trim();
 
 let tokenCache = { accessToken: null, expiresAt: 0 };
 
+// Default headers attached to every request. The User-Agent is required —
+// without it Contasimple's WAF returns 403 Forbidden (HTML page) before the
+// request ever reaches the OAuth endpoint. Accept ensures consistent JSON.
+const DEFAULT_HEADERS = {
+  'User-Agent': 'core-api/1.0 (contasimple-integration)',
+  Accept: 'application/json',
+};
+
 // ============ HTTP HELPERS ============
 
 function httpsRequest(method, urlStr, headers, body) {
@@ -28,7 +36,7 @@ function httpsRequest(method, urlStr, headers, body) {
       port: parsed.port || 443,
       path: parsed.pathname + parsed.search,
       method,
-      headers: { ...headers },
+      headers: { ...DEFAULT_HEADERS, ...headers },
     };
     if (body !== null && body !== undefined) {
       options.headers['Content-Length'] = Buffer.byteLength(body);
