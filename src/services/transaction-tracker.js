@@ -295,14 +295,18 @@ async function trackShipment(prisma, gkOrder, opts = {}) {
       shipmentHash: gkOrder.hash || gkOrder.orderHash,
       shipmentNumber: gkOrder.number || gkOrder.orderNumber,
       trackingNumber,
-      amount,
-      currency,
+      // Don't write freight cost into the goods-value column. amount is
+      // expected to mean "what the customer pays for the order" (which we
+      // only know once an invoice is matched). Freight goes into notes.
+      amount: null,
+      currency: null,
       occurredAt,
       hasShipped: true,
       hasDelivered: status === 'DELIVERED',
       deliveredAt: status === 'DELIVERED' && gkOrder.deliveryDate ? new Date(gkOrder.deliveryDate) : null,
-      itemsSummary: opts.itemsSummary || null,
+      itemsSummary: opts.itemsSummary || (gkOrder.productName ? `(paczka: ${gkOrder.productName})` : null),
       itemsDetails: opts.itemsDetails || null,
+      notes: amount ? `Koszt wysyłki: ${Number(amount).toFixed(2)} ${currency}` : null,
       source,
       matchScore: null,
       matchReason: contractor ? 'opened from shipment (no matching invoice yet)' : 'orphan: contractor not resolved from receiver',

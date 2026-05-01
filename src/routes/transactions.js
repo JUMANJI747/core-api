@@ -287,22 +287,26 @@ router.post('/transactions/sync-sheets/init', async (req, res) => {
 });
 
 // Bulk sync — push every transaction in DB to the spreadsheet, oldest at
-// the bottom. Use after bootstrap (or to recover from a wiped sheet).
-// Cleans the data area first (rows FIRST_DATA_ROW+) and reinserts from DB.
+// the bottom. CLEARS the data area first so duplicate rows from earlier
+// runs (or hooks that already inserted while bootstrapping) don't pile
+// up. Resets sheetRowId on every tx before inserting fresh.
 router.post('/transactions/sync-sheets/all', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     if (!sheetsSync.isConfigured()) return res.status(400).json({ ok: false, error: 'Google Sheets not configured' });
 
-    const transactions = await prisma.transaction.findMany({
-      orderBy: { occurredAt: 'asc' }, // insert oldest first → newest ends up on top
-    });
+    // 1. Wipe the data area + drop every sheetRowId in DB
+    await sheetsSync.clearDataRows();
+    await prisma.$executeRawUnsafe(`UPDATE "Transaction" SET "sheetRowId" = NULL, "sheetSyncedAt" = NULL`);
 
+    // 2. Insert oldest first → newest ends up on top
+    const transactions = await prisma.transaction.findMany({
+      orderBy: { occurredAt: 'asc' },
+    });
     let inserted = 0;
     for (const tx of transactions) {
       const rowId = await sheetsSync.insertTopRow(tx);
       if (rowId) {
-        // Bump every other tx's sheetRowId by 1 (rows shifted)
         await prisma.$executeRawUnsafe(
           `UPDATE "Transaction" SET "sheetRowId" = "sheetRowId" + 1 WHERE "sheetRowId" IS NOT NULL AND "sheetRowId" >= ${rowId} AND id != $1`,
           tx.id
