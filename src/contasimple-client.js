@@ -221,6 +221,207 @@ async function getCustomer(id) {
   );
 }
 
+async function createCustomer(data) {
+  // Required by Contasimple: type ('Issuer' for customers), organization or
+  // firstname+lastname, nif (we enforce CIF mandatory at route/agent level).
+  const body = {
+    type: 'Issuer',
+    organization: null,
+    name: null,
+    firstname: null,
+    lastname: null,
+    nif: null,
+    address: null,
+    province: null,
+    city: null,
+    country: null,
+    countryId: null,
+    postalCode: null,
+    phone: null,
+    mobile: null,
+    fax: null,
+    email: null,
+    notes: null,
+    url: null,
+    customField1: null,
+    customField2: null,
+    latitude: 0,
+    longitude: 0,
+    discountPercentage: 0,
+    documentCulture: null,
+    selectedTags: [],
+    ...data,
+  };
+  return await csJson('POST', '/entities/customers', null, body);
+}
+
+async function updateCustomer(id, data) {
+  return await csJson('PUT', `/entities/customers/${encodeURIComponent(id)}`, null, data);
+}
+
+// ============ INVOICES — ISSUED ============
+//
+// Every invoice path includes a {period} segment. Period is a quarter in the
+// form "YYYY-NT" (e.g. "2026-2T" for April-June 2026). Helper dateToPeriod()
+// derives it from the invoice issue date. If Contasimple turns out to also
+// accept "YYYY" or "YYYY-MM", we'll add fallbacks — for now we ship YYYY-NT
+// since that's what the dashboard surfaces.
+
+const DEFAULT_VAT_PERCENT = Number(process.env.CONTASIMPLE_DEFAULT_IGIC_PERCENT) || 7;
+const DEFAULT_UI_CULTURE = process.env.CONTASIMPLE_DEFAULT_CULTURE || 'es-ES';
+
+function dateToPeriod(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) throw new Error('dateToPeriod: invalid date: ' + date);
+  const year = d.getFullYear();
+  const quarter = Math.floor(d.getMonth() / 3) + 1; // months are 0-indexed
+  return `${year}-${quarter}T`;
+}
+
+async function listInvoices(period, filters = {}) {
+  const {
+    startIndex = 0,
+    numRows = 100,
+    number,
+    nif,
+    status,
+    fromDate,
+    toDate,
+    customerOrganizationName,
+    sort,
+  } = filters;
+  return await csJson(
+    'GET',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued`,
+    { startIndex, numRows, number, nif, status, fromDate, toDate, customerOrganizationName, sort }
+  );
+}
+
+async function getInvoice(period, id) {
+  return await csJson(
+    'GET',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/${encodeURIComponent(id)}`
+  );
+}
+
+async function searchInvoiceByNumber(period, query) {
+  // Contasimple-side fuzzy search on invoice number — analog of the
+  // "65" → "65/2026" trick we run in the iFirma agent.
+  return await csJson(
+    'GET',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/search/number`,
+    { query }
+  );
+}
+
+// Build a single line with sane defaults. Caller passes concept/quantity/
+// unitAmount; we fill in IGIC 7% unless overridden, and let Contasimple
+// compute totals server-side (we don't trust client-side rounding).
+function buildInvoiceLine(line) {
+  const vatPercentage =
+    line.vatPercentage !== undefined && line.vatPercentage !== null
+      ? Number(line.vatPercentage)
+      : DEFAULT_VAT_PERCENT;
+  return {
+    concept: line.concept || line.name || '',
+    unitAmount: Number(line.unitAmount),
+    quantity: Number(line.quantity),
+    vatPercentage,
+    rePercentage: line.rePercentage || 0,
+    discountPercentage: line.discountPercentage || 0,
+    detailedDescription: line.detailedDescription || '',
+    productId: line.productId || 0,
+    productName: line.productName || '',
+    productSku: line.productSku || '',
+  };
+}
+
+async function createInvoice(period, payload) {
+  // payload: { targetEntityId, lines: [{concept, quantity, unitAmount, vatPercentage?}],
+  //            date?, expirationDate?, numberingFormatId?, notes?, footer?, uiCulture? }
+  if (!payload.targetEntityId) {
+    throw new Error('createInvoice: targetEntityId required (customer must exist in Contasimple)');
+  }
+  if (!Array.isArray(payload.lines) || payload.lines.length === 0) {
+    throw new Error('createInvoice: lines[] required and non-empty');
+  }
+
+  const body = {
+    targetEntityId: Number(payload.targetEntityId),
+    relatedEstimatesId: payload.relatedEstimatesId || 0,
+    relatedDeliveryNotesId: payload.relatedDeliveryNotesId || [],
+    rectifiesInvoiceId: payload.rectifiesInvoiceId || 0,
+    numberingFormatId: payload.numberingFormatId || 0,
+    reimbursableExpenses: payload.reimbursableExpenses || 0,
+    number: payload.number || '',
+    date: payload.date || new Date().toISOString(),
+    expirationDate: payload.expirationDate || null,
+    operationDate: payload.operationDate || null,
+    invoiceClass: payload.invoiceClass || 0,
+    notes: payload.notes || '',
+    footer: payload.footer || '',
+    retentionPercentage: payload.retentionPercentage || 0,
+    operationType: payload.operationType || 'Nacional',
+    lines: payload.lines.map(buildInvoiceLine),
+    selectedTags: payload.selectedTags || [],
+    uiCulture: payload.uiCulture || DEFAULT_UI_CULTURE,
+  };
+
+  return await csJson(
+    'POST',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued`,
+    null,
+    body
+  );
+}
+
+async function deleteInvoice(period, id) {
+  return await csJson(
+    'DELETE',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/${encodeURIComponent(id)}`
+  );
+}
+
+// Returns raw Buffer (PDF binary). Swagger says response is application/json
+// with empty body — that's a docs artifact; the real response is application/pdf.
+async function fetchInvoicePdf(period, id) {
+  const { status, body, headers } = await csRequest(
+    'GET',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/${encodeURIComponent(id)}/pdf`
+  );
+  if (status >= 400) {
+    throw new Error(
+      `Contasimple PDF fetch failed (${status}): ${body.toString().slice(0, 300)}`
+    );
+  }
+  return { buffer: body, contentType: headers['content-type'] || 'application/pdf' };
+}
+
+async function sendInvoiceEmail(period, id, message) {
+  // message: { to, replyTo?, blindCopy?, subject, body }
+  if (!message || !message.to) throw new Error('sendInvoiceEmail: message.to required');
+  const body = {
+    to: message.to,
+    replyTo: message.replyTo || null,
+    blindCopy: Boolean(message.blindCopy),
+    subject: message.subject || '',
+    body: message.body || '',
+  };
+  return await csJson(
+    'POST',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/${encodeURIComponent(id)}/send`,
+    null,
+    body
+  );
+}
+
+async function getNextInvoiceNumber(period, numberingFormatId) {
+  return await csJson(
+    'GET',
+    `/accounting/${encodeURIComponent(period)}/invoices/issued/nextInvoiceNumber/${encodeURIComponent(numberingFormatId)}`
+  );
+}
+
 // ============ EXPORTS ============
 
 function isConfigured() {
@@ -230,10 +431,27 @@ function isConfigured() {
 module.exports = {
   isConfigured,
   getAccessToken,
+  // me
   getMyCompanies,
+  // customers
   listCustomers,
   listAllCustomers,
   searchCustomerByNif,
   searchCustomers,
   getCustomer,
+  createCustomer,
+  updateCustomer,
+  // invoices
+  listInvoices,
+  getInvoice,
+  searchInvoiceByNumber,
+  createInvoice,
+  deleteInvoice,
+  fetchInvoicePdf,
+  sendInvoiceEmail,
+  getNextInvoiceNumber,
+  // helpers
+  dateToPeriod,
+  DEFAULT_VAT_PERCENT,
+  DEFAULT_UI_CULTURE,
 };
