@@ -301,14 +301,15 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
     footer: overrides.footer || '', // empty → Contasimple uses company default
     uiCulture: overrides.uiCulture || 'es-ES',
     lines: lines.map(l => ({
+      // Contasimple computes totalTaxableAmount and vatAmount server-side
+      // from unitAmount × quantity and vatPercentage. Sending them in the
+      // request body is rejected with TaxableAmountDiscrepancy (the API
+      // ignores our values and compares against its own zero-default).
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
       unitAmount: l.unitNetto,
       quantity: l.qty,
       vatPercentage: l.vatPercentage,
-      vatAmount: l.lineIgic,
       rePercentage: 0,
-      reAmount: 0,
-      totalTaxableAmount: l.lineNetto, // required: unitAmount × quantity (Contasimple cross-checks)
       discountPercentage: 0,
       detailedDescription: '',
       productId: l.contasimpleProductId || 0,
