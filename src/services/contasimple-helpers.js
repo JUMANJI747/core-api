@@ -304,32 +304,62 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
       const concept = l.name + (l.variant ? ` ${l.variant}` : '');
       const lineNetto = l.lineNetto;
       const lineIgic = l.lineIgic;
-      // Contasimple's API binder is inconsistent: most fields accept camelCase
-      // (unitAmount, quantity, vatPercentage), but totalTaxableAmount,
-      // vatAmount and productName silently get dropped to zero/null when sent
-      // in camelCase — the server then validates the post-bind values against
-      // its computed totals and rejects with TaxableAmountDiscrepancy. Sending
-      // the same values under PascalCase keys (matching the underlying entity
-      // names) lets them through. We send both shapes; whichever the binder
-      // accepts wins.
+      // Shotgun: Contasimple's binder ignores some camelCase keys for unknown
+      // reasons (totalTaxableAmount, vatAmount, productName all bind to zero/
+      // null even though spec lists them). We send every plausible alias so
+      // whichever shape the DTO expects, one of them lands.
       return {
         concept,
+        description: concept,
+        Description: concept,
+
         unitAmount: l.unitNetto,
+        UnitAmount: l.unitNetto,
+        unitTaxableAmount: l.unitNetto,
+        UnitTaxableAmount: l.unitNetto,
+
         quantity: l.qty,
+        Quantity: l.qty,
+
         vatPercentage: l.vatPercentage,
+        VatPercentage: l.vatPercentage,
+        VATPercentage: l.vatPercentage,
+
         vatAmount: lineIgic,
         VatAmount: lineIgic,
         VATAmount: lineIgic,
-        rePercentage: 0,
-        reAmount: 0,
+        totalVatAmount: lineIgic,
+        TotalVatAmount: lineIgic,
+        TotalVATAmount: lineIgic,
+
         totalTaxableAmount: lineNetto,
         TotalTaxableAmount: lineNetto,
+        totalAmount: lineNetto,
+        TotalAmount: lineNetto,
+        lineTotal: lineNetto,
+        LineTotal: lineNetto,
+        subtotal: lineNetto,
+        Subtotal: lineNetto,
+        taxableAmount: lineNetto,
+        TaxableAmount: lineNetto,
+
+        rePercentage: 0,
+        reAmount: 0,
         discountPercentage: 0,
+        DiscountPercentage: 0,
         detailedDescription: '',
+        DetailedDescription: '',
+
         productId: l.contasimpleProductId || 0,
+        ProductId: l.contasimpleProductId || 0,
+
         productName: l.name,
         ProductName: l.name,
+        name: l.name,
+        Name: l.name,
+
         productSku: '',
+        ProductSku: '',
       };
     }),
   };
