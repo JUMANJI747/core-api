@@ -300,68 +300,25 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
     notes: overrides.notes || '',
     footer: overrides.footer || '', // empty → Contasimple uses company default
     uiCulture: overrides.uiCulture || 'es-ES',
-    lines: lines.map(l => {
-      const concept = l.name + (l.variant ? ` ${l.variant}` : '');
-      const lineNetto = l.lineNetto;
-      const lineIgic = l.lineIgic;
-      // Shotgun: Contasimple's binder ignores some camelCase keys for unknown
-      // reasons (totalTaxableAmount, vatAmount, productName all bind to zero/
-      // null even though spec lists them). We send every plausible alias so
-      // whichever shape the DTO expects, one of them lands.
-      return {
-        concept,
-        description: concept,
-        Description: concept,
-
-        unitAmount: l.unitNetto,
-        UnitAmount: l.unitNetto,
-        unitTaxableAmount: l.unitNetto,
-        UnitTaxableAmount: l.unitNetto,
-
-        quantity: l.qty,
-        Quantity: l.qty,
-
-        vatPercentage: l.vatPercentage,
-        VatPercentage: l.vatPercentage,
-        VATPercentage: l.vatPercentage,
-
-        vatAmount: lineIgic,
-        VatAmount: lineIgic,
-        VATAmount: lineIgic,
-        totalVatAmount: lineIgic,
-        TotalVatAmount: lineIgic,
-        TotalVATAmount: lineIgic,
-
-        totalTaxableAmount: lineNetto,
-        TotalTaxableAmount: lineNetto,
-        totalAmount: lineNetto,
-        TotalAmount: lineNetto,
-        lineTotal: lineNetto,
-        LineTotal: lineNetto,
-        subtotal: lineNetto,
-        Subtotal: lineNetto,
-        taxableAmount: lineNetto,
-        TaxableAmount: lineNetto,
-
-        rePercentage: 0,
-        reAmount: 0,
-        discountPercentage: 0,
-        DiscountPercentage: 0,
-        detailedDescription: '',
-        DetailedDescription: '',
-
-        productId: l.contasimpleProductId || 0,
-        ProductId: l.contasimpleProductId || 0,
-
-        productName: l.name,
-        ProductName: l.name,
-        name: l.name,
-        Name: l.name,
-
-        productSku: '',
-        ProductSku: '',
-      };
-    }),
+    lines: lines.map(l => ({
+      // Verified working shape (curl-tested directly against api.contasimple.com).
+      // Earlier shotgun-aliases approach (TotalTaxableAmount + Subtotal + ...)
+      // confused the .NET case-insensitive deserializer into dropping the
+      // values to zero. Plain camelCase per Swagger spec is what works.
+      concept: l.name + (l.variant ? ` ${l.variant}` : ''),
+      unitAmount: l.unitNetto,
+      quantity: l.qty,
+      vatPercentage: l.vatPercentage,
+      vatAmount: l.lineIgic,
+      rePercentage: 0,
+      reAmount: 0,
+      totalTaxableAmount: l.lineNetto,
+      discountPercentage: 0,
+      detailedDescription: '',
+      productId: l.contasimpleProductId || 0,
+      productName: l.name,
+      productSku: '',
+    })),
   };
 }
 
