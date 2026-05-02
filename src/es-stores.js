@@ -41,10 +41,57 @@ function getLatestEsPreview() {
   return { id: bestId, data: esInvoicePreviews.get(bestId).data };
 }
 
+// ============ DELETE PREVIEW STORE ============
+//
+// Same TTL/scan pattern as the invoice preview store, but for the
+// "delete-preview → delete-confirm-latest" flow: list invoices that match
+// the user's filter (contractor/number/dates), let them eyeball the list,
+// then confirm to actually fire DELETE per invoice. Returns raw Contasimple
+// responses so callers can verify nothing was hallucinated.
+
+const esDeletePreviews = new Map();
+
+function saveEsDeletePreview(id, data) {
+  esDeletePreviews.set(id, { data, expiresAt: Date.now() + PREVIEW_TTL_MS });
+}
+
+function getEsDeletePreview(id) {
+  const entry = esDeletePreviews.get(id);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    esDeletePreviews.delete(id);
+    return null;
+  }
+  return entry.data;
+}
+
+function deleteEsDeletePreview(id) {
+  esDeletePreviews.delete(id);
+}
+
+function getLatestEsDeletePreview() {
+  const now = Date.now();
+  let bestId = null;
+  let bestExpiry = 0;
+  for (const [id, entry] of esDeletePreviews.entries()) {
+    if (entry.expiresAt > now && entry.expiresAt > bestExpiry) {
+      bestExpiry = entry.expiresAt;
+      bestId = id;
+    }
+  }
+  if (!bestId) return null;
+  return { id: bestId, data: esDeletePreviews.get(bestId).data };
+}
+
 module.exports = {
   esInvoicePreviews,
   saveEsPreview,
   getEsPreview,
   deleteEsPreview,
   getLatestEsPreview,
+  esDeletePreviews,
+  saveEsDeletePreview,
+  getEsDeletePreview,
+  deleteEsDeletePreview,
+  getLatestEsDeletePreview,
 };

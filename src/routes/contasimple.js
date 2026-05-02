@@ -10,6 +10,10 @@ const {
   getEsPreview,
   deleteEsPreview,
   getLatestEsPreview,
+  saveEsDeletePreview,
+  getEsDeletePreview,
+  deleteEsDeletePreview,
+  getLatestEsDeletePreview,
 } = require('../es-stores');
 const {
   findEsContractor,
@@ -905,6 +909,217 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
   }
+}));
+
+// ============ DELETE PREVIEW / CONFIRM ============
+//
+// Two-step delete flow (mirrors invoice-preview/confirm):
+//   1. POST /delete-preview  — search invoices matching filter, return list,
+//                              cache it under previewId. Nothing deleted.
+//   2. POST /delete-confirm-latest  — actually fire DELETE per invoice from
+//                              the most-recent preview, return raw
+//                              Contasimple responses so the agent can quote
+//                              them verbatim instead of hallucinating.
+//
+// Body for delete-preview:
+//   { contractorSearch? | contractorCif? | contractorId?,
+//     number?, fromDate?, toDate?, period? }
+// Date format follows Contasimple convention: dd/MM/yyyy HH:mm:ss.
+
+router.post('/delete-preview', asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const period = body.period || cs.dateToPeriod(new Date());
+
+  let contractorInfo = null;
+  let nifFilter = null;
+  if (body.contractorCif) {
+    nifFilter = body.contractorCif;
+    contractorInfo = await prisma.esContractor.findFirst({ where: { nif: body.contractorCif } });
+  } else if (body.contractorId) {
+    contractorInfo = await prisma.esContractor.findUnique({ where: { id: body.contractorId } });
+    if (contractorInfo) nifFilter = contractorInfo.nif;
+  } else if (body.contractorSearch) {
+    const r = await findEsContractor(prisma, body.contractorSearch);
+    if (!r.contractor) {
+      return res.json({ ok: false, error: 'contractor not found', suggestions: r.suggestions });
+    }
+    contractorInfo = r.contractor;
+    nifFilter = r.contractor.nif;
+  }
+
+  const filters = {
+    numRows: 300,
+    number: body.number,
+    nif: nifFilter,
+    fromDate: body.fromDate,
+    toDate: body.toDate,
+  };
+  const remote = await cs.listInvoices(period, filters);
+  const found = (remote && remote.data) || [];
+
+  if (!found.length) {
+    return res.json({
+      ok: false,
+      period,
+      filters,
+      contractor: contractorInfo ? { name: contractorInfo.name, nif: contractorInfo.nif } : null,
+      error: 'no invoices match filter',
+    });
+  }
+
+  const summary = found.map(inv => ({
+    id: inv.id,
+    number: inv.number,
+    invoiceDate: inv.invoiceDate,
+    customerName: inv.target && inv.target.organization,
+    customerNif: inv.target && inv.target.nif,
+    totalAmount: inv.totalAmount,
+    status: inv.status,
+  }));
+
+  const previewId = crypto.randomUUID();
+  saveEsDeletePreview(previewId, { period, invoices: found, summary, contractor: contractorInfo });
+
+  prisma.agentContext
+    .upsert({
+      where: { id: 'ksiegowosc-es' },
+      update: {
+        data: {
+          lastAction: 'delete-preview',
+          deletePreviewId: previewId,
+          period,
+          count: found.length,
+          contractor: contractorInfo ? { name: contractorInfo.name, nif: contractorInfo.nif } : null,
+          timestamp: Date.now(),
+        },
+      },
+      create: {
+        id: 'ksiegowosc-es',
+        data: {
+          lastAction: 'delete-preview',
+          deletePreviewId: previewId,
+          period,
+          count: found.length,
+          contractor: contractorInfo ? { name: contractorInfo.name, nif: contractorInfo.nif } : null,
+          timestamp: Date.now(),
+        },
+      },
+    })
+    .catch(e => console.error('[cs delete-preview] AgentContext save error:', e.message));
+
+  res.json({
+    ok: true,
+    period,
+    count: found.length,
+    invoices: summary,
+    contractor: contractorInfo ? { id: contractorInfo.id, name: contractorInfo.name, nif: contractorInfo.nif } : null,
+    previewId,
+    hint: 'Wykonaj POST /api/contasimple/delete-confirm-latest aby usunąć wszystkie powyższe FV.',
+  });
+}));
+
+async function executeDeleteForPreview(stored) {
+  const { period, invoices } = stored;
+  const results = [];
+  for (const inv of invoices) {
+    try {
+      const apiResp = await cs.deleteInvoice(period, inv.id);
+      try {
+        await prisma.esInvoice.deleteMany({ where: { contasimpleId: inv.id } });
+      } catch (mirrorErr) {
+        console.error('[cs delete-confirm] local mirror delete failed:', mirrorErr.message);
+      }
+      results.push({
+        id: inv.id,
+        number: inv.number,
+        customerName: inv.target && inv.target.organization,
+        totalAmount: inv.totalAmount,
+        status: 'deleted',
+        contasimpleResponse: apiResp,
+      });
+    } catch (e) {
+      results.push({
+        id: inv.id,
+        number: inv.number,
+        customerName: inv.target && inv.target.organization,
+        totalAmount: inv.totalAmount,
+        status: 'failed',
+        error: e.message,
+        contasimpleStatus: e.status,
+        contasimpleBody: e.body,
+      });
+    }
+  }
+  return { period, totalRequested: invoices.length, results };
+}
+
+router.post('/delete-confirm-latest', asyncHandler(async (req, res) => {
+  const latest = getLatestEsDeletePreview();
+  if (!latest) return res.status(404).json({ error: 'Brak aktywnego delete-preview ES. Utwórz nowy przez /delete-preview.' });
+
+  const out = await executeDeleteForPreview(latest.data);
+  deleteEsDeletePreview(latest.id);
+
+  const deleted = out.results.filter(r => r.status === 'deleted');
+  const failed = out.results.filter(r => r.status === 'failed');
+
+  prisma.agentContext
+    .upsert({
+      where: { id: 'ksiegowosc-es' },
+      update: {
+        data: {
+          lastAction: 'delete-confirmed',
+          period: out.period,
+          deletedCount: deleted.length,
+          failedCount: failed.length,
+          deletedNumbers: deleted.map(d => d.number),
+          timestamp: Date.now(),
+        },
+      },
+      create: {
+        id: 'ksiegowosc-es',
+        data: {
+          lastAction: 'delete-confirmed',
+          period: out.period,
+          deletedCount: deleted.length,
+          failedCount: failed.length,
+          deletedNumbers: deleted.map(d => d.number),
+          timestamp: Date.now(),
+        },
+      },
+    })
+    .catch(e => console.error('[cs delete-confirm] AgentContext save error:', e.message));
+
+  res.json({
+    ok: failed.length === 0,
+    period: out.period,
+    totalRequested: out.totalRequested,
+    totalDeleted: deleted.length,
+    totalFailed: failed.length,
+    results: out.results,
+  });
+}));
+
+router.post('/delete-confirm', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (!previewId) return res.status(400).json({ error: 'previewId required' });
+  const stored = getEsDeletePreview(previewId);
+  if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
+
+  const out = await executeDeleteForPreview(stored);
+  deleteEsDeletePreview(previewId);
+
+  const deleted = out.results.filter(r => r.status === 'deleted');
+  const failed = out.results.filter(r => r.status === 'failed');
+
+  res.json({
+    ok: failed.length === 0,
+    period: out.period,
+    totalRequested: out.totalRequested,
+    totalDeleted: deleted.length,
+    totalFailed: failed.length,
+    results: out.results,
+  });
 }));
 
 // ============ HELPERS ============
