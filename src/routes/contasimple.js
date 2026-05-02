@@ -1,9 +1,24 @@
 'use strict';
 
 const router = require('express').Router();
+const crypto = require('crypto');
 const prisma = require('../db');
 const asyncHandler = require('../asyncHandler');
 const cs = require('../contasimple-client');
+const {
+  saveEsPreview,
+  getEsPreview,
+  deleteEsPreview,
+  getLatestEsPreview,
+} = require('../es-stores');
+const {
+  findEsContractor,
+  expandEsLines,
+  buildEsTotals,
+  buildContasimplePayload,
+  IGIC_DEFAULT_PCT,
+} = require('../services/contasimple-helpers');
+const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 
 // ============ SMOKE TEST ============
 //
@@ -318,6 +333,403 @@ router.delete('/invoices/:id', asyncHandler(async (req, res) => {
     console.error('[contasimple] local invoice delete mirror failed:', e.message);
   }
   res.json(result);
+}));
+
+// ============ PRODUCTS (local catalog mirror) ============
+
+router.post('/sync-products', asyncHandler(async (req, res) => {
+  if (!cs.isConfigured()) {
+    return res.status(503).json({ ok: false, error: 'CONTASIMPLE_API_KEY not configured' });
+  }
+  const remote = await cs.listAllProducts();
+  const list = (remote && remote.data) || [];
+  let created = 0;
+  let updated = 0;
+  for (const p of list) {
+    const data = {
+      contasimpleId: p.id,
+      name: p.name || `Product ${p.id}`,
+      category: 'product',
+      variant: p.variant || null,
+      priceEUR: p.unitTaxableAmount || p.unitAmount || p.price || 0,
+      unit: p.unit || 'szt',
+      active: p.active !== false,
+      extras: { sku: p.sku || null, raw: p },
+    };
+    const existing = await prisma.esProduct.findUnique({ where: { contasimpleId: p.id } });
+    if (existing) {
+      await prisma.esProduct.update({ where: { id: existing.id }, data });
+      updated++;
+    } else {
+      await prisma.esProduct.create({ data });
+      created++;
+    }
+  }
+  res.json({ ok: true, total: list.length, created, updated });
+}));
+
+router.get('/products', asyncHandler(async (req, res) => {
+  const list = await prisma.esProduct.findMany({
+    where: { active: true },
+    orderBy: [{ category: 'asc' }, { name: 'asc' }],
+  });
+  res.json({ count: list.length, data: list });
+}));
+
+// One-shot bootstrap: ensures the three template "boxes" exist (BOX-STICK-ES,
+// BOX-COLLECTION-ES, BOX-MASCARA-ES) with the right composition. Idempotent —
+// safe to call repeatedly. Uses contasimpleId from the existing products table
+// (must run AFTER /sync-products at least once).
+router.post('/seed-boxes', asyncHandler(async (req, res) => {
+  // Look up Nikodem's product IDs from the local mirror
+  const findIdByName = async (name) => {
+    const p = await prisma.esProduct.findFirst({
+      where: { name: { contains: name, mode: 'insensitive' }, category: 'product' },
+    });
+    return p ? p.contasimpleId : null;
+  };
+
+  const stickId = await findIdByName('SURF STICK BELL');
+  const lipId = await findIdByName('SURF LIP BALM');
+  const dailyId = await findIdByName('SURF DAILY');
+  const careId = await findIdByName('SURF CARE');
+  const gelId = await findIdByName('SURF EXTREME GEL');
+
+  const boxes = [
+    {
+      ean: 'BOX-STICK-ES',
+      name: 'BOX SURF STICK',
+      composition: [{ name: 'SURF STICK BELL SPF 50+', contasimpleId: stickId, qty: 30 }],
+    },
+    {
+      ean: 'BOX-COLLECTION-ES',
+      name: 'BOX COLLECTION',
+      composition: [
+        { name: 'SURF LIP BALM BELL SPF 50+', contasimpleId: lipId, qty: 12 },
+        { name: 'SURF DAILY BELL SPF 50+', contasimpleId: dailyId, qty: 6 },
+        { name: 'SURF EXTREME GEL BELL SPF 50+', contasimpleId: gelId, qty: 6 },
+        { name: 'SURF CARE BELL', contasimpleId: careId, qty: 6 },
+      ],
+    },
+    {
+      // Mascara not in Contasimple yet — placeholder. When Nikodem adds the
+      // product in Contasimple UI, /sync-products will pick it up and the
+      // composition entry below will resolve via name lookup at expand time.
+      ean: 'BOX-MASCARA-ES',
+      name: 'BOX SURF MASCARA',
+      composition: [{ name: 'SURF MASCARA BELL', contasimpleId: null, qty: 30 }],
+    },
+  ];
+
+  const results = [];
+  for (const b of boxes) {
+    const totalQty = b.composition.reduce((s, c) => s + c.qty, 0);
+    const data = {
+      ean: b.ean,
+      name: b.name,
+      category: 'template',
+      priceEUR: 0,
+      active: true,
+      extras: { isTemplate: true, composition: b.composition, totalQty },
+    };
+    const existing = await prisma.esProduct.findUnique({ where: { ean: b.ean } });
+    if (existing) {
+      await prisma.esProduct.update({ where: { id: existing.id }, data });
+      results.push({ ean: b.ean, action: 'updated', totalQty });
+    } else {
+      await prisma.esProduct.create({ data });
+      results.push({ ean: b.ean, action: 'created', totalQty });
+    }
+  }
+  res.json({ ok: true, boxes: results });
+}));
+
+// ============ CUSTOMER VERIFY-CIF ============
+//
+// Resolves a CIF/NIF to canonical customer data. Tries (in order): local
+// EsContractor, Contasimple search/nif. External AEAT/VIES integrations
+// (Contasimple "Integrations - Entities fiscal data" / "Integrations - Vies")
+// will be added in a follow-up once we map their request/response shapes.
+router.post('/customer-verify-cif', asyncHandler(async (req, res) => {
+  const { cif } = req.body || {};
+  if (!cif) return res.status(400).json({ error: 'cif required' });
+
+  const local = await prisma.esContractor.findFirst({ where: { nif: cif } });
+
+  let remote = null;
+  try {
+    const r = await cs.searchCustomerByNif(cif, true);
+    if (r && r.data && r.data.length === 1) remote = r.data[0];
+  } catch (e) {
+    console.error('[contasimple] verify-cif Contasimple lookup failed:', e.message);
+  }
+
+  res.json({
+    ok: true,
+    cif,
+    foundIn: { local: Boolean(local), contasimple: Boolean(remote) },
+    local,
+    contasimple: remote,
+  });
+}));
+
+// ============ INVOICE PREVIEW ============
+//
+// Body: {
+//   contractorId? | contractorCif? | contractorSearch?,   // pick one
+//   items: [ { name? | ean?, qty, priceNetto?, priceBrutto? }, ... ],
+//   globalPriceNetto? | globalPriceBrutto?,
+//   invoiceDate?, expirationDate?
+// }
+//
+// Returns: { ok: true, preview, previewId } or { ok: false, suggestions[] }
+router.post('/invoice-preview', asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  let parsedItems = body.items;
+  if (typeof parsedItems === 'string') {
+    try { parsedItems = JSON.parse(parsedItems); }
+    catch (e) { return res.status(400).json({ error: 'items must be valid JSON array' }); }
+  }
+  if (!parsedItems || !parsedItems.length) {
+    return res.status(400).json({ error: 'items required' });
+  }
+
+  // Resolve contractor: id > cif > fuzzy search.
+  let contractor = null;
+  if (body.contractorId) {
+    contractor = await prisma.esContractor.findUnique({ where: { id: body.contractorId } });
+  } else if (body.contractorCif) {
+    contractor = await prisma.esContractor.findFirst({ where: { nif: body.contractorCif } });
+  } else if (body.contractorSearch) {
+    const result = await findEsContractor(prisma, body.contractorSearch);
+    if (!result.contractor) {
+      return res.json({ ok: false, suggestions: result.suggestions, hint: 'Add the customer first via POST /api/contasimple/customers' });
+    }
+    contractor = result.contractor;
+  }
+  if (!contractor) {
+    return res.status(404).json({ error: 'contractor not found — provide contractorId, contractorCif, or contractorSearch' });
+  }
+  if (!contractor.nif) {
+    return res.status(400).json({ error: 'contractor missing CIF/NIF — Nikodem invoices only B2B' });
+  }
+  if (!contractor.contasimpleId) {
+    return res.status(400).json({ error: 'contractor exists locally but has no contasimpleId — re-run /sync-customers or create in Contasimple first' });
+  }
+
+  // Expand items into positions (resolving templates / fuzzy product lookup).
+  let positions;
+  try {
+    positions = await expandEsLines(prisma, parsedItems, {
+      globalPriceNetto: body.globalPriceNetto,
+      globalPriceBrutto: body.globalPriceBrutto,
+    });
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+
+  if (!positions.length) {
+    return res.status(400).json({ error: 'no positions resolved from items' });
+  }
+
+  const { lines, totals, priceMode } = buildEsTotals(positions, {
+    igicPct: IGIC_DEFAULT_PCT,
+    globalPriceNetto: body.globalPriceNetto,
+    globalPriceBrutto: body.globalPriceBrutto,
+  });
+
+  const invoiceDate = body.invoiceDate || new Date().toISOString();
+
+  const preview = {
+    contractor: {
+      id: contractor.id,
+      contasimpleId: contractor.contasimpleId,
+      name: contractor.name,
+      organization: contractor.organization,
+      nif: contractor.nif,
+      country: contractor.country,
+      city: contractor.city,
+      postalCode: contractor.postalCode,
+      address: contractor.address,
+      email: contractor.email,
+    },
+    currency: 'EUR',
+    igicPct: IGIC_DEFAULT_PCT,
+    priceMode,
+    lines,
+    totals,
+    invoiceDate,
+    period: cs.dateToPeriod(invoiceDate),
+  };
+
+  const previewId = crypto.randomUUID();
+  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body });
+
+  prisma.agentContext
+    .upsert({
+      where: { id: 'ksiegowosc-es' },
+      update: {
+        data: {
+          lastAction: 'preview',
+          previewId,
+          contractor: { name: contractor.name, nif: contractor.nif },
+          totals,
+          period: preview.period,
+          timestamp: Date.now(),
+        },
+      },
+      create: {
+        id: 'ksiegowosc-es',
+        data: {
+          lastAction: 'preview',
+          previewId,
+          contractor: { name: contractor.name, nif: contractor.nif },
+          totals,
+          period: preview.period,
+          timestamp: Date.now(),
+        },
+      },
+    })
+    .catch(e => console.error('[cs invoice-preview] AgentContext save error:', e.message));
+
+  res.json({ ok: true, preview, previewId });
+}));
+
+// ============ INVOICE CONFIRM ============
+
+async function confirmEsPreview(stored) {
+  const { preview, contractor, lines, invoiceDate } = stored;
+  const period = preview.period;
+
+  const csPayload = buildContasimplePayload({
+    targetEntityId: contractor.contasimpleId,
+    lines,
+    invoiceDate,
+  });
+
+  const csResult = await cs.createInvoice(period, csPayload);
+  const invoice = csResult && csResult.data;
+  if (!invoice || !invoice.id) {
+    throw new Error('Contasimple createInvoice returned no data');
+  }
+
+  // Mirror locally — best-effort.
+  let localInvoice = null;
+  try {
+    localInvoice = await prisma.esInvoice.create({
+      data: {
+        contasimpleId: invoice.id,
+        contractorId: contractor.id,
+        period,
+        number: invoice.number || null,
+        status: invoice.status || 'Pending',
+        invoiceDate: new Date(invoice.invoiceDate || invoiceDate),
+        expirationDate: invoice.expirationDate ? new Date(invoice.expirationDate) : null,
+        totalAmount: invoice.totalAmount || preview.totals.brutto,
+        totalTaxableAmount: invoice.totalTaxableAmount || preview.totals.netto,
+        totalVatAmount: invoice.totalVatAmount || preview.totals.igic,
+        totalPayedAmount: invoice.totalPayedAmount || 0,
+        uiCulture: invoice.uiCulture || 'es-ES',
+        numberingFormatId: invoice.numberingFormatId || null,
+        operationType: invoice.operationType || null,
+        extras: { lines: invoice.lines || [], payments: invoice.payments || [], previewLines: lines },
+      },
+    });
+  } catch (e) {
+    console.error('[cs invoice-confirm] local persist failed:', e.message);
+  }
+
+  // PDF → Telegram (best-effort).
+  let pdfSent = false;
+  try {
+    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgChat = tgChatCfg && tgChatCfg.value;
+    if (tgToken && tgChat) {
+      const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
+      const filename = `factura_${(invoice.number || invoice.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+      const caption = `Factura ${invoice.number || invoice.id} — ${contractor.name} (${preview.totals.brutto} €)`;
+      await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
+      pdfSent = true;
+    }
+  } catch (tgErr) {
+    console.error('[cs invoice-confirm] Telegram PDF send failed:', tgErr.message);
+  }
+
+  prisma.agentContext
+    .upsert({
+      where: { id: 'ksiegowosc-es' },
+      update: {
+        data: {
+          lastAction: 'confirmed',
+          invoiceContasimpleId: invoice.id,
+          invoiceNumber: invoice.number || null,
+          invoiceLocalId: localInvoice ? localInvoice.id : null,
+          contractor: { name: contractor.name, nif: contractor.nif },
+          period,
+          totals: preview.totals,
+          timestamp: Date.now(),
+        },
+      },
+      create: {
+        id: 'ksiegowosc-es',
+        data: {
+          lastAction: 'confirmed',
+          invoiceContasimpleId: invoice.id,
+          invoiceNumber: invoice.number || null,
+          invoiceLocalId: localInvoice ? localInvoice.id : null,
+          contractor: { name: contractor.name, nif: contractor.nif },
+          period,
+          totals: preview.totals,
+          timestamp: Date.now(),
+        },
+      },
+    })
+    .catch(e => console.error('[cs invoice-confirm] AgentContext save error:', e.message));
+
+  return { invoice, localInvoice, pdfSent, period };
+}
+
+router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
+  const latest = getLatestEsPreview();
+  if (!latest) return res.status(404).json({ error: 'Brak aktywnego podglądu ES. Utwórz nowy.' });
+  try {
+    const result = await confirmEsPreview(latest.data);
+    deleteEsPreview(latest.id);
+    res.json({
+      ok: true,
+      invoiceNumber: result.invoice.number,
+      invoiceId: result.invoice.id,
+      period: result.period,
+      pdfSent: result.pdfSent,
+      contasimpleResponse: result.invoice,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body });
+  }
+}));
+
+router.post('/invoice-confirm', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (!previewId) return res.status(400).json({ error: 'previewId required' });
+  const stored = getEsPreview(previewId);
+  if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
+  try {
+    const result = await confirmEsPreview(stored);
+    deleteEsPreview(previewId);
+    res.json({
+      ok: true,
+      invoiceNumber: result.invoice.number,
+      invoiceId: result.invoice.id,
+      period: result.period,
+      pdfSent: result.pdfSent,
+      contasimpleResponse: result.invoice,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body });
+  }
 }));
 
 // ============ HELPERS ============

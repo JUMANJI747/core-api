@@ -259,6 +259,24 @@ async function updateCustomer(id, data) {
   return await csJson('PUT', `/entities/customers/${encodeURIComponent(id)}`, null, data);
 }
 
+// ============ PRODUCTS ============
+//
+// Used by the bulk-import endpoint to populate local EsProduct rows so that
+// preview/confirm flow can resolve "30 sticków" → SURF STICK BELL SPF 50+
+// (contasimpleId 3686995) without round-tripping the API on every line.
+
+async function listAllProducts() {
+  return await csJson('GET', '/products/all');
+}
+
+async function listProducts({ startIndex = 0, numRows = 100, name } = {}) {
+  return await csJson('GET', '/products', { startIndex, numRows, name });
+}
+
+async function getProduct(id) {
+  return await csJson('GET', `/products/${encodeURIComponent(id)}`);
+}
+
 // ============ INVOICES — ISSUED ============
 //
 // Every invoice path includes a {period} segment. Period is a quarter in the
@@ -441,6 +459,10 @@ module.exports = {
   getCustomer,
   createCustomer,
   updateCustomer,
+  // products
+  listProducts,
+  listAllProducts,
+  getProduct,
   // invoices
   listInvoices,
   getInvoice,

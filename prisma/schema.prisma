@@ -442,6 +442,27 @@ model EsInvoice {
   @@index([period])
 }
 
+// Local product catalog for the Canarias company. Synced from Contasimple
+// `Products` (POST /sync-products) so preview/confirm flow can resolve items
+// without round-tripping the API on every line. Templates (boxes, collections)
+// live here too — they expand via extras.composition[] at preview time.
+model EsProduct {
+  id            String   @id @default(uuid())
+  contasimpleId Int?     @unique // numeric id from Contasimple `Products`; null for local-only templates
+  ean           String?  @unique // local SKU (e.g. BOX-STICK-ES, BOX-COLLECTION-ES)
+  name          String
+  category      String   @default("product") // product | template
+  variant       String?
+  priceEUR      Decimal  @default(0) @db.Decimal(12, 2) // unit netto (Contasimple unitTaxableAmount)
+  unit          String   @default("szt")
+  active        Boolean  @default(true)
+  extras        Json     @default("{}") // {composition: [{name, contasimpleId, qty}], totalQty, isTemplate, aliases}
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category])
+}
+
 // ============ TRANSACTIONS (Operations Tracker) ============
 //
 // Glues together a single business deal: order-mail → invoice → shipment →
