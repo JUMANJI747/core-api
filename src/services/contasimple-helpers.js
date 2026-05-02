@@ -305,8 +305,15 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
       unitAmount: l.unitNetto,
       quantity: l.qty,
       vatPercentage: l.vatPercentage,
+      vatAmount: l.lineIgic,
+      rePercentage: 0,
+      reAmount: 0,
+      totalTaxableAmount: l.lineNetto, // required: unitAmount × quantity (Contasimple cross-checks)
+      discountPercentage: 0,
+      detailedDescription: '',
       productId: l.contasimpleProductId || 0,
       productName: l.name,
+      productSku: '',
     })),
   };
 }
