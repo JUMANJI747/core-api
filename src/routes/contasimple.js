@@ -405,10 +405,10 @@ router.post('/seed-boxes', asyncHandler(async (req, res) => {
   };
 
   const stick = await findIdByFragment('STICK');
-  const lip = await findIdByFragment('LIP BALM');
+  const lip = await findIdByFragment('LIP');
   const daily = await findIdByFragment('DAILY');
   const care = await findIdByFragment('CARE');
-  const gel = await findIdByFragment('EXTREME GEL');
+  const gel = await findIdByFragment('GEL'); // post-rename name "SURF GEL extreme waterproof gel spf 50+" — "EXTREME GEL" no longer adjacent
   const mascara = await findIdByFragment('MASCARA');
 
   const missing = [];
@@ -479,13 +479,16 @@ router.post('/seed-boxes', asyncHandler(async (req, res) => {
 //
 // After running this, re-run /seed-boxes to refresh composition.name labels.
 
+// Order matters: most-specific-first. "LIP BALM" before "LIP" so "SURF LIPS"
+// doesn't accidentally trigger LIP-BALM logic. "GEL" is short but unique in
+// Nikodem's catalog (only one gel product exists, post-rename or pre-rename).
 const PL_NAME_MAP = [
-  ['EXTREME GEL', '5902082579021'],
   ['LIP BALM', '5902082579052'],
   ['LIP', '5902082579052'],
   ['MASCARA', 'MASCARA-GENERIC'],
   ['DAILY', '5902082579045'],
   ['CARE', '5902082579014'],
+  ['GEL', '5902082579021'],
   ['STICK', 'STICK-GENERIC'],
 ];
 
