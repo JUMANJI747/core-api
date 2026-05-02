@@ -76,7 +76,13 @@ function normalize(s) {
 
 // 1:1 of findProductFuzzy from src/routes/invoices.js — kept local so the
 // PL function can evolve without dragging ES along (different catalogs,
-// different generic-prefixes).
+// different generic-prefixes). Plus an extra rule: prefer non-template
+// products unless the query explicitly mentions a "box" keyword — without
+// this, "stick" fuzzy-matches both BOX-STICK-ES (14 chars, wins length sort)
+// and SURF STICK zinc stick (28 chars), accidentally expanding 1 stick into
+// the whole 30-piece box.
+const BOX_KEYWORDS = /\b(box|pudelko|pudlo|kartonik|collection|coleccion|colecc)\b/;
+
 function findEsProductFuzzy(catalog, query) {
   if (!query) return null;
   const q = normalize(query);
@@ -104,8 +110,21 @@ function findEsProductFuzzy(catalog, query) {
   if (candidates.length === 1) return candidates[0];
 
   if (candidates.length > 1) {
-    const nonGeneric = candidates.filter(c => !(c.ean || '').startsWith('STICK-') && !(c.ean || '').startsWith('MASCARA-'));
-    const pool = nonGeneric.length ? nonGeneric : candidates;
+    // Disambiguate template vs product based on whether the query mentions
+    // a box keyword. "stick" → product. "box stick" → template.
+    const isBoxQuery = BOX_KEYWORDS.test(q);
+    let pool = candidates;
+    if (isBoxQuery) {
+      const templates = candidates.filter(c => c.category === 'template');
+      if (templates.length) pool = templates;
+    } else {
+      const nonTemplate = candidates.filter(c => c.category !== 'template');
+      if (nonTemplate.length) pool = nonTemplate;
+    }
+
+    const nonGeneric = pool.filter(c => !(c.ean || '').startsWith('STICK-') && !(c.ean || '').startsWith('MASCARA-'));
+    if (nonGeneric.length) pool = nonGeneric;
+
     pool.sort((a, b) => {
       const nvA = normalize((a.name || '') + ' ' + (a.variant || ''));
       const nvB = normalize((b.name || '') + ' ' + (b.variant || ''));
@@ -200,8 +219,16 @@ function buildEsTotals(positions, opts = {}) {
   const igicPct = opts.igicPct != null ? Number(opts.igicPct) : IGIC_DEFAULT_PCT;
   const igicFactor = 1 + igicPct / 100;
 
-  const hasNetto = positions.some(p => p.priceNetto != null) || opts.globalPriceNetto != null;
-  const priceMode = hasNetto ? 'netto' : 'brutto';
+  // Catalog priceEUR is netto (matches Contasimple unitTaxableAmount).
+  // priceMode reflects how the prices were sourced — informational only,
+  // since unitNetto is always normalized to netto for createInvoice.
+  const hasNettoOverride = positions.some(p => p.priceNetto != null) || opts.globalPriceNetto != null;
+  const hasBruttoOverride = positions.some(p => p.priceBrutto != null) || opts.globalPriceBrutto != null;
+  let priceMode;
+  if (hasNettoOverride && hasBruttoOverride) priceMode = 'mixed';
+  else if (hasBruttoOverride) priceMode = 'brutto';
+  else if (hasNettoOverride) priceMode = 'netto';
+  else priceMode = 'netto'; // catalog default — Contasimple unitTaxableAmount = netto
 
   const lines = positions.map(({ product, qty, priceNetto, priceBrutto }) => {
     let unitNetto;
