@@ -277,6 +277,10 @@ async function getProduct(id) {
   return await csJson('GET', `/products/${encodeURIComponent(id)}`);
 }
 
+async function updateProduct(id, data) {
+  return await csJson('PUT', `/products/${encodeURIComponent(id)}`, null, data);
+}
+
 // ============ INVOICES — ISSUED ============
 //
 // Every invoice path includes a {period} segment. Period is a quarter in the
@@ -463,6 +467,7 @@ module.exports = {
   listProducts,
   listAllProducts,
   getProduct,
+  updateProduct,
   // invoices
   listInvoices,
   getInvoice,

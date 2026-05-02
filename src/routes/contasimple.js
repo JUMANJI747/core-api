@@ -449,6 +449,137 @@ router.post('/seed-boxes', asyncHandler(async (req, res) => {
   res.json({ ok: true, boxes: results, missingProducts: missing });
 }));
 
+// ============ PRODUCT RENAME (sync names from PL catalog) ============
+//
+// For each EsProduct (synced from Contasimple), find the matching PL Product
+// by a deterministic name fragment, take its `name`, and PUT it on
+// Contasimple. Idempotent. Run with ?dryRun=true first to preview the plan.
+//
+// Mapping (most-specific-first to avoid "GEL" matching "EXTREME GEL" rows):
+//   EXTREME GEL → PL ean 5902082579021  ("SURF GEL extreme waterproof gel spf 50+")
+//   LIP BALM    → PL ean 5902082579052  ("SURF LIPS lip balm spf 50+")
+//   LIP         → PL ean 5902082579052
+//   MASCARA     → PL ean MASCARA-GENERIC ("SURF GIRL waterproof mascara")
+//   DAILY       → PL ean 5902082579045  ("SURF DAILY protection spf 50")
+//   CARE        → PL ean 5902082579014  ("SURF CARE hydrating cream")
+//   STICK       → PL ean STICK-GENERIC  ("SURF STICK zinc stick spf 50+")
+//
+// After running this, re-run /seed-boxes to refresh composition.name labels.
+
+const PL_NAME_MAP = [
+  ['EXTREME GEL', '5902082579021'],
+  ['LIP BALM', '5902082579052'],
+  ['LIP', '5902082579052'],
+  ['MASCARA', 'MASCARA-GENERIC'],
+  ['DAILY', '5902082579045'],
+  ['CARE', '5902082579014'],
+  ['STICK', 'STICK-GENERIC'],
+];
+
+router.post('/products/rename-from-pl', asyncHandler(async (req, res) => {
+  const dryRun = req.query.dryRun === 'true';
+
+  const esProducts = await prisma.esProduct.findMany({
+    where: { category: 'product', contasimpleId: { not: null } },
+  });
+
+  const plan = [];
+  for (const es of esProducts) {
+    const upper = (es.name || '').toUpperCase();
+    let matched = null;
+    for (const [fragment, plEan] of PL_NAME_MAP) {
+      if (upper.includes(fragment)) {
+        matched = { fragment, plEan };
+        break;
+      }
+    }
+
+    if (!matched) {
+      plan.push({
+        contasimpleId: es.contasimpleId,
+        oldName: es.name,
+        newName: null,
+        action: 'skip',
+        reason: 'no PL fragment match',
+      });
+      continue;
+    }
+
+    const plProduct = await prisma.product.findUnique({ where: { ean: matched.plEan } });
+    if (!plProduct) {
+      plan.push({
+        contasimpleId: es.contasimpleId,
+        oldName: es.name,
+        newName: null,
+        action: 'skip',
+        reason: `PL product not found by ean=${matched.plEan}`,
+        matchedFragment: matched.fragment,
+      });
+      continue;
+    }
+
+    if (plProduct.name === es.name) {
+      plan.push({
+        contasimpleId: es.contasimpleId,
+        oldName: es.name,
+        newName: plProduct.name,
+        action: 'noop',
+        matchedFragment: matched.fragment,
+        plEan: matched.plEan,
+      });
+      continue;
+    }
+
+    plan.push({
+      contasimpleId: es.contasimpleId,
+      oldName: es.name,
+      newName: plProduct.name,
+      action: 'rename',
+      matchedFragment: matched.fragment,
+      plEan: matched.plEan,
+    });
+  }
+
+  if (dryRun) {
+    return res.json({ ok: true, dryRun: true, plan });
+  }
+
+  // Apply: for each rename, fetch full Contasimple product, PUT with new
+  // name (preserving every other field), mirror locally.
+  const results = [];
+  for (const item of plan) {
+    if (item.action !== 'rename') {
+      results.push(item);
+      continue;
+    }
+    try {
+      const remote = await cs.getProduct(item.contasimpleId);
+      const remoteData = remote && remote.data ? remote.data : remote;
+
+      const updateBody = { ...remoteData, name: item.newName };
+      await cs.updateProduct(item.contasimpleId, updateBody);
+
+      const local = await prisma.esProduct.findUnique({ where: { contasimpleId: item.contasimpleId } });
+      if (local) {
+        const prev = (local.extras && local.extras.previousNames) || [];
+        await prisma.esProduct.update({
+          where: { id: local.id },
+          data: {
+            name: item.newName,
+            extras: { ...(local.extras || {}), previousNames: [...prev, item.oldName] },
+          },
+        });
+      }
+
+      results.push({ ...item, status: 'success' });
+    } catch (e) {
+      results.push({ ...item, status: 'failed', error: e.message, statusCode: e.status });
+    }
+  }
+
+  res.json({ ok: true, dryRun: false, results });
+}));
+
 // ============ CUSTOMER VERIFY-CIF ============
 //
 // Resolves a CIF/NIF to canonical customer data. Tries (in order): local
