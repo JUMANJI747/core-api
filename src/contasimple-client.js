@@ -338,64 +338,24 @@ async function searchInvoiceByNumber(period, query) {
   );
 }
 
-// Build a single line with sane defaults. Caller passes concept/quantity/
-// unitAmount; we fill in IGIC 7% unless overridden, and let Contasimple
-// compute totals server-side (we don't trust client-side rounding).
-function buildInvoiceLine(line) {
-  const vatPercentage =
-    line.vatPercentage !== undefined && line.vatPercentage !== null
-      ? Number(line.vatPercentage)
-      : DEFAULT_VAT_PERCENT;
-  return {
-    concept: line.concept || line.name || '',
-    unitAmount: Number(line.unitAmount),
-    quantity: Number(line.quantity),
-    vatPercentage,
-    rePercentage: line.rePercentage || 0,
-    discountPercentage: line.discountPercentage || 0,
-    detailedDescription: line.detailedDescription || '',
-    productId: line.productId || 0,
-    productName: line.productName || '',
-    productSku: line.productSku || '',
-  };
-}
-
+// POST the payload as-is. Earlier this function had its own buildInvoiceLine
+// remapper that silently stripped totalTaxableAmount and injected productId:0
+// + productName:'' on every line — which was the actual root cause of the
+// TaxableAmountDiscrepancy errors. The caller (buildContasimplePayload in
+// services/contasimple-helpers.js) already produces the verified-working
+// minimal shape; the client must not modify it.
 async function createInvoice(period, payload) {
-  // payload: { targetEntityId, lines: [{concept, quantity, unitAmount, vatPercentage?}],
-  //            date?, expirationDate?, numberingFormatId?, notes?, footer?, uiCulture? }
   if (!payload.targetEntityId) {
     throw new Error('createInvoice: targetEntityId required (customer must exist in Contasimple)');
   }
   if (!Array.isArray(payload.lines) || payload.lines.length === 0) {
     throw new Error('createInvoice: lines[] required and non-empty');
   }
-
-  const body = {
-    targetEntityId: Number(payload.targetEntityId),
-    relatedEstimatesId: payload.relatedEstimatesId || 0,
-    relatedDeliveryNotesId: payload.relatedDeliveryNotesId || [],
-    rectifiesInvoiceId: payload.rectifiesInvoiceId || 0,
-    numberingFormatId: payload.numberingFormatId || 0,
-    reimbursableExpenses: payload.reimbursableExpenses || 0,
-    number: payload.number || '',
-    date: payload.date || new Date().toISOString(),
-    expirationDate: payload.expirationDate || null,
-    operationDate: payload.operationDate || null,
-    invoiceClass: payload.invoiceClass || 0,
-    notes: payload.notes || '',
-    footer: payload.footer || '',
-    retentionPercentage: payload.retentionPercentage || 0,
-    operationType: payload.operationType || 'Nacional',
-    lines: payload.lines.map(buildInvoiceLine),
-    selectedTags: payload.selectedTags || [],
-    uiCulture: payload.uiCulture || DEFAULT_UI_CULTURE,
-  };
-
   return await csJson(
     'POST',
     `/accounting/${encodeURIComponent(period)}/invoices/issued`,
     null,
-    body
+    payload
   );
 }
 
