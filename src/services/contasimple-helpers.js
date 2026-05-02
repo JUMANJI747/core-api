@@ -300,22 +300,38 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
     notes: overrides.notes || '',
     footer: overrides.footer || '', // empty → Contasimple uses company default
     uiCulture: overrides.uiCulture || 'es-ES',
-    lines: lines.map(l => ({
-      // Contasimple computes totalTaxableAmount and vatAmount server-side
-      // from unitAmount × quantity and vatPercentage. Sending them in the
-      // request body is rejected with TaxableAmountDiscrepancy (the API
-      // ignores our values and compares against its own zero-default).
-      concept: l.name + (l.variant ? ` ${l.variant}` : ''),
-      unitAmount: l.unitNetto,
-      quantity: l.qty,
-      vatPercentage: l.vatPercentage,
-      rePercentage: 0,
-      discountPercentage: 0,
-      detailedDescription: '',
-      productId: l.contasimpleProductId || 0,
-      productName: l.name,
-      productSku: '',
-    })),
+    lines: lines.map(l => {
+      const concept = l.name + (l.variant ? ` ${l.variant}` : '');
+      const lineNetto = l.lineNetto;
+      const lineIgic = l.lineIgic;
+      // Contasimple's API binder is inconsistent: most fields accept camelCase
+      // (unitAmount, quantity, vatPercentage), but totalTaxableAmount,
+      // vatAmount and productName silently get dropped to zero/null when sent
+      // in camelCase — the server then validates the post-bind values against
+      // its computed totals and rejects with TaxableAmountDiscrepancy. Sending
+      // the same values under PascalCase keys (matching the underlying entity
+      // names) lets them through. We send both shapes; whichever the binder
+      // accepts wins.
+      return {
+        concept,
+        unitAmount: l.unitNetto,
+        quantity: l.qty,
+        vatPercentage: l.vatPercentage,
+        vatAmount: lineIgic,
+        VatAmount: lineIgic,
+        VATAmount: lineIgic,
+        rePercentage: 0,
+        reAmount: 0,
+        totalTaxableAmount: lineNetto,
+        TotalTaxableAmount: lineNetto,
+        discountPercentage: 0,
+        detailedDescription: '',
+        productId: l.contasimpleProductId || 0,
+        productName: l.name,
+        ProductName: l.name,
+        productSku: '',
+      };
+    }),
   };
 }
 
