@@ -818,23 +818,35 @@ async function confirmEsPreview(stored) {
     console.error('[cs invoice-confirm] local persist failed:', e.message);
   }
 
-  // PDF → Telegram (best-effort).
+  // PDF → Telegram (best-effort, but report truthfully whether it actually
+  // landed). Telegram API returns 200 with {ok:false, description:"..."} for
+  // recoverable failures (chat not found, bot blocked, file too big), so we
+  // must inspect the response body rather than trust the await resolving.
   let pdfSent = false;
+  let pdfError = null;
   try {
     const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
     const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
       || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
     const tgToken = tgTokenCfg && tgTokenCfg.value;
     const tgChat = tgChatCfg && tgChatCfg.value;
-    if (tgToken && tgChat) {
+    if (!tgToken) pdfError = 'telegram_bot_token missing in Config';
+    else if (!tgChat) pdfError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
+    else {
       const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
       const filename = `factura_${(invoice.number || invoice.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
       const caption = `Factura ${invoice.number || invoice.id} — ${contractor.name} (${preview.totals.brutto} €)`;
-      await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
-      pdfSent = true;
+      const tgResp = await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
+      if (tgResp && tgResp.ok) {
+        pdfSent = true;
+      } else {
+        pdfError = `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})`;
+        console.error('[cs invoice-confirm] Telegram returned not-ok:', JSON.stringify(tgResp));
+      }
     }
   } catch (tgErr) {
-    console.error('[cs invoice-confirm] Telegram PDF send failed:', tgErr.message);
+    pdfError = tgErr.message;
+    console.error('[cs invoice-confirm] Telegram PDF send threw:', tgErr.message);
   }
 
   prisma.agentContext
@@ -868,7 +880,7 @@ async function confirmEsPreview(stored) {
     })
     .catch(e => console.error('[cs invoice-confirm] AgentContext save error:', e.message));
 
-  return { invoice, localInvoice, pdfSent, period };
+  return { invoice, localInvoice, pdfSent, pdfError, period };
 }
 
 router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
@@ -883,6 +895,7 @@ router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
       invoiceId: result.invoice.id,
       period: result.period,
       pdfSent: result.pdfSent,
+      pdfError: result.pdfError,
       contasimpleResponse: result.invoice,
     });
   } catch (e) {
@@ -904,6 +917,7 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
       invoiceId: result.invoice.id,
       period: result.period,
       pdfSent: result.pdfSent,
+      pdfError: result.pdfError,
       contasimpleResponse: result.invoice,
     });
   } catch (e) {
