@@ -17,6 +17,7 @@ const {
   buildEsTotals,
   buildContasimplePayload,
   IGIC_DEFAULT_PCT,
+  NIKODEM_DEFAULTS,
 } = require('../services/contasimple-helpers');
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 
@@ -753,10 +754,25 @@ async function confirmEsPreview(stored) {
   const { preview, contractor, lines, invoiceDate } = stored;
   const period = preview.period;
 
+  // Contasimple requires `number` in POST body — UI auto-generates it but
+  // the API does not, so we fetch the next available one from the configured
+  // series first.
+  let nextNumber = '';
+  try {
+    const r = await cs.getNextInvoiceNumber(period, NIKODEM_DEFAULTS.numberingFormatId);
+    nextNumber = (r && r.data) || '';
+  } catch (e) {
+    console.error('[cs invoice-confirm] getNextInvoiceNumber failed:', e.message);
+  }
+  if (!nextNumber) {
+    throw new Error('Failed to fetch next invoice number from Contasimple');
+  }
+
   const csPayload = buildContasimplePayload({
     targetEntityId: contractor.contasimpleId,
     lines,
     invoiceDate,
+    overrides: { number: nextNumber },
   });
 
   const csResult = await cs.createInvoice(period, csPayload);

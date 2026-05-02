@@ -291,6 +291,7 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
 
   return {
     targetEntityId,
+    number: overrides.number || '', // required by Contasimple — caller must fetch via getNextInvoiceNumber
     numberingFormatId: overrides.numberingFormatId || NIKODEM_DEFAULTS.numberingFormatId,
     invoiceClass: overrides.invoiceClass || NIKODEM_DEFAULTS.invoiceClass,
     operationType: overrides.operationType || NIKODEM_DEFAULTS.operationType,
