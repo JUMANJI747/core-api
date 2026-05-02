@@ -953,9 +953,23 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
     nif: nifFilter,
     fromDate: body.fromDate,
     toDate: body.toDate,
+    sort: '-date', // newest first server-side
   };
   const remote = await cs.listInvoices(period, filters);
-  const found = (remote && remote.data) || [];
+  let found = (remote && remote.data) || [];
+
+  // Defensive: sort newest-first locally too in case Contasimple ignores `sort`.
+  found.sort((a, b) => new Date(b.invoiceDate) - new Date(a.invoiceDate));
+
+  // "latest: true" → only newest one. "limit: N" → N newest. Without either,
+  // returns everything matching the filter.
+  const totalMatched = found.length;
+  let limit = null;
+  if (body.latest === true) limit = 1;
+  else if (typeof body.limit === 'number' && body.limit > 0) limit = body.limit;
+  if (limit !== null && found.length > limit) {
+    found = found.slice(0, limit);
+  }
 
   if (!found.length) {
     return res.json({
@@ -989,6 +1003,7 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
           deletePreviewId: previewId,
           period,
           count: found.length,
+          totalMatched,
           contractor: contractorInfo ? { name: contractorInfo.name, nif: contractorInfo.nif } : null,
           timestamp: Date.now(),
         },
@@ -1000,6 +1015,7 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
           deletePreviewId: previewId,
           period,
           count: found.length,
+          totalMatched,
           contractor: contractorInfo ? { name: contractorInfo.name, nif: contractorInfo.nif } : null,
           timestamp: Date.now(),
         },
@@ -1010,11 +1026,14 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
   res.json({
     ok: true,
     period,
-    count: found.length,
+    totalMatched,
+    selectedCount: found.length,
     invoices: summary,
     contractor: contractorInfo ? { id: contractorInfo.id, name: contractorInfo.name, nif: contractorInfo.nif } : null,
     previewId,
-    hint: 'Wykonaj POST /api/contasimple/delete-confirm-latest aby usunąć wszystkie powyższe FV.',
+    hint: limit === 1
+      ? `Wybrano najnowszą z ${totalMatched} pasujących. Wykonaj POST /api/contasimple/delete-confirm-latest aby skasować.`
+      : `${found.length} z ${totalMatched} FV. Wykonaj POST /api/contasimple/delete-confirm-latest aby skasować WSZYSTKIE z tej listy.`,
   });
 }));
 
