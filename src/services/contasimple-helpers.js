@@ -289,35 +289,26 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
   const date = invoiceDate || new Date().toISOString();
   const dueDate = new Date(new Date(date).getTime() + NIKODEM_DEFAULTS.paymentTermDays * 24 * 60 * 60 * 1000);
 
+  // Minimal payload — verified working via direct curl against api.contasimple.com.
+  // Earlier attempts that included productId/productName/vatAmount/discountPercentage/
+  // notes/footer/uiCulture caused TaxableAmountDiscrepancy: even though those fields
+  // are listed in Swagger spec, the .NET binder treats some of them in a way that
+  // zeroes-out TotalTaxableAmount on the entity. Stripping to the bare minimum
+  // (matching the curl-tested shape) makes Contasimple compute totals correctly.
   return {
     targetEntityId,
-    number: overrides.number || '', // required by Contasimple — caller must fetch via getNextInvoiceNumber
     numberingFormatId: overrides.numberingFormatId || NIKODEM_DEFAULTS.numberingFormatId,
     invoiceClass: overrides.invoiceClass || NIKODEM_DEFAULTS.invoiceClass,
     operationType: overrides.operationType || NIKODEM_DEFAULTS.operationType,
+    number: overrides.number || '',
     date,
     expirationDate: overrides.expirationDate || dueDate.toISOString(),
-    notes: overrides.notes || '',
-    footer: overrides.footer || '', // empty → Contasimple uses company default
-    uiCulture: overrides.uiCulture || 'es-ES',
     lines: lines.map(l => ({
-      // Verified working shape (curl-tested directly against api.contasimple.com).
-      // Earlier shotgun-aliases approach (TotalTaxableAmount + Subtotal + ...)
-      // confused the .NET case-insensitive deserializer into dropping the
-      // values to zero. Plain camelCase per Swagger spec is what works.
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
       unitAmount: l.unitNetto,
       quantity: l.qty,
       vatPercentage: l.vatPercentage,
-      vatAmount: l.lineIgic,
-      rePercentage: 0,
-      reAmount: 0,
       totalTaxableAmount: l.lineNetto,
-      discountPercentage: 0,
-      detailedDescription: '',
-      productId: l.contasimpleProductId || 0,
-      productName: l.name,
-      productSku: '',
     })),
   };
 }
