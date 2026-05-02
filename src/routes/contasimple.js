@@ -774,8 +774,15 @@ async function confirmEsPreview(stored) {
     invoiceDate,
     overrides: { number: nextNumber },
   });
+  console.log('[cs invoice-confirm] payload:', JSON.stringify(csPayload));
 
-  const csResult = await cs.createInvoice(period, csPayload);
+  let csResult;
+  try {
+    csResult = await cs.createInvoice(period, csPayload);
+  } catch (e) {
+    e.attemptedPayload = csPayload;
+    throw e;
+  }
   const invoice = csResult && csResult.data;
   if (!invoice || !invoice.id) {
     throw new Error('Contasimple createInvoice returned no data');
@@ -875,7 +882,7 @@ router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
       contasimpleResponse: result.invoice,
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body });
+    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
   }
 }));
 
@@ -896,7 +903,7 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
       contasimpleResponse: result.invoice,
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body });
+    res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
   }
 }));
 
