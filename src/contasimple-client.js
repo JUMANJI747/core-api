@@ -125,7 +125,10 @@ async function csRequest(method, path, queryParams, body) {
   let headers = {
     Authorization: 'Bearer ' + token,
     Accept: 'application/json',
-    'Accept-Language': 'es-ES',
+    // en-US so the .NET deserializer uses invariant culture for numbers —
+    // with es-ES the binder expects "4,5" (comma-separated) for decimal
+    // fields, which silently zeroes-out totalTaxableAmount when we send "4.5".
+    'Accept-Language': 'en-US',
   };
   if (body !== undefined && body !== null) {
     bodyStr = JSON.stringify(body);
