@@ -341,8 +341,21 @@ router.post('/sync-products', asyncHandler(async (req, res) => {
   if (!cs.isConfigured()) {
     return res.status(503).json({ ok: false, error: 'CONTASIMPLE_API_KEY not configured' });
   }
-  const remote = await cs.listAllProducts();
-  const list = (remote && remote.data) || [];
+
+  // Paginate /products (max 300/page per Contasimple limit). /products/all
+  // is not available for this resource (only for entities/customers).
+  const PAGE_SIZE = 300;
+  const list = [];
+  let startIndex = 0;
+  while (true) {
+    const page = await cs.listProducts({ startIndex, numRows: PAGE_SIZE });
+    const chunk = (page && page.data) || [];
+    list.push(...chunk);
+    if (chunk.length < PAGE_SIZE) break;
+    startIndex += PAGE_SIZE;
+    if (startIndex > 5000) break; // safety stop, Nikodem has ~6 products
+  }
+
   let created = 0;
   let updated = 0;
   for (const p of list) {
