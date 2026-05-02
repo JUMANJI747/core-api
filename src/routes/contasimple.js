@@ -381,43 +381,48 @@ router.get('/products', asyncHandler(async (req, res) => {
 // safe to call repeatedly. Uses contasimpleId from the existing products table
 // (must run AFTER /sync-products at least once).
 router.post('/seed-boxes', asyncHandler(async (req, res) => {
-  // Look up Nikodem's product IDs from the local mirror
-  const findIdByName = async (name) => {
+  // Resolve Nikodem's product IDs from the local mirror by short, distinctive
+  // name fragments. Tolerant to naming variations ("SURF MASCARA", "MASCARA
+  // BELL SPF 30", etc.) — only the keyword needs to match.
+  const findIdByFragment = async (fragment) => {
     const p = await prisma.esProduct.findFirst({
-      where: { name: { contains: name, mode: 'insensitive' }, category: 'product' },
+      where: { name: { contains: fragment, mode: 'insensitive' }, category: 'product' },
     });
-    return p ? p.contasimpleId : null;
+    return p ? { id: p.contasimpleId, name: p.name } : null;
   };
 
-  const stickId = await findIdByName('SURF STICK BELL');
-  const lipId = await findIdByName('SURF LIP BALM');
-  const dailyId = await findIdByName('SURF DAILY');
-  const careId = await findIdByName('SURF CARE');
-  const gelId = await findIdByName('SURF EXTREME GEL');
+  const stick = await findIdByFragment('STICK');
+  const lip = await findIdByFragment('LIP BALM');
+  const daily = await findIdByFragment('DAILY');
+  const care = await findIdByFragment('CARE');
+  const gel = await findIdByFragment('EXTREME GEL');
+  const mascara = await findIdByFragment('MASCARA');
+
+  const missing = [];
+  for (const [k, v] of Object.entries({ stick, lip, daily, care, gel, mascara })) {
+    if (!v) missing.push(k);
+  }
 
   const boxes = [
     {
       ean: 'BOX-STICK-ES',
       name: 'BOX SURF STICK',
-      composition: [{ name: 'SURF STICK BELL SPF 50+', contasimpleId: stickId, qty: 30 }],
+      composition: [{ name: stick && stick.name, contasimpleId: stick && stick.id, qty: 30 }],
     },
     {
       ean: 'BOX-COLLECTION-ES',
       name: 'BOX COLLECTION',
       composition: [
-        { name: 'SURF LIP BALM BELL SPF 50+', contasimpleId: lipId, qty: 12 },
-        { name: 'SURF DAILY BELL SPF 50+', contasimpleId: dailyId, qty: 6 },
-        { name: 'SURF EXTREME GEL BELL SPF 50+', contasimpleId: gelId, qty: 6 },
-        { name: 'SURF CARE BELL', contasimpleId: careId, qty: 6 },
+        { name: lip && lip.name, contasimpleId: lip && lip.id, qty: 12 },
+        { name: daily && daily.name, contasimpleId: daily && daily.id, qty: 6 },
+        { name: gel && gel.name, contasimpleId: gel && gel.id, qty: 6 },
+        { name: care && care.name, contasimpleId: care && care.id, qty: 6 },
       ],
     },
     {
-      // Mascara not in Contasimple yet — placeholder. When Nikodem adds the
-      // product in Contasimple UI, /sync-products will pick it up and the
-      // composition entry below will resolve via name lookup at expand time.
       ean: 'BOX-MASCARA-ES',
       name: 'BOX SURF MASCARA',
-      composition: [{ name: 'SURF MASCARA BELL', contasimpleId: null, qty: 30 }],
+      composition: [{ name: mascara && mascara.name, contasimpleId: mascara && mascara.id, qty: 30 }],
     },
   ];
 
@@ -435,13 +440,13 @@ router.post('/seed-boxes', asyncHandler(async (req, res) => {
     const existing = await prisma.esProduct.findUnique({ where: { ean: b.ean } });
     if (existing) {
       await prisma.esProduct.update({ where: { id: existing.id }, data });
-      results.push({ ean: b.ean, action: 'updated', totalQty });
+      results.push({ ean: b.ean, action: 'updated', totalQty, composition: b.composition });
     } else {
       await prisma.esProduct.create({ data });
-      results.push({ ean: b.ean, action: 'created', totalQty });
+      results.push({ ean: b.ean, action: 'created', totalQty, composition: b.composition });
     }
   }
-  res.json({ ok: true, boxes: results });
+  res.json({ ok: true, boxes: results, missingProducts: missing });
 }));
 
 // ============ CUSTOMER VERIFY-CIF ============
