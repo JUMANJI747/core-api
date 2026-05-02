@@ -304,10 +304,15 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
     date,
     expirationDate: overrides.expirationDate || dueDate.toISOString(),
     lines: lines.map(l => ({
+      // Verified working shape (curl-tested directly + first real invoice
+      // 2026-0056 issued via API). vatAmount must be sent — Contasimple does
+      // NOT auto-compute it from vatPercentage; without it totalVatAmount
+      // ends up as 0 on the issued invoice (visible on the PDF as no IGIC).
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
       unitAmount: l.unitNetto,
       quantity: l.qty,
       vatPercentage: l.vatPercentage,
+      vatAmount: l.lineIgic,
       totalTaxableAmount: l.lineNetto,
     })),
   };
