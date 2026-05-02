@@ -1052,7 +1052,7 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
 }));
 
 async function executeDeleteForPreview(stored) {
-  const { period, invoices } = stored;
+  const { period, invoices, contractor } = stored;
   const results = [];
   for (const inv of invoices) {
     try {
@@ -1083,7 +1083,58 @@ async function executeDeleteForPreview(stored) {
       });
     }
   }
-  return { period, totalRequested: invoices.length, results };
+
+  const deleted = results.filter(r => r.status === 'deleted');
+  const failed = results.filter(r => r.status === 'failed');
+
+  // Telegram notification (text, not PDF — confirms what was actually deleted
+  // verbatim per Contasimple's own response). Same telegram_chat_id_es →
+  // telegram_chat_id fallback chain as the create flow.
+  let tgSent = false;
+  let tgError = null;
+  try {
+    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgChat = tgChatCfg && tgChatCfg.value;
+    if (!tgToken) tgError = 'telegram_bot_token missing in Config';
+    else if (!tgChat) tgError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
+    else {
+      const lines = [];
+      if (deleted.length) {
+        const header = contractor && contractor.name
+          ? `Skasowano ${deleted.length} FV dla ${contractor.name}:`
+          : `Skasowano ${deleted.length} FV:`;
+        lines.push(header);
+        for (const d of deleted) {
+          lines.push(`- ${d.number} (${d.totalAmount} €)`);
+        }
+        const totalSum = deleted.reduce((s, d) => s + (Number(d.totalAmount) || 0), 0);
+        lines.push(`Razem: ${totalSum.toFixed(2)} €`);
+      }
+      if (failed.length) {
+        if (deleted.length) lines.push('');
+        lines.push(`Nie udało się skasować ${failed.length}:`);
+        for (const f of failed) {
+          lines.push(`- ${f.number}: ${f.error || 'unknown'}`);
+        }
+      }
+      const text = lines.join('\n');
+      const tgResp = await sendTelegram(tgToken, tgChat, text);
+      if (tgResp && tgResp.ok) {
+        tgSent = true;
+      } else {
+        tgError = `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})`;
+        console.error('[cs delete-confirm] Telegram returned not-ok:', JSON.stringify(tgResp));
+      }
+    }
+  } catch (tgErr) {
+    tgError = tgErr.message;
+    console.error('[cs delete-confirm] Telegram notify threw:', tgErr.message);
+  }
+
+  return { period, totalRequested: invoices.length, results, tgSent, tgError };
 }
 
 router.post('/delete-confirm-latest', asyncHandler(async (req, res) => {
@@ -1129,6 +1180,8 @@ router.post('/delete-confirm-latest', asyncHandler(async (req, res) => {
     totalRequested: out.totalRequested,
     totalDeleted: deleted.length,
     totalFailed: failed.length,
+    tgSent: out.tgSent,
+    tgError: out.tgError,
     results: out.results,
   });
 }));
@@ -1151,6 +1204,8 @@ router.post('/delete-confirm', asyncHandler(async (req, res) => {
     totalRequested: out.totalRequested,
     totalDeleted: deleted.length,
     totalFailed: failed.length,
+    tgSent: out.tgSent,
+    tgError: out.tgError,
     results: out.results,
   });
 }));
