@@ -1274,8 +1274,8 @@ router.post('/glob/order', async (req, res) => {
         const labelResult = await getOrderLabels(orderHash, 'A4');
         const pdfBuffer = labelResult && labelResult.body;
         if (pdfBuffer && pdfBuffer.length > 100) {
-          const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
-          const tgChat = process.env.TELEGRAM_CHAT_ID || '8164528644';
+          const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+          const tgChat = process.env.TELEGRAM_CHAT_ID;
           if (tgToken && tgChat) {
             const orderNum = result.number || orderHash.slice(0, 12);
             const boundary = '----FormBoundary' + Date.now();

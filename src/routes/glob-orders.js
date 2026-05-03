@@ -162,8 +162,8 @@ router.post('/glob/send-label', async (req, res) => {
     const { hash: hashOrNumber, chatId, caption } = req.body || {};
     if (!hashOrNumber) return res.status(400).json({ ok: false, error: 'Brak hash / numeru zamówienia' });
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN || '8359714766:AAHHE2bStorakXZRSaxtxZl69EqJWA_GlC4';
-    const tgChat = chatId || process.env.TELEGRAM_CHAT_ID || '8164528644';
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const tgChat = chatId || process.env.TELEGRAM_CHAT_ID;
     if (!tgToken || !tgChat) return res.status(500).json({ ok: false, error: 'Brak konfiguracji Telegram' });
 
     // Resolve hash from order number if needed. Real GK hashes are long
