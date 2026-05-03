@@ -2,8 +2,13 @@
 
 const https = require('https');
 
-async function sendTelegram(botToken, chatId, text) {
-  const body = Buffer.from(JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }));
+async function sendTelegram(botToken, chatId, text, opts = {}) {
+  // Default to plain text. parse_mode='HTML' chokes on Markdown-style **bold**
+  // that LLMs love to emit ("Can't find end of the entity"). Caller can opt
+  // back into HTML or MarkdownV2 if they hand-craft escaped content.
+  const payload = { chat_id: chatId, text };
+  if (opts.parseMode) payload.parse_mode = opts.parseMode;
+  const body = Buffer.from(JSON.stringify(payload));
   return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: 'api.telegram.org',
