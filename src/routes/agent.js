@@ -4,6 +4,7 @@ const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
 const { processLogisticsQuery } = require('../services/logistics-agent');
 const { processAccountingQuery } = require('../services/accounting-agent');
+const { processAccountingEsQuery } = require('../services/accounting-agent-es');
 const { processCommunicationQuery } = require('../services/communication-agent');
 const { processOperationsQuery } = require('../services/operations-agent');
 
@@ -25,6 +26,15 @@ router.post('/agent/accounting', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'query (string) required' });
   }
   const result = await processAccountingQuery(query);
+  res.json(result);
+}));
+
+router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
+  const { query } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'query (string) required' });
+  }
+  const result = await processAccountingEsQuery(query);
   res.json(result);
 }));
 

@@ -1221,6 +1221,103 @@ router.post('/delete-confirm', asyncHandler(async (req, res) => {
   });
 }));
 
+// ============ CONVENIENCE ENDPOINTS FOR AGENT ============
+//
+// The raw API exposes /invoices/:id/send and /invoices/:id/pdf, both keyed
+// by Contasimple's numeric id and requiring an explicit ?period=. The agent
+// usually only knows a human-readable invoice number ("2026-0056") at the
+// moment of the request, so these wrappers resolve the rest.
+
+async function resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period }) {
+  if (contasimpleId) {
+    const p = period || cs.dateToPeriod(new Date());
+    try {
+      const r = await cs.getInvoice(p, contasimpleId);
+      const data = r && r.data ? r.data : r;
+      return { id: data.id, period: data.period || p, data };
+    } catch (e) {
+      if (e.status === 404) return null;
+      throw e;
+    }
+  }
+  if (invoiceNumber) {
+    // Try current quarter first, then fall back to a few prior quarters.
+    const today = new Date();
+    const candidates = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i * 3, 1);
+      candidates.push(cs.dateToPeriod(d));
+    }
+    if (period) candidates.unshift(period);
+    const seen = new Set();
+    for (const p of candidates) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      try {
+        const r = await cs.searchInvoiceByNumber(p, invoiceNumber);
+        const list = (r && r.data) || [];
+        if (list.length) {
+          const inv = list[0];
+          return { id: inv.id, period: inv.period || p, data: inv };
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+  return null;
+}
+
+router.post('/send-invoice-email', asyncHandler(async (req, res) => {
+  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail, replyTo, blindCopy, subject, body: emailBody } = req.body || {};
+  if (!toEmail) return res.status(400).json({ error: 'toEmail required' });
+  const resolved = await resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period: bodyPeriod });
+  if (!resolved) {
+    return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
+  }
+  const apiResp = await cs.sendInvoiceEmail(resolved.period, resolved.id, {
+    to: toEmail, replyTo, blindCopy, subject, body: emailBody,
+  });
+  res.json({
+    ok: true,
+    invoiceNumber: resolved.data.number || invoiceNumber,
+    invoiceId: resolved.id,
+    period: resolved.period,
+    to: toEmail,
+    contasimpleResponse: apiResp,
+  });
+}));
+
+router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
+  const { invoiceNumber, contasimpleId, period: bodyPeriod } = req.body || {};
+  const resolved = await resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period: bodyPeriod });
+  if (!resolved) {
+    return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
+  }
+  const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+  const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+    || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+  const tgToken = tgTokenCfg && tgTokenCfg.value;
+  const tgChat = tgChatCfg && tgChatCfg.value;
+  if (!tgToken) return res.status(503).json({ error: 'telegram_bot_token missing' });
+  if (!tgChat) return res.status(503).json({ error: 'telegram_chat_id missing' });
+
+  const { buffer } = await cs.fetchInvoicePdf(resolved.period, resolved.id);
+  const number = resolved.data.number || String(resolved.id);
+  const customer = (resolved.data.target && resolved.data.target.organization) || '';
+  const total = resolved.data.totalAmount;
+  const filename = `factura_${number.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+  const caption = `Factura ${number}${customer ? ` — ${customer}` : ''}${total != null ? ` (${total} €)` : ''}`;
+  const tgResp = await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
+  if (!tgResp || !tgResp.ok) {
+    return res.status(502).json({
+      ok: false,
+      error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'}`,
+      invoiceNumber: number,
+    });
+  }
+  res.json({ ok: true, invoiceNumber: number, invoiceId: resolved.id, period: resolved.period, pdfSent: true });
+}));
+
 // ============ HELPERS ============
 
 router.get('/_period', asyncHandler(async (req, res) => {
