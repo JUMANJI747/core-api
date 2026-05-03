@@ -283,6 +283,14 @@ const NIKODEM_DEFAULTS = {
   invoiceClass: 700, // "Venta de mercaderías"
   operationType: 'Nacional',
   paymentTermDays: 7,
+  // Footer used on Nikodem's existing invoices (verbatim from FV 2026-0043 etc.).
+  // Override per-invoice via overrides.footer, or globally via Config row
+  // contasimple_invoice_footer.
+  footer:
+    'Forma de pago\r\n' +
+    'Transferencia bancaria, 7 dias\r\n' +
+    'IBAN: ES6021001523470200599397\r\n' +
+    'BIC: CAIXESBBXXX',
 };
 
 function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides = {} }) {
@@ -303,6 +311,7 @@ function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides
     number: overrides.number || '',
     date,
     expirationDate: overrides.expirationDate || dueDate.toISOString(),
+    footer: overrides.footer != null ? overrides.footer : NIKODEM_DEFAULTS.footer,
     lines: lines.map(l => ({
       // Verified working shape (curl-tested directly + first real invoice
       // 2026-0056 issued via API). vatAmount must be sent — Contasimple does

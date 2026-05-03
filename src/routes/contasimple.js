@@ -758,6 +758,14 @@ async function confirmEsPreview(stored) {
   const { preview, contractor, lines, invoiceDate } = stored;
   const period = preview.period;
 
+  // Optional footer override from Config (lets Nikodem change IBAN without
+  // a deploy by setting Config key `contasimple_invoice_footer`).
+  let footerOverride = null;
+  try {
+    const cfg = await prisma.config.findUnique({ where: { key: 'contasimple_invoice_footer' } });
+    if (cfg && cfg.value) footerOverride = cfg.value;
+  } catch (_) {}
+
   // Contasimple requires `number` in POST body — UI auto-generates it but
   // the API does not, so we fetch the next available one from the configured
   // series first.
@@ -776,7 +784,10 @@ async function confirmEsPreview(stored) {
     targetEntityId: contractor.contasimpleId,
     lines,
     invoiceDate,
-    overrides: { number: nextNumber },
+    overrides: {
+      number: nextNumber,
+      ...(footerOverride != null ? { footer: footerOverride } : {}),
+    },
   });
   console.log('[cs invoice-confirm] payload:', JSON.stringify(csPayload));
 
