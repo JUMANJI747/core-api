@@ -1005,6 +1005,36 @@ router.post('/glob/order', async (req, res) => {
       return Array.from(ids);
     }
 
+    // Mutex addon groups: GlobKurier requires EXACTLY ONE from each group.
+    // Picking both (or none) gets rejected with "Dodatek nie może być wybrany
+    // we wskazanej grupie". Resolved by inspecting the receiver name for a
+    // legal-form suffix (S.L., GmbH, Ltd, Sp. z o.o. ...) — company → 1310,
+    // otherwise → 1311 (private individual).
+    const ADDON_MUTEX_GROUPS = [
+      { ids: [1310, 1311], company: 1310, person: 1311 },
+    ];
+
+    function isCompanyName(name) {
+      if (!name) return false;
+      return /\b(S\.?\s*L\.?(\s*U\.?)?|S\.?\s*A\.?|S\.?\s*A\.?\s*S\.?|GMBH|LTD\.?|LLC|INC\.?|CORP\.?|B\.?V\.?|N\.?V\.?|A\.?B\.?|A\.?S\.?|O\.?Y\.?|S\.?R\.?L\.?|S\.?R\.?L\.?\s*U|LDA\.?|SP\.?\s*Z\s*O\.?\s*O\.?|SP\.?\s*J\.?|SP\.?\s*K\.?)\b/i.test(name);
+    }
+
+    function applyAddonMutexGroups(addonsList, receiverName) {
+      const ids = new Set(addonsList.map(a => parseInt(a.id)));
+      const isCompany = isCompanyName(receiverName);
+      let changed = false;
+      for (const group of ADDON_MUTEX_GROUPS) {
+        const present = group.ids.filter(id => ids.has(id));
+        if (present.length > 1) {
+          const wanted = isCompany ? group.company : group.person;
+          for (const id of group.ids) if (id !== wanted) ids.delete(id);
+          changed = true;
+        }
+      }
+      if (!changed) return addonsList;
+      return Array.from(ids).map(id => ({ id }));
+    }
+
     async function createOrderWithAddonRetry(payload) {
       let r = await createOrder(payload);
       for (let i = 0; i < 2; i++) {
@@ -1018,6 +1048,12 @@ router.post('/glob/order', async (req, res) => {
           if (!existing.has(id)) { payload.addons.push({ id }); existing.add(id); added = true; }
         }
         if (!added) break;
+        // Resolve mutex groups (e.g. company-vs-individual delivery): pick
+        // exactly one based on receiver legal-form detection.
+        payload.addons = applyAddonMutexGroups(
+          payload.addons,
+          (payload.receiverAddress && payload.receiverAddress.name) || ''
+        );
         console.log('[glob/order] Auto-fixing addons from error, retrying with:', JSON.stringify(payload.addons));
         r = await createOrder(payload);
       }
