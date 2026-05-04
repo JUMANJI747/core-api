@@ -1342,11 +1342,44 @@ async function buildEsEmailFromTemplate({ culture, customer, invoice, signature 
 }
 
 router.post('/send-invoice-email', asyncHandler(async (req, res) => {
-  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail, replyTo, blindCopy, subject, body: emailBody, language } = req.body || {};
-  if (!toEmail) return res.status(400).json({ error: 'toEmail required' });
+  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail: bodyToEmail, replyTo, blindCopy, subject, body: emailBody, language } = req.body || {};
   const resolved = await resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period: bodyPeriod });
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
+  }
+
+  // Auto-fetch email from local EsContractor (synced from Contasimple) if
+  // caller didn't supply it. Lets the agent say "wyślij fv 2026-0058 mailem
+  // do Folkertsa" without having to memorize email addresses.
+  let toEmail = bodyToEmail;
+  let emailSource = 'request';
+  if (!toEmail) {
+    const targetEntity = resolved.data.target || {};
+    let customer = null;
+    if (targetEntity.id) {
+      customer = await prisma.esContractor.findUnique({ where: { contasimpleId: targetEntity.id } });
+    }
+    if (!customer && targetEntity.nif) {
+      customer = await prisma.esContractor.findFirst({ where: { nif: targetEntity.nif } });
+    }
+    if (customer && customer.email) {
+      toEmail = customer.email;
+      emailSource = 'contractor';
+    } else if (targetEntity.email) {
+      toEmail = targetEntity.email;
+      emailSource = 'invoice';
+    }
+  }
+  if (!toEmail) {
+    return res.status(400).json({
+      error: 'no email available',
+      hint: 'Klient nie ma maila w bazie. Podaj toEmail explicit albo uzupełnij EsContractor.email.',
+      customer: resolved.data.target && {
+        id: resolved.data.target.id,
+        organization: resolved.data.target.organization,
+        nif: resolved.data.target.nif,
+      },
+    });
   }
 
   // If caller didn't provide subject/body — generate from template using
@@ -1398,6 +1431,7 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
     invoiceId: resolved.id,
     period: resolved.period,
     to: toEmail,
+    emailSource,
     subject: finalSubject,
     body: finalBody,
     templateUsed,

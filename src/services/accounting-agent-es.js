@@ -144,17 +144,16 @@ const tools = [
   {
     name: 'cs_invoice_send_email',
     description:
-      'Wyślij FV mailem do klienta przez Contasimple. From = adres firmy Nikodema (skonfigurowany w UI Contasimple). Akceptuje invoiceNumber lub contasimpleId.',
+      'Wyślij FV mailem do klienta przez Contasimple. From = adres firmy Nikodema (skonfigurowany w UI Contasimple). Akceptuje invoiceNumber lub contasimpleId. **toEmail OPCJONALNY** — backend automatycznie znajdzie adres klienta w bazie EsContractor (synced z Contasimple). Tylko jak user explicit podaje inny adres — przekaż w toEmail.',
     input_schema: {
       type: 'object',
       properties: {
         invoiceNumber: { type: 'string', description: 'Pełny numer FV np. "2026-0056"' },
         contasimpleId: { type: 'number' },
-        toEmail: { type: 'string' },
+        toEmail: { type: 'string', description: 'Opcjonalne — backend znajdzie w bazie klienta jeśli pusty' },
         subject: { type: 'string' },
         body: { type: 'string' },
       },
-      required: ['toEmail'],
     },
   },
   {
