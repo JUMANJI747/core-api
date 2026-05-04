@@ -720,7 +720,7 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   };
 
   const previewId = crypto.randomUUID();
-  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body });
+  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body, chatId: body.chatId || null });
 
   prisma.agentContext
     .upsert({
@@ -755,7 +755,7 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
 // ============ INVOICE CONFIRM ============
 
 async function confirmEsPreview(stored) {
-  const { preview, contractor, lines, invoiceDate } = stored;
+  const { preview, contractor, lines, invoiceDate, chatId: storedChatId } = stored;
   const period = preview.period;
 
   // Optional footer override from Config (lets Nikodem change IBAN without
@@ -837,8 +837,10 @@ async function confirmEsPreview(stored) {
   let pdfError = null;
   try {
     const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgChatCfg = storedChatId
+      ? { value: String(storedChatId) }
+      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+        || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
     const tgToken = tgTokenCfg && tgTokenCfg.value;
     const tgChat = tgChatCfg && tgChatCfg.value;
     if (!tgToken) pdfError = 'telegram_bot_token missing in Config';
@@ -1017,7 +1019,7 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
   }));
 
   const previewId = crypto.randomUUID();
-  saveEsDeletePreview(previewId, { period, invoices: found, summary, contractor: contractorInfo });
+  saveEsDeletePreview(previewId, { period, invoices: found, summary, contractor: contractorInfo, chatId: body.chatId || null });
 
   prisma.agentContext
     .upsert({
@@ -1063,7 +1065,7 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
 }));
 
 async function executeDeleteForPreview(stored) {
-  const { period, invoices, contractor } = stored;
+  const { period, invoices, contractor, chatId: storedChatId } = stored;
   const results = [];
   for (const inv of invoices) {
     try {
@@ -1105,8 +1107,10 @@ async function executeDeleteForPreview(stored) {
   let tgError = null;
   try {
     const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgChatCfg = storedChatId
+      ? { value: String(storedChatId) }
+      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+        || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
     const tgToken = tgTokenCfg && tgTokenCfg.value;
     const tgChat = tgChatCfg && tgChatCfg.value;
     if (!tgToken) tgError = 'telegram_bot_token missing in Config';
@@ -1408,8 +1412,10 @@ router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
   }
   const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-  const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-    || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+  const tgChatCfg = req.body && req.body.chatId
+    ? { value: String(req.body.chatId) }
+    : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
+      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
   const tgToken = tgTokenCfg && tgTokenCfg.value;
   const tgChat = tgChatCfg && tgChatCfg.value;
   if (!tgToken) return res.status(503).json({ error: 'telegram_bot_token missing' });

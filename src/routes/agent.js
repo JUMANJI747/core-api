@@ -30,11 +30,11 @@ router.post('/agent/accounting', asyncHandler(async (req, res) => {
 }));
 
 router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
-  const { query } = req.body || {};
+  const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
-  const result = await processAccountingEsQuery(query);
+  const result = await processAccountingEsQuery(query, { chatId });
   res.json(result);
 }));
 

@@ -275,12 +275,16 @@ function selfCall(method, path, body) {
   });
 }
 
-async function executeTool(name, input) {
+async function executeTool(name, input, ctx = {}) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
   const [method, path] = ep;
+  // Inject ctx.chatId on every body so endpoints that send Telegram (confirm,
+  // delete-confirm, resend-pdf-telegram) deliver to the user who actually
+  // initiated the request, not the global telegram_chat_id_es from Config.
+  const body = method === 'GET' ? input : { ...(input || {}), ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
   try {
-    const resp = await selfCall(method, path, input);
+    const resp = await selfCall(method, path, body);
     return resp.body;
   } catch (err) {
     console.error(`[accounting-agent-es] tool ${name} error:`, err.message);
@@ -301,7 +305,7 @@ const PDF_TELEGRAM_INTENT_RE = new RegExp(
 const DELETE_INTENT = /\b(skasuj|usu[nń]|skasowa[ćc]|elimina|borra|cancela)\b/i;
 const SYNC_INTENT = /\bsynchron|\bsync\b|sincroniz/i;
 
-async function processAccountingEsQuery(query) {
+async function processAccountingEsQuery(query, opts = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   }
@@ -309,6 +313,7 @@ async function processAccountingEsQuery(query) {
     return { text: 'Brak query.', error: 'no_query' };
   }
 
+  const ctx = { chatId: opts.chatId || null };
   const messages = [{ role: 'user', content: query }];
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query)) {
@@ -344,7 +349,7 @@ async function processAccountingEsQuery(query) {
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
       console.log(`[accounting-agent-es] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input);
+      const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,
