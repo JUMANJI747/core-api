@@ -1859,10 +1859,16 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     const display = c.organization || [c.firstname, c.lastname].filter(Boolean).join(' ') || c.name || '';
     const customerTokens = tokenize(display);
 
+    const inboxEntry = uniqueEmails.find(u => u.email === email);
+    const inboxContext = inboxEntry
+      ? { displayName: inboxEntry.name, subjects: inboxEntry.subjects, count: inboxEntry.count }
+      : null;
+    const reasoning = m.reasoning || null;
+
     // Guard 1: blocklist domen
     const domain = email.split('@')[1] || '';
     if (DOMAIN_BLOCKLIST.some(d => domain === d || domain.endsWith('.' + d))) {
-      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'blocklisted_domain' });
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'blocklisted_domain', reasoning, inboxContext });
       continue;
     }
 
@@ -1870,16 +1876,15 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     const sharers = emailGroups.get(email) || [];
     const uniqueNifs = new Set(sharers.map(x => x.nif).filter(Boolean));
     if (uniqueNifs.size > 1) {
-      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'shared_across_distinct_companies', sharedWith: sharers.map(s => s.organization || s.name).filter(x => x !== display) });
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'shared_across_distinct_companies', sharedWith: sharers.map(s => s.organization || s.name).filter(x => x !== display), reasoning, inboxContext });
       continue;
     }
 
     // Guard 3: brak jakiegokolwiek tokenu nazwy w email lub display
-    const inboxEntry = uniqueEmails.find(u => u.email === email);
     const haystack = (email + ' ' + (inboxEntry ? inboxEntry.name : '') + ' ' + (inboxEntry ? inboxEntry.subjects.join(' ') : '')).toLowerCase();
     const tokenHit = customerTokens.some(t => haystack.includes(t));
     if (customerTokens.length > 0 && !tokenHit) {
-      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'no_customer_token_in_email_or_displayname' });
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'no_customer_token_in_email_or_displayname', reasoning, inboxContext });
       continue;
     }
 
