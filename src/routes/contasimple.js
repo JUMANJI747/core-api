@@ -1472,6 +1472,169 @@ router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
   res.json({ ok: true, invoiceNumber: number, invoiceId: resolved.id, period: resolved.period, pdfSent: true });
 }));
 
+// ============ EMAIL BACKFILL FROM INBOX HISTORY ============
+//
+// Nikodem rarely fills the customer email field in Contasimple (only ~5% of
+// 121 customers have one). This endpoint scans an IMAP-synced inbox (e.g.
+// "nikodem") and matches incoming emails to EsContractor rows by company
+// name in the sender's display name or email domain. Confident matches are
+// upserted onto EsContractor.email; ambiguous matches (multiple distinct
+// emails for the same customer) are reported but skipped.
+
+function normalizeNameForMatch(s) {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[áàä]/g, 'a').replace(/[éèë]/g, 'e').replace(/[íìï]/g, 'i')
+    .replace(/[óòö]/g, 'o').replace(/[úùü]/g, 'u').replace(/ñ/g, 'n')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\b(sl|slu|sa|sas|lda|gmbh|ltd|llc|inc|corp|bv|nv|ab|as|oy|srl|spz|spzoo)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+router.get('/_inbox-stats', asyncHandler(async (req, res) => {
+  const stats = await prisma.email.groupBy({
+    by: ['inbox', 'direction'],
+    _count: { _all: true },
+    orderBy: [{ inbox: 'asc' }, { direction: 'asc' }],
+  });
+  res.json({ stats });
+}));
+
+router.post('/sync-emails-from-inbox', asyncHandler(async (req, res) => {
+  const { inbox = 'nikodem', dryRun = false, includeOutbound = true } = req.body || {};
+
+  const emailWhere = { inbox };
+  // Inbound: fromEmail is the customer. Outbound: toEmail is the customer.
+  // We pull both and key on the right side per record.
+  const emails = await prisma.email.findMany({
+    where: emailWhere,
+    select: {
+      id: true,
+      direction: true,
+      fromEmail: true,
+      fromName: true,
+      toEmail: true,
+      subject: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const contractors = await prisma.esContractor.findMany({
+    where: { OR: [{ email: null }, { email: '' }] },
+    select: { id: true, name: true, organization: true, firstname: true, lastname: true, nif: true },
+  });
+
+  // For each contractor, find candidate customer emails from inbox by
+  // matching the contractor's distinct words against fromName / domain
+  // (inbound) or subject / toEmail (outbound).
+  const plan = [];
+  for (const c of contractors) {
+    const fullName =
+      c.organization ||
+      [c.firstname, c.lastname].filter(Boolean).join(' ') ||
+      c.name ||
+      '';
+    const cName = normalizeNameForMatch(fullName);
+    if (!cName) continue;
+    const cWords = cName.split(' ').filter(w => w.length >= 4);
+    if (!cWords.length) continue;
+
+    const candidateEmails = new Map(); // email → match count
+    for (const em of emails) {
+      const isInbound = em.direction === 'INBOUND';
+      const isOutbound = em.direction === 'OUTBOUND';
+      if (!isInbound && !(isOutbound && includeOutbound)) continue;
+
+      let customerEmail = null;
+      let haystack = '';
+      if (isInbound) {
+        customerEmail = em.fromEmail;
+        const fromDomain = ((em.fromEmail || '').split('@')[1] || '').replace(/\./g, ' ');
+        haystack = normalizeNameForMatch(`${em.fromName || ''} ${fromDomain} ${em.subject || ''}`);
+      } else {
+        customerEmail = em.toEmail;
+        const toDomain = ((em.toEmail || '').split('@')[1] || '').replace(/\./g, ' ');
+        haystack = normalizeNameForMatch(`${toDomain} ${em.subject || ''}`);
+      }
+      if (!customerEmail || !haystack) continue;
+
+      const allWordsMatch = cWords.every(w => haystack.includes(w));
+      if (!allWordsMatch) continue;
+
+      candidateEmails.set(customerEmail, (candidateEmails.get(customerEmail) || 0) + 1);
+    }
+
+    if (candidateEmails.size === 0) continue;
+
+    // Pick the most-frequent match. Tie-break: prefer non-noreply / non-info.
+    const sorted = [...candidateEmails.entries()].sort((a, b) => {
+      const aIsGeneric = /noreply|no-reply|info@|admin@|postmaster/i.test(a[0]);
+      const bIsGeneric = /noreply|no-reply|info@|admin@|postmaster/i.test(b[0]);
+      if (aIsGeneric !== bIsGeneric) return aIsGeneric ? 1 : -1;
+      return b[1] - a[1];
+    });
+
+    if (sorted.length === 1) {
+      plan.push({
+        contractorId: c.id,
+        contractorName: fullName,
+        nif: c.nif,
+        email: sorted[0][0],
+        hits: sorted[0][1],
+        action: 'update',
+      });
+    } else {
+      // Multiple distinct emails — keep the top one but flag.
+      plan.push({
+        contractorId: c.id,
+        contractorName: fullName,
+        nif: c.nif,
+        email: sorted[0][0],
+        hits: sorted[0][1],
+        candidates: sorted.map(([em, n]) => ({ email: em, hits: n })),
+        action: 'update_top_pick',
+      });
+    }
+  }
+
+  if (dryRun) {
+    return res.json({
+      ok: true,
+      dryRun: true,
+      inbox,
+      emailsScanned: emails.length,
+      contractorsWithoutEmail: contractors.length,
+      planSize: plan.length,
+      plan,
+    });
+  }
+
+  let updated = 0;
+  for (const item of plan) {
+    try {
+      await prisma.esContractor.update({
+        where: { id: item.contractorId },
+        data: { email: item.email },
+      });
+      updated++;
+    } catch (e) {
+      console.error('[cs sync-emails] update failed for', item.contractorId, e.message);
+    }
+  }
+  res.json({
+    ok: true,
+    dryRun: false,
+    inbox,
+    emailsScanned: emails.length,
+    contractorsWithoutEmail: contractors.length,
+    updated,
+    ambiguous: plan.filter(p => p.action === 'update_top_pick').length,
+  });
+}));
+
 // ============ HELPERS ============
 
 router.get('/_period', asyncHandler(async (req, res) => {
