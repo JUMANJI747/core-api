@@ -225,6 +225,21 @@ const tools = [
       'Pobierz kontekst poprzedniej operacji ES (lastAction, lastInvoiceContasimpleId, lastInvoiceNumber, deletePreviewId itp.). Wywołaj gdy user pisze krótkie polecenie bez konkretu (tak/ok/wyślij).',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'cs_set_email',
+    description:
+      'Ustaw adres email kontrahenta w lokalnej bazie EsContractor. Używaj gdy user mówi "ustaw email Folkertsa na X" / "zapisz mail klienta Y: Z" / "email do X to Y". Identyfikuje kontrahenta po NIF, organization (fragment nazwy) lub contasimpleId. Gdy fragment nazwy pasuje do >1 firmy, zwraca matches[] do wybrania.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        email: { type: 'string', description: 'Nowy adres email (wymagane)' },
+        nif: { type: 'string', description: 'NIF/CIF kontrahenta (najpewniejsze)' },
+        contasimpleId: { type: 'number', description: 'ID kontrahenta w Contasimple' },
+        organization: { type: 'string', description: 'Fragment nazwy firmy (fuzzy match)' },
+      },
+      required: ['email'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -239,6 +254,7 @@ const ENDPOINT_MAP = {
   cs_list_invoices: ['GET', '/api/contasimple/invoices'],
   cs_sync_customers: ['POST', '/api/contasimple/sync-customers'],
   cs_get_context: ['GET', '/api/agent-context/ksiegowosc-es'],
+  cs_set_email: ['POST', '/api/contasimple/set-customer-email'],
 };
 
 function selfCall(method, path, body) {

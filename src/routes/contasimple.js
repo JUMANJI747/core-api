@@ -1425,6 +1425,33 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
   const apiResp = await cs.sendInvoiceEmail(resolved.period, resolved.id, {
     to: toEmail, replyTo, blindCopy, subject: finalSubject, body: finalBody,
   });
+
+  // Auto-backfill: jak user podał email ręcznie a kontrahent miał pusty
+  // → zapisz na EsContractor (uczy się z każdego ręcznego wpisu).
+  let backfilled = false;
+  if (emailSource === 'request' && bodyToEmail) {
+    const targetEntity = resolved.data.target || {};
+    let customer = null;
+    if (targetEntity.id) {
+      customer = await prisma.esContractor.findUnique({ where: { contasimpleId: targetEntity.id } });
+    }
+    if (!customer && targetEntity.nif) {
+      customer = await prisma.esContractor.findFirst({ where: { nif: targetEntity.nif } });
+    }
+    if (customer && (!customer.email || customer.email.trim() === '')) {
+      try {
+        await prisma.esContractor.update({
+          where: { id: customer.id },
+          data: { email: toEmail.toLowerCase().trim() },
+        });
+        backfilled = true;
+        console.log(`[cs send-invoice-email] auto-backfilled email for ${customer.organization || customer.name}: ${toEmail}`);
+      } catch (e) {
+        console.error('[cs send-invoice-email] backfill failed:', e.message);
+      }
+    }
+  }
+
   res.json({
     ok: true,
     invoiceNumber: resolved.data.number || invoiceNumber,
@@ -1432,10 +1459,61 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
     period: resolved.period,
     to: toEmail,
     emailSource,
+    backfilled,
     subject: finalSubject,
     body: finalBody,
     templateUsed,
     contasimpleResponse: apiResp,
+  });
+}));
+
+// Bezpośrednie ustawienie maila kontrahenta — agent woła np. gdy user
+// powie "ustaw email Folkertsa na folkerts@gmail.com". Identyfikacja
+// kontrahenta po NIF, contasimpleId albo fragmentcie nazwy (organization).
+router.post('/set-customer-email', asyncHandler(async (req, res) => {
+  const { nif, contasimpleId, organization, email } = req.body || {};
+  if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: 'email (valid format) required' });
+  }
+  let customer = null;
+  if (contasimpleId) {
+    customer = await prisma.esContractor.findUnique({ where: { contasimpleId } });
+  }
+  if (!customer && nif) {
+    customer = await prisma.esContractor.findFirst({ where: { nif } });
+  }
+  if (!customer && organization) {
+    const norm = organization.toLowerCase();
+    const all = await prisma.esContractor.findMany({
+      select: { id: true, organization: true, name: true, nif: true, email: true },
+    });
+    const hits = all.filter(c => {
+      const display = (c.organization || c.name || '').toLowerCase();
+      return display.includes(norm) || norm.includes(display.split(' ')[0]);
+    });
+    if (hits.length === 1) {
+      customer = await prisma.esContractor.findUnique({ where: { id: hits[0].id } });
+    } else if (hits.length > 1) {
+      return res.json({
+        ok: false,
+        error: 'ambiguous organization match',
+        matches: hits.map(h => ({ id: h.id, organization: h.organization || h.name, nif: h.nif, email: h.email })),
+      });
+    }
+  }
+  if (!customer) {
+    return res.status(404).json({ error: 'EsContractor not found by nif/contasimpleId/organization' });
+  }
+  const previousEmail = customer.email;
+  await prisma.esContractor.update({
+    where: { id: customer.id },
+    data: { email: email.toLowerCase().trim() },
+  });
+  res.json({
+    ok: true,
+    contractor: { id: customer.id, organization: customer.organization || customer.name, nif: customer.nif },
+    previousEmail,
+    newEmail: email.toLowerCase().trim(),
   });
 }));
 
