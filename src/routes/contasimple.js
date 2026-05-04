@@ -1635,6 +1635,164 @@ router.post('/sync-emails-from-inbox', asyncHandler(async (req, res) => {
   });
 }));
 
+// AI-driven email→contractor matcher. Uses Claude to fuzzy-match each
+// EsContractor (without email) against every unique sender/recipient seen
+// in the inbox, returning a confidence score. Only matches at or above
+// minConfidence get persisted. Single-shot, scoped to one Anthropic call;
+// works for ~150 contractors × ~500 unique emails per batch comfortably.
+router.post('/ai-match-emails', asyncHandler(async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured' });
+  }
+  const {
+    inbox,
+    dryRun = false,
+    minConfidence = 0.75,
+    model = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929',
+  } = req.body || {};
+  if (!inbox) return res.status(400).json({ error: 'inbox (string) required — e.g. "nikodem"' });
+
+  const emails = await prisma.email.findMany({
+    where: { inbox },
+    select: { fromEmail: true, fromName: true, toEmail: true, subject: true, direction: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!emails.length) {
+    return res.json({ ok: false, error: `no emails in inbox "${inbox}"` });
+  }
+
+  // Aggregate unique customer addresses with their best display name + a few
+  // recent subjects for context.
+  const emailMap = new Map();
+  for (const em of emails) {
+    const key = em.direction === 'INBOUND' ? em.fromEmail : em.toEmail;
+    if (!key) continue;
+    const lower = key.toLowerCase();
+    if (/noreply|no-reply|mailer-daemon|postmaster/i.test(lower)) continue;
+    if (!emailMap.has(lower)) emailMap.set(lower, { name: '', subjects: [], count: 0 });
+    const entry = emailMap.get(lower);
+    entry.count++;
+    if (em.fromName && (!entry.name || em.fromName.length > entry.name.length)) entry.name = em.fromName;
+    if (em.subject && entry.subjects.length < 3 && !entry.subjects.includes(em.subject)) {
+      entry.subjects.push(em.subject);
+    }
+  }
+  const uniqueEmails = [...emailMap.entries()]
+    .map(([email, d]) => ({ email, name: d.name || '', subjects: d.subjects, count: d.count }))
+    .sort((a, b) => b.count - a.count);
+
+  const contractors = await prisma.esContractor.findMany({
+    where: { OR: [{ email: null }, { email: '' }] },
+    select: { id: true, organization: true, firstname: true, lastname: true, name: true, nif: true, city: true, postalCode: true },
+  });
+
+  if (!contractors.length) {
+    return res.json({ ok: true, message: 'all EsContractor rows already have email', updated: 0 });
+  }
+
+  // Build prompt. Indexes are 1-based in the prompt for readability; we map
+  // back to UUIDs server-side.
+  const customerLines = contractors.map((c, i) => {
+    const display = c.organization || [c.firstname, c.lastname].filter(Boolean).join(' ') || c.name;
+    return `${i + 1}. ${display}${c.nif ? ' [' + c.nif + ']' : ''}${c.city ? ' (' + c.city + ')' : ''}`;
+  });
+  const contactLines = uniqueEmails.map(e => {
+    const subjs = e.subjects.length ? ' | ' + e.subjects.join(' / ') : '';
+    return `${e.email}  —  "${e.name}"${subjs}  (×${e.count})`;
+  });
+
+  const prompt =
+    'Match each Spanish/Canary Islands B2B customer below to its most likely email contact. Customers are companies (SL/SA/SLU/etc.) or sole traders. Use fuzzy matching on company name vs sender display name AND email domain.\n\n' +
+    'CUSTOMERS (no email yet):\n' +
+    customerLines.join('\n') +
+    '\n\nCONTACTS FROM INBOX (email — display name — recent subjects — frequency):\n' +
+    contactLines.join('\n') +
+    '\n\nReturn a JSON array of matches. Only include matches you are confident about (skip ambiguous ones). Schema:\n' +
+    '[{"customerIndex": <number from CUSTOMERS list>, "email": "<email from CONTACTS list>", "confidence": <0.0-1.0>, "reasoning": "<short>"}]\n\n' +
+    'Rules:\n' +
+    '- One email per customer (if multiple plausible, pick the highest-confidence).\n' +
+    '- Same email can match multiple customers only if they are clearly the same business under different rows.\n' +
+    `- Skip matches below ${minConfidence} confidence — leave them out of the array entirely.\n` +
+    '- Respond with ONLY the JSON array, no markdown fences, no commentary.';
+
+  const Anthropic = require('@anthropic-ai/sdk');
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const llm = await anthropic.messages.create({
+    model,
+    max_tokens: 8192,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const textBlock = llm.content.find(b => b.type === 'text');
+  const text = textBlock ? textBlock.text : '';
+
+  let matches;
+  try {
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+    const arrStart = cleaned.indexOf('[');
+    const arrEnd = cleaned.lastIndexOf(']');
+    matches = JSON.parse(cleaned.slice(arrStart, arrEnd + 1));
+  } catch (e) {
+    return res.status(502).json({
+      error: 'AI returned non-JSON',
+      rawResponse: text.slice(0, 2000),
+    });
+  }
+
+  const plan = [];
+  for (const m of matches) {
+    if (typeof m.customerIndex !== 'number' || !m.email) continue;
+    if (typeof m.confidence === 'number' && m.confidence < minConfidence) continue;
+    const c = contractors[m.customerIndex - 1];
+    if (!c) continue;
+    plan.push({
+      contractorId: c.id,
+      contractorName: c.organization || c.name,
+      nif: c.nif,
+      email: m.email.toLowerCase().trim(),
+      confidence: m.confidence,
+      reasoning: m.reasoning || null,
+    });
+  }
+
+  if (dryRun) {
+    return res.json({
+      ok: true,
+      dryRun: true,
+      inbox,
+      emailsScanned: emails.length,
+      uniqueContacts: uniqueEmails.length,
+      contractorsWithoutEmail: contractors.length,
+      planSize: plan.length,
+      plan,
+      tokensUsed: llm.usage,
+    });
+  }
+
+  let updated = 0;
+  for (const item of plan) {
+    try {
+      await prisma.esContractor.update({
+        where: { id: item.contractorId },
+        data: { email: item.email },
+      });
+      updated++;
+    } catch (e) {
+      console.error('[cs ai-match-emails] update failed:', item.contractorId, e.message);
+    }
+  }
+
+  res.json({
+    ok: true,
+    inbox,
+    emailsScanned: emails.length,
+    uniqueContacts: uniqueEmails.length,
+    contractorsWithoutEmail: contractors.length,
+    updated,
+    planSize: plan.length,
+    tokensUsed: llm.usage,
+  });
+}));
+
 // ============ HELPERS ============
 
 router.get('/_period', asyncHandler(async (req, res) => {
