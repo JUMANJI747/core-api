@@ -1738,17 +1738,78 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     });
   }
 
-  const plan = [];
+  // ============ SANITY GUARDS ============
+  // AI lubi halucynować dopasowanie po fragmencie nazwy ("PARA..." w trzech
+  // różnych firmach → ten sam mail). Filtrujemy:
+  // 1. Blocklist domen logistycznych/kurierskich/operatorskich.
+  // 2. Wymagamy że jakiś token z nazwy klienta (≥4 znaki) występuje w
+  //    local-part maila, domenie LUB display name skrzynki.
+  // 3. Ten sam email dla wielu klientów z różnymi NIF → odrzucamy wszystkie.
+  const DOMAIN_BLOCKLIST = [
+    'olmed.net.pl', 'dhl.com', 'dhl.pl', 'ups.com', 'fedex.com',
+    'gls-group.com', 'gls-poland.com', 'gls-spain.com', 'inpost.pl',
+    'dpd.com', 'dpd.pl', 'globkurier.pl', 'globkurier.com',
+    'correos.es', 'correos.com', 'sending.es', 'seur.com',
+    'mrw.es', 'nacex.es', 'tipsa.com', 'redyser.com',
+    'kuehne-nagel.com', 'tnt.com', 'postnl.nl', 'amazon.com',
+    'ebay.com', 'paypal.com', 'stripe.com', 'mailchimp.com',
+    'sendgrid.net', 'mailgun.org', 'shopify.com',
+    'noreply.com', 'notification.com',
+  ];
+  const tokenize = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+    .filter(t => t.length >= 4 && !['surf', 'sport', 'gmbh', 'sociedad', 'limitada', 'farma', 'farmacia', 'parafarm', 'shop', 'store', 'company'].includes(t));
+
+  // Najpierw — agreguj plan po emailu żeby wykryć kolizje.
+  const emailGroups = new Map();
+  const rawPlan = [];
   for (const m of matches) {
     if (typeof m.customerIndex !== 'number' || !m.email) continue;
     if (typeof m.confidence === 'number' && m.confidence < minConfidence) continue;
     const c = contractors[m.customerIndex - 1];
     if (!c) continue;
+    rawPlan.push({ m, c });
+    const lower = m.email.toLowerCase().trim();
+    if (!emailGroups.has(lower)) emailGroups.set(lower, []);
+    emailGroups.get(lower).push(c);
+  }
+
+  const plan = [];
+  const rejected = [];
+  for (const { m, c } of rawPlan) {
+    const email = m.email.toLowerCase().trim();
+    const display = c.organization || [c.firstname, c.lastname].filter(Boolean).join(' ') || c.name || '';
+    const customerTokens = tokenize(display);
+
+    // Guard 1: blocklist domen
+    const domain = email.split('@')[1] || '';
+    if (DOMAIN_BLOCKLIST.some(d => domain === d || domain.endsWith('.' + d))) {
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'blocklisted_domain' });
+      continue;
+    }
+
+    // Guard 2: ten sam email do wielu różnych klientów (różne NIF) → drop
+    const sharers = emailGroups.get(email) || [];
+    const uniqueNifs = new Set(sharers.map(x => x.nif).filter(Boolean));
+    if (uniqueNifs.size > 1) {
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'shared_across_distinct_companies', sharedWith: sharers.map(s => s.organization || s.name).filter(x => x !== display) });
+      continue;
+    }
+
+    // Guard 3: brak jakiegokolwiek tokenu nazwy w email lub display
+    const inboxEntry = uniqueEmails.find(u => u.email === email);
+    const haystack = (email + ' ' + (inboxEntry ? inboxEntry.name : '') + ' ' + (inboxEntry ? inboxEntry.subjects.join(' ') : '')).toLowerCase();
+    const tokenHit = customerTokens.some(t => haystack.includes(t));
+    if (customerTokens.length > 0 && !tokenHit) {
+      rejected.push({ contractorName: display, nif: c.nif, email, confidence: m.confidence, reason: 'no_customer_token_in_email_or_displayname' });
+      continue;
+    }
+
     plan.push({
       contractorId: c.id,
-      contractorName: c.organization || c.name,
+      contractorName: display,
       nif: c.nif,
-      email: m.email.toLowerCase().trim(),
+      email,
       confidence: m.confidence,
       reasoning: m.reasoning || null,
     });
@@ -1763,7 +1824,9 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
       uniqueContacts: uniqueEmails.length,
       contractorsWithoutEmail: contractors.length,
       planSize: plan.length,
+      rejectedSize: rejected.length,
       plan,
+      rejected,
       tokensUsed: llm.usage,
     });
   }
@@ -1789,8 +1852,31 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     contractorsWithoutEmail: contractors.length,
     updated,
     planSize: plan.length,
+    rejectedSize: rejected.length,
+    rejected,
     tokensUsed: llm.usage,
   });
+}));
+
+// Cofnięcie błędnych dopasowań — czyści email field na EsContractor
+// dla podanych NIF-ów albo emaili.
+router.post('/clear-emails', asyncHandler(async (req, res) => {
+  const { nifs, emails: emailsToClear } = req.body || {};
+  const where = { OR: [] };
+  if (Array.isArray(nifs) && nifs.length) where.OR.push({ nif: { in: nifs } });
+  if (Array.isArray(emailsToClear) && emailsToClear.length) where.OR.push({ email: { in: emailsToClear.map(e => e.toLowerCase()) } });
+  if (!where.OR.length) {
+    return res.status(400).json({ error: 'pass nifs[] or emails[] in body' });
+  }
+  const before = await prisma.esContractor.findMany({
+    where,
+    select: { id: true, organization: true, nif: true, email: true },
+  });
+  const result = await prisma.esContractor.updateMany({
+    where,
+    data: { email: null },
+  });
+  res.json({ ok: true, cleared: result.count, contractors: before });
 }));
 
 // ============ HELPERS ============
