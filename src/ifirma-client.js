@@ -5,6 +5,9 @@ const https = require('https');
 
 const login = (process.env.IFIRMA_USER || '').trim();
 const keyHex = (process.env.IFIRMA_API_KEY || '').trim();
+// Klucz modułu "Abonent" — wymagany do PUT /iapi/abonent/miesiacksiegowy.
+// Fallback na klucz fakturowy, gdyby user wpisał ten sam klucz pod oba env-vary.
+const keyHexAbonent = (process.env.IFIRMA_API_KEY_ABONENT || process.env.IFIRMA_API_KEY || '').trim();
 
 // ============ HELPERS ============
 
@@ -16,6 +19,62 @@ function generateAuth(url, body, login, keyHex) {
   const msg = url + login + 'faktura' + (body || '');
   const sig = hmacSig(msg, keyHex);
   return 'IAPIS user=' + login + ', hmac-sha1=' + sig;
+}
+
+function generateAuthAbonent(url, body, login, keyHex) {
+  const msg = url + login + 'abonent' + (body || '');
+  const sig = hmacSig(msg, keyHex);
+  return 'IAPIS user=' + login + ', hmac-sha1=' + sig;
+}
+
+function httpsPutJson(url, headers, bodyObj) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const data = JSON.stringify(bodyObj);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(data, 'utf8'),
+        ...headers,
+      },
+    };
+    const req = https.request(options, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString();
+        try { resolve({ status: res.statusCode, body: JSON.parse(text) }); }
+        catch (e) { reject(new Error('iFirma invalid JSON: ' + text.slice(0, 300))); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// PUT /iapi/abonent/miesiacksiegowy.json — przestawia bieżący miesiąc
+// księgowy konta. Wymagany klucz modułu "Abonent" (IFIRMA_API_KEY_ABONENT).
+async function setAccountingMonth(miesiac, rok) {
+  if (!login || !keyHexAbonent) {
+    throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway.');
+  }
+  const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
+  const body = { MiesiacKsiegowy: { Miesiac: miesiac, Rok: rok } };
+  const bodyStr = JSON.stringify(body);
+  const auth = generateAuthAbonent(url, bodyStr, login, keyHexAbonent);
+  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')}`);
+  const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
+  const kod = resp && resp.response && resp.response.Kod;
+  const informacja = resp && resp.response && resp.response.Informacja;
+  console.log(`[ifirma] setAccountingMonth status=${status} kod=${kod} info="${informacja}"`);
+  if (status !== 200 || (kod != null && kod !== 0)) {
+    throw new Error(`iFirma setAccountingMonth błąd: ${informacja || JSON.stringify(resp)}`);
+  }
+  return { ok: true };
 }
 
 function httpsGetRaw(url, headers) {
@@ -256,20 +315,51 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     } : {}),
   };
 
-  const bodyStr = JSON.stringify(body);
-  const auth = generateAuth(url, bodyStr, login, keyHex);
+  const postOnce = async () => {
+    const bodyStr = JSON.stringify(body);
+    const auth = generateAuth(url, bodyStr, login, keyHex);
+    console.log('[ifirma] creating invoice for', kontrahent.name);
+    console.log('[ifirma] CREATE INVOICE URL:', url);
+    console.log('[ifirma] CREATE INVOICE AUTH:', auth.slice(0, 60) + '...');
+    console.log('[ifirma] CREATE INVOICE REQUEST BODY:', JSON.stringify(body, null, 2));
+    return httpsPostJson(url, { Authentication: auth }, body);
+  };
 
-  console.log('[ifirma] creating invoice for', kontrahent.name);
-  console.log('[ifirma] CREATE INVOICE URL:', url);
-  console.log('[ifirma] CREATE INVOICE AUTH:', auth.slice(0, 60) + '...');
-  console.log('[ifirma] CREATE INVOICE REQUEST BODY:', JSON.stringify(body, null, 2));
-
-  const { status, body: resp } = await httpsPostJson(url, { Authentication: auth }, body);
-  const fullResp = JSON.stringify(resp);
+  let { status, body: resp } = await postOnce();
+  let fullResp = JSON.stringify(resp);
   console.log('[ifirma] create invoice status:', status, fullResp.slice(0, 300));
 
-  const kod = resp && resp.response && resp.response.Kod;
-  const informacja = resp && resp.response && resp.response.Informacja;
+  let kod = resp && resp.response && resp.response.Kod;
+  let informacja = resp && resp.response && resp.response.Informacja;
+
+  // Auto-retry: gdy iFirma odrzuca z powodu niezgodnego miesiąca/roku
+  // księgowego (Kod 201 z komunikatem o "miesiącem i rokiem księgowym"),
+  // przestawiamy miesiąc księgowy na ten z DataSprzedazy i ponawiamy raz.
+  const isAccountingMonthError = (kod === 201 || kod === '201') &&
+    typeof informacja === 'string' &&
+    /miesi[aą]c.*ksi[eę]gow|rok.*ksi[eę]gow/i.test(informacja);
+
+  if (isAccountingMonthError) {
+    const [yyyy, mm] = (body.DataSprzedazy || today).split('-');
+    const targetMonth = parseInt(mm, 10);
+    const targetYear = parseInt(yyyy, 10);
+    console.log(`[ifirma] Kod 201 miesiąc księgowy — próba przestawienia na ${targetYear}-${String(targetMonth).padStart(2, '0')} i retry`);
+    try {
+      await setAccountingMonth(targetMonth, targetYear);
+      ({ status, body: resp } = await postOnce());
+      fullResp = JSON.stringify(resp);
+      kod = resp && resp.response && resp.response.Kod;
+      informacja = resp && resp.response && resp.response.Informacja;
+      console.log('[ifirma] retry create invoice status:', status, fullResp.slice(0, 300));
+    } catch (e) {
+      console.log('[ifirma] auto-retry przestawienia miesiąca nieudane:', e.message);
+      throw Object.assign(
+        new Error('iFirma error: ' + fullResp + ' (auto-fix miesiąca księgowego nieudany: ' + e.message + ')'),
+        { ifirmaRaw: resp }
+      );
+    }
+  }
+
   if (status !== 200 || (kod != null && kod !== 0)) {
     console.log('[ifirma] API error:', fullResp);
     throw Object.assign(new Error('iFirma error: ' + fullResp), { ifirmaRaw: resp });
@@ -430,4 +520,4 @@ async function registerPayment(invoiceNumber, type, amount, currency, date) {
   return result;
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice, registerPayment };
+module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice, registerPayment, setAccountingMonth };
