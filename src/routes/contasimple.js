@@ -1267,15 +1267,126 @@ async function resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period
   return null;
 }
 
+// Email templates per documentCulture. The customer's culture is read from
+// EsContractor.documentCulture (synced from Contasimple, values like es-ES /
+// ca-ES / en-US). Override globally via Config keys:
+//   contasimple_email_template_<culture>  (JSON: {subject, body})
+//   contasimple_email_signature           (text, default "Nikodem")
+// Placeholders: {number}, {customerName}, {totalAmount}, {senderName}.
+const ES_EMAIL_TEMPLATES = {
+  'es-ES': {
+    subject: 'Factura {number} – Surf Stick Bell',
+    body:
+      'Hola {customerName},\n\n' +
+      'Adjunto la factura {number} por importe de {totalAmount} €.\n' +
+      'Si tienes cualquier duda, no dudes en contactarme.\n\n' +
+      'Saludos,\n{senderName}',
+  },
+  'ca-ES': {
+    subject: 'Factura {number} – Surf Stick Bell',
+    body:
+      'Hola {customerName},\n\n' +
+      'T\'adjunto la factura {number} per import de {totalAmount} €.\n' +
+      'Si tens qualsevol dubte, no dubtis a contactar-me.\n\n' +
+      'Salutacions,\n{senderName}',
+  },
+  'en-US': {
+    subject: 'Invoice {number} – Surf Stick Bell',
+    body:
+      'Hello {customerName},\n\n' +
+      'Please find attached invoice {number} for €{totalAmount}.\n' +
+      'Let me know if you have any questions.\n\n' +
+      'Best regards,\n{senderName}',
+  },
+};
+
+function fillTemplate(tpl, vars) {
+  return tpl.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ''));
+}
+
+async function buildEsEmailFromTemplate({ culture, customer, invoice, signature }) {
+  // Allow Config override per culture (lets Nikodem tweak wording without redeploy).
+  let template = null;
+  try {
+    const row = await prisma.config.findUnique({
+      where: { key: `contasimple_email_template_${culture}` },
+    });
+    if (row && row.value) {
+      try { template = JSON.parse(row.value); } catch (_) {}
+    }
+  } catch (_) {}
+  if (!template) template = ES_EMAIL_TEMPLATES[culture] || ES_EMAIL_TEMPLATES['es-ES'];
+
+  const customerName =
+    (customer && (customer.organization || [customer.firstname, customer.lastname].filter(Boolean).join(' ') || customer.name)) || '';
+  const totalAmount =
+    invoice.totalAmount != null
+      ? Number(invoice.totalAmount).toFixed(2).replace('.', ',')
+      : '';
+
+  const vars = {
+    number: invoice.number || '',
+    customerName,
+    totalAmount,
+    senderName: signature,
+  };
+
+  return {
+    subject: fillTemplate(template.subject, vars),
+    body: fillTemplate(template.body, vars),
+  };
+}
+
 router.post('/send-invoice-email', asyncHandler(async (req, res) => {
-  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail, replyTo, blindCopy, subject, body: emailBody } = req.body || {};
+  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail, replyTo, blindCopy, subject, body: emailBody, language } = req.body || {};
   if (!toEmail) return res.status(400).json({ error: 'toEmail required' });
   const resolved = await resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period: bodyPeriod });
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
   }
+
+  // If caller didn't provide subject/body — generate from template using
+  // customer's documentCulture (synced from Contasimple).
+  let finalSubject = subject;
+  let finalBody = emailBody;
+  let templateUsed = null;
+  if (!finalSubject || !finalBody) {
+    // Find local EsContractor record matching the invoice's target customer.
+    const targetEntity = resolved.data.target || {};
+    let customer = null;
+    if (targetEntity.id) {
+      customer = await prisma.esContractor.findUnique({ where: { contasimpleId: targetEntity.id } });
+    }
+    if (!customer && targetEntity.nif) {
+      customer = await prisma.esContractor.findFirst({ where: { nif: targetEntity.nif } });
+    }
+    // Fallback to data already on the invoice (Contasimple snapshots customer).
+    const customerForTemplate = customer || {
+      organization: targetEntity.organization,
+      firstname: targetEntity.firstname,
+      lastname: targetEntity.lastname,
+    };
+    const culture =
+      language ||
+      (customer && customer.documentCulture) ||
+      'es-ES';
+
+    const sigCfg = await prisma.config.findUnique({ where: { key: 'contasimple_email_signature' } });
+    const signature = (sigCfg && sigCfg.value) || 'Nikodem';
+
+    const generated = await buildEsEmailFromTemplate({
+      culture,
+      customer: customerForTemplate,
+      invoice: resolved.data,
+      signature,
+    });
+    if (!finalSubject) finalSubject = generated.subject;
+    if (!finalBody) finalBody = generated.body;
+    templateUsed = culture;
+  }
+
   const apiResp = await cs.sendInvoiceEmail(resolved.period, resolved.id, {
-    to: toEmail, replyTo, blindCopy, subject, body: emailBody,
+    to: toEmail, replyTo, blindCopy, subject: finalSubject, body: finalBody,
   });
   res.json({
     ok: true,
@@ -1283,6 +1394,9 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
     invoiceId: resolved.id,
     period: resolved.period,
     to: toEmail,
+    subject: finalSubject,
+    body: finalBody,
+    templateUsed,
     contasimpleResponse: apiResp,
   });
 }));
