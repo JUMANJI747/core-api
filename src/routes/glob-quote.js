@@ -690,7 +690,6 @@ router.post('/glob/quote', async (req, res) => {
      // 'gk_country_ids') — po wywołaniu /glob/discover-countries Config
      // zawiera mapowania z bazy odbiorców GK. Pozwala na nowe kraje bez
      // edycji src.
-    const prisma = req.app.locals.prisma;
     let dynamicIds = {};
     try {
       const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
