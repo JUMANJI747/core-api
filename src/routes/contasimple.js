@@ -30,13 +30,20 @@ const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 // 2. Config key 'telegram_bot_token_es' (gdy chcesz override z UI)
 // 3. fallback Config 'telegram_bot_token' (token bota PL — jednobotowy setup, kompatybilność wsteczna)
 async function getEsTelegramToken(prismaClient) {
-  if (process.env.TELEGRAM_BOT_TOKEN_ES && process.env.TELEGRAM_BOT_TOKEN_ES.trim()) {
-    return process.env.TELEGRAM_BOT_TOKEN_ES.trim();
+  // Akceptujemy oba aliasy env (KANARY / ES) — user mógł nazwać po swojemu w Railway.
+  const envToken = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
+  let token, source;
+  if (envToken) { token = envToken; source = process.env.TELEGRAM_BOT_TOKEN_KANARY ? 'env_KANARY' : 'env_ES'; }
+  else {
+    const esCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
+    if (esCfg && esCfg.value) { token = esCfg.value; source = 'config_telegram_bot_token_es'; }
+    else {
+      const plCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token' } });
+      if (plCfg && plCfg.value) { token = plCfg.value; source = 'config_telegram_bot_token (FALLBACK PL!)'; }
+    }
   }
-  const esCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
-  if (esCfg && esCfg.value) return esCfg.value;
-  const plCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token' } });
-  return plCfg && plCfg.value;
+  console.log(`[cs telegram-token] using ${source || 'NONE'} (last4=${token ? token.slice(-4) : '-'})`);
+  return token;
 }
 
 // ============ SMOKE TEST ============
