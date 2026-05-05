@@ -1389,7 +1389,31 @@ router.post('/glob/order', async (req, res) => {
   }
 });
 
-// ============ DISCOVER COUNTRY IDs ============
+// Mapowanie prefiksów telefonicznych E.164 (longest-prefix-match) → ISO-2.
+// GK nie zwraca ISO countryCode na odbiorcach (tylko numeryczne countryId),
+// więc kraj wnioskujemy z phone field. Pokrycie EU + sąsiedzi.
+const PHONE_PREFIX_TO_ISO = [
+  ['+1', 'US'], ['+7', 'RU'],
+  ['+30', 'GR'], ['+31', 'NL'], ['+32', 'BE'], ['+33', 'FR'], ['+34', 'ES'],
+  ['+36', 'HU'], ['+39', 'IT'],
+  ['+40', 'RO'], ['+41', 'CH'], ['+420', 'CZ'], ['+421', 'SK'], ['+43', 'AT'],
+  ['+44', 'GB'], ['+45', 'DK'], ['+46', 'SE'], ['+47', 'NO'], ['+48', 'PL'], ['+49', 'DE'],
+  ['+351', 'PT'], ['+352', 'LU'], ['+353', 'IE'], ['+354', 'IS'], ['+355', 'AL'],
+  ['+356', 'MT'], ['+357', 'CY'], ['+358', 'FI'], ['+359', 'BG'],
+  ['+370', 'LT'], ['+371', 'LV'], ['+372', 'EE'], ['+373', 'MD'], ['+374', 'AM'],
+  ['+375', 'BY'], ['+376', 'AD'], ['+377', 'MC'], ['+378', 'SM'], ['+380', 'UA'],
+  ['+381', 'RS'], ['+382', 'ME'], ['+385', 'HR'], ['+386', 'SI'], ['+387', 'BA'], ['+389', 'MK'],
+  ['+90', 'TR'], ['+972', 'IL'], ['+971', 'AE'],
+].sort((a, b) => b[0].length - a[0].length); // longest first
+
+function phoneToIso(phone) {
+  if (!phone) return null;
+  const clean = String(phone).replace(/[\s\-().]/g, '');
+  for (const [pref, iso] of PHONE_PREFIX_TO_ISO) {
+    if (clean.startsWith(pref)) return iso;
+  }
+  return null;
+}
 // Pobiera bazę odbiorców z GK (paginowana), wyciąga unikalne pary
 // {countryCode → countryId}, scala z istniejącą mapą i zapisuje w
 // Config pod 'gk_country_ids'. Discovery raz po deploy + ad-hoc gdy
@@ -1403,29 +1427,35 @@ router.post('/glob/discover-countries', async (req, res) => {
     const pageSize = 200;
     let totalScanned = 0;
     let firstSample = null;
+    // {countryId → {ISO: hits}} — głosowanie po prefiksie telefonicznym
+    // (multiple odbiorców per countryId, czasem ktoś wpisze zły numer).
+    const idToIsoVotes = {};
     while (offset < 5000) {
       const gkRes = await getReceivers(offset, pageSize, '');
       const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
         || (Array.isArray(gkRes) ? gkRes : []);
-      if (!firstSample && items.length > 0) firstSample = items[0]; // żeby zobaczyć kształt rekordu
+      if (!firstSample && items.length > 0) firstSample = items[0];
       if (!Array.isArray(items) || items.length === 0) break;
       for (const r of items) {
         totalScanned++;
-        const code = (
-          r.countryCode ||
-          (typeof r.country === 'string' ? r.country : (r.country && r.country.code)) ||
-          ''
-        ).toUpperCase();
         const id = r.countryId || (r.country && typeof r.country === 'object' ? r.country.id : null);
-        if (code && id && /^[A-Z]{2}$/.test(code)) {
-          if (!discovered[code]) {
-            discovered[code] = id;
-            samples[code] = { receiverName: r.companyName || r.name || r.firstName || '?', city: r.city || '?' };
-          }
+        if (!id) continue;
+        const iso = phoneToIso(r.phone);
+        if (!iso) continue;
+        if (!idToIsoVotes[id]) idToIsoVotes[id] = {};
+        idToIsoVotes[id][iso] = (idToIsoVotes[id][iso] || 0) + 1;
+        if (!samples[iso]) {
+          samples[iso] = { receiverName: r.name || '?', city: r.city || '?', phone: r.phone, countryId: id };
         }
       }
       if (items.length < pageSize) break;
       offset += pageSize;
+    }
+    // Wybierz dla każdego countryId najpopularniejszy ISO i odwróć: ISO → countryId
+    for (const [id, votes] of Object.entries(idToIsoVotes)) {
+      const sorted = Object.entries(votes).sort((a, b) => b[1] - a[1]);
+      const winner = sorted[0];
+      if (winner) discovered[winner[0]] = parseInt(id, 10);
     }
     const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
     let previous = {};
@@ -1454,6 +1484,7 @@ router.post('/glob/discover-countries', async (req, res) => {
       // gdy discovered jest puste a totalScanned > 0.
       firstReceiverSample: firstSample ? Object.keys(firstSample) : null,
       firstReceiverFull: firstSample,
+      idToIsoVotes, // diagnostyka — gdy jeden countryId ma głosy na 2+ ISO, widać w którą stronę zwycięstwo
     });
   } catch (e) {
     console.error('[glob/discover-countries] error:', e.message);
