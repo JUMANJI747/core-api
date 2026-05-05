@@ -687,10 +687,23 @@ router.post('/glob/quote', async (req, res) => {
     sender.country = normalizeCountry(sender.country) || sender.country;
     receiver.country = normalizeCountry(receiver.country) || receiver.country;
     const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
-    const receiverCountryId = receiver.countryId || COUNTRY_IDS[receiver.country] || 1;
-    if (receiverCountryId === 1 && receiver.country !== 'PL') {
-      warnings.push(`KRAJ ODBIORCY "${receiver.country}" NIE MA ZNANEGO countryId w GlobKurier — wycena leci jako PL→PL. Sprawdź czy to obsługiwany kraj.`);
+    const receiverCountryIdMapped = receiver.countryId || COUNTRY_IDS[receiver.country];
+
+    // Hard-block: jeśli kraj odbiorcy nie ma znanego countryId w GlobKurier,
+    // GK API i tak zwróci ofertę PL→PL (silent fallback) — ceny są wtedy
+    // BEZUŻYTECZNE bo kurier nie zabierze paczki za PL-stawkę za granicę.
+    // Lepiej w ogóle nie odpalać quote niż wprowadzać usera w błąd.
+    if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
+      const supported = Object.keys(COUNTRY_IDS).join(', ');
+      return res.status(422).json({
+        ok: false,
+        error: `GlobKurier countryId nieznane dla "${receiver.country}". Wycena PL→${receiver.country} nie jest możliwa — GK zwróciłby błędne ceny PL→PL.`,
+        supportedCountries: supported,
+        suggestion: `Sprawdź czy GlobKurier obsługuje ${receiver.country} — jeśli tak, dodaj countryId do COUNTRY_IDS (src/routes/glob-helpers.js). Jeśli nie, użyj innego operatora (DHL/UPS bezpośrednio).`,
+      });
     }
+
+    const receiverCountryId = receiverCountryIdMapped || 1;
 
     const collectionType = req.body.collectionType || 'PICKUP';
     if (!deliveryType) deliveryType = 'PICKUP';
