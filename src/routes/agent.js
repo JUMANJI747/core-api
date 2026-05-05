@@ -6,6 +6,7 @@ const { processLogisticsQuery } = require('../services/logistics-agent');
 const { processAccountingQuery } = require('../services/accounting-agent');
 const { processAccountingEsQuery } = require('../services/accounting-agent-es');
 const { processCommunicationQuery } = require('../services/communication-agent');
+const { processCommunicationEsQuery } = require('../services/communication-agent-es');
 const { processOperationsQuery } = require('../services/operations-agent');
 
 // Stateless agent endpoints. Master agent (n8n) sends a self-contained query
@@ -44,6 +45,15 @@ router.post('/agent/communication', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'query (string) required' });
   }
   const result = await processCommunicationQuery(query);
+  res.json(result);
+}));
+
+router.post('/agent/communication-es', asyncHandler(async (req, res) => {
+  const { query, chatId } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'query (string) required' });
+  }
+  const result = await processCommunicationEsQuery(query, { chatId });
   res.json(result);
 }));
 
