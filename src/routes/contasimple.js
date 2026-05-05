@@ -25,6 +25,20 @@ const {
 } = require('../services/contasimple-helpers');
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 
+// Bot Telegrama dla firmy kanaryjskiej (osobny od bota PL). Kolejność:
+// 1. env TELEGRAM_BOT_TOKEN_ES (preferowane — single source of truth na Railway)
+// 2. Config key 'telegram_bot_token_es' (gdy chcesz override z UI)
+// 3. fallback Config 'telegram_bot_token' (token bota PL — jednobotowy setup, kompatybilność wsteczna)
+async function getEsTelegramToken(prismaClient) {
+  if (process.env.TELEGRAM_BOT_TOKEN_ES && process.env.TELEGRAM_BOT_TOKEN_ES.trim()) {
+    return process.env.TELEGRAM_BOT_TOKEN_ES.trim();
+  }
+  const esCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
+  if (esCfg && esCfg.value) return esCfg.value;
+  const plCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token' } });
+  return plCfg && plCfg.value;
+}
+
 // ============ SMOKE TEST ============
 //
 // After deploy, run:
@@ -836,14 +850,13 @@ async function confirmEsPreview(stored) {
   let pdfSent = false;
   let pdfError = null;
   try {
-    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
     const tgChatCfg = storedChatId
       ? { value: String(storedChatId) }
       : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
         || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
-    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgToken = await getEsTelegramToken(prisma);
     const tgChat = tgChatCfg && tgChatCfg.value;
-    if (!tgToken) pdfError = 'telegram_bot_token missing in Config';
+    if (!tgToken) pdfError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_ES';
     else if (!tgChat) pdfError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
     else {
       const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
@@ -1523,14 +1536,13 @@ router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
   }
-  const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
   const tgChatCfg = req.body && req.body.chatId
     ? { value: String(req.body.chatId) }
     : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
       || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
-  const tgToken = tgTokenCfg && tgTokenCfg.value;
+  const tgToken = await getEsTelegramToken(prisma);
   const tgChat = tgChatCfg && tgChatCfg.value;
-  if (!tgToken) return res.status(503).json({ error: 'telegram_bot_token missing' });
+  if (!tgToken) return res.status(503).json({ error: 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_ES' });
   if (!tgChat) return res.status(503).json({ error: 'telegram_chat_id missing' });
 
   const { buffer } = await cs.fetchInvoicePdf(resolved.period, resolved.id);
