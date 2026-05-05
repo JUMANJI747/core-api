@@ -686,15 +686,27 @@ router.post('/glob/quote', async (req, res) => {
     // instead of "ES", which silently fell back to PL via COUNTRY_IDS lookup.
     sender.country = normalizeCountry(sender.country) || sender.country;
     receiver.country = normalizeCountry(receiver.country) || receiver.country;
-    const senderCountryId = sender.countryId || COUNTRY_IDS[sender.country] || 1;
-    const receiverCountryIdMapped = receiver.countryId || COUNTRY_IDS[receiver.country];
+    // Merge hardcoded COUNTRY_IDS z dynamiczną mapą z Config (klucz
+     // 'gk_country_ids') — po wywołaniu /glob/discover-countries Config
+     // zawiera mapowania z bazy odbiorców GK. Pozwala na nowe kraje bez
+     // edycji src.
+    const prisma = req.app.locals.prisma;
+    let dynamicIds = {};
+    try {
+      const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+      if (cfg && cfg.value && typeof cfg.value === 'object') dynamicIds = cfg.value;
+    } catch (_) {}
+    const mergedIds = { ...COUNTRY_IDS, ...dynamicIds };
+
+    const senderCountryId = sender.countryId || mergedIds[sender.country] || 1;
+    const receiverCountryIdMapped = receiver.countryId || mergedIds[receiver.country];
 
     // Hard-block: jeśli kraj odbiorcy nie ma znanego countryId w GlobKurier,
     // GK API i tak zwróci ofertę PL→PL (silent fallback) — ceny są wtedy
     // BEZUŻYTECZNE bo kurier nie zabierze paczki za PL-stawkę za granicę.
     // Lepiej w ogóle nie odpalać quote niż wprowadzać usera w błąd.
     if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
-      const supported = Object.keys(COUNTRY_IDS).join(', ');
+      const supported = Object.keys(mergedIds).join(', ');
       return res.status(422).json({
         ok: false,
         error: `GlobKurier countryId nieznane dla "${receiver.country}". Wycena PL→${receiver.country} nie jest możliwa — GK zwróciłby błędne ceny PL→PL.`,
@@ -1371,6 +1383,73 @@ router.post('/glob/order', async (req, res) => {
   } catch (err) {
     console.error('[glob/order]', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============ DISCOVER COUNTRY IDs ============
+// Pobiera bazę odbiorców z GK (paginowana), wyciąga unikalne pary
+// {countryCode → countryId}, scala z istniejącą mapą i zapisuje w
+// Config pod 'gk_country_ids'. Discovery raz po deploy + ad-hoc gdy
+// dorzucisz nowy kraj do GK i chcesz go aktywować.
+router.post('/glob/discover-countries', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const discovered = {};
+    const samples = {};
+    let offset = 0;
+    const pageSize = 200;
+    let totalScanned = 0;
+    while (offset < 5000) {
+      const data = await getReceivers(offset, pageSize, '');
+      const items = (data && data.data) || data || [];
+      if (!Array.isArray(items) || items.length === 0) break;
+      for (const r of items) {
+        totalScanned++;
+        const code = (r.countryCode || r.country || '').toUpperCase();
+        const id = r.countryId || (r.country && r.country.id);
+        if (code && id && /^[A-Z]{2}$/.test(code)) {
+          if (!discovered[code]) {
+            discovered[code] = id;
+            samples[code] = { receiverName: r.name || r.companyName || r.firstName || '?', city: r.city || '?' };
+          }
+        }
+      }
+      if (items.length < pageSize) break;
+      offset += pageSize;
+    }
+    const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+    const previous = (existing && existing.value && typeof existing.value === 'object') ? existing.value : {};
+    const merged = { ...previous, ...discovered };
+    await prisma.config.upsert({
+      where: { key: 'gk_country_ids' },
+      update: { value: merged },
+      create: { key: 'gk_country_ids', value: merged },
+    });
+    const newKeys = Object.keys(discovered).filter(k => !previous[k]);
+    res.json({
+      ok: true,
+      receiversScanned: totalScanned,
+      discovered,
+      samples,
+      newCountriesAdded: newKeys,
+      mergedMap: merged,
+      hardcodedMap: COUNTRY_IDS,
+    });
+  } catch (e) {
+    console.error('[glob/discover-countries] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Podgląd aktualnej scalonej mapy (hardcoded + Config dynamic).
+router.get('/glob/country-ids', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+    const dynamic = (cfg && cfg.value && typeof cfg.value === 'object') ? cfg.value : {};
+    res.json({ ok: true, hardcoded: COUNTRY_IDS, dynamic, merged: { ...COUNTRY_IDS, ...dynamic } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
