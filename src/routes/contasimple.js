@@ -24,6 +24,7 @@ const {
   NIKODEM_DEFAULTS,
 } = require('../services/contasimple-helpers');
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
+const { sendMail } = require('../mail-sender');
 
 // Bot Telegrama dla firmy kanaryjskiej (osobny od bota PL). Kolejność:
 // 1. env TELEGRAM_BOT_TOKEN_ES (preferowane — single source of truth na Railway)
@@ -1441,9 +1442,49 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
     templateUsed = culture;
   }
 
-  const apiResp = await cs.sendInvoiceEmail(resolved.period, resolved.id, {
-    to: toEmail, replyTo, blindCopy, subject: finalSubject, body: finalBody,
-  });
+  // Wysyłka przez NASZ SMTP (mail-sender), nie przez Contasimple. Powód:
+  // Contasimple wymaga ReplyTo skonfigurowanego w panelu (a tego nie mamy)
+  // i odpada jak coś tam się posypie. Nasz SMTP używa konta IMAP_ACCOUNTS
+  // (domyślnie nikodem@) i działa niezależnie. PDF zaciągamy z Contasimple
+  // i dorzucamy jako załącznik.
+  const fromAddress = (process.env.KANARY_DEFAULT_FROM || 'nikodem@surfstickbell.com').trim();
+  let pdfBuffer;
+  try {
+    const pdfResp = await cs.fetchInvoicePdf(resolved.period, resolved.id);
+    pdfBuffer = pdfResp && pdfResp.buffer;
+  } catch (e) {
+    return res.status(502).json({ error: 'fetchInvoicePdf failed: ' + e.message });
+  }
+  const number = resolved.data.number || String(resolved.id);
+  const filename = `factura_${number.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+  let apiResp;
+  try {
+    const saved = await sendMail({
+      from: fromAddress,
+      to: toEmail,
+      subject: finalSubject,
+      body: finalBody,
+      replyTo: replyTo || undefined,
+      attachments: [{
+        filename,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      }],
+    });
+    apiResp = {
+      sent: true,
+      from: fromAddress,
+      to: toEmail,
+      subject: finalSubject,
+      attachmentFilename: filename,
+      attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 1024) : null,
+      messageId: saved && saved.messageId,
+      sentAt: saved && saved.createdAt,
+      via: 'smtp',
+    };
+  } catch (e) {
+    return res.status(502).json({ error: 'sendMail failed: ' + e.message, hint: 'sprawdź IMAP_ACCOUNTS w Railway czy konto ' + fromAddress + ' ma password' });
+  }
 
   // Auto-backfill: jak user podał email ręcznie a kontrahent miał pusty
   // → zapisz na EsContractor (uczy się z każdego ręcznego wpisu).
