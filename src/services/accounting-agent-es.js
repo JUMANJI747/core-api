@@ -53,10 +53,11 @@ Najpierw cs_get_context aby zobaczyć ostatnią akcję (lastAction).
 - lastAction="delete-preview" + "tak" → cs_delete_confirm
 
 FLOW WYSTAWIENIA FV:
-1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, lines, totals, period
-2. POKAŻ user-owi DOSŁOWNIE listę pozycji + sumy + previewId
-3. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
-4. Po confirm: response = invoiceNumber (np. "2026-0058"), invoiceId, pdfSent. PDF idzie na Telegram automatycznie.
+1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
+2. WAŻNE: backend SAM pushuje preview na Telegrama (ground truth). Twoja rola: krótko skomentuj że preview gotowy + zapytaj o potwierdzenie. NIE PISZ liczb z głowy. JEŚLI w odpowiedzi sub-agenta są liczby których NIE MA w response.preview — to kłamstwo i blokowanie produktu.
+3. ZASADA TWARDA: wszystkie liczby (qty, unitNetto, lineNetto, netto/igic/brutto) muszą pochodzić DOSŁOWNIE z response.preview. Każda inna liczba = błąd. NIE przeliczaj sam, NIE zaokrąglaj, NIE rekonstruuj z pamięci.
+4. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
+5. Po confirm: response = invoiceNumber (np. "2026-0058"), invoiceId, pdfSent. PDF + caption idzie na Telegram automatycznie z backendu.
 
 USUWANIE FV (preview → confirm):
 - "skasuj ostatnią fv" → cs_delete_preview {latest:true}

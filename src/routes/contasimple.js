@@ -744,6 +744,34 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   const previewId = crypto.randomUUID();
   saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body, chatId: body.chatId || null });
 
+  // Telegram-notyfikacja preview (ground truth — niezależnie od tego co
+  // agent napisze w swojej odpowiedzi). User widzi prawdziwe qty/ceny przed
+  // potwierdzeniem. Best-effort.
+  try {
+    const tgChatId = body.chatId
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgToken = await getEsTelegramToken(prisma);
+    if (tgToken && tgChatId) {
+      const lineRows = lines.map(l => {
+        const concept = l.name + (l.variant ? ` ${l.variant}` : '');
+        return `- ${l.qty}× ${concept} @ ${Number(l.unitNetto).toFixed(2)} € = ${Number(l.lineNetto).toFixed(2)} € netto`;
+      }).join('\n');
+      const text =
+        `🧾 PREVIEW FV (ground truth z backendu)\n` +
+        `Klient: ${contractor.name || contractor.organization}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
+        `Okres: ${preview.period}\n\n` +
+        `${lineRows}\n\n` +
+        `Netto: ${Number(totals.netto).toFixed(2)} €\n` +
+        `IGIC ${IGIC_DEFAULT_PCT}%: ${Number(totals.igic).toFixed(2)} €\n` +
+        `Brutto: ${Number(totals.brutto).toFixed(2)} €\n\n` +
+        `Potwierdzasz? "tak/ok" wystawi.`;
+      sendTelegram(tgToken, String(tgChatId), text).catch(e => console.error('[cs invoice-preview] tg notify failed:', e.message));
+    }
+  } catch (e) {
+    console.error('[cs invoice-preview] tg notify outer:', e.message);
+  }
+
   prisma.agentContext
     .upsert({
       where: { id: 'ksiegowosc-es' },
