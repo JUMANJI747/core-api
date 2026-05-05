@@ -694,7 +694,10 @@ router.post('/glob/quote', async (req, res) => {
     let dynamicIds = {};
     try {
       const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
-      if (cfg && cfg.value && typeof cfg.value === 'object') dynamicIds = cfg.value;
+      if (cfg && cfg.value) {
+        const parsed = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+        if (parsed && typeof parsed === 'object') dynamicIds = parsed;
+      }
     } catch (_) {}
     const mergedIds = { ...COUNTRY_IDS, ...dynamicIds };
 
@@ -1399,18 +1402,25 @@ router.post('/glob/discover-countries', async (req, res) => {
     let offset = 0;
     const pageSize = 200;
     let totalScanned = 0;
+    let firstSample = null;
     while (offset < 5000) {
-      const data = await getReceivers(offset, pageSize, '');
-      const items = (data && data.data) || data || [];
+      const gkRes = await getReceivers(offset, pageSize, '');
+      const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
+        || (Array.isArray(gkRes) ? gkRes : []);
+      if (!firstSample && items.length > 0) firstSample = items[0]; // żeby zobaczyć kształt rekordu
       if (!Array.isArray(items) || items.length === 0) break;
       for (const r of items) {
         totalScanned++;
-        const code = (r.countryCode || r.country || '').toUpperCase();
-        const id = r.countryId || (r.country && r.country.id);
+        const code = (
+          r.countryCode ||
+          (typeof r.country === 'string' ? r.country : (r.country && r.country.code)) ||
+          ''
+        ).toUpperCase();
+        const id = r.countryId || (r.country && typeof r.country === 'object' ? r.country.id : null);
         if (code && id && /^[A-Z]{2}$/.test(code)) {
           if (!discovered[code]) {
             discovered[code] = id;
-            samples[code] = { receiverName: r.name || r.companyName || r.firstName || '?', city: r.city || '?' };
+            samples[code] = { receiverName: r.companyName || r.name || r.firstName || '?', city: r.city || '?' };
           }
         }
       }
@@ -1418,12 +1428,18 @@ router.post('/glob/discover-countries', async (req, res) => {
       offset += pageSize;
     }
     const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
-    const previous = (existing && existing.value && typeof existing.value === 'object') ? existing.value : {};
+    let previous = {};
+    if (existing && existing.value) {
+      try {
+        const parsed = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value;
+        if (parsed && typeof parsed === 'object') previous = parsed;
+      } catch (_) {}
+    }
     const merged = { ...previous, ...discovered };
     await prisma.config.upsert({
       where: { key: 'gk_country_ids' },
-      update: { value: merged },
-      create: { key: 'gk_country_ids', value: merged },
+      update: { value: JSON.stringify(merged) },
+      create: { key: 'gk_country_ids', value: JSON.stringify(merged) },
     });
     const newKeys = Object.keys(discovered).filter(k => !previous[k]);
     res.json({
@@ -1434,6 +1450,10 @@ router.post('/glob/discover-countries', async (req, res) => {
       newCountriesAdded: newKeys,
       mergedMap: merged,
       hardcodedMap: COUNTRY_IDS,
+      // Podgląd surowego pierwszego rekordu — diagnostyka kształtu odpowiedzi GK
+      // gdy discovered jest puste a totalScanned > 0.
+      firstReceiverSample: firstSample ? Object.keys(firstSample) : null,
+      firstReceiverFull: firstSample,
     });
   } catch (e) {
     console.error('[glob/discover-countries] error:', e.message);
@@ -1446,7 +1466,13 @@ router.get('/glob/country-ids', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
-    const dynamic = (cfg && cfg.value && typeof cfg.value === 'object') ? cfg.value : {};
+    let dynamic = {};
+    if (cfg && cfg.value) {
+      try {
+        const parsed = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+        if (parsed && typeof parsed === 'object') dynamic = parsed;
+      } catch (_) {}
+    }
     res.json({ ok: true, hardcoded: COUNTRY_IDS, dynamic, merged: { ...COUNTRY_IDS, ...dynamic } });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
