@@ -1296,13 +1296,14 @@ async function resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period
 // ca-ES / en-US). Override globally via Config keys:
 //   contasimple_email_template_<culture>  (JSON: {subject, body})
 //   contasimple_email_signature           (text, default "Nikodem")
-// Placeholders: {number}, {customerName}, {totalAmount}, {senderName}.
+// Placeholders: {number}, {customerName}, {senderName}. (Kwoty już nie
+// dorzucamy do treści — klient zobaczy w PDF; mail ma być krótki.)
 const ES_EMAIL_TEMPLATES = {
   'es-ES': {
     subject: 'Factura {number} – Surf Stick Bell',
     body:
       'Hola {customerName},\n\n' +
-      'Adjunto la factura {number} por importe de {totalAmount} €.\n' +
+      'Adjunto la factura {number}.\n' +
       'Si tienes cualquier duda, no dudes en contactarme.\n\n' +
       'Saludos,\n{senderName}',
   },
@@ -1310,7 +1311,7 @@ const ES_EMAIL_TEMPLATES = {
     subject: 'Factura {number} – Surf Stick Bell',
     body:
       'Hola {customerName},\n\n' +
-      'T\'adjunto la factura {number} per import de {totalAmount} €.\n' +
+      'T\'adjunto la factura {number}.\n' +
       'Si tens qualsevol dubte, no dubtis a contactar-me.\n\n' +
       'Salutacions,\n{senderName}',
   },
@@ -1318,7 +1319,7 @@ const ES_EMAIL_TEMPLATES = {
     subject: 'Invoice {number} – Surf Stick Bell',
     body:
       'Hello {customerName},\n\n' +
-      'Please find attached invoice {number} for €{totalAmount}.\n' +
+      'Please find attached invoice {number}.\n' +
       'Let me know if you have any questions.\n\n' +
       'Best regards,\n{senderName}',
   },
