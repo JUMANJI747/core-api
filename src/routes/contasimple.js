@@ -1363,7 +1363,7 @@ async function buildEsEmailFromTemplate({ culture, customer, invoice, signature 
 }
 
 router.post('/send-invoice-email', asyncHandler(async (req, res) => {
-  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail: bodyToEmail, replyTo, blindCopy, subject, body: emailBody, language } = req.body || {};
+  const { invoiceNumber, contasimpleId, period: bodyPeriod, toEmail: bodyToEmail, replyTo, blindCopy, subject, body: emailBody, language, chatId: requestChatId } = req.body || {};
   const resolved = await resolveInvoiceByNumberOrId({ invoiceNumber, contasimpleId, period: bodyPeriod });
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
@@ -1486,6 +1486,31 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
   } catch (e) {
     return res.status(502).json({ error: 'sendMail failed: ' + e.message, hint: 'sprawdź IMAP_ACCOUNTS w Railway czy konto ' + fromAddress + ' ma password' });
   }
+
+  // Telegram-notyfikacja na chat zlecającego (chatId propagowany przez sub-agenta).
+  // Best-effort — błąd nie blokuje response, tylko log.
+  let tgNotified = false;
+  let tgNotifyError = null;
+  try {
+    const tgChatId = requestChatId
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgToken = await getEsTelegramToken(prisma);
+    if (tgToken && tgChatId) {
+      const sizeKB = apiResp.attachmentSizeKB;
+      const text = `✉️ Mail z FV ${number} wysłany do ${toEmail}\n- Od: ${fromAddress}\n- Załącznik: ${filename}${sizeKB ? ` (${sizeKB} KB)` : ''}`;
+      const tgResp = await sendTelegram(tgToken, String(tgChatId), text);
+      tgNotified = !!(tgResp && tgResp.ok);
+      if (!tgNotified) tgNotifyError = (tgResp && tgResp.description) || 'unknown';
+    } else {
+      tgNotifyError = !tgToken ? 'no telegram token' : 'no chatId';
+    }
+  } catch (e) {
+    tgNotifyError = e.message;
+    console.error('[cs send-invoice-email] tg notify failed:', e.message);
+  }
+  apiResp.tgNotified = tgNotified;
+  if (tgNotifyError) apiResp.tgNotifyError = tgNotifyError;
 
   // Auto-backfill: jak user podał email ręcznie a kontrahent miał pusty
   // → zapisz na EsContractor (uczy się z każdego ręcznego wpisu).
