@@ -1126,14 +1126,13 @@ async function executeDeleteForPreview(stored) {
   let tgSent = false;
   let tgError = null;
   try {
-    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
     const tgChatCfg = storedChatId
       ? { value: String(storedChatId) }
       : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
         || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
-    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const tgToken = await getEsTelegramToken(prisma);
     const tgChat = tgChatCfg && tgChatCfg.value;
-    if (!tgToken) tgError = 'telegram_bot_token missing in Config';
+    if (!tgToken) tgError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
     else if (!tgChat) tgError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
     else {
       const lines = [];
