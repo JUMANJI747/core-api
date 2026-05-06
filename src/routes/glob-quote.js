@@ -1128,14 +1128,39 @@ router.post('/glob/order', async (req, res) => {
     const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
     const receiverEmail = receiver.email || cGkData.email || (contractorForReceiver && contractorForReceiver.email) || DEFAULT_RECEIVER_EMAIL;
 
-    function sanitizePhone(phone, fallback) {
+    // Mapowanie ISO-2 → numeryczny kod telefoniczny (subset E.164). Używamy
+    // do normalizacji telefonu odbiorcy gdy zaczyna się wiodącym '0' a kraj
+    // jest non-PL — GK odrzuca lokalne formaty, wymaga E.164.
+    const PHONE_DIAL_CODES = {
+      PL: '48', DE: '49', FR: '33', IT: '39', ES: '34', NL: '31', BE: '32',
+      AT: '43', CZ: '420', SK: '421', HU: '36', SE: '46', DK: '45', FI: '358',
+      NO: '47', GB: '44', IE: '353', PT: '351', RO: '40', BG: '359', HR: '385',
+      SI: '386', LT: '370', LV: '371', EE: '372', GR: '30', CY: '357', MT: '356',
+      LU: '352', CH: '41', AE: '971',
+    };
+    function sanitizePhone(phone, countryIso, fallback) {
       if (!phone) return fallback;
-      const cleaned = String(phone).replace(/[^\d+]/g, '');
+      let cleaned = String(phone).replace(/[^\d+]/g, '');
       if (cleaned.length < 7 || /^0+$/.test(cleaned)) return fallback;
+      // Wiodące '0' w numerze lokalnym + non-PL kraj → konwersja na E.164.
+      // Np. DE '01725788429' → '+491725788429'.
+      if (cleaned.startsWith('0') && !cleaned.startsWith('00') && countryIso && countryIso !== 'PL') {
+        const dial = PHONE_DIAL_CODES[countryIso];
+        if (dial) cleaned = '+' + dial + cleaned.slice(1);
+      }
+      // '00...' (international prefix) → '+...'
+      if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
       return cleaned;
     }
-    const cleanReceiverPhone = sanitizePhone(receiverPhone, DEFAULT_SENDER_PHONE);
-    const cleanSenderPhone = sanitizePhone(senderPhone, DEFAULT_SENDER_PHONE);
+    // GK odrzuca w polach name/street znaki specjalne: / , ; ( ) [ ] & % + " "
+    // Zamieniamy '/' na '-' (najczęstszy case: 'Surfstylefever / Stefan' →
+    // 'Surfstylefever - Stefan'), pozostałe usuwamy.
+    function sanitizeName(s) {
+      if (!s) return s;
+      return String(s).replace(/\s*\/\s*/g, ' - ').replace(/[,;()\[\]&%+"”""]/g, '').trim();
+    }
+    const cleanReceiverPhone = sanitizePhone(receiverPhone, receiver.country, DEFAULT_SENDER_PHONE);
+    const cleanSenderPhone = sanitizePhone(senderPhone, sender.country, DEFAULT_SENDER_PHONE);
     const cleanReceiverHouse = receiverHouse || (receiverStreet ? '1' : '1');
 
     const orderPayload = {
@@ -1148,22 +1173,22 @@ router.post('/glob/order', async (req, res) => {
         quantity: 1,
       },
       senderAddress: {
-        name: senderName,
-        street: senderStreet,
+        name: sanitizeName(senderName),
+        street: sanitizeName(senderStreet),
         houseNumber: senderHouse || '1',
         postCode: senderPostCode,
         city: senderCity,
-        countryId: sender.countryId || COUNTRY_IDS[sender.country] || 1,
+        countryId: quote.quoteParams.senderCountryId || sender.countryId || COUNTRY_IDS[sender.country] || 1,
         phone: cleanSenderPhone,
         email: senderEmail,
       },
       receiverAddress: {
-        name: receiverName,
-        street: receiverStreet,
+        name: sanitizeName(receiverName),
+        street: sanitizeName(receiverStreet),
         houseNumber: cleanReceiverHouse,
         postCode: receiverPostCode,
         city: receiverCity,
-        countryId: receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
+        countryId: quote.quoteParams.receiverCountryId || receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
         phone: cleanReceiverPhone,
         email: receiverEmail,
       },
@@ -1190,17 +1215,23 @@ router.post('/glob/order', async (req, res) => {
       const problems = [];
       for (const [field, raw] of Object.entries(errFields)) {
         const msg = String(raw || '');
+        const fieldLow = field.toLowerCase();
+        const who = field.includes('receiver') ? 'odbiorcy' : (field.includes('sender') ? 'nadawcy' : '');
         if (field.includes('pickup') && /nie jest możliwe|niemożliw/i.test(msg)) {
           problems.push('Brak dostępnych terminów odbioru dla tego kuriera. Spróbuj innego (np. DPD zamiast InPost).');
-        } else if (field.toLowerCase().includes('phone') || /phone|telefon/i.test(msg)) {
-          problems.push('Brakuje telefonu odbiorcy. Podaj numer telefonu dla ' + ((receiver && receiver.name) || 'odbiorcy') + '.');
-        } else if (field.toLowerCase().includes('street') || field.toLowerCase().includes('housenumber') || field.toLowerCase().includes('address')) {
-          problems.push('Niepełny adres odbiorcy. Sprawdź ulicę i numer domu dla ' + ((receiver && receiver.name) || 'odbiorcy') + '.');
-        } else if (field.toLowerCase().includes('email')) {
-          problems.push('Brakuje emaila odbiorcy.');
-        } else if (field.toLowerCase().includes('postcode')) {
-          problems.push('Brakuje kodu pocztowego odbiorcy.');
-        } else if (field.toLowerCase().includes('addon')) {
+        } else if (fieldLow.includes('phone')) {
+          problems.push(`Telefon ${who || 'odbiorcy'} (${receiverPhone}) odrzucony przez GK: "${msg}". DE/FR/IT wymagają E.164 (+49.../+33...). Sprawdź lub podaj prawidłowy numer.`);
+        } else if (fieldLow.includes('street') || fieldLow.includes('housenumber') || fieldLow.includes('address')) {
+          problems.push(`Adres ${who || 'odbiorcy'} odrzucony: "${msg}". Sprawdź ulicę/numer domu (bez znaków specjalnych jak / , ; & % + ( ) [ ]).`);
+        } else if (fieldLow.includes('email')) {
+          problems.push(`Email ${who || 'odbiorcy'}: "${msg}".`);
+        } else if (fieldLow.includes('postcode')) {
+          problems.push(`Kod pocztowy ${who || 'odbiorcy'}: "${msg}".`);
+        } else if (fieldLow.includes('name')) {
+          problems.push(`Nazwa ${who || 'odbiorcy'} odrzucona: "${msg}". GK nie pozwala na znaki: / , ; & % + ( ) [ ] " ”. Backend usuwa je automatycznie — jeśli błąd persistuje, zmień nazwę kontrahenta w bazie.`);
+        } else if (fieldLow.includes('countryid')) {
+          problems.push(`Kraj ${who || ''} odrzucony: "${msg}". Możliwy brak countryId dla tego kraju w GK — uruchom POST /api/glob/discover-countries.`);
+        } else if (fieldLow.includes('addon')) {
           continue;
         } else {
           problems.push(field + ': ' + msg);
