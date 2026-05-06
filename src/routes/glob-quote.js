@@ -16,7 +16,7 @@ router.get('/glob/presets', (req, res) => {
 
 router.post('/glob/calculate-package', async (req, res) => {
   const { items } = req.body || {};
-  if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, error: 'Podaj items z qty i name' });
+  if (!Array.isArray(items) || !items.length) return res.status(200).json({ ok: false, error: 'Podaj items z qty i name' });
   const result = calculatePackageFromItems(items);
   res.json({ ok: true, ...result });
 });
@@ -68,7 +68,7 @@ router.post('/glob/quote', async (req, res) => {
       validateDim(height, 'height', 175),
     ].filter(Boolean);
     if (dimErrors.length) {
-      return res.status(400).json({
+      return res.status(200).json({
         ok: false,
         error: 'Niepoprawne wymiary paczki',
         issues: dimErrors,
@@ -113,14 +113,14 @@ router.post('/glob/quote', async (req, res) => {
           ],
         },
       });
-      if (!sender) return res.status(404).json({ ok: false, error: 'Nie znaleziono nadawcy: ' + senderSearch });
+      if (!sender) return res.status(200).json({ ok: false, error: 'Nie znaleziono nadawcy: ' + senderSearch });
     } else if (senderId) {
       sender = await prisma.sender.findUnique({ where: { id: senderId } });
     } else {
       sender = await prisma.sender.findFirst({ where: { isDefault: true } });
       if (!sender) sender = await prisma.sender.findFirst();
     }
-    if (!sender) return res.status(400).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
+    if (!sender) return res.status(200).json({ ok: false, error: 'Brak nadawcy. POST /api/glob/sync-senders' });
 
     // 2A. PACZKA — z faktury
     let foundInvoice = null;
@@ -255,7 +255,7 @@ router.post('/glob/quote', async (req, res) => {
 
     // 4. RECEIVER (resolved before final dimension fallbacks so we can auto-lookup latest invoice for the contractor)
     if (!receiverSearch && !(deliveryAddress && (deliveryAddress.city || deliveryAddress.street))) {
-      return res.status(400).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta) lub deliveryAddress' });
+      return res.status(200).json({ ok: false, error: 'Podaj receiverSearch (nazwa kontrahenta) lub deliveryAddress' });
     }
 
     let receiver = null;
@@ -589,7 +589,7 @@ router.post('/glob/quote', async (req, res) => {
     // returned needsAddress would have been dead code.
 
     if (!receiver) {
-      return res.status(404).json({ ok: false, error: 'Nie znaleziono odbiorcy: ' + receiverSearch + '. Sprawdź kontrahentów, książkę adresową GlobKurier lub nadawców.' });
+      return res.status(200).json({ ok: false, error: 'Nie znaleziono odbiorcy: ' + receiverSearch + '. Sprawdź kontrahentów, książkę adresową GlobKurier lub nadawców.' });
     }
 
     // Auto-lookup latest invoice if no dimensions and we have a contractor
@@ -650,7 +650,7 @@ router.post('/glob/quote', async (req, res) => {
     }
 
     if (!weight || !length || !width || !height) {
-      return res.status(400).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
+      return res.status(200).json({ ok: false, error: 'Brak wymiarów paczki. Podaj packageType/invoiceNumber/items lub weight/length/width/height. Aby użyć ostatniej faktury kontrahenta: invoiceNumber="latest"' });
     }
 
     // Detect country fallback to PL — happens when contractor exists but
@@ -709,7 +709,7 @@ router.post('/glob/quote', async (req, res) => {
     // Lepiej w ogóle nie odpalać quote niż wprowadzać usera w błąd.
     if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
       const supported = Object.keys(mergedIds).join(', ');
-      return res.status(422).json({
+      return res.status(200).json({
         ok: false,
         error: `GlobKurier countryId nieznane dla "${receiver.country}". Wycena PL→${receiver.country} nie jest możliwa — GK zwróciłby błędne ceny PL→PL.`,
         supportedCountries: supported,
@@ -917,13 +917,13 @@ router.post('/glob/order', async (req, res) => {
 
     if (!quoteId) {
       console.log('[glob/order] No quoteId and store empty — abort');
-      return res.status(400).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
+      return res.status(200).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
     }
 
     const quote = quoteStore[quoteId];
     if (!quote) {
       console.log(`[glob/order] Quote ${quoteId} not in store (expired/wrong id) — abort`);
-      return res.status(404).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
+      return res.status(200).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
     }
 
     console.log(`[glob/order] Quote resolved: id=${quoteId}, offers=${(quote.offers || []).length}, productIdRequested=${JSON.stringify(productId)}`);
@@ -946,7 +946,7 @@ router.post('/glob/order', async (req, res) => {
     if (!selectedOffer) selectedOffer = quote.offers[0];
     if (!selectedOffer) {
       console.log(`[glob/order] No offers in quote ${quoteId} — quote likely failed earlier`);
-      return res.status(404).json({ ok: false, error: 'Quote nie zawiera ofert. Wygeneruj nowy.' });
+      return res.status(200).json({ ok: false, error: 'Quote nie zawiera ofert. Wygeneruj nowy.' });
     }
     console.log(`[glob/order] Selected offer: productId=${selectedOffer.productId}, carrier=${selectedOffer.carrier}, name=${selectedOffer.name}, price=${selectedOffer.price}`);
 
@@ -1271,7 +1271,7 @@ router.post('/glob/order', async (req, res) => {
           const retryPickupError = retryFields['pickup[date]'] || retryFields['pickup.date'] || '';
           if (!retryPickupError) {
             console.log('[glob/order] Non-pickup error on', tryDate, ':', JSON.stringify(retryResult).slice(0, 300));
-            return res.status(400).json({
+            return res.status(200).json({
               ok: false,
               error: humanizeGkErrors(retryResult),
               carrier: selectedOffer && selectedOffer.carrier,
@@ -1281,14 +1281,14 @@ router.post('/glob/order', async (req, res) => {
         }
 
         if (!retrySuccess) {
-          return res.status(400).json({
+          return res.status(200).json({
             ok: false,
             error: 'Brak dostępnych terminów odbioru dla ' + ((selectedOffer && selectedOffer.carrier) || 'tego kuriera') + ' w ciągu 7 dni (możliwe święta/długi weekend). Spróbuj innego kuriera (np. DPD) lub późniejszy termin.',
             carrier: selectedOffer && selectedOffer.carrier,
           });
         }
       } else {
-        return res.status(400).json({
+        return res.status(200).json({
           ok: false,
           error: humanizeGkErrors(result),
           carrier: selectedOffer && selectedOffer.carrier,

@@ -562,13 +562,14 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       const raw = ifirmaErr.ifirmaRaw || null;
       const kod = raw && raw.response && raw.response.Kod;
       const info = raw && raw.response && raw.response.Informacja;
-      console.log('[invoice-confirm] sending iFirma response to Telegram (error)');
+      const humanError = info ? `${info}${kod != null ? ` (kod ${kod})` : ''}` : ifirmaErr.message;
+      console.log('[invoice-confirm] iFirma error:', humanError);
       if (tgToken && tgChat) {
         sendTelegram(tgToken, tgChat,
-          `IFIRMA ODPOWIEDŹ:\nStatus: BŁĄD\nKod: ${kod != null ? kod : '?'}\nInformacja: ${info || ifirmaErr.message}\nKontrahent: ${contractor.name}\nPełna odpowiedź: ${JSON.stringify(raw)}`
+          `❌ Błąd iFirma\n${humanError}\nKontrahent: ${contractor.name}`
         ).catch(e => console.error('[invoice-confirm] tg error:', e.message));
       }
-      return res.json({ ok: false, error: 'iFirma error', ifirmaResponse: raw });
+      return res.json({ ok: false, error: humanError, ifirmaCode: kod != null ? kod : null });
     }
 
     const ifirmaRaw = ifirmaResult.ifirmaRaw;
