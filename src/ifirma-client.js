@@ -302,6 +302,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     MiejsceWystawienia: 'Warszawa',
     DataSprzedazy: today,
     FormatDatySprzedazy: 'DZN',
+    TerminPlatnosci: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
