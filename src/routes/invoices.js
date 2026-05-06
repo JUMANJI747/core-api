@@ -928,6 +928,45 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       }
     }
 
+    // Drugi fallback: historia korespondencji. Wcześniej wysyłaliśmy do nich
+    // FV (OUTBOUND z contractorId), albo oni pisali do nas (INBOUND). Bierzemy
+    // najświeższy wpis Email z tym samym contractorId i ekstraktujemy adres.
+    // Jak znajdziemy → też zapisujemy na Contractor.email żeby kolejny raz
+    // szło bezpośrednio.
+    if (!to && invoice.contractorId) {
+      const lastOut = await prisma.email.findFirst({
+        where: { contractorId: invoice.contractorId, direction: 'OUTBOUND', toEmail: { not: null } },
+        orderBy: { createdAt: 'desc' },
+        select: { toEmail: true },
+      });
+      if (lastOut && lastOut.toEmail) {
+        to = lastOut.toEmail;
+        emailSource = 'email_history_outbound';
+      } else {
+        const lastIn = await prisma.email.findFirst({
+          where: { contractorId: invoice.contractorId, direction: 'INBOUND', fromEmail: { not: null } },
+          orderBy: { createdAt: 'desc' },
+          select: { fromEmail: true },
+        });
+        if (lastIn && lastIn.fromEmail) {
+          to = lastIn.fromEmail;
+          emailSource = 'email_history_inbound';
+        }
+      }
+      if (to) {
+        console.log(`[send-invoice-email] resolved from email history (${emailSource}): ${to}`);
+        try {
+          await prisma.contractor.update({
+            where: { id: invoice.contractorId },
+            data: { email: to.toLowerCase().trim() },
+          });
+          console.log(`[send-invoice-email] backfilled contractor.email from history: ${to}`);
+        } catch (e) {
+          console.error('[send-invoice-email] history backfill failed:', e.message);
+        }
+      }
+    }
+
     // Reject oczywistych halucynacji (example.com, test.com, fake-...).
     // Agent wymyślał adresy „delart.ochnik@example.com" zamiast wziąć
     // prawdziwy z bazy. Lepiej 400 z sugestią niż wysłać w próżnię.
