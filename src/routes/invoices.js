@@ -904,7 +904,43 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       }
     }
 
-    if (!to) return res.status(400).json({ error: 'toEmail required (or provide emailId to reply)' });
+    // Auto-fetch z kontrahenta gdy agent nie podał maila explicit. Lustro
+    // logiki ES /api/contasimple/send-invoice-email — agent mówi „wyślij im
+    // mailem", backend resolwuje email z Contractor.email zamiast wymagać
+    // od agenta pamiętania adresów (i halucynowania).
+    let emailSource = to ? 'request' : null;
+    if (!to && invoice.contractorId) {
+      const contractor = await prisma.contractor.findUnique({
+        where: { id: invoice.contractorId },
+        select: { email: true },
+      });
+      if (contractor && contractor.email) {
+        to = contractor.email;
+        emailSource = 'contractor';
+        console.log(`[send-invoice-email] auto-fetched email from contractor: ${to}`);
+      }
+    }
+
+    // Reject oczywistych halucynacji (example.com, test.com, fake-...).
+    // Agent wymyślał adresy „delart.ochnik@example.com" zamiast wziąć
+    // prawdziwy z bazy. Lepiej 400 z sugestią niż wysłać w próżnię.
+    if (to && /(example|test|fake|placeholder|domain)\.(com|org|net|pl)$/i.test(to)) {
+      const realEmail = invoice.contractorId
+        ? (await prisma.contractor.findUnique({
+            where: { id: invoice.contractorId },
+            select: { email: true, name: true },
+          }))
+        : null;
+      return res.status(400).json({
+        error: `toEmail "${to}" wygląda na zmyślony (placeholder domain)`,
+        hint: realEmail && realEmail.email
+          ? `W bazie kontrahent "${realEmail.name}" ma email: ${realEmail.email} — użyj go.`
+          : `Kontrahent w bazie nie ma maila. Podaj prawdziwy adres.`,
+        contractorEmail: realEmail && realEmail.email,
+      });
+    }
+
+    if (!to) return res.status(400).json({ error: 'toEmail required (or provide emailId to reply, or set contractor.email in DB)' });
 
     // Localize default body by recipient country. Hiszpan dostaje
     // hiszpańską wiadomość; polski klient polską itd. Falls back to EN
@@ -985,6 +1021,28 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
+    // Auto-backfill: jak user/agent podał email i kontrahent miał pusty,
+    // zapisz na rekord. Następnym razem nie trzeba podawać.
+    let backfilled = false;
+    if (emailSource === 'request' && invoice.contractorId) {
+      try {
+        const c = await prisma.contractor.findUnique({
+          where: { id: invoice.contractorId },
+          select: { email: true },
+        });
+        if (c && (!c.email || !c.email.trim())) {
+          await prisma.contractor.update({
+            where: { id: invoice.contractorId },
+            data: { email: to.toLowerCase().trim() },
+          });
+          backfilled = true;
+          console.log(`[send-invoice-email] auto-backfilled contractor.email: ${to}`);
+        }
+      } catch (e) {
+        console.error('[send-invoice-email] backfill failed:', e.message);
+      }
+    }
+
     // Verbatim confirmation block — agents tend to claim "sent" without
     // proof, so surface every fact the SMTP server gave us. The agent is
     // instructed to display this block as-is to the user.
@@ -999,6 +1057,8 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         from,
         fromSource,
         to,
+        toSource: emailSource,
+        backfilled,
         subject,
         bodyPreview: (sentBody || '').slice(0, 200),
         attachmentFilename: filename,
