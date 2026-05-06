@@ -77,6 +77,20 @@ const LEGAL_FORM_TO_COUNTRY = [
   { re: /\bltd\b/i, country: 'GB' },
 ];
 
+// Sprowadza dowolny zapis kraju do ISO-2 ("Polska"/"POLSKA"/"Poland"/"PL"
+// → "PL"). Zwraca null gdy nie da się rozpoznać. Używamy WSZĘDZIE gdzie
+// czytamy country — bo iFirma/VIES zwracają pełne nazwy ("Polska",
+// "Hiszpania"), a w bazie Contractor mamy mix ("PL", "POLSKA", null).
+function normalizeIso(value) {
+  if (!value) return null;
+  const v = String(value).trim();
+  if (!v) return null;
+  if (/^[A-Za-z]{2}$/.test(v)) return v.toUpperCase();
+  const key = v.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (key === 'polska' || key === 'poland') return 'PL';
+  return COUNTRY_NAME_TO_CODE[key] || null;
+}
+
 // Wyciąga prefiks UE z NIP-u (np. "ES36100525R" → "ES"). Zwraca null
 // gdy NIP polski (10 cyfr) lub nie pasuje do schematu UE.
 function nipPrefixToCountry(nip) {
@@ -85,83 +99,25 @@ function nipPrefixToCountry(nip) {
   const m = clean.match(/^([A-Z]{2})[A-Z0-9]+$/);
   if (!m) return null;
   const prefix = m[1];
-  // EL = Greek VAT prefix maps to GR country code
   if (prefix === 'EL') return 'GR';
   return EU_VAT_PREFIXES.has(prefix) ? prefix : null;
 }
 
-// Pattern recognition na samym numerze (bez prefiksu) — np. ES wystawia
-// 8 cyfr+litera albo litera+7 cyfr+litera/cyfra.
-function nipPatternToCountry(nip) {
-  if (!nip) return null;
-  const clean = nip.replace(/[\s.-]/g, '').toUpperCase();
-  if (/^\d{10}$/.test(clean)) return 'PL';
-  if (/^[A-Z]\d{7}[A-Z0-9]$/.test(clean) || /^\d{8}[A-Z]$/.test(clean)) return 'ES';
-  return null;
-}
-
-function addressToCountry(addr) {
-  if (!addr) return null;
-  const lower = addr.toLowerCase();
-  for (const [name, code] of Object.entries(COUNTRY_NAME_TO_CODE)) {
-    if (lower.includes(name)) return code;
-  }
-  return null;
-}
-
-function nameSuffixToCountry(name) {
-  if (!name) return null;
-  for (const { re, country } of LEGAL_FORM_TO_COUNTRY) {
-    if (re.test(name)) return country;
-  }
-  return null;
-}
-
-// Wieloźródłowa derywacja kraju kontrahenta. Kolejność = siła sygnału.
-// Zwraca { country, source } albo { country: null, source: null }.
-async function deriveCountry(contractor, prisma) {
-  // Eksplicytny non-PL country = ufamy bezwzględnie. PL traktujemy jak
-  // niepewne (default w bazie / wgrane bez weryfikacji) i odpalamy chain —
-  // jeśli reszta sygnałów wskaże non-PL, override'ujemy.
-  const explicit = (contractor.country || '').trim().toUpperCase();
-  if (explicit && explicit !== 'PL') {
-    return { country: explicit, source: 'contractor.country' };
-  }
-  // Najmocniejszy: poprzednia faktura z walutą EUR / rodzajem WDT.
-  if (prisma && contractor.id) {
-    const past = await prisma.invoice.findFirst({
-      where: {
-        contractorId: contractor.id,
-        OR: [{ currency: 'EUR' }, { type: 'wdt' }, { ifirmaType: 'wdt' }],
-      },
-      orderBy: { issueDate: 'desc' },
-      select: { currency: true, type: true, ifirmaType: true },
-    }).catch(() => null);
-    if (past) {
-      const fromNip = nipPrefixToCountry(contractor.nip) || nipPatternToCountry(contractor.nip);
-      const fromAddr = addressToCountry(contractor.address);
-      const fromName = nameSuffixToCountry(contractor.name);
-      const c = fromNip || fromAddr || fromName;
-      if (c && c !== 'PL') return { country: c, source: 'invoice_history+derived' };
-      // Mamy WDT historię ale nie wiemy skąd; oznacz jako EU bez konkretu.
-      return { country: 'EU', source: 'invoice_history' };
-    }
-  }
+// Prosta derywacja kraju — TYLKO mocne, niepodważalne sygnały. Nie używamy
+// historii faktur (pojedyncza pomyłka EUR oznaczałaby PL klienta jako EU
+// na zawsze) ani wzorca NIP / sufiksu nazwy (false positives na polskich
+// nazwach jak "sp.k."). Trzy źródła w kolejności pewności:
+// 1. contractor.country znormalizowany do ISO-2
+// 2. NIP z prefiksem UE (ES36..., DE12..., etc.)
+// 3. extras.billingAddress.country znormalizowany do ISO-2
+async function deriveCountry(contractor) {
+  const explicit = normalizeIso(contractor.country);
+  if (explicit) return { country: explicit, source: 'contractor.country' };
   const fromPrefix = nipPrefixToCountry(contractor.nip);
-  if (fromPrefix && fromPrefix !== 'PL') return { country: fromPrefix, source: 'nip_prefix' };
+  if (fromPrefix) return { country: fromPrefix, source: 'nip_prefix' };
   const billing = contractor.extras && contractor.extras.billingAddress;
-  if (billing && billing.country) {
-    const code = billing.country.toUpperCase();
-    if (code && code !== 'PL') return { country: code, source: 'extras.billingAddress' };
-  }
-  const fromAddr = addressToCountry(contractor.address);
-  if (fromAddr && fromAddr !== 'PL') return { country: fromAddr, source: 'address_text' };
-  const fromPattern = nipPatternToCountry(contractor.nip);
-  if (fromPattern && fromPattern !== 'PL') return { country: fromPattern, source: 'nip_pattern' };
-  const fromName = nameSuffixToCountry(contractor.name);
-  if (fromName && fromName !== 'PL') return { country: fromName, source: 'name_suffix' };
-  // Nic nie wskazuje na non-PL — zostajemy z PL (jeśli było eksplicytnie ustawione).
-  if (explicit === 'PL') return { country: 'PL', source: 'contractor.country' };
+  const fromBilling = billing ? normalizeIso(billing.country) : null;
+  if (fromBilling) return { country: fromBilling, source: 'extras.billingAddress' };
   return { country: null, source: null };
 }
 
@@ -395,30 +351,27 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       }
     }
 
-    const derived = await deriveCountry(contractor, prisma);
+    const derived = await deriveCountry(contractor);
     const effectiveCountry = derived.country || 'PL';
     const waluta = effectiveCountry === 'PL' ? 'PLN' : 'EUR';
     const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
 
-    // Auto-persist na rekord żeby kolejne FV szły od razu WDT (jednorazowa
-    // samonaprawa bazy). Pomijamy gdy derive zwrócił 'EU' bez konkretu.
-    if (
-      effectiveCountry !== 'PL' &&
-      effectiveCountry !== 'EU' &&
-      (!contractor.country || contractor.country.toUpperCase() === 'PL')
-    ) {
+    // Auto-persist znormalizowanego ISO-2 gdy w bazie był pełny tekst
+    // ("Polska"/"Hiszpania") albo pusto a wykryliśmy non-PL przez NIP.
+    // Robimy update tylko gdy nowa wartość różni się od obecnej.
+    if (effectiveCountry && contractor.country !== effectiveCountry) {
       try {
         await prisma.contractor.update({
           where: { id: contractor.id },
           data: { country: effectiveCountry },
         });
         contractor = { ...contractor, country: effectiveCountry };
-        console.log(`[invoice-preview] auto-set country=${effectiveCountry} on ${contractor.name} (source=${derived.source})`);
+        console.log(`[invoice-preview] normalize country: ${derived.source} → ${effectiveCountry} on ${contractor.name}`);
       } catch (e) {
         console.error('[invoice-preview] persist country failed:', e.message);
       }
     }
-    console.log(`[invoice-preview] country=${effectiveCountry} (source=${derived.source}) → waluta=${waluta} rodzaj=${rodzaj}`);
+    console.log(`[invoice-preview] country=${effectiveCountry} (source=${derived.source || 'default_PL'}) → waluta=${waluta} rodzaj=${rodzaj}`);
 
     // Load product catalog for fuzzy lookup
     const catalog = await prisma.product.findMany({ where: { active: true } });
@@ -1399,15 +1352,16 @@ router.post('/invoices/:id/backfill-items', async (req, res) => {
 });
 
 // ============ COUNTRY BACKFILL ============
-// Skanuje wszystkich kontrahentów z pustym/PL country, derive'uje kraj
-// z mocnych sygnałów (historia FV / NIP / adres / nazwa), wpisuje gdy
-// znajdzie. dryRun zwraca plan bez zapisu.
+// Normalizuje pole country we wszystkich rekordach Contractor — z pełnych
+// nazw ("POLSKA"/"Hiszpania") na ISO-2 ("PL"/"ES"). Plus dorzuca ISO dla
+// kontrahentów z pustym country gdy NIP ma prefiks UE. dryRun=true (default)
+// zwraca plan bez zapisu.
 router.post('/invoices/backfill-country', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { dryRun = true, onlyMissing = true } = req.body || {};
+  const { dryRun = true, onlyMissing = false } = req.body || {};
   try {
     const where = onlyMissing
-      ? { OR: [{ country: null }, { country: '' }, { country: 'PL' }] }
+      ? { OR: [{ country: null }, { country: '' }] }
       : {};
     const contractors = await prisma.contractor.findMany({
       where,
@@ -1415,9 +1369,9 @@ router.post('/invoices/backfill-country', async (req, res) => {
     });
     const plan = [];
     for (const c of contractors) {
-      const d = await deriveCountry(c, prisma);
-      if (!d.country || d.country === 'PL' || d.country === 'EU') continue;
-      if ((c.country || '').toUpperCase() === d.country) continue;
+      const d = await deriveCountry(c);
+      if (!d.country) continue;
+      if (c.country === d.country) continue; // już zgodne
       plan.push({ id: c.id, name: c.name, nip: c.nip, currentCountry: c.country, newCountry: d.country, source: d.source });
     }
     if (dryRun) {
