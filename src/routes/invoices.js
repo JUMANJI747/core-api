@@ -942,7 +942,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     // szło bezpośrednio.
     if (!to && invoice.contractorId) {
       const lastOut = await prisma.email.findFirst({
-        where: { contractorId: invoice.contractorId, direction: 'OUTBOUND', toEmail: { not: null } },
+        where: { contractorId: invoice.contractorId, direction: 'OUTBOUND' },
         orderBy: { createdAt: 'desc' },
         select: { toEmail: true },
       });
@@ -951,7 +951,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         emailSource = 'email_history_outbound';
       } else {
         const lastIn = await prisma.email.findFirst({
-          where: { contractorId: invoice.contractorId, direction: 'INBOUND', fromEmail: { not: null } },
+          where: { contractorId: invoice.contractorId, direction: 'INBOUND' },
           orderBy: { createdAt: 'desc' },
           select: { fromEmail: true },
         });
@@ -1544,7 +1544,7 @@ router.get('/find-contractor-email/:idOrSearch', async (req, res) => {
 
     // L2: history outbound
     const lastOut = await prisma.email.findFirst({
-      where: { contractorId: contractor.id, direction: 'OUTBOUND', toEmail: { not: null } },
+      where: { contractorId: contractor.id, direction: 'OUTBOUND' },
       orderBy: { createdAt: 'desc' },
       select: { toEmail: true },
     });
@@ -1553,7 +1553,7 @@ router.get('/find-contractor-email/:idOrSearch', async (req, res) => {
       return res.json(result);
     }
     const lastIn = await prisma.email.findFirst({
-      where: { contractorId: contractor.id, direction: 'INBOUND', fromEmail: { not: null } },
+      where: { contractorId: contractor.id, direction: 'INBOUND' },
       orderBy: { createdAt: 'desc' },
       select: { fromEmail: true },
     });
