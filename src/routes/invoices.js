@@ -953,17 +953,62 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
           emailSource = 'email_history_inbound';
         }
       }
-      if (to) {
-        console.log(`[send-invoice-email] resolved from email history (${emailSource}): ${to}`);
-        try {
-          await prisma.contractor.update({
-            where: { id: invoice.contractorId },
-            data: { email: to.toLowerCase().trim() },
-          });
-          console.log(`[send-invoice-email] backfilled contractor.email from history: ${to}`);
-        } catch (e) {
-          console.error('[send-invoice-email] history backfill failed:', e.message);
+    }
+
+    // Trzeci fallback: fuzzy lookup po tokenach nazwy firmy w polach Email
+    // (fromName/fromEmail/toEmail/subject). Działa nawet jak Email rekordy
+    // mają contractorId=null (poller nie zlinkował bo Contractor.email był
+    // pusty). Filtrujemy oczywiste śmieci (placeholder/blocklist domains)
+    // żeby nie podstawić halucynacji typu 'delart.ochnik@example.com' z
+    // poprzednich nieudanych wysyłek.
+    if (!to && invoice.contractorId) {
+      const contractor = await prisma.contractor.findUnique({
+        where: { id: invoice.contractorId },
+        select: { name: true },
+      });
+      const STOPWORDS = new Set(['sp', 'k', 'sa', 'sc', 'sl', 'sci', 'spz', 'oo', 'ltd', 'gmbh', 'ochnik', 'spolka', 'spółka', 'komandytowa', 'akcyjna', 'cywilna']);
+      const tokens = ((contractor && contractor.name) || '')
+        .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+        .filter(t => t.length >= 4 && !STOPWORDS.has(t));
+      if (tokens.length) {
+        const orFilters = [];
+        for (const t of tokens) {
+          orFilters.push({ fromEmail: { contains: t, mode: 'insensitive' } });
+          orFilters.push({ toEmail: { contains: t, mode: 'insensitive' } });
+          orFilters.push({ fromName: { contains: t, mode: 'insensitive' } });
+          orFilters.push({ subject: { contains: t, mode: 'insensitive' } });
         }
+        const candidates = await prisma.email.findMany({
+          where: { OR: orFilters },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          select: { fromEmail: true, toEmail: true, direction: true, fromName: true },
+        });
+        const isPlaceholder = (e) => !e || /(example|test|fake|placeholder|domain)\.(com|org|net|pl)$/i.test(e);
+        const isFromUs = (e) => !e || /surfstickbell|surf-stick-bell/i.test(e);
+        for (const c of candidates) {
+          const candidate = c.direction === 'INBOUND' ? c.fromEmail : c.toEmail;
+          if (!candidate) continue;
+          if (isPlaceholder(candidate)) continue;
+          if (isFromUs(candidate)) continue; // nasz adres, pomijamy
+          to = candidate;
+          emailSource = 'email_history_fuzzy';
+          break;
+        }
+      }
+    }
+    // Po znalezieniu z którejkolwiek warstwy historii — zapisz na rekord.
+    if (to && (emailSource === 'email_history_outbound' || emailSource === 'email_history_inbound' || emailSource === 'email_history_fuzzy')) {
+      console.log(`[send-invoice-email] resolved from email history (${emailSource}): ${to}`);
+      try {
+        await prisma.contractor.update({
+          where: { id: invoice.contractorId },
+          data: { email: to.toLowerCase().trim() },
+        });
+        console.log(`[send-invoice-email] backfilled contractor.email from history: ${to}`);
+      } catch (e) {
+        console.error('[send-invoice-email] history backfill failed:', e.message);
       }
     }
 
