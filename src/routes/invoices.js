@@ -978,6 +978,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
         .replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
         .filter(t => t.length >= 4 && !STOPWORDS.has(t));
+      console.log(`[send-invoice-email] fuzzy: contractor="${contractor && contractor.name}" tokens=[${tokens.join(',')}]`);
       if (tokens.length) {
         const orFilters = [];
         for (const t of tokens) {
@@ -990,19 +991,22 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
           where: { OR: orFilters },
           orderBy: { createdAt: 'desc' },
           take: 50,
-          select: { fromEmail: true, toEmail: true, direction: true, fromName: true },
+          select: { fromEmail: true, toEmail: true, direction: true, fromName: true, subject: true },
         });
+        console.log(`[send-invoice-email] fuzzy: ${candidates.length} kandydatów w Email`);
         const isPlaceholder = (e) => !e || /(example|test|fake|placeholder|domain)\.(com|org|net|pl)$/i.test(e);
         const isFromUs = (e) => !e || /surfstickbell|surf-stick-bell/i.test(e);
         for (const c of candidates) {
           const candidate = c.direction === 'INBOUND' ? c.fromEmail : c.toEmail;
-          if (!candidate) continue;
-          if (isPlaceholder(candidate)) continue;
-          if (isFromUs(candidate)) continue; // nasz adres, pomijamy
+          if (!candidate) { continue; }
+          if (isPlaceholder(candidate)) { console.log(`[send-invoice-email] fuzzy skip ${candidate}: placeholder`); continue; }
+          if (isFromUs(candidate)) { console.log(`[send-invoice-email] fuzzy skip ${candidate}: from us`); continue; }
           to = candidate;
           emailSource = 'email_history_fuzzy';
+          console.log(`[send-invoice-email] fuzzy match: ${candidate} (${c.direction}, fromName="${c.fromName}", subject="${c.subject}")`);
           break;
         }
+        if (!to) console.log(`[send-invoice-email] fuzzy: zero przeszło filtry`);
       }
     }
     // Po znalezieniu z którejkolwiek warstwy historii — zapisz na rekord.
@@ -1505,6 +1509,99 @@ router.post('/invoices/:id/backfill-items', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[backfill-items] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Diagnostyka — jakie email backend ZNAJDZIE dla danego kontrahenta przez
+// fallback chain (contractor.email → email_history_outbound/inbound →
+// fuzzy). Bez wysyłki, bez side-effectów. Pomocne gdy „wyślij im mailem"
+// nie działa i chcemy zobaczyć co backend widzi.
+router.get('/contractors/:id-or-search/find-email', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const idOrSearch = req.params['id-or-search'];
+  try {
+    let contractor = null;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSearch);
+    if (isUuid) {
+      contractor = await prisma.contractor.findUnique({ where: { id: idOrSearch } });
+    } else {
+      const all = await prisma.contractor.findMany({
+        select: { id: true, name: true, nip: true, country: true, email: true },
+      });
+      const scored = all.map(c => ({ c, s: scoreContractor(c, idOrSearch) }))
+        .filter(x => x.s >= 50).sort((a, b) => b.s - a.s);
+      if (scored.length) contractor = scored[0].c;
+    }
+    if (!contractor) return res.status(404).json({ error: 'contractor not found' });
+    const result = { contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, currentEmail: contractor.email } };
+
+    // L1: Contractor.email
+    if (contractor.email) {
+      result.found = { source: 'contractor', email: contractor.email };
+      return res.json(result);
+    }
+
+    // L2: history outbound
+    const lastOut = await prisma.email.findFirst({
+      where: { contractorId: contractor.id, direction: 'OUTBOUND', toEmail: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { toEmail: true },
+    });
+    if (lastOut && lastOut.toEmail) {
+      result.found = { source: 'email_history_outbound', email: lastOut.toEmail };
+      return res.json(result);
+    }
+    const lastIn = await prisma.email.findFirst({
+      where: { contractorId: contractor.id, direction: 'INBOUND', fromEmail: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { fromEmail: true },
+    });
+    if (lastIn && lastIn.fromEmail) {
+      result.found = { source: 'email_history_inbound', email: lastIn.fromEmail };
+      return res.json(result);
+    }
+
+    // L3: fuzzy
+    const STOPWORDS = new Set(['sp', 'k', 'sa', 'sc', 'sl', 'sci', 'spz', 'oo', 'ltd', 'gmbh', 'ochnik', 'spolka', 'spółka', 'komandytowa', 'akcyjna', 'cywilna']);
+    const tokens = (contractor.name || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+      .filter(t => t.length >= 4 && !STOPWORDS.has(t));
+    result.fuzzyTokens = tokens;
+    if (!tokens.length) {
+      return res.json({ ...result, found: null, hint: 'brak tokenów ≥4 znaki po wyrzuceniu stopwords' });
+    }
+    const orFilters = [];
+    for (const t of tokens) {
+      orFilters.push({ fromEmail: { contains: t, mode: 'insensitive' } });
+      orFilters.push({ toEmail: { contains: t, mode: 'insensitive' } });
+      orFilters.push({ fromName: { contains: t, mode: 'insensitive' } });
+      orFilters.push({ subject: { contains: t, mode: 'insensitive' } });
+    }
+    const candidates = await prisma.email.findMany({
+      where: { OR: orFilters },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: { fromEmail: true, toEmail: true, direction: true, fromName: true, subject: true },
+    });
+    result.candidatesFound = candidates.length;
+    const isPlaceholder = (e) => !e || /(example|test|fake|placeholder|domain)\.(com|org|net|pl)$/i.test(e);
+    const isFromUs = (e) => !e || /surfstickbell|surf-stick-bell/i.test(e);
+    const inspected = [];
+    for (const c of candidates) {
+      const candidate = c.direction === 'INBOUND' ? c.fromEmail : c.toEmail;
+      if (!candidate) { inspected.push({ direction: c.direction, candidate: null, reason: 'null' }); continue; }
+      if (isPlaceholder(candidate)) { inspected.push({ direction: c.direction, candidate, reason: 'placeholder' }); continue; }
+      if (isFromUs(candidate)) { inspected.push({ direction: c.direction, candidate, reason: 'from_us' }); continue; }
+      inspected.push({ direction: c.direction, candidate, fromName: c.fromName, subject: c.subject, accepted: true });
+      result.found = { source: 'email_history_fuzzy', email: candidate, direction: c.direction, fromName: c.fromName };
+      result.candidatesInspected = inspected;
+      return res.json(result);
+    }
+    result.candidatesInspected = inspected;
+    result.found = null;
+    res.json(result);
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
