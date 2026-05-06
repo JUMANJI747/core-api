@@ -1517,9 +1517,9 @@ router.post('/invoices/:id/backfill-items', async (req, res) => {
 // fallback chain (contractor.email → email_history_outbound/inbound →
 // fuzzy). Bez wysyłki, bez side-effectów. Pomocne gdy „wyślij im mailem"
 // nie działa i chcemy zobaczyć co backend widzi.
-router.get('/contractors/:id-or-search/find-email', async (req, res) => {
+router.get('/find-contractor-email/:idOrSearch', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const idOrSearch = req.params['id-or-search'];
+  const idOrSearch = req.params.idOrSearch;
   try {
     let contractor = null;
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSearch);
