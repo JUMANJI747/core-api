@@ -48,8 +48,14 @@ OFERTY:
 - "wyślij ofertę do X" → send_offer (contractorSearch + opcjonalnie language).
 
 WYSYŁKA FAKTURY:
-- "wyślij fakturę N do klienta" → send_invoice_email (invoiceId + toEmail).
-- Jeśli odpowiedź na konkretny mail → dopisz emailId (reply-in-thread).
+- "wyślij fakturę N do klienta" → send_invoice_email z {invoiceId}.
+- toEmail OPCJONALNY: jeśli NIE znasz prawdziwego adresu, POMIŃ to pole — backend sam pobierze z Contractor.email albo z historii korespondencji (Email model).
+- toEmail MUSI być formatem 'local@domena.tld'. NIE wpisuj tam:
+  · nazwy firmy ("Delart Ochnik sp.k." → ŹLE)
+  · placeholderów ("example.com", "test.com" → ŹLE)
+  · "z bazy", "domyślny" itp. (puste pole zamiast tego)
+- Jeśli odpowiadasz na konkretny mail → dopisz emailId (reply-in-thread).
+- response.confirmation pokaż DOSŁOWNIE z polami: invoiceNumber, to, from, subject, attachmentSizeKB, messageId, toSource (request/contractor/email_history_*), backfilled.
 
 POTWIERDZENIE DRAFTU:
 - "tak"/"ok" po pokazaniu draftu → confirm_draft (bez argumentów — bierze najnowszy DRAFT z bazy do 30 min).
@@ -111,15 +117,15 @@ const tools = [
   },
   {
     name: 'send_invoice_email',
-    description: 'Wyślij PDF faktury mailem do klienta. Podaj invoiceId z bazy i toEmail. Opcjonalnie emailId — wtedy reply-in-thread.',
+    description: 'Wyślij PDF faktury mailem do klienta. Podaj invoiceId. toEmail OPCJONALNY — jak pominiesz, backend pobierze z Contractor.email albo z historii Email (najświeższa korespondencja z tym kontrahentem). NIE wpisuj nazwy firmy ani placeholderów ("example.com") jako toEmail — pomiń pole.',
     input_schema: {
       type: 'object',
       properties: {
-        invoiceId: { type: 'string' },
-        toEmail: { type: 'string' },
-        emailId: { type: 'string', description: 'ID oryginalnego maila do reply-in-thread (opcjonalne)' },
+        invoiceId: { type: 'string', description: 'Numer faktury (np. "69/2026") lub UUID z bazy' },
+        toEmail: { type: 'string', description: 'OPCJONALNY: prawdziwy adres email odbiorcy (format local@domena.tld). Pomiń jeśli nie znasz — backend sam dobierze.' },
+        emailId: { type: 'string', description: 'OPCJONALNY: ID oryginalnego maila do reply-in-thread' },
       },
-      required: ['invoiceId', 'toEmail'],
+      required: ['invoiceId'],
     },
   },
   {

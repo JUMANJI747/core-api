@@ -63,7 +63,8 @@ OFERTY:
 
 WYSYŁKA FAKTURY:
 - "wyślij fakturę N do klienta" → send_invoice_email (Contasimple).
-- Argumenty: invoiceNumber LUB contasimpleId. toEmail opcjonalny — backend ściąga z EsContractor.email gdy puste.
+- Argumenty: invoiceNumber LUB contasimpleId. toEmail OPCJONALNY — jak nie znasz adresu, POMIŃ pole. Backend sam pobierze z EsContractor.email.
+- toEmail MUSI być formatem 'local@domena.tld'. NIE wpisuj nazwy firmy, "z bazy", "example.com" — w wątpliwości pomiń.
 
 POTWIERDZENIE DRAFTU:
 - "tak"/"ok" po pokazaniu draftu → confirm_draft (bez argumentów — bierze najnowszy DRAFT z bazy do 30 min).
