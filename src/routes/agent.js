@@ -13,20 +13,20 @@ const { processOperationsQuery } = require('../services/operations-agent');
 // (with any context it wants the sub-agent to see), gets back a text reply.
 
 router.post('/agent/logistics', asyncHandler(async (req, res) => {
-  const { query } = req.body || {};
+  const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
-  const result = await processLogisticsQuery(query);
+  const result = await processLogisticsQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/accounting', asyncHandler(async (req, res) => {
-  const { query } = req.body || {};
+  const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
-  const result = await processAccountingQuery(query);
+  const result = await processAccountingQuery(query, { chatId });
   res.json(result);
 }));
 
@@ -40,11 +40,11 @@ router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
 }));
 
 router.post('/agent/communication', asyncHandler(async (req, res) => {
-  const { query } = req.body || {};
+  const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
-  const result = await processCommunicationQuery(query);
+  const result = await processCommunicationQuery(query, { chatId });
   res.json(result);
 }));
 
@@ -58,11 +58,11 @@ router.post('/agent/communication-es', asyncHandler(async (req, res) => {
 }));
 
 router.post('/agent/operations', asyncHandler(async (req, res) => {
-  const { query } = req.body || {};
+  const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
-  const result = await processOperationsQuery(query);
+  const result = await processOperationsQuery(query, { chatId });
   res.json(result);
 }));
 

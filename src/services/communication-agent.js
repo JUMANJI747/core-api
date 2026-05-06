@@ -192,19 +192,21 @@ function selfCall(method, path, body) {
   });
 }
 
-async function executeTool(name, input) {
+async function executeTool(name, input, ctx = {}) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
+  // Propagacja chatId z konwersacji (Master → sub-agent) żeby backend
+  // odpowiadał Telegramem do tego kto pisał, nie do Config statycznego.
+  const fullInput = { ...input, ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
   try {
     if (ep[0] === 'POST_PATH') {
-      // Path with params (e.g. parse_attachments needs emailId in URL)
-      const path = ep[1].replace(':emailId', encodeURIComponent(input.emailId || ''));
-      const { emailId, ...rest } = input;
+      const path = ep[1].replace(':emailId', encodeURIComponent(fullInput.emailId || ''));
+      const { emailId, ...rest } = fullInput;
       const resp = await selfCall('POST', path, Object.keys(rest).length ? rest : null);
       return resp.body;
     }
     const [method, path] = ep;
-    const resp = await selfCall(method, path, input);
+    const resp = await selfCall(method, path, fullInput);
     return resp.body;
   } catch (err) {
     console.error(`[communication-agent] tool ${name} error:`, err.message);
@@ -222,7 +224,7 @@ const PARSE_INTENT = /\bparsuj zal|otw[oó]rz zal|sprawd[zź] zal/iu;
 const CHECK_SENT_INTENT = /\bczy (fakt|fv).{0,40}(wysy[lł]ana|wys[lł]aliśmy|by[lł]a wys)/iu;
 const CONFIRM_INTENT = /^\s*(tak|ok|potwierd|akceptu|wy[sś]lij( go| j[ąa])?)\b/iu;
 
-async function processCommunicationQuery(query) {
+async function processCommunicationQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   }
@@ -257,7 +259,7 @@ async function processCommunicationQuery(query) {
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
       console.log(`[communication-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input);
+      const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,

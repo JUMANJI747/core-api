@@ -248,20 +248,15 @@ function selfCall(method, path, body) {
   });
 }
 
-async function executeTool(name, input) {
+async function executeTool(name, input, ctx = {}) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
   const [method, pathTemplate] = ep;
-  // Expand :param placeholders from input and strip those keys from the body
-  // so they don't double up as form/JSON fields.
   let path = pathTemplate;
-  const body = { ...(input || {}) };
+  const body = { ...(input || {}), ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
   path = path.replace(/:([a-zA-Z]+)/g, (_, key) => {
     const val = body[key];
     delete body[key];
-    // "_" is the backend sentinel for "lookup by name from body" — keeps
-    // the route registered with a path param while letting the agent omit
-    // the ID when it doesn't have one (stateless turn).
     if (!val) return '_';
     return encodeURIComponent(val);
   });
@@ -296,7 +291,7 @@ const DELETE_INTENT = /\b(usu[nń]|anuluj|skasuj|skasować|delete)\s+(?:t[aęą]
 const ADDRESS_FROM_ORDERS_INTENT = /\b(adres\w*\s+(z|w|po)\s+(poprzedni|histori|wysy[lł]\w*|paczk))|\b(z\s+(poprzedni\w*|histori\w*)\s+(wysy[lł]\w*|gk|paczek|paczk))|\bz\s+histori[ai]\s+gk|\bszukaj\s+(adres\w*\s+)?(w|z)\s+(wysy[lł]\w*|histori\w*|paczk\w*)|\bz\s+poprzedni\w*\s+wysy[lł]\w*/iu;
 const ADDRESS_FROM_EMAILS_INTENT = /\b(adres\w*\s+(z|w)\s+mail)|\bszukaj\s+(adres\w*\s+)?(w|z)\s+mail/iu;
 
-async function processLogisticsQuery(query) {
+async function processLogisticsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   }
@@ -338,7 +333,7 @@ async function processLogisticsQuery(query) {
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
       console.log(`[logistics-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input);
+      const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,

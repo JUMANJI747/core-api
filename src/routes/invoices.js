@@ -531,12 +531,14 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
 
-    const [tgTokenCfg, tgChatCfg] = await Promise.all([
-      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-    ]);
-    const tgToken = tgTokenCfg && tgTokenCfg.value;
+    const reqChatId = req.body && req.body.chatId;
+    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+    const tgChatCfg = reqChatId
+      ? { value: String(reqChatId) }
+      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
     const tgChat = tgChatCfg && tgChatCfg.value;
+    console.log(`[ifirma confirm-latest] tg → chat=${tgChat} (source=${reqChatId ? 'request' : 'config'}) token=...${tgToken.slice(-4)}`);
 
     let ifirmaResult;
     try {
@@ -763,12 +765,17 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     let pdfSent = false;
     try {
-      const [tokenCfg, chatCfg] = await Promise.all([
-        prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-        prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-      ]);
-      const token = tokenCfg && tokenCfg.value;
+      // chatId per-request (od kogo idzie żądanie) ma pierwszeństwo nad
+      // statycznym Config — bez tego PDF leciał zawsze do telegram_chat_id
+      // z Config niezależnie od tego kto pisał.
+      const reqChatId = req.body && req.body.chatId;
+      const tokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+      const chatCfg = reqChatId
+        ? { value: String(reqChatId) }
+        : await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+      const token = (process.env.TELEGRAM_BOT_TOKEN || (tokenCfg && tokenCfg.value) || '').trim();
       const chatId = chatCfg && chatCfg.value;
+      console.log(`[ifirma confirm] tg → chat=${chatId} (source=${reqChatId ? 'request' : 'config'}) token=...${token.slice(-4)}`);
 
       if (token && chatId) {
         const boundary = '----FormBoundary' + Date.now();
@@ -1356,12 +1363,12 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
     const rodzaj = invoice.ifirmaType || invoice.type || 'wdt';
     const pdfBuffer = await fetchInvoicePdf(realNumber, rodzaj, invoice.ifirmaId);
 
-    const [tgTokenCfg, tgChatCfg] = await Promise.all([
-      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-    ]);
-    const tgToken = tgTokenCfg && tgTokenCfg.value;
-    const tgChat = (req.body && req.body.chatId) || (tgChatCfg && tgChatCfg.value);
+    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
+    const reqChatId = req.body && req.body.chatId;
+    const tgChat = reqChatId || (tgChatCfg && tgChatCfg.value);
+    console.log(`[ifirma resend-pdf] tg → chat=${tgChat} (source=${reqChatId ? 'request' : 'config'}) token=...${tgToken.slice(-4)}`);
     if (!tgToken || !tgChat) {
       return res.status(500).json({ error: 'Brak telegram_bot_token lub telegram_chat_id w konfiguracji.' });
     }

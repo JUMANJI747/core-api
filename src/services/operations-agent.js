@@ -149,12 +149,12 @@ function selfCall(method, path, body) {
   });
 }
 
-async function executeTool(name, input) {
+async function executeTool(name, input, ctx = {}) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
   const [method, pathTemplate] = ep;
   let path = pathTemplate;
-  const body = { ...(input || {}) };
+  const body = { ...(input || {}), ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
   path = path.replace(/:([a-zA-Z]+)/g, (_, key) => {
     const val = body[key]; delete body[key];
     return encodeURIComponent(val || '_');
@@ -168,7 +168,7 @@ async function executeTool(name, input) {
   }
 }
 
-async function processOperationsQuery(query) {
+async function processOperationsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   if (!query || typeof query !== 'string') return { text: 'Brak query.', error: 'no_query' };
 
@@ -186,7 +186,7 @@ async function processOperationsQuery(query) {
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
     const toolUse = response.content.find(b => b.type === 'tool_use');
-    const result = await executeTool(toolUse.name, toolUse.input);
+    const result = await executeTool(toolUse.name, toolUse.input, ctx);
     console.log(`[operations-agent] tool_use: ${toolUse.name}`, JSON.stringify(toolUse.input).slice(0, 200));
 
     messages.push({ role: 'assistant', content: response.content });

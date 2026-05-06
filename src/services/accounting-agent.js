@@ -250,12 +250,15 @@ function selfCall(method, path, body) {
   });
 }
 
-async function executeTool(name, input) {
+async function executeTool(name, input, ctx = {}) {
   const ep = ENDPOINT_MAP[name];
   if (!ep) return { error: `Unknown tool: ${name}` };
   const [method, path] = ep;
+  // Propagacja chatId z konwersacji żeby backend wysyłał PDF/notyfikacje
+  // do tego kto pisał, a nie do statycznego telegram_chat_id z Config.
+  const fullInput = { ...input, ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
   try {
-    const resp = await selfCall(method, path, input);
+    const resp = await selfCall(method, path, fullInput);
     return resp.body;
   } catch (err) {
     console.error(`[accounting-agent] tool ${name} error:`, err.message);
@@ -278,7 +281,7 @@ const PDF_TELEGRAM_INTENT_RE = new RegExp(PDF_TELEGRAM_INTENT, 'i');
 const SYNC_INTENT = /\bsynchron|\bsync\b|zsynchronizuj/i;
 const ANALYTICS_INTENT = /\bobr[oó]t|przetermin|statystyk|raport|ile (mam|jest|wystawiono)|suma fakt/i;
 
-async function processAccountingQuery(query) {
+async function processAccountingQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   }
@@ -314,7 +317,7 @@ async function processAccountingQuery(query) {
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
       console.log(`[accounting-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input);
+      const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,
