@@ -876,7 +876,14 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     const filename = `faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
 
     // Threading: if emailId provided, reply in same thread
-    let to = toEmail;
+    // Walidacja formatu — agent czasem podaje nazwę firmy ('Delart Ochnik sp.k.')
+    // jako toEmail. Jeśli nie wygląda na adres email — traktujemy jak brak,
+    // żeby fallback chain (contractor → email_history) miał szansę zadziałać.
+    const looksLikeEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+    let to = looksLikeEmail(toEmail) ? toEmail.trim() : null;
+    if (toEmail && !to) {
+      console.log(`[send-invoice-email] toEmail="${toEmail}" nie wygląda na adres — odrzucone, próbuję fallback`);
+    }
     let from = 'info@surfstickbell.com';
     let fromSource = 'default';
     let subject = customSubject || `Faktura ${invoice.number} - Surf Stick Bell`;
