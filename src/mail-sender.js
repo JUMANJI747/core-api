@@ -96,8 +96,32 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
 
   const result = await transporter.sendMail(mailOptions);
   const sentMessageId = result.messageId || null;
+  // SMTP server accepted the message AND returned a Message-ID. Bez tego
+  // nie mamy 100% pewności że trafił — zapisujemy jako FAILED i rzucamy
+  // tak żeby caller mógł powiadomić użytkownika.
+  if (!sentMessageId) {
+    console.error(`[mail-sender] WARN: sendMail returned no messageId, treating as failure. Response:`, JSON.stringify(result).slice(0, 500));
+    await prisma.email.create({
+      data: {
+        direction: 'FAILED',
+        inbox: extractInbox(from),
+        fromEmail: from,
+        toEmail: to,
+        subject: subject || null,
+        bodyPreview: (body || html || '').replace(/<[^>]*>/g, '').slice(0, 300),
+        bodyFull: (body || html || '').slice(0, 2000),
+        messageId: null,
+        inReplyTo: inReplyTo || null,
+        references: references || null,
+        contractorId: null,
+      },
+    });
+    const err = new Error('SMTP nie zwrócił Message-ID — wysyłka niepotwierdzona');
+    err.smtpResponse = result;
+    throw err;
+  }
 
-  console.log(`[mail-sender] sent from ${from} to ${to} subject: ${subject}`);
+  console.log(`[mail-sender] sent from ${from} to ${to} subject: ${subject} messageId=${sentMessageId}`);
 
   // Find contractor by toEmail
   let contractorId = null;

@@ -4,6 +4,50 @@ const https = require('https');
 const crypto = require('crypto');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
+const { sendTelegram } = require('../telegram-utils');
+
+// Wspólny helper potwierdzeń SMTP na Telegram. Zachowanie:
+// - sukces: messageId niepuste → krótki blok "✉️ wysłany" z dowodem
+// - błąd: error string → blok "❌ Błąd SMTP" z powodem
+// chatId pobierany z body żądania (per-request) → fallback Config.telegram_chat_id.
+// Token: env TELEGRAM_BOT_TOKEN_KANARY/ES → Config telegram_bot_token_es →
+// env TELEGRAM_BOT_TOKEN → Config telegram_bot_token (bot PL default).
+async function notifyMailResult(prisma, { reqChatId, scope, ok, to, from, subject, messageId, attachmentFilename, attachmentSizeKB, error }) {
+  let token = '';
+  if (scope === 'es' || scope === 'kanary') {
+    token = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
+    if (!token) {
+      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
+      token = (cfg && cfg.value) || '';
+    }
+  }
+  if (!token) {
+    token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (!token) {
+      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+      token = (cfg && cfg.value) || '';
+    }
+  }
+  let chatId = reqChatId;
+  if (!chatId) {
+    const cfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    chatId = cfg && cfg.value;
+  }
+  if (!token || !chatId) return;
+  let text;
+  if (ok) {
+    text = `✉️ Mail wysłany (SMTP potwierdził)\n- Do: ${to}\n- Od: ${from}\n- Temat: ${subject || '-'}` +
+      (attachmentFilename ? `\n- Załącznik: ${attachmentFilename}${attachmentSizeKB ? ` (${attachmentSizeKB} KB)` : ''}` : '') +
+      `\n- MessageId: ${messageId}`;
+  } else {
+    text = `❌ Błąd wysyłki maila\n- Do: ${to || '-'}\n- Od: ${from || '-'}\n- Temat: ${subject || '-'}\n- Powód: ${error || 'unknown'}`;
+  }
+  try {
+    await sendTelegram(token, String(chatId), text);
+  } catch (e) {
+    console.error('[notifyMailResult] tg error:', e.message);
+  }
+}
 const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');
@@ -472,6 +516,7 @@ router.post('/send-email/confirm', async (req, res) => {
 
 router.post('/send-email/confirm-latest', async (req, res) => {
   const prisma = req.app.locals.prisma;
+  const reqChatId = req.body && req.body.chatId;
   try {
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
     const draft = await prisma.email.findFirst({
@@ -486,18 +531,36 @@ router.post('/send-email/confirm-latest', async (req, res) => {
       return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
     }
 
-    await sendMail({
-      from: draft.fromEmail,
-      to: draft.toEmail,
-      subject: draft.subject || '',
-      body: draft.bodyFull || '',
-      inReplyTo: draft.inReplyTo || undefined,
-      references: draft.references || undefined,
-    });
+    let saved;
+    try {
+      saved = await sendMail({
+        from: draft.fromEmail,
+        to: draft.toEmail,
+        subject: draft.subject || '',
+        body: draft.bodyFull || '',
+        inReplyTo: draft.inReplyTo || undefined,
+        references: draft.references || undefined,
+      });
+    } catch (sendErr) {
+      await notifyMailResult(prisma, {
+        reqChatId, ok: false, to: draft.toEmail, from: draft.fromEmail,
+        subject: draft.subject, error: sendErr.message,
+      });
+      throw sendErr;
+    }
 
     await prisma.email.update({ where: { id: draft.id }, data: { direction: 'OUTBOUND' } });
 
-    return res.json({ ok: true, sent: true, to: draft.toEmail, subject: draft.subject, replyToThread: !!draft.inReplyTo });
+    await notifyMailResult(prisma, {
+      reqChatId, ok: true, to: draft.toEmail, from: draft.fromEmail,
+      subject: draft.subject, messageId: saved && saved.messageId,
+    });
+
+    return res.json({
+      ok: true, sent: true, to: draft.toEmail, subject: draft.subject,
+      replyToThread: !!draft.inReplyTo, messageId: saved && saved.messageId,
+      smtpConfirmed: !!(saved && saved.messageId),
+    });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });
