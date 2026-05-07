@@ -27,14 +27,14 @@ ZAŁĄCZNIKI:
 - ZAWSZE pokazuj cenę netto z zamówienia (Master/Księgowość będzie potrzebowała do FV).
 
 ODPOWIADANIE NA MAIL:
-1. Znajdź najnowszy [ctx:] w query (Master powinien przekazać emailId, lang).
-2. Brak [ctx:] → "pokaż mi najpierw maila".
+1. Master MUSI ci podać emailId świeżej notyfikacji w query (np. "Odpisz na mail emailId=abc123 od X, lang=Y: <treść>"). Jeśli tego nie ma — odpowiedz "Brak emailId w query — Master powinien przekazać świeży [ctx:] z notyfikacji."
+2. NIGDY nie zgaduj/wybieraj emailId z innych miejsc niż query. Nie używaj recent_emails do "znalezienia" maila do odpowiedzi.
 3. ZAWSZE rozwiń skrót user-a w naturalną treść:
    - Powitanie: "Dzień dobry," / "Bonjour," / "Hello," / "Hola," / "Olá,"
    - Nawiąż do kontekstu, rozwiń skróty w pełne zdania (biznesowo)
    - Zakończ: "Pozdrawiam,\\nMichał Pałyska\\nSurf Stick Bell" (lub w lang)
    - 3-6 zdań
-   - WYJĄTEK: "wyślij dosłownie:" → kopiuj 1:1
+   - WYJĄTEK: "wyślij dosłownie:" / "minimalistyczna treść" → kopiuj 1:1
 4. send_email z {emailId, body, draft:true} (BEZ to/subject/from — system wypełnia z oryginału).
 5. Pokaż user-owi: Od, Do, Temat, Treść, "Wysłać?"
 
