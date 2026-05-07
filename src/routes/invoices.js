@@ -534,12 +534,15 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     const reqChatId = req.body && req.body.chatId;
     const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    const tgChatCfg = reqChatId
-      ? { value: String(reqChatId) }
-      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    // STRICT routing: tylko per-request chatId, brak fallback Config. Bez tego
+    // PDF leciał zawsze do Config.telegram_chat_id (jednego usera) niezależnie
+    // od tego kto pisał. Master n8n MUSI przekazać chatId w body tool calla.
+    const tgChat = reqChatId ? String(reqChatId) : null;
     const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
-    const tgChat = tgChatCfg && tgChatCfg.value;
-    console.log(`[ifirma confirm-latest] tg → chat=${tgChat} (source=${reqChatId ? 'request' : 'config'}) token=...${tgToken.slice(-4)}`);
+    if (!tgChat) {
+      console.warn('[ifirma confirm-latest] BRAK chatId w body żądania — Master n8n nie skonfigurowany. PDF nie zostanie wysłany.');
+    }
+    console.log(`[ifirma confirm-latest] tg → chat=${tgChat || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${tgToken.slice(-4)}`);
 
     let ifirmaResult;
     try {
@@ -767,17 +770,15 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     let pdfSent = false;
     try {
-      // chatId per-request (od kogo idzie żądanie) ma pierwszeństwo nad
-      // statycznym Config — bez tego PDF leciał zawsze do telegram_chat_id
-      // z Config niezależnie od tego kto pisał.
+      // STRICT: tylko per-request chatId. Bez fallback na Config.
       const reqChatId = req.body && req.body.chatId;
       const tokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-      const chatCfg = reqChatId
-        ? { value: String(reqChatId) }
-        : await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+      const chatId = reqChatId ? String(reqChatId) : null;
       const token = (process.env.TELEGRAM_BOT_TOKEN || (tokenCfg && tokenCfg.value) || '').trim();
-      const chatId = chatCfg && chatCfg.value;
-      console.log(`[ifirma confirm] tg → chat=${chatId} (source=${reqChatId ? 'request' : 'config'}) token=...${token.slice(-4)}`);
+      if (!chatId) {
+        console.warn('[ifirma confirm] BRAK chatId w body żądania — PDF nie zostanie wysłany. Sprawdź konfigurację Master tool node w n8n.');
+      }
+      console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${token.slice(-4)}`);
 
       if (token && chatId) {
         const boundary = '----FormBoundary' + Date.now();
@@ -1480,15 +1481,14 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
     const rodzaj = invoice.ifirmaType || invoice.type || 'wdt';
     const pdfBuffer = await fetchInvoicePdf(realNumber, rodzaj, invoice.ifirmaId);
 
+    // STRICT: tylko per-request chatId.
     const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    const tgChatCfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
     const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
     const reqChatId = req.body && req.body.chatId;
-    const tgChat = reqChatId || (tgChatCfg && tgChatCfg.value);
-    console.log(`[ifirma resend-pdf] tg → chat=${tgChat} (source=${reqChatId ? 'request' : 'config'}) token=...${tgToken.slice(-4)}`);
-    if (!tgToken || !tgChat) {
-      return res.status(500).json({ error: 'Brak telegram_bot_token lub telegram_chat_id w konfiguracji.' });
-    }
+    const tgChat = reqChatId ? String(reqChatId) : null;
+    console.log(`[ifirma resend-pdf] tg → chat=${tgChat || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${tgToken.slice(-4)}`);
+    if (!tgToken) return res.json({ ok: false, error: 'Brak telegram_bot_token. Skonfiguruj env TELEGRAM_BOT_TOKEN albo Config.' });
+    if (!tgChat) return res.json({ ok: false, error: 'Brak chatId w body żądania. Master n8n musi przekazać chatId={{ $(\'Buduj kontekst\').first().json.chatId }} w body tool calla.' });
 
     const boundary = '----FormBoundary' + Date.now();
     const filename = `faktura_${realNumber.replace(/\//g, '_')}.pdf`;
