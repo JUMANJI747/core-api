@@ -5,6 +5,7 @@ const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetc
 const { backfillInvoiceItems } = require('../services/invoice-backfill');
 const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
+const { notifyMailResult } = require('../services/notify-mail-result');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { scoreContractor } = require('../services/contractor-match');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
@@ -1113,15 +1114,35 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     console.log(`[send-invoice-email] language: ${lang} (source=${langSource}, to=${to}, country=${country || 'null'})`);
 
     const sentBody = customBody || defaultBody;
-    const savedEmail = await sendMail({
-      from,
-      to,
-      subject,
-      body: sentBody,
-      html: customBody ? undefined : defaultHtml,
-      inReplyTo,
-      references,
-      attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
+    const reqChatId = req.body && req.body.chatId;
+    let savedEmail;
+    try {
+      savedEmail = await sendMail({
+        from,
+        to,
+        subject,
+        body: sentBody,
+        html: customBody ? undefined : defaultHtml,
+        inReplyTo,
+        references,
+        attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
+      });
+    } catch (sendErr) {
+      await notifyMailResult(prisma, {
+        reqChatId, scope: 'pl', ok: false,
+        to, from, subject,
+        attachmentFilename: filename,
+        attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 102.4) / 10 : null,
+        error: sendErr.message,
+      });
+      throw sendErr;
+    }
+    await notifyMailResult(prisma, {
+      reqChatId, scope: 'pl', ok: true,
+      to, from, subject,
+      messageId: savedEmail && savedEmail.messageId,
+      attachmentFilename: filename,
+      attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 102.4) / 10 : null,
     });
 
     // Auto-backfill: jak user/agent podał email i kontrahent miał pusty,

@@ -5,49 +5,7 @@ const crypto = require('crypto');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
-
-// Wspólny helper potwierdzeń SMTP na Telegram. Zachowanie:
-// - sukces: messageId niepuste → krótki blok "✉️ wysłany" z dowodem
-// - błąd: error string → blok "❌ Błąd SMTP" z powodem
-// chatId pobierany z body żądania (per-request) → fallback Config.telegram_chat_id.
-// Token: env TELEGRAM_BOT_TOKEN_KANARY/ES → Config telegram_bot_token_es →
-// env TELEGRAM_BOT_TOKEN → Config telegram_bot_token (bot PL default).
-async function notifyMailResult(prisma, { reqChatId, scope, ok, to, from, subject, messageId, attachmentFilename, attachmentSizeKB, error }) {
-  let token = '';
-  if (scope === 'es' || scope === 'kanary') {
-    token = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
-  if (!token) {
-    token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
-  let chatId = reqChatId;
-  if (!chatId) {
-    const cfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
-    chatId = cfg && cfg.value;
-  }
-  if (!token || !chatId) return;
-  let text;
-  if (ok) {
-    text = `✉️ Mail wysłany (SMTP potwierdził)\n- Do: ${to}\n- Od: ${from}\n- Temat: ${subject || '-'}` +
-      (attachmentFilename ? `\n- Załącznik: ${attachmentFilename}${attachmentSizeKB ? ` (${attachmentSizeKB} KB)` : ''}` : '') +
-      `\n- MessageId: ${messageId}`;
-  } else {
-    text = `❌ Błąd wysyłki maila\n- Do: ${to || '-'}\n- Od: ${from || '-'}\n- Temat: ${subject || '-'}\n- Powód: ${error || 'unknown'}`;
-  }
-  try {
-    await sendTelegram(token, String(chatId), text);
-  } catch (e) {
-    console.error('[notifyMailResult] tg error:', e.message);
-  }
-}
+const { notifyMailResult } = require('../services/notify-mail-result');
 const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');

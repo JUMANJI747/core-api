@@ -25,6 +25,7 @@ const {
 } = require('../services/contasimple-helpers');
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 const { sendMail } = require('../mail-sender');
+const { notifyMailResult } = require('../services/notify-mail-result');
 
 // Bot Telegrama dla firmy kanaryjskiej (osobny od bota PL). Kolejność:
 // 1. env TELEGRAM_BOT_TOKEN_ES (preferowane — single source of truth na Railway)
@@ -1512,33 +1513,24 @@ router.post('/send-invoice-email', asyncHandler(async (req, res) => {
       via: 'smtp',
     };
   } catch (e) {
+    await notifyMailResult(prisma, {
+      reqChatId: requestChatId, scope: 'es', ok: false,
+      to: toEmail, from: fromAddress, subject: finalSubject,
+      attachmentFilename: filename,
+      attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 1024) : null,
+      error: e.message,
+    });
     return res.status(502).json({ error: 'sendMail failed: ' + e.message, hint: 'sprawdź IMAP_ACCOUNTS w Railway czy konto ' + fromAddress + ' ma password' });
   }
 
-  // Telegram-notyfikacja na chat zlecającego (chatId propagowany przez sub-agenta).
-  // Best-effort — błąd nie blokuje response, tylko log.
-  let tgNotified = false;
-  let tgNotifyError = null;
-  try {
-    const tgChatId = requestChatId
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
-    const tgToken = await getEsTelegramToken(prisma);
-    if (tgToken && tgChatId) {
-      const sizeKB = apiResp.attachmentSizeKB;
-      const text = `✉️ Mail z FV ${number} wysłany do ${toEmail}\n- Od: ${fromAddress}\n- Załącznik: ${filename}${sizeKB ? ` (${sizeKB} KB)` : ''}`;
-      const tgResp = await sendTelegram(tgToken, String(tgChatId), text);
-      tgNotified = !!(tgResp && tgResp.ok);
-      if (!tgNotified) tgNotifyError = (tgResp && tgResp.description) || 'unknown';
-    } else {
-      tgNotifyError = !tgToken ? 'no telegram token' : 'no chatId';
-    }
-  } catch (e) {
-    tgNotifyError = e.message;
-    console.error('[cs send-invoice-email] tg notify failed:', e.message);
-  }
-  apiResp.tgNotified = tgNotified;
-  if (tgNotifyError) apiResp.tgNotifyError = tgNotifyError;
+  const notifyResult = await notifyMailResult(prisma, {
+    reqChatId: requestChatId, scope: 'es', ok: true,
+    to: toEmail, from: fromAddress, subject: finalSubject,
+    messageId: apiResp.messageId,
+    attachmentFilename: filename,
+    attachmentSizeKB: apiResp.attachmentSizeKB,
+  });
+  apiResp.tgNotified = notifyResult && notifyResult.sent;
 
   // Auto-backfill: jak user podał email ręcznie a kontrahent miał pusty
   // → zapisz na EsContractor (uczy się z każdego ręcznego wpisu).
