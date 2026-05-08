@@ -812,13 +812,11 @@ async function processAccount(account) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
 
-        // Date filter: skip mails older than 8 minutes
-        const AGE_LIMIT_MS = 30 * 60 * 1000;
-        const mailDate = mail.date ? new Date(mail.date).getTime() : 0;
-        if (mailDate && Date.now() - mailDate > AGE_LIMIT_MS) {
-          console.log(`[inbox-poller] skipping old mail uid=${mail.uid} date=${mail.date}`);
-          continue;
-        }
+        // (Wcześniej: filtr „skip older than 30 min" — usuwał maile które
+        // przyszły zanim poller zdążył je przeczytać. UID mechanism już
+        // gwarantuje że mail nie zostanie zapisany dwa razy, więc age limit
+        // tylko psuł — np. force-poll na żądanie nigdy nie nadrobiłby maili
+        // od rana. Usunięte.)
 
         // Hard filter
         if (!hardFilter(mail)) {
