@@ -318,4 +318,48 @@ router.post('/confirm-latest', async (req, res) => {
   }
 });
 
+// Proxy do Telegrama — wysyłka wiadomości tekstowej bez parse_mode (czysty
+// plain text, Telegram nie próbuje parsować markdown/html). Master n8n
+// woła ten endpoint zamiast natywnego Telegram node który wymusza wybór
+// HTML/Markdown/MarkdownV2 z dropdown — przy każdym znaku specjalnym wywala
+// "can't parse entities".
+//
+// Body: { chatId, text, scope?: 'pl'|'kanary' }
+// Token wybiera backend: scope='kanary' → env_KANARY/env_ES → Config kanary
+//                       scope='pl' (default) → env TELEGRAM_BOT_TOKEN → Config telegram_bot_token
+router.post('/telegram-send', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { chatId, text, scope } = req.body || {};
+  if (!chatId) return res.status(400).json({ ok: false, error: 'chatId required' });
+  if (!text || typeof text !== 'string') return res.status(400).json({ ok: false, error: 'text (string) required' });
+
+  let token = '';
+  if (scope === 'kanary' || scope === 'es') {
+    token = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
+    if (!token) {
+      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
+      token = (cfg && cfg.value) || '';
+    }
+  }
+  if (!token) {
+    token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (!token) {
+      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+      token = (cfg && cfg.value) || '';
+    }
+  }
+  if (!token) return res.status(503).json({ ok: false, error: 'no telegram bot token configured' });
+
+  const { sendTelegram } = require('../telegram-utils');
+  try {
+    const tgResp = await sendTelegram(token, String(chatId), text);
+    if (tgResp && tgResp.ok) {
+      return res.json({ ok: true, messageId: tgResp.result && tgResp.result.message_id, chatId, scope: scope || 'pl' });
+    }
+    return res.json({ ok: false, error: (tgResp && tgResp.description) || 'unknown', tgResponse: tgResp });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
