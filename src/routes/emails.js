@@ -709,23 +709,22 @@ ${tline}`;
   }).join('\n\n');
 
   const prompt =
-    `Przeanalizuj poniższe wątki mailowe (z ostatnich ${daysBack} dni). Bieżąca data: ${now.toISOString().slice(0, 10)}.\n\n` +
-    `Dla KAŻDEGO wątku:\n` +
-    `1. Klasyfikacja: jedno z [CZEKA_NA_NASZĄ_ODPOWIEDŹ, CZEKA_NA_ICH_ODPOWIEDŹ, AKTYWNY_DIALOG, ZAŁATWIONE, MARTWY]\n` +
-    `2. Sugerowana akcja: jedno krótkie zdanie po polsku (np. "Odpisz że masz w magazynie", "Przypomnieć o samples wysłanych N dni temu", "Czekaj — odpowiedzieli wczoraj", "Zostaw — dialog domknięty").\n` +
-    `3. Priorytet: WYSOKI (zaległa nasza odpowiedź / klient czeka >2 dni) / ŚREDNI / NISKI.\n\n` +
-    `Reguły klasyfikacji:\n` +
-    `- ostatnia wiadomość ON/ONA + brak naszej odpowiedzi → CZEKA_NA_NASZĄ_ODPOWIEDŹ (HIGH gdy >2 dni)\n` +
-    `- ostatnia wiadomość MY + brak ich odpowiedzi >5 dni → CZEKA_NA_ICH_ODPOWIEDŹ (MEDIUM, sugestia follow-up)\n` +
-    `- ostatnia wiadomość MY + brak odpowiedzi >14 dni → MARTWY (LOW, sugestia drugi follow-up albo odpuść)\n` +
-    `- jeśli wymiana w obie strony w ostatnich 3 dniach → AKTYWNY_DIALOG\n` +
-    `- jeśli ostatnie zdanie sugeruje że temat domknięty (np. "dziękuję, zamówię", "ok pozdrawiam") + nic potem → ZAŁATWIONE\n\n` +
-    `WĄTKI:\n${threadBlocks}\n\n` +
-    `Format odpowiedzi: tabela markdown:\n` +
+    `Przeanalizuj WSZYSTKIE wątki mailowe poniżej (z ostatnich ${daysBack} dni). Bieżąca data: ${now.toISOString().slice(0, 10)}.\n\n` +
+    `OBOWIĄZKI:\n` +
+    `- KAŻDY wątek z listy MUSI być w tabeli wynikowej. Liczba wierszy w tabeli = liczba wątków poniżej. NIE filtruj, NIE pomijaj.\n` +
+    `- Sprawdź OSTATNIĄ wiadomość każdego wątku — symbol "←" = oni do nas, "→" = my do nich.\n\n` +
+    `Reguły klasyfikacji (bezwzględne):\n` +
+    `- Ostatnia wiadomość "←" (oni) + brak naszej odpowiedzi PO niej → CZEKA_NA_NASZĄ_ODPOWIEDŹ. Priorytet WYSOKI gdy ≥2 dni temu, ŚREDNI gdy mniej.\n` +
+    `- Ostatnia wiadomość "→" (my) + brak ich odpowiedzi PO niej → CZEKA_NA_ICH_ODPOWIEDŹ. Priorytet ŚREDNI gdy 5-13 dni, NISKI gdy <5, MARTWY gdy ≥14 dni.\n` +
+    `- Wymiana w obie strony w ostatnich 3 dniach + ostatnia "→" → AKTYWNY_DIALOG (NISKI, "czekaj na ich reakcję").\n` +
+    `- Jeśli ostatnia wiadomość "←" zawiera potwierdzenie/podziękowanie typu "dziękuję, zamówię" / "ok, czekam na fv" → ZAŁATWIONE (NISKI).\n` +
+    `- AUTO/SYSTEM (GlobKurier/InPost/no-reply) → klasa AUTO, priorytet NISKI, sugestia "tylko do informacji".\n\n` +
+    `WĄTKI (każdy z numerem; w sumie ${filtered.length} wątków):\n${threadBlocks}\n\n` +
+    `Format odpowiedzi:\n` +
     `| # | Kontakt | Klasyfikacja | Priorytet | Sugerowana akcja |\n` +
     `|---|---------|--------------|-----------|------------------|\n` +
     `| 1 | ... | ... | ... | ... |\n\n` +
-    `Sortuj po priorytecie (WYSOKI najpierw). Po tabeli krótkie podsumowanie (ile WYSOKICH, średnich, martwych).`;
+    `WYMÓG: w tabeli ${filtered.length} wierszy (po jednym per wątek), kolejność po priorytecie WYSOKI→ŚREDNI→NISKI→MARTWY→AUTO. Po tabeli krótkie podsumowanie (ile WYSOKICH/ŚREDNICH/MARTWYCH/AUTO). Bez własnych komentarzy poza tym.`;
 
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -742,6 +741,8 @@ ${tline}`;
     ok: true,
     daysBack,
     threadsFound: filtered.length,
+    threadsExpected: filtered.length,
+    contacts: filtered.map(g => g.contact),
     emailsScanned: emails.length,
     analysis: text,
     tokensUsed: llm.usage,
