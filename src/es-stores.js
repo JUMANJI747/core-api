@@ -83,6 +83,42 @@ function getLatestEsDeletePreview() {
   return { id: bestId, data: esDeletePreviews.get(bestId).data };
 }
 
+// ============ ALBARÁN PREVIEW STORE (WZ — bez podatku, tylko qty+nazwa) ============
+
+const esAlbaranPreviews = new Map();
+
+function saveEsAlbaranPreview(id, data) {
+  esAlbaranPreviews.set(id, { data, expiresAt: Date.now() + PREVIEW_TTL_MS });
+}
+
+function getEsAlbaranPreview(id) {
+  const entry = esAlbaranPreviews.get(id);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    esAlbaranPreviews.delete(id);
+    return null;
+  }
+  return entry.data;
+}
+
+function deleteEsAlbaranPreview(id) {
+  esAlbaranPreviews.delete(id);
+}
+
+function getLatestEsAlbaranPreview() {
+  const now = Date.now();
+  let bestId = null;
+  let bestExpiry = 0;
+  for (const [id, entry] of esAlbaranPreviews.entries()) {
+    if (entry.expiresAt > now && entry.expiresAt > bestExpiry) {
+      bestExpiry = entry.expiresAt;
+      bestId = id;
+    }
+  }
+  if (!bestId) return null;
+  return { id: bestId, data: esAlbaranPreviews.get(bestId).data };
+}
+
 module.exports = {
   esInvoicePreviews,
   saveEsPreview,
@@ -94,4 +130,9 @@ module.exports = {
   getEsDeletePreview,
   deleteEsDeletePreview,
   getLatestEsDeletePreview,
+  esAlbaranPreviews,
+  saveEsAlbaranPreview,
+  getEsAlbaranPreview,
+  deleteEsAlbaranPreview,
+  getLatestEsAlbaranPreview,
 };

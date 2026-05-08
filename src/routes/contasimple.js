@@ -14,12 +14,17 @@ const {
   getEsDeletePreview,
   deleteEsDeletePreview,
   getLatestEsDeletePreview,
+  saveEsAlbaranPreview,
+  getEsAlbaranPreview,
+  deleteEsAlbaranPreview,
+  getLatestEsAlbaranPreview,
 } = require('../es-stores');
 const {
   findEsContractor,
   expandEsLines,
   buildEsTotals,
   buildContasimplePayload,
+  buildContasimpleAlbaranPayload,
   IGIC_DEFAULT_PCT,
   NIKODEM_DEFAULTS,
 } = require('../services/contasimple-helpers');
@@ -2065,6 +2070,316 @@ router.post('/clear-emails', asyncHandler(async (req, res) => {
     data: { email: null },
   });
   res.json({ ok: true, cleared: result.count, contractors: before });
+}));
+
+// ============ ALBARÁN (WZ — DELIVERY NOTES) ============
+//
+// Analogiczne do FV ale: bez cen, bez VAT/IGIC, osobny numerator (prefix
+// 'AL-' w Contasimple). Body składa się z {targetEntityId, lines:
+// [{concept, quantity, productId?, productSku?, ...zera w polach finansowych}]}.
+// Numerator z env KANARY_ALBARAN_NUMBERING_FORMAT_ID.
+
+router.post('/albaran-preview', asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const { items, contractorSearch, contractorCif, contractorId, deliveryNoteDate } = body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items[] required' });
+  }
+  const contractor = await findEsContractor(prisma, { contractorId, contractorCif, contractorSearch });
+  if (!contractor) {
+    return res.status(404).json({
+      error: 'contractor not found',
+      hint: 'Najpierw cs_create_customer albo podaj poprawne nif/contractorSearch.',
+    });
+  }
+  let positions;
+  try {
+    positions = await expandEsLines(prisma, items);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+
+  const lines = positions.map(p => ({
+    name: p.product.name,
+    variant: p.product.variant || null,
+    qty: p.qty,
+    product: p.product,
+  }));
+
+  const date = deliveryNoteDate ? new Date(deliveryNoteDate) : new Date();
+  const preview = {
+    type: 'albaran',
+    contractor: { id: contractor.id, contasimpleId: contractor.contasimpleId, organization: contractor.organization || contractor.name, nif: contractor.nif },
+    lines: lines.map(l => ({ name: l.name, variant: l.variant, qty: l.qty })),
+    totalQty: lines.reduce((s, l) => s + l.qty, 0),
+    deliveryNoteDate: date.toISOString(),
+  };
+  const previewId = crypto.randomUUID();
+  saveEsAlbaranPreview(previewId, { preview, contractor, lines, deliveryNoteDate: date.toISOString(), body, chatId: body.chatId || null });
+
+  // Telegram-notyfikacja preview (ground truth) — analogiczna do FV.
+  try {
+    const tgChatId = body.chatId
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgToken = await getEsTelegramToken(prisma);
+    if (tgToken && tgChatId) {
+      const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
+      const text =
+        `📋 PREVIEW ALBARÁN (WZ)\n` +
+        `Klient: ${contractor.organization || contractor.name}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
+        `Data: ${date.toISOString().slice(0, 10)}\n\n` +
+        `${lineRows}\n\n` +
+        `Razem sztuk: ${preview.totalQty}\n\n` +
+        `Potwierdzasz? "tak/ok" wystawi.`;
+      sendTelegram(tgToken, String(tgChatId), text).catch(e => console.error('[cs albaran-preview] tg notify failed:', e.message));
+    }
+  } catch (e) {
+    console.error('[cs albaran-preview] tg notify outer:', e.message);
+  }
+
+  prisma.agentContext.upsert({
+    where: { id: 'ksiegowosc-es' },
+    update: { data: { lastAction: 'albaran-preview', albaranPreviewId: previewId, contractor: { name: contractor.name, nif: contractor.nif }, totalQty: preview.totalQty, timestamp: Date.now() } },
+    create: { id: 'ksiegowosc-es', data: { lastAction: 'albaran-preview', albaranPreviewId: previewId, contractor: { name: contractor.name, nif: contractor.nif }, totalQty: preview.totalQty, timestamp: Date.now() } },
+  }).catch(e => console.error('[cs albaran-preview] AgentContext save error:', e.message));
+
+  res.json({ ok: true, preview, previewId });
+}));
+
+router.post('/albaran-confirm-latest', asyncHandler(async (req, res) => {
+  const latest = getLatestEsAlbaranPreview();
+  if (!latest) return res.status(404).json({ error: 'no recent albarán preview (TTL 30 min)' });
+  await confirmAlbaran(req, res, latest.id);
+}));
+
+router.post('/albaran-confirm', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (!previewId) return res.status(400).json({ error: 'previewId required' });
+  await confirmAlbaran(req, res, previewId);
+}));
+
+async function confirmAlbaran(req, res, previewId) {
+  const stored = getEsAlbaranPreview(previewId);
+  if (!stored) {
+    deleteEsAlbaranPreview(previewId);
+    return res.status(404).json({ error: 'albaran preview expired or unknown' });
+  }
+  const { contractor, lines, deliveryNoteDate, chatId: storedChatId } = stored;
+
+  if (!NIKODEM_DEFAULTS.albaranNumberingFormatId) {
+    return res.status(500).json({
+      error: 'KANARY_ALBARAN_NUMBERING_FORMAT_ID not set',
+      hint: 'W Railway env ustaw KANARY_ALBARAN_NUMBERING_FORMAT_ID = <id formatu z prefixem AL- z panelu Contasimple, sekcja Configuración → Numeración>.',
+    });
+  }
+
+  let nextNumber = '';
+  try {
+    const r = await cs.getNextDeliveryNoteNumber(NIKODEM_DEFAULTS.albaranNumberingFormatId);
+    nextNumber = (r && r.data) || '';
+  } catch (e) {
+    console.error('[cs albaran-confirm] getNextDeliveryNoteNumber failed:', e.message);
+  }
+
+  const csPayload = buildContasimpleAlbaranPayload({
+    targetEntityId: contractor.contasimpleId,
+    lines,
+    deliveryNoteDate,
+    overrides: nextNumber ? { number: nextNumber } : {},
+  });
+  console.log('[cs albaran-confirm] payload:', JSON.stringify(csPayload));
+
+  let csResult;
+  try {
+    csResult = await cs.createDeliveryNote(csPayload);
+  } catch (e) {
+    e.attemptedPayload = csPayload;
+    throw e;
+  }
+  const albaran = csResult && csResult.data;
+  if (!albaran || !albaran.id) {
+    throw new Error('Contasimple createDeliveryNote returned no data');
+  }
+
+  // PDF → Telegram
+  let pdfSent = false;
+  let pdfError = null;
+  try {
+    const tgChatId = storedChatId
+      || (req.body && req.body.chatId)
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgToken = await getEsTelegramToken(prisma);
+    if (!tgToken) pdfError = 'telegram bot token missing';
+    else if (!tgChatId) pdfError = 'telegram chatId missing';
+    else {
+      const { buffer } = await cs.fetchDeliveryNotePdf(albaran.id);
+      const filename = `albaran_${(albaran.number || albaran.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+      const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
+      const caption = `Albarán ${albaran.number || albaran.id} — ${contractor.organization || contractor.name} (${totalQty} szt)`;
+      const tgResp = await sendTelegramDocument(tgToken, String(tgChatId), buffer, filename, caption);
+      if (tgResp && tgResp.ok) pdfSent = true;
+      else pdfError = (tgResp && tgResp.description) || 'unknown';
+    }
+  } catch (e) {
+    pdfError = e.message;
+    console.error('[cs albaran-confirm] PDF Telegram error:', e.message);
+  }
+
+  prisma.agentContext.upsert({
+    where: { id: 'ksiegowosc-es' },
+    update: { data: { lastAction: 'albaran-confirmed', albaranContasimpleId: albaran.id, albaranNumber: albaran.number, contractor: { name: contractor.name, nif: contractor.nif }, timestamp: Date.now() } },
+    create: { id: 'ksiegowosc-es', data: { lastAction: 'albaran-confirmed', albaranContasimpleId: albaran.id, albaranNumber: albaran.number, contractor: { name: contractor.name, nif: contractor.nif }, timestamp: Date.now() } },
+  }).catch(e => console.error('[cs albaran-confirm] AgentContext save error:', e.message));
+
+  deleteEsAlbaranPreview(previewId);
+  res.json({
+    ok: true,
+    albaranNumber: albaran.number,
+    albaranId: albaran.id,
+    contractor: { organization: contractor.organization || contractor.name, nif: contractor.nif },
+    totalQty: (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0),
+    pdfSent,
+    pdfError,
+  });
+}
+
+router.get('/albarans', asyncHandler(async (req, res) => {
+  const r = await cs.listDeliveryNotes({
+    page: req.query.page,
+    itemsPerPage: req.query.itemsPerPage,
+    targetEntityId: req.query.targetEntityId,
+  });
+  res.json(r);
+}));
+
+router.get('/albarans/:id', asyncHandler(async (req, res) => {
+  const r = await cs.getDeliveryNote(req.params.id);
+  res.json(r);
+}));
+
+router.post('/albaran-resend-pdf-telegram', asyncHandler(async (req, res) => {
+  const { albaranId, albaranNumber } = req.body || {};
+  let id = albaranId;
+  if (!id && albaranNumber) {
+    // Brak osobnego search-by-number; pobieramy listę i filtrujemy.
+    const list = await cs.listDeliveryNotes({ itemsPerPage: 100 });
+    const items = (list && list.data && list.data.items) || (list && list.data) || [];
+    const match = Array.isArray(items) ? items.find(x => String(x.number || '').includes(String(albaranNumber))) : null;
+    id = match && match.id;
+  }
+  if (!id) return res.status(404).json({ error: 'albaran not found (podaj albaranId albo albaranNumber)' });
+
+  const tgToken = await getEsTelegramToken(prisma);
+  const reqChatId = req.body && req.body.chatId;
+  const tgChat = reqChatId
+    ? String(reqChatId)
+    : (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
+      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+  if (!tgToken) return res.status(503).json({ error: 'telegram bot token missing — set TELEGRAM_BOT_TOKEN_KANARY' });
+  if (!tgChat) return res.status(503).json({ error: 'chatId missing' });
+
+  const { buffer } = await cs.fetchDeliveryNotePdf(id);
+  const albaran = (await cs.getDeliveryNote(id)).data;
+  const filename = `albaran_${(albaran.number || id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+  const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
+  const customer = (albaran.target && albaran.target.organization) || '';
+  const caption = `Albarán ${albaran.number || id}${customer ? ` — ${customer}` : ''} (${totalQty} szt)`;
+  const tgResp = await sendTelegramDocument(tgToken, String(tgChat), buffer, filename, caption);
+  if (!tgResp || !tgResp.ok) {
+    return res.status(502).json({ ok: false, error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'}`, albaranNumber: albaran.number });
+  }
+  res.json({ ok: true, sent: true, albaranNumber: albaran.number, albaranId: id });
+}));
+
+router.post('/albaran-send-email', asyncHandler(async (req, res) => {
+  const { albaranId, albaranNumber, toEmail: bodyToEmail, replyTo, subject, body: emailBody, chatId: requestChatId } = req.body || {};
+  let id = albaranId;
+  if (!id && albaranNumber) {
+    const list = await cs.listDeliveryNotes({ itemsPerPage: 100 });
+    const items = (list && list.data && list.data.items) || (list && list.data) || [];
+    const match = Array.isArray(items) ? items.find(x => String(x.number || '').includes(String(albaranNumber))) : null;
+    id = match && match.id;
+  }
+  if (!id) return res.status(404).json({ error: 'albaran not found' });
+
+  const albaran = (await cs.getDeliveryNote(id)).data;
+  const target = albaran.target || {};
+  let toEmail = bodyToEmail;
+  let emailSource = toEmail ? 'request' : null;
+  if (!toEmail && target.id) {
+    const customer = await prisma.esContractor.findUnique({ where: { contasimpleId: target.id } }).catch(() => null);
+    if (customer && customer.email) { toEmail = customer.email; emailSource = 'contractor'; }
+  }
+  if (!toEmail && target.email) { toEmail = target.email; emailSource = 'invoice'; }
+  if (!toEmail) {
+    return res.status(400).json({ error: 'no email available', hint: 'Podaj toEmail albo uzupełnij EsContractor.email.' });
+  }
+
+  const fromAddress = (process.env.KANARY_DEFAULT_FROM || 'nikodem@surfstickbell.com').trim();
+  const filename = `albaran_${(albaran.number || id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+  const finalSubject = subject || `Albarán ${albaran.number || id} – Surf Stick Bell`;
+  const finalBody = emailBody || `Hola,\n\nAdjunto el albarán ${albaran.number || id}.\n\nSaludos,\nNikodem\nSurf Stick Bell Canarias`;
+
+  let pdfBuffer;
+  try {
+    const r = await cs.fetchDeliveryNotePdf(id);
+    pdfBuffer = r && r.buffer;
+  } catch (e) {
+    return res.status(502).json({ error: 'fetchDeliveryNotePdf failed: ' + e.message });
+  }
+
+  let saved;
+  try {
+    saved = await sendMail({
+      from: fromAddress, to: toEmail, subject: finalSubject, body: finalBody,
+      replyTo: replyTo || undefined,
+      attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
+  } catch (sendErr) {
+    await notifyMailResult(prisma, {
+      reqChatId: requestChatId, scope: 'es', ok: false,
+      to: toEmail, from: fromAddress, subject: finalSubject,
+      attachmentFilename: filename, attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 1024) : null,
+      error: sendErr.message,
+    });
+    return res.status(502).json({ error: 'sendMail failed: ' + sendErr.message });
+  }
+
+  const notify = await notifyMailResult(prisma, {
+    reqChatId: requestChatId, scope: 'es', ok: true,
+    to: toEmail, from: fromAddress, subject: finalSubject,
+    messageId: saved && saved.messageId,
+    attachmentFilename: filename,
+    attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 1024) : null,
+  });
+
+  res.json({
+    ok: true,
+    albaranNumber: albaran.number || id,
+    to: toEmail,
+    emailSource,
+    subject: finalSubject,
+    attachmentFilename: filename,
+    attachmentSizeKB: pdfBuffer ? Math.round(pdfBuffer.length / 1024) : null,
+    messageId: saved && saved.messageId,
+    tgNotified: notify && notify.sent,
+  });
+}));
+
+router.post('/albaran-delete', asyncHandler(async (req, res) => {
+  const { albaranId, albaranNumber } = req.body || {};
+  let id = albaranId;
+  if (!id && albaranNumber) {
+    const list = await cs.listDeliveryNotes({ itemsPerPage: 100 });
+    const items = (list && list.data && list.data.items) || (list && list.data) || [];
+    const match = Array.isArray(items) ? items.find(x => String(x.number || '').includes(String(albaranNumber))) : null;
+    id = match && match.id;
+  }
+  if (!id) return res.status(404).json({ error: 'albaran not found' });
+  await cs.deleteDeliveryNote(id);
+  res.json({ ok: true, deleted: id, albaranNumber });
 }));
 
 // ============ HELPERS ============

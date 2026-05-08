@@ -406,6 +406,70 @@ async function getNextInvoiceNumber(period, numberingFormatId) {
   );
 }
 
+// ============ DELIVERY NOTES (ALBARANES / WZ) ============
+//
+// Endpointy globalne (bez {period} w URL — Contasimple sam wybiera okres
+// na podstawie deliveryNoteDate w body). Body POST analogiczne do FV ale
+// zwykle z zerami w polach finansowych (albarán = lista wydanych towarów,
+// bez cen/podatku).
+
+async function listDeliveryNotes(params = {}) {
+  const query = new URLSearchParams();
+  if (params.page) query.set('page', String(params.page));
+  if (params.itemsPerPage) query.set('itemsPerPage', String(params.itemsPerPage));
+  if (params.targetEntityId) query.set('targetEntityId', String(params.targetEntityId));
+  const url = '/accounting/deliveryNotes' + (query.toString() ? `?${query}` : '');
+  return await csJson('GET', url);
+}
+
+async function getDeliveryNote(id) {
+  return await csJson('GET', `/accounting/deliveryNotes/${encodeURIComponent(id)}`);
+}
+
+async function createDeliveryNote(payload) {
+  if (!payload.targetEntityId) {
+    throw new Error('createDeliveryNote: targetEntityId required (customer must exist in Contasimple)');
+  }
+  if (!Array.isArray(payload.lines) || payload.lines.length === 0) {
+    throw new Error('createDeliveryNote: lines[] required');
+  }
+  return await csJson('POST', '/accounting/deliveryNotes', null, payload);
+}
+
+async function deleteDeliveryNote(id) {
+  return await csJson('DELETE', `/accounting/deliveryNotes/${encodeURIComponent(id)}`);
+}
+
+async function fetchDeliveryNotePdf(id) {
+  const { status, body, headers } = await csRequest(
+    'GET',
+    `/accounting/deliveryNotes/${encodeURIComponent(id)}/pdf`
+  );
+  if (status >= 400) {
+    throw new Error(`Contasimple deliveryNote PDF fetch failed (${status}): ${body.toString().slice(0, 300)}`);
+  }
+  return { buffer: body, contentType: headers['content-type'] || 'application/pdf' };
+}
+
+async function sendDeliveryNoteEmail(id, message) {
+  if (!message || !message.to) throw new Error('sendDeliveryNoteEmail: message.to required');
+  const body = {
+    to: message.to,
+    replyTo: message.replyTo || null,
+    blindCopy: Boolean(message.blindCopy),
+    subject: message.subject || '',
+    body: message.body || '',
+  };
+  return await csJson('POST', `/accounting/deliveryNotes/${encodeURIComponent(id)}/send`, null, body);
+}
+
+async function getNextDeliveryNoteNumber(numberingFormatId) {
+  return await csJson(
+    'GET',
+    `/accounting/deliveryNotes/nextDeliveryNoteNumber/${encodeURIComponent(numberingFormatId)}`
+  );
+}
+
 // ============ EXPORTS ============
 
 function isConfigured() {
@@ -439,6 +503,14 @@ module.exports = {
   fetchInvoicePdf,
   sendInvoiceEmail,
   getNextInvoiceNumber,
+  // delivery notes (albaranes / WZ)
+  listDeliveryNotes,
+  getDeliveryNote,
+  createDeliveryNote,
+  deleteDeliveryNote,
+  fetchDeliveryNotePdf,
+  sendDeliveryNoteEmail,
+  getNextDeliveryNoteNumber,
   // helpers
   dateToPeriod,
   DEFAULT_VAT_PERCENT,

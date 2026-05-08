@@ -74,6 +74,17 @@ WYSYŁKA FV MAILEM DO KLIENTA:
 - "wyślij fv 0056 mailem do X" → cs_invoice_send_email {invoiceNumber, toEmail}.
 - Contasimple wysyła z adresu firmy Nikodema (skonfigurowany w UI).
 
+ALBARÁN (WZ — DOKUMENT WYDANIA):
+- "wystaw wz dla X 30 sticków", "wystaw albaran X", "wydaj towar do X" → cs_albaran_preview z items+contractor.
+- WZ to dokument wydania bez cen i bez podatku — tylko qty + nazwa produktu. Numerator inny niż FV (prefix 'AL-', np. AL-2026-0002).
+- Po cs_albaran_preview backend pokaże ground-truth na Telegrama (qty + pozycje + razem sztuk).
+- "tak/ok" po preview → cs_albaran_confirm. Po confirm PDF idzie automatycznie na Telegrama.
+- "daj wz AL-2026-0002" / "wyślij wz tu" → cs_albaran_send_pdf_telegram {albaranNumber}.
+- "wyślij wz mailem do X" → cs_albaran_send_email {albaranNumber}. toEmail OPCJONALNY (backend pobierze z bazy).
+- "skasuj wz X" → cs_albaran_delete {albaranNumber}.
+- "lista wz" → cs_list_albarans.
+- WAŻNE: WZ ≠ FV. NIGDY nie używaj cs_invoice_* przy słowie "wz" / "albaran" / "albarán".
+
 ZASADY:
 - ZAWSZE wywołaj tool przy nowym żądaniu — nie kopiuj odpowiedzi z historii.
 - response.error → pokaż DOSŁOWNIE.
@@ -241,6 +252,84 @@ const tools = [
       required: ['email'],
     },
   },
+  {
+    name: 'cs_albaran_preview',
+    description:
+      'Podgląd ALBARÁN (WZ — dokument wydania, bez cen, bez podatku) przed wystawieniem. Trigger: "wz", "albaran", "albarán", "wystaw wz dla X", "wydaj towar do X". Argumenty jak cs_invoice_preview ale w wynik bez total/IGIC — tylko qty+nazwa pozycji.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorSearch: { type: 'string', description: 'Fragment nazwy kontrahenta (fuzzy)' },
+        contractorCif: { type: 'string', description: 'NIF/CIF/NIE klienta — najpewniejsze' },
+        contractorId: { type: 'string', description: 'UUID lokalnego EsContractor (gdy znany)' },
+        items: {
+          type: 'array',
+          description: 'Lista pozycji [{name?|ean?, qty}]',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              ean: { type: 'string' },
+              qty: { type: 'number' },
+            },
+          },
+        },
+        deliveryNoteDate: { type: 'string', description: 'Data wydania ISO (opcjonalna, default dzisiaj)' },
+      },
+      required: ['items'],
+    },
+  },
+  {
+    name: 'cs_albaran_confirm',
+    description: 'Potwierdza i wystawia ostatnio przygotowany albarán (WZ). Bez argumentów — bierze najnowszy preview.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'cs_albaran_send_pdf_telegram',
+    description: 'Wyślij PDF wystawionego albaranu na Telegrama. Argumenty: albaranNumber LUB albaranId.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        albaranNumber: { type: 'string' },
+        albaranId: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'cs_albaran_send_email',
+    description: 'Wyślij PDF albaranu mailem do klienta. Argumenty: albaranNumber LUB albaranId. toEmail OPCJONALNY — backend pobierze z EsContractor.email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        albaranNumber: { type: 'string' },
+        albaranId: { type: 'number' },
+        toEmail: { type: 'string', description: 'OPCJONALNY: prawdziwy adres. Pomiń jeśli nie znasz.' },
+      },
+    },
+  },
+  {
+    name: 'cs_albaran_delete',
+    description: 'Usuwa albarán z Contasimple. Argumenty: albaranNumber LUB albaranId.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        albaranNumber: { type: 'string' },
+        albaranId: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'cs_list_albarans',
+    description: 'Lista albaranów. Opcjonalnie filter targetEntityId (per klient).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        page: { type: 'number' },
+        itemsPerPage: { type: 'number' },
+        targetEntityId: { type: 'number' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -256,6 +345,12 @@ const ENDPOINT_MAP = {
   cs_sync_customers: ['POST', '/api/contasimple/sync-customers'],
   cs_get_context: ['GET', '/api/agent-context/ksiegowosc-es'],
   cs_set_email: ['POST', '/api/contasimple/set-customer-email'],
+  cs_albaran_preview: ['POST', '/api/contasimple/albaran-preview'],
+  cs_albaran_confirm: ['POST', '/api/contasimple/albaran-confirm-latest'],
+  cs_albaran_send_pdf_telegram: ['POST', '/api/contasimple/albaran-resend-pdf-telegram'],
+  cs_albaran_send_email: ['POST', '/api/contasimple/albaran-send-email'],
+  cs_albaran_delete: ['POST', '/api/contasimple/albaran-delete'],
+  cs_list_albarans: ['GET', '/api/contasimple/albarans'],
 };
 
 function selfCall(method, path, body) {
@@ -320,6 +415,9 @@ const PDF_TELEGRAM_INTENT_RE = new RegExp(
 );
 const DELETE_INTENT = /\b(skasuj|usu[nń]|skasowa[ćc]|elimina|borra|cancela)\b/i;
 const SYNC_INTENT = /\bsynchron|\bsync\b|sincroniz/i;
+// Albarán (WZ) — trigger words po PL i ES.
+const ALBARAN_PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj|wydaj|zr[oó]b)\s+(wz|albaran|albarán|delivery)\b|\b(wz|albaran|albarán)\s+(dla|do|para)\b|^(wz|albaran|albarán)\b/i;
+const ALBARAN_DELETE_INTENT = /\b(skasuj|usu[nń]|elimina|borra|cancela)\s+(wz|albaran|albarán)\b/i;
 
 async function processAccountingEsQuery(query, opts = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -332,10 +430,10 @@ async function processAccountingEsQuery(query, opts = {}) {
   const ctx = { chatId: opts.chatId || null };
   const messages = [{ role: 'user', content: query }];
   let forcedTool = null;
-  if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query)) {
-    // "tak" alone — let agent decide via cs_get_context whether to confirm
-    // an invoice or a delete; don't force a single tool here.
+  if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) && !ALBARAN_PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query) && !ALBARAN_DELETE_INTENT.test(query)) {
     forcedTool = 'cs_get_context';
+  } else if (ALBARAN_DELETE_INTENT.test(query)) {
+    forcedTool = 'cs_albaran_delete';
   } else if (DELETE_INTENT.test(query)) {
     forcedTool = 'cs_delete_preview';
   } else if (PDF_TELEGRAM_INTENT_RE.test(query)) {
@@ -344,6 +442,8 @@ async function processAccountingEsQuery(query, opts = {}) {
     forcedTool = 'cs_invoice_send_email';
   } else if (SYNC_INTENT.test(query)) {
     forcedTool = 'cs_sync_customers';
+  } else if (ALBARAN_PREVIEW_INTENT.test(query)) {
+    forcedTool = 'cs_albaran_preview';
   } else if (PREVIEW_INTENT.test(query)) {
     forcedTool = 'cs_invoice_preview';
   }

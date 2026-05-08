@@ -280,12 +280,13 @@ function buildEsTotals(positions, opts = {}) {
 
 const NIKODEM_DEFAULTS = {
   numberingFormatId: 1285771,
+  // Osobny numerator dla albaranów (prefix 'AL-'). Wartość z env
+  // KANARY_ALBARAN_NUMBERING_FORMAT_ID — Nikodem ustawia po pierwszym
+  // wystawieniu lub bierze ID z panelu Contasimple (Config → Numeración).
+  albaranNumberingFormatId: parseInt(process.env.KANARY_ALBARAN_NUMBERING_FORMAT_ID || '0', 10),
   invoiceClass: 700, // "Venta de mercaderías"
   operationType: 'Nacional',
   paymentTermDays: 7,
-  // Footer used on Nikodem's existing invoices (verbatim from FV 2026-0043 etc.).
-  // Override per-invoice via overrides.footer, or globally via Config row
-  // contasimple_invoice_footer.
   footer:
     'Forma de pago\r\n' +
     'Transferencia bancaria, 7 dias\r\n' +
@@ -331,6 +332,40 @@ function round2(n) {
   return Math.round(Number(n) * 100) / 100;
 }
 
+// Albarán (WZ) payload — analogiczny do FV ale bez fiscal pól. Wszystkie
+// kwoty 0 bo albarán to lista wydanych towarów, nie dokument fiskalny.
+// numberingFormatId musi być inny niż FV (Nikodem ma osobny format z
+// prefixem 'AL-'). Przychodzi z overrides albo z env
+// KANARY_ALBARAN_NUMBERING_FORMAT_ID (NIKODEM_DEFAULTS.albaranNumberingFormatId).
+function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDate, overrides = {} }) {
+  const date = deliveryNoteDate || new Date().toISOString();
+  return {
+    targetEntityId,
+    numberingFormatId: overrides.numberingFormatId || NIKODEM_DEFAULTS.albaranNumberingFormatId,
+    number: overrides.number || '',
+    date,
+    notes: overrides.notes || '',
+    footer: overrides.footer != null ? overrides.footer : '',
+    uiCulture: overrides.uiCulture || 'es-ES',
+    retentionPercentage: 0,
+    lines: lines.map(l => ({
+      concept: l.name + (l.variant ? ` ${l.variant}` : ''),
+      unitAmount: 0,
+      quantity: l.qty,
+      vatPercentage: 0,
+      vatAmount: 0,
+      rePercentage: 0,
+      reAmount: 0,
+      totalTaxableAmount: 0,
+      discountPercentage: 0,
+      detailedDescription: '',
+      productId: (l.product && l.product.contasimpleId) || 0,
+      productName: l.name + (l.variant ? ` ${l.variant}` : ''),
+      productSku: (l.product && l.product.ean) || '',
+    })),
+  };
+}
+
 module.exports = {
   IGIC_DEFAULT_PCT,
   NIKODEM_DEFAULTS,
@@ -339,4 +374,5 @@ module.exports = {
   expandEsLines,
   buildEsTotals,
   buildContasimplePayload,
+  buildContasimpleAlbaranPayload,
 };
