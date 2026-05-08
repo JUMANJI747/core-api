@@ -620,6 +620,23 @@ router.post('/send-offer', async (req, res) => {
   }
 });
 
+// ============ INBOX RESCAN (force fetch by date, ignore lastUid) ============
+//
+// Wymusza pełen fetch maili z konkretnej skrzynki od daty (default 3 dni).
+// Ignoruje lastUid (przydatne gdy ktoś przeniósł mail / UIDValidity reset).
+// Dedup po messageId — bez duplikatów. Synchroniczne — zwraca po zakończeniu.
+router.post('/inbox-rescan', async (req, res) => {
+  const { inbox, daysBack = 3 } = req.body || {};
+  if (!inbox) return res.status(400).json({ ok: false, error: 'inbox (string) required' });
+  try {
+    const { rescanInboxSince } = require('../inbox-poller');
+    const result = await rescanInboxSince(inbox, daysBack);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ FORCE POLL TRIGGER ============
 //
 // Wymusza inbox-pollera do natychmiastowego sprawdzenia wszystkich skrzynek

@@ -291,6 +291,67 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
   });
 }
 
+// Fetch po dacie (SINCE) zamiast UID — przydatne gdy lastUid w bazie jest
+// rozjechany z faktycznym stanem skrzynki (UIDValidity reset, reorg).
+// Używane przez /inbox-rescan żeby ratować pominięte maile.
+function fetchMailsSince(imap, sinceDate, folderName = 'INBOX') {
+  return new Promise((resolve, reject) => {
+    imap.openBox(folderName, true, (err, box) => {
+      if (err) return reject(err);
+      if (!box.messages || box.messages.total === 0) return resolve([]);
+      const sinceStr = sinceDate.toISOString().slice(0, 10);
+      // IMAP SINCE format: "DD-Mon-YYYY"
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const imapDate = `${String(sinceDate.getDate()).padStart(2,'0')}-${months[sinceDate.getMonth()]}-${sinceDate.getFullYear()}`;
+      console.log(`[inbox-poller] SINCE search ${folderName} since=${imapDate}`);
+      imap.search([['SINCE', imapDate]], (searchErr, uids) => {
+        if (searchErr) return reject(searchErr);
+        if (!uids || uids.length === 0) return resolve([]);
+        console.log(`[inbox-poller] SINCE found ${uids.length} mail(s)`);
+        const mails = [];
+        const messagePromises = [];
+        const fetch = imap.fetch(uids, { bodies: '', struct: true });
+        fetch.on('message', (msg) => {
+          let uid = null;
+          let rawBuffer = [];
+          msg.on('attributes', attrs => { uid = attrs.uid; });
+          msg.on('body', stream => {
+            stream.on('data', chunk => rawBuffer.push(chunk));
+          });
+          msg.once('end', () => {
+            messagePromises.push((async () => {
+              try {
+                const buffer = Buffer.concat(rawBuffer);
+                const parsed = await simpleParser(buffer);
+                mails.push({
+                  uid,
+                  fromEmail: parsed.from && parsed.from.value && parsed.from.value[0] && parsed.from.value[0].address,
+                  fromName: parsed.from && parsed.from.value && parsed.from.value[0] && parsed.from.value[0].name,
+                  toEmail: parsed.to && parsed.to.value && parsed.to.value[0] && parsed.to.value[0].address,
+                  subject: parsed.subject,
+                  date: parsed.date,
+                  messageId: parsed.messageId,
+                  inReplyTo: parsed.inReplyTo,
+                  references: Array.isArray(parsed.references) ? parsed.references.join(' ') : parsed.references,
+                  body: parsed.text || (parsed.html ? stripHtml(parsed.html) : ''),
+                  bodyText: parsed.text || (parsed.html ? stripHtml(parsed.html) : ''),
+                  attachments: parsed.attachments || [],
+                });
+              } catch (e) {
+                console.error('[inbox-poller] SINCE parse error:', e.message);
+              }
+            })());
+          });
+        });
+        fetch.once('error', reject);
+        fetch.once('end', () => {
+          Promise.all(messagePromises).then(() => resolve(mails)).catch(reject);
+        });
+      });
+    });
+  });
+}
+
 // ============ AI CLASSIFICATION ============
 
 function httpsGet(url) {
@@ -1334,4 +1395,80 @@ function stopPolling() {
 }
 
 startPolling();
-module.exports = { pollAll, stopPolling };
+// Rescan po dacie — zmusza fetch z folderu (default INBOX) używając SINCE
+// zamiast UID range. Dedup po messageId. Niezbędny gdy lastUid jest
+// rozjechany z faktycznym stanem skrzynki (UIDValidity reset / reorg).
+async function rescanInboxSince(inbox, daysBack = 3) {
+  const accounts = getAccounts();
+  const account = accounts.find(a => a.inbox === inbox);
+  if (!account) throw new Error(`inbox "${inbox}" not in IMAP_ACCOUNTS`);
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  let imap;
+  let added = 0;
+  let dedupedExisting = 0;
+  let filteredOut = 0;
+  try {
+    imap = await connectImap(account);
+    const mails = await fetchMailsSince(imap, since);
+    console.log(`[inbox-rescan] ${inbox}: fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
+    let maxUid = 0;
+    for (const mail of mails) {
+      try {
+        if (mail.uid > maxUid) maxUid = mail.uid;
+        if (!mail.fromEmail) continue;
+        if (!hardFilter(mail)) { filteredOut++; continue; }
+        if (bounceFilter(mail)) { filteredOut++; continue; }
+
+        // Dedup po messageId
+        if (mail.messageId) {
+          const existing = await prisma.email.findFirst({ where: { messageId: mail.messageId } });
+          if (existing) { dedupedExisting++; continue; }
+        }
+
+        // Link contractor po fromEmail
+        let contractorId = null;
+        const contractor = await prisma.contractor.findFirst({
+          where: { email: { contains: mail.fromEmail, mode: 'insensitive' } },
+        }).catch(() => null);
+        if (contractor) contractorId = contractor.id;
+
+        await prisma.email.create({
+          data: {
+            direction: 'INBOUND',
+            inbox,
+            fromEmail: mail.fromEmail,
+            fromName: mail.fromName || null,
+            toEmail: mail.toEmail || `${inbox}@surfstickbell.com`,
+            subject: mail.subject || null,
+            bodyPreview: (mail.body || '').slice(0, 300),
+            bodyFull: (mail.body || '').slice(0, 2000),
+            messageId: mail.messageId || null,
+            inReplyTo: mail.inReplyTo || null,
+            references: mail.references || null,
+            contractorId,
+          },
+        });
+        added++;
+      } catch (mailErr) {
+        console.error(`[inbox-rescan] ${inbox}: mail error uid=${mail.uid}:`, mailErr.message);
+      }
+    }
+    // Update lastUid jeśli aktualny wyższy.
+    if (maxUid > 0) {
+      const state = await prisma.imapState.findUnique({ where: { inbox } });
+      if (!state || maxUid > state.lastUid) {
+        await prisma.imapState.upsert({
+          where: { inbox },
+          update: { lastUid: maxUid },
+          create: { inbox, lastUid: maxUid },
+        });
+        console.log(`[inbox-rescan] ${inbox}: bumped lastUid → ${maxUid}`);
+      }
+    }
+    return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, filteredOut };
+  } finally {
+    if (imap) try { imap.end(); } catch (_) {}
+  }
+}
+
+module.exports = { pollAll, stopPolling, rescanInboxSince };
