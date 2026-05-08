@@ -1351,21 +1351,42 @@ async function processSentItems(account) {
 
 // ============ MAIN LOOP ============
 
+// Licznik cykli — co 12 cykli (pollInterval=5min × 12 = ~60 min) odpalamy
+// rescanInboxSince(inbox, 0.5) na każdej skrzynce. UID-based fetch może
+// pominąć maile gdy UIDy nie są strict-rosnąco; godzinny SINCE-rescan
+// naprawia to automatycznie. Dedup po messageId więc bez duplikatów.
+let pollCycleCount = 0;
+const RESCAN_EVERY_N_CYCLES = 12;
+
 async function pollAll() {
   const accounts = getAccounts();
   if (accounts.length === 0) {
     console.log('[inbox-poller] No IMAP_ACCOUNTS configured, skipping');
     return;
   }
+  pollCycleCount++;
+  const shouldRescan = pollCycleCount % RESCAN_EVERY_N_CYCLES === 0;
+
   for (const account of accounts) {
     await processAccount(account);
-    // Po INBOX bierzemy też SENT — żeby OUTBOUND z natywnego klienta
-    // (Gmail/Outlook) pojawił się w bazie obok tych z naszego sendMail.
     try {
       await processSentItems(account);
     } catch (e) {
       console.error(`[inbox-poller] processSentItems failed for ${account.inbox}:`, e.message);
     }
+    if (shouldRescan) {
+      try {
+        const r = await rescanInboxSince(account.inbox, 0.5);
+        if (r.added > 0) {
+          console.log(`[inbox-poller] AUTO-RESCAN ${account.inbox}: nadrobiono ${r.added} mail(i) (cycle ${pollCycleCount})`);
+        }
+      } catch (e) {
+        console.error(`[inbox-poller] auto-rescan failed for ${account.inbox}:`, e.message);
+      }
+    }
+  }
+  if (shouldRescan) {
+    console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
   }
 }
 
