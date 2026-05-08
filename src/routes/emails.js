@@ -620,6 +620,24 @@ router.post('/send-offer', async (req, res) => {
   }
 });
 
+// ============ FORCE POLL TRIGGER ============
+//
+// Wymusza inbox-pollera do natychmiastowego sprawdzenia wszystkich skrzynek
+// (lub konkretnej z body.inbox). Ten sam cycle co normalny timer (co 5 min).
+// Używane przed analiza_leads żeby świeże maile od dziś rana były dostępne.
+router.post('/inbox-poll-now', async (req, res) => {
+  try {
+    const { pollAll } = require('../inbox-poller');
+    console.log('[inbox-poll-now] forced poll triggered via API');
+    // Nie czekamy na pełen cycle — ale zawracamy gdy już startuje, żeby
+    // klient nie hangował. Cycle leci w tle.
+    pollAll().catch(e => console.error('[inbox-poll-now] error:', e.message));
+    res.json({ ok: true, started: true, note: 'Polling started in background. New mails will appear in DB within ~30 sec.' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ LEADS ANALYZER ============
 //
 // On-demand: pobiera ostatnie maile (default 7 dni), grupuje po external
