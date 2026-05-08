@@ -620,4 +620,132 @@ router.post('/send-offer', async (req, res) => {
   }
 });
 
+// ============ LEADS ANALYZER ============
+//
+// On-demand: pobiera ostatnie maile (default 7 dni), grupuje po external
+// adresie (the other side, nie nasze), zwraca timeline + AI klasyfikację
+// per wątek (czeka na nasza/ich odpowiedź, świeży/martwy, sugerowana akcja).
+// Używane gdy user pisze "przeanalizuj maile", "kto czeka na odpowiedź",
+// "status leadów", "zaległe wątki".
+router.post('/leads/analyze', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { daysBack = 7, inbox, minThreadSize = 1, model } = req.body || {};
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY not configured' });
+  }
+
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  const where = { createdAt: { gte: since } };
+  if (inbox) where.inbox = inbox;
+
+  const emails = await prisma.email.findMany({
+    where,
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true, direction: true, inbox: true, fromEmail: true, fromName: true,
+      toEmail: true, subject: true, bodyPreview: true, createdAt: true,
+      contractorId: true, contractor: { select: { name: true } },
+    },
+  });
+
+  // Domeny które są NASZE — to nie są kontakty zewnętrzne, pomijamy w grupowaniu.
+  const OUR_DOMAINS = ['surfstickbell.com', 'surfstickbell.fr'];
+  const isOurs = (e) => !e || OUR_DOMAINS.some(d => e.toLowerCase().endsWith('@' + d));
+
+  // Group by external email (contact who is NOT us). Per INBOUND: fromEmail.
+  // Per OUTBOUND: toEmail. Skip noreply/automated.
+  const groups = new Map();
+  for (const em of emails) {
+    let external;
+    if (em.direction === 'INBOUND') external = em.fromEmail;
+    else if (em.direction === 'OUTBOUND' || em.direction === 'DRAFT') external = em.toEmail;
+    else continue;
+    if (!external || isOurs(external)) continue;
+    if (/noreply|no-reply|mailer-daemon|postmaster|notif/i.test(external)) continue;
+    const key = external.toLowerCase();
+    if (!groups.has(key)) {
+      groups.set(key, {
+        contact: external,
+        contactName: em.fromName || (em.contractor && em.contractor.name) || '',
+        contractorId: em.contractorId,
+        contractorName: em.contractor && em.contractor.name,
+        timeline: [],
+      });
+    }
+    const g = groups.get(key);
+    if (!g.contactName && em.fromName) g.contactName = em.fromName;
+    if (!g.contractorName && em.contractor && em.contractor.name) g.contractorName = em.contractor.name;
+    g.timeline.push({
+      id: em.id,
+      direction: em.direction,
+      ts: em.createdAt,
+      subject: em.subject,
+      preview: (em.bodyPreview || '').slice(0, 200),
+    });
+  }
+  const filtered = [...groups.values()].filter(g => g.timeline.length >= minThreadSize);
+  if (!filtered.length) {
+    return res.json({ ok: true, daysBack, threadsFound: 0, message: 'Brak wątków w tym okresie.' });
+  }
+
+  // Build prompt for Claude with grouped threads.
+  const now = new Date();
+  const threadBlocks = filtered.map((g, i) => {
+    const lastMsg = g.timeline[g.timeline.length - 1];
+    const lastDir = lastMsg.direction === 'INBOUND' ? 'ON/ONA' : 'MY';
+    const lastTs = new Date(lastMsg.ts);
+    const daysSinceLast = Math.floor((now - lastTs) / (24 * 60 * 60 * 1000));
+    const tline = g.timeline.map(t => {
+      const dt = new Date(t.ts);
+      const tag = t.direction === 'INBOUND' ? '←' : '→';
+      const subj = (t.subject || '(brak tematu)').slice(0, 80);
+      const prev = (t.preview || '').replace(/\s+/g, ' ').slice(0, 150);
+      return `  ${tag} [${dt.toISOString().slice(0, 10)}] ${subj} | ${prev}`;
+    }).join('\n');
+    return `${i + 1}. KONTAKT: ${g.contact}${g.contactName ? ' (' + g.contactName + ')' : ''}${g.contractorName ? ' [kontrahent: ' + g.contractorName + ']' : ''}
+   Wymian: ${g.timeline.length} | Ostatnia wiadomość: ${lastDir} ${daysSinceLast === 0 ? 'dziś' : daysSinceLast + ' dni temu'}
+${tline}`;
+  }).join('\n\n');
+
+  const prompt =
+    `Przeanalizuj poniższe wątki mailowe (z ostatnich ${daysBack} dni). Bieżąca data: ${now.toISOString().slice(0, 10)}.\n\n` +
+    `Dla KAŻDEGO wątku:\n` +
+    `1. Klasyfikacja: jedno z [CZEKA_NA_NASZĄ_ODPOWIEDŹ, CZEKA_NA_ICH_ODPOWIEDŹ, AKTYWNY_DIALOG, ZAŁATWIONE, MARTWY]\n` +
+    `2. Sugerowana akcja: jedno krótkie zdanie po polsku (np. "Odpisz że masz w magazynie", "Przypomnieć o samples wysłanych N dni temu", "Czekaj — odpowiedzieli wczoraj", "Zostaw — dialog domknięty").\n` +
+    `3. Priorytet: WYSOKI (zaległa nasza odpowiedź / klient czeka >2 dni) / ŚREDNI / NISKI.\n\n` +
+    `Reguły klasyfikacji:\n` +
+    `- ostatnia wiadomość ON/ONA + brak naszej odpowiedzi → CZEKA_NA_NASZĄ_ODPOWIEDŹ (HIGH gdy >2 dni)\n` +
+    `- ostatnia wiadomość MY + brak ich odpowiedzi >5 dni → CZEKA_NA_ICH_ODPOWIEDŹ (MEDIUM, sugestia follow-up)\n` +
+    `- ostatnia wiadomość MY + brak odpowiedzi >14 dni → MARTWY (LOW, sugestia drugi follow-up albo odpuść)\n` +
+    `- jeśli wymiana w obie strony w ostatnich 3 dniach → AKTYWNY_DIALOG\n` +
+    `- jeśli ostatnie zdanie sugeruje że temat domknięty (np. "dziękuję, zamówię", "ok pozdrawiam") + nic potem → ZAŁATWIONE\n\n` +
+    `WĄTKI:\n${threadBlocks}\n\n` +
+    `Format odpowiedzi: tabela markdown:\n` +
+    `| # | Kontakt | Klasyfikacja | Priorytet | Sugerowana akcja |\n` +
+    `|---|---------|--------------|-----------|------------------|\n` +
+    `| 1 | ... | ... | ... | ... |\n\n` +
+    `Sortuj po priorytecie (WYSOKI najpierw). Po tabeli krótkie podsumowanie (ile WYSOKICH, średnich, martwych).`;
+
+  const Anthropic = require('@anthropic-ai/sdk');
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const llmModel = model || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
+  const llm = await anthropic.messages.create({
+    model: llmModel,
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const textBlock = llm.content.find(b => b.type === 'text');
+  const text = textBlock ? textBlock.text : '';
+
+  res.json({
+    ok: true,
+    daysBack,
+    threadsFound: filtered.length,
+    emailsScanned: emails.length,
+    analysis: text,
+    tokensUsed: llm.usage,
+  });
+});
+
 module.exports = router;

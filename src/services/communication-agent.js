@@ -60,6 +60,11 @@ WYSYŁKA FAKTURY:
 POTWIERDZENIE DRAFTU:
 - "tak"/"ok" po pokazaniu draftu → confirm_draft (bez argumentów — bierze najnowszy DRAFT z bazy do 30 min).
 
+ANALIZA LEADÓW (cold maile, follow-upy):
+- "przeanalizuj maile", "status leadów", "kto czeka", "zaległe wątki", "kto dostał sample" → analyze_leads {daysBack}.
+- daysBack: domyślnie 7. "z dziś" → 1. "z tygodnia" → 7. "z miesiąca" → 30. "z 3 dni" → 3.
+- Tool zwraca gotową tabelę markdown — pokaż userowi DOSŁOWNIE z analysis pole. Nie dodawaj nic od siebie poza krótkim wstępem.
+
 ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj z historii.
 - response.error → pokaż DOSŁOWNIE.
@@ -151,6 +156,18 @@ const tools = [
       required: ['invoiceNumber'],
     },
   },
+  {
+    name: 'analyze_leads',
+    description: 'Przeanalizuj wątki mailowe z ostatnich N dni — klasyfikuje każdy (czy czeka na nasza/ich odpowiedź, świeży/martwy) i zwraca tabelę z sugerowanymi akcjami. Trigger: "przeanalizuj maile", "status leadów", "kto czeka na odpowiedź", "co wymaga akcji", "zaległe wątki", "kto dostał sample". Output to gotowa tabela do skopiowania userowi.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        daysBack: { type: 'number', description: 'Ilu dni wstecz analizować (default 7, dziś=1)' },
+        inbox: { type: 'string', description: 'Konkretny inbox (info / sales / michal_fr...) — opcjonalne, default wszystkie' },
+        minThreadSize: { type: 'number', description: 'Min wymian żeby uwzględnić (default 1 — pokazuje też single-shot)' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -162,6 +179,7 @@ const ENDPOINT_MAP = {
   send_invoice_email: ['POST', '/api/ifirma/send-invoice-email'],
   parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
+  analyze_leads: ['POST', '/api/leads/analyze'],
 };
 
 function selfCall(method, path, body) {
@@ -222,6 +240,7 @@ async function executeTool(name, input, ctx = {}) {
 
 // Force tool choice for unambiguous intents.
 const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie mail|jakie mail|maile od)/iu;
+const ANALYZE_LEADS_INTENT = /\b(przeanaliz\w*\s+mail|status\s+lead|kto\s+czeka|co\s+wymaga|zaleg[lł]\w*\s+w[ąa]tk|kto\s+dosta[lł]\s+sample|martw\w*\s+w[ąa]tk|niedoko[nń]czon|wymaga\w*\s+akcj|do\s+odpis)/iu;
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
 const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
@@ -242,6 +261,7 @@ async function processCommunicationQuery(query, ctx = {}) {
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';
+  else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';
   else if (PARSE_INTENT.test(query)) forcedTool = 'parse_attachments';
   else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'send_invoice_email';
   else if (OFFER_INTENT.test(query)) forcedTool = 'send_offer';

@@ -160,6 +160,18 @@ const tools = [
       required: ['invoiceNumber'],
     },
   },
+  {
+    name: 'analyze_leads',
+    description: 'Przeanalizuj wątki mailowe z ostatnich N dni — klasyfikuje każdy (czy czeka na nasza/ich odpowiedź, świeży/martwy) i zwraca tabelę z sugerowanymi akcjami. Trigger: "przeanalizuj maile", "status leadów", "kto czeka na odpowiedź", "zaległe wątki", "kto dostał sample".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        daysBack: { type: 'number', description: 'Ilu dni wstecz (default 7, dziś=1)' },
+        inbox: { type: 'string', description: 'Konkretny inbox (opcjonalny)' },
+        minThreadSize: { type: 'number' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -172,6 +184,7 @@ const ENDPOINT_MAP = {
   send_invoice_email: ['POST', '/api/contasimple/send-invoice-email'],
   parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
+  analyze_leads: ['POST', '/api/leads/analyze'],
 };
 
 function selfCall(method, path, body) {
@@ -239,6 +252,7 @@ async function executeTool(name, input, ctx = {}) {
 
 const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie mail|jakie mail|maile od)/iu;
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
+const ANALYZE_LEADS_INTENT = /\b(przeanaliz\w*\s+mail|status\s+lead|kto\s+czeka|co\s+wymaga|zaleg[lł]\w*\s+w[ąa]tk|kto\s+dosta[lł]\s+sample|martw\w*\s+w[ąa]tk|wymaga\w*\s+akcj|do\s+odpis)/iu;
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
 const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
@@ -258,6 +272,7 @@ async function processCommunicationEsQuery(query, ctx = {}) {
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';
+  else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';
   else if (PARSE_INTENT.test(query)) forcedTool = 'parse_attachments';
   else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'send_invoice_email';
   else if (OFFER_INTENT.test(query)) forcedTool = 'send_offer';
