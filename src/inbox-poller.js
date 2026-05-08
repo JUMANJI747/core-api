@@ -164,9 +164,9 @@ function connectImap(account) {
   });
 }
 
-function fetchMailsFromUid(imap, sinceUid) {
+function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
   return new Promise((resolve, reject) => {
-    imap.openBox('INBOX', true, (err, box) => {
+    imap.openBox(folderName, true, (err, box) => {
       if (err) return reject(err);
 
       const totalMessages = box.messages.total;
@@ -1123,6 +1123,173 @@ async function processAccount(account) {
   }
 }
 
+// ============ SENT FOLDER POLLING ============
+//
+// User pisze maile zarówno z Telegrama (przez naszego bota) jak z natywnego
+// klienta (Gmail/Outlook). Te wysłane natywnie NIE wpadają do bazy przez
+// sendMail — trafiają tylko do folderu SENT na IMAP. Żeby analyzer widział
+// PEŁNE wątki (INBOUND + OUTBOUND niezależnie skąd), musimy też skanować
+// folder SENT każdej skrzynki.
+//
+// Dedup: jeśli messageId już istnieje w Email (bo wysłaliśmy przez sendMail),
+// pomijamy — nie chcemy duplikatów.
+//
+// State: osobny rekord ImapState z kluczem '<inbox>:sent' (zamiast nowej
+// kolumny lastSentUid). Default 0 = na pierwszym uruchomieniu pobierze
+// wszystko, kolejne tylko nowe.
+
+const SENT_FOLDER_CANDIDATES = [
+  'Sent',
+  'Sent Items',
+  'INBOX.Sent',
+  'INBOX.Wysłane',
+  'Wysłane',
+  '[Gmail]/Sent Mail',
+];
+
+function findSentFolder(imap) {
+  return new Promise((resolve, reject) => {
+    imap.getBoxes((err, boxes) => {
+      if (err) return reject(err);
+      // Recursive search for box with \\Sent special-use flag.
+      function walk(node, prefix = '') {
+        for (const [name, box] of Object.entries(node || {})) {
+          const fullName = prefix ? prefix + box.delimiter + name : name;
+          if (box.attribs && box.attribs.includes('\\Sent')) return fullName;
+          if (box.children) {
+            const found = walk(box.children, fullName);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const fromFlag = walk(boxes);
+      if (fromFlag) return resolve(fromFlag);
+      // Fallback — match by common names (case insensitive).
+      const flat = [];
+      function collect(node, prefix = '') {
+        for (const [name, box] of Object.entries(node || {})) {
+          const fullName = prefix ? prefix + box.delimiter + name : name;
+          flat.push(fullName);
+          if (box.children) collect(box.children, fullName);
+        }
+      }
+      collect(boxes);
+      for (const candidate of SENT_FOLDER_CANDIDATES) {
+        const match = flat.find(n => n.toLowerCase() === candidate.toLowerCase());
+        if (match) return resolve(match);
+      }
+      resolve(null);
+    });
+  });
+}
+
+async function processSentItems(account) {
+  const { inbox, user } = account;
+  const sentKey = `${inbox}:sent`;
+  console.log(`[inbox-poller] Checking SENT for ${inbox} (${user})`);
+
+  let imap;
+  try {
+    imap = await connectImap(account);
+
+    const folderName = await findSentFolder(imap);
+    if (!folderName) {
+      console.log(`[inbox-poller] ${inbox}: no SENT folder found`);
+      try { imap.end(); } catch (_) {}
+      return;
+    }
+    console.log(`[inbox-poller] ${inbox}: SENT folder = "${folderName}"`);
+
+    const state = await prisma.imapState.findUnique({ where: { inbox: sentKey } });
+    const lastUid = (state && state.lastUid) || 0;
+
+    // Pierwsze uruchomienie — nie ściągaj historii w tył (mogą być setki maili
+    // co spowoduje długi cycle). Bierz tylko nowe od momentu wdrożenia.
+    if (lastUid === 0) {
+      const mails0 = await fetchMailsFromUid(imap, 0, folderName);
+      const maxUid0 = mails0.length ? Math.max(...mails0.map(m => m.uid)) : 0;
+      if (maxUid0 > 0) {
+        await prisma.imapState.upsert({
+          where: { inbox: sentKey },
+          update: { lastUid: maxUid0 },
+          create: { inbox: sentKey, lastUid: maxUid0 },
+        });
+        console.log(`[inbox-poller] ${sentKey}: bootstrap lastUid=${maxUid0} (skipping ${mails0.length} historical SENT mails)`);
+      }
+      try { imap.end(); } catch (_) {}
+      return;
+    }
+
+    const mails = await fetchMailsFromUid(imap, lastUid, folderName);
+    if (mails.length === 0) {
+      console.log(`[inbox-poller] ${sentKey}: no new sent mails`);
+      try { imap.end(); } catch (_) {}
+      return;
+    }
+    console.log(`[inbox-poller] ${sentKey}: ${mails.length} new sent mail(s)`);
+
+    let maxUid = lastUid;
+    for (const mail of mails) {
+      try {
+        if (mail.uid > maxUid) maxUid = mail.uid;
+        if (!mail.toEmail || !mail.fromEmail) continue;
+
+        // Dedup po messageId — gdy mail wysłaliśmy przez nasz sendMail,
+        // już jest w Email. Nie dublujemy.
+        if (mail.messageId) {
+          const existing = await prisma.email.findFirst({ where: { messageId: mail.messageId } });
+          if (existing) {
+            console.log(`[inbox-poller] ${sentKey}: dedup by messageId, skip uid=${mail.uid}`);
+            continue;
+          }
+        }
+
+        // Próbujemy zlinkować kontrahenta po toEmail.
+        let contractorId = null;
+        const contractor = await prisma.contractor.findFirst({
+          where: { email: { contains: mail.toEmail, mode: 'insensitive' } },
+        }).catch(() => null);
+        if (contractor) contractorId = contractor.id;
+
+        await prisma.email.create({
+          data: {
+            direction: 'OUTBOUND',
+            inbox,
+            fromEmail: mail.fromEmail,
+            fromName: mail.fromName || null,
+            toEmail: mail.toEmail,
+            subject: mail.subject || null,
+            bodyPreview: (mail.body || '').slice(0, 300),
+            bodyFull: (mail.body || '').slice(0, 2000),
+            messageId: mail.messageId || null,
+            inReplyTo: mail.inReplyTo || null,
+            references: mail.references || null,
+            contractorId,
+          },
+        });
+      } catch (mailErr) {
+        console.error(`[inbox-poller] ${sentKey}: error uid=${mail.uid}:`, mailErr.message);
+      }
+    }
+
+    if (maxUid > lastUid) {
+      await prisma.imapState.upsert({
+        where: { inbox: sentKey },
+        update: { lastUid: maxUid },
+        create: { inbox: sentKey, lastUid: maxUid },
+      });
+      console.log(`[inbox-poller] ${sentKey}: updated lastUid=${maxUid}`);
+    }
+    try { imap.end(); } catch (_) {}
+  } catch (err) {
+    console.error(`[inbox-poller] SENT error for ${inbox}:`, err.message);
+    if (imap) {
+      try { imap.end(); } catch (_) {}
+    }
+  }
+}
+
 // ============ MAIN LOOP ============
 
 async function pollAll() {
@@ -1133,6 +1300,13 @@ async function pollAll() {
   }
   for (const account of accounts) {
     await processAccount(account);
+    // Po INBOX bierzemy też SENT — żeby OUTBOUND z natywnego klienta
+    // (Gmail/Outlook) pojawił się w bazie obok tych z naszego sendMail.
+    try {
+      await processSentItems(account);
+    } catch (e) {
+      console.error(`[inbox-poller] processSentItems failed for ${account.inbox}:`, e.message);
+    }
   }
 }
 
