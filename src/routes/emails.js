@@ -637,6 +637,22 @@ router.post('/inbox-rescan', async (req, res) => {
   }
 });
 
+// ============ COVERAGE DIAGNOSTIC ============
+//
+// Per skrzynka porównuje liczbę maili na IMAP (INBOX, ostatnie N dni) z liczbą
+// w naszej bazie. Duży gap = potencjalne pominięcia. Filter wynik gdzie gap > 0
+// żeby zobaczyć tylko problematyczne skrzynki.
+router.get('/inbox-coverage', async (req, res) => {
+  try {
+    const daysBack = parseInt(req.query.daysBack || '30', 10);
+    const { getCoverageStats } = require('../inbox-poller');
+    const stats = await getCoverageStats(daysBack);
+    res.json({ ok: true, daysBack, stats });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ FORCE POLL TRIGGER ============
 //
 // Wymusza inbox-pollera do natychmiastowego sprawdzenia wszystkich skrzynek

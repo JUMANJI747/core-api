@@ -1471,4 +1471,49 @@ async function rescanInboxSince(inbox, daysBack = 3) {
   }
 }
 
-module.exports = { pollAll, stopPolling, rescanInboxSince };
+// Diagnostyka pokrycia — dla każdej skrzynki: ile maili w INBOX na IMAP
+// vs ile mamy w bazie (z dowolnego direction). Duża różnica = potencjalne
+// pominięcia (przez UID gap / filtry / poll lag).
+async function getCoverageStats(daysBack = 30) {
+  const accounts = getAccounts();
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  const stats = [];
+  for (const account of accounts) {
+    const { inbox } = account;
+    let imap;
+    try {
+      imap = await connectImap(account);
+      const imapCount = await new Promise((resolve, reject) => {
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const imapDate = `${String(since.getDate()).padStart(2,'0')}-${months[since.getMonth()]}-${since.getFullYear()}`;
+        imap.openBox('INBOX', true, (err) => {
+          if (err) return reject(err);
+          imap.search([['SINCE', imapDate]], (sErr, uids) => {
+            if (sErr) return reject(sErr);
+            resolve((uids || []).length);
+          });
+        });
+      });
+      const dbCount = await prisma.email.count({
+        where: { inbox, direction: 'INBOUND', createdAt: { gte: since } },
+      });
+      const state = await prisma.imapState.findUnique({ where: { inbox } });
+      stats.push({
+        inbox,
+        user: account.user,
+        daysBack,
+        imapInboxCount: imapCount,
+        dbCount,
+        gap: imapCount - dbCount,
+        lastUid: (state && state.lastUid) || 0,
+      });
+    } catch (e) {
+      stats.push({ inbox, user: account.user, error: e.message });
+    } finally {
+      if (imap) try { imap.end(); } catch (_) {}
+    }
+  }
+  return stats;
+}
+
+module.exports = { pollAll, stopPolling, rescanInboxSince, getCoverageStats };
