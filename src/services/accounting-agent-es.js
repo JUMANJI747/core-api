@@ -405,7 +405,7 @@ async function executeTool(name, input, ctx = {}) {
 
 // Force tool choice on unambiguous intents to suppress LLM detours.
 const PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj) (fakt|fv|factura)|\b(faktur|fv|factura) (dla|na|para)/i;
-const CONFIRM_INTENT = /^\s*(tak|ok|si|sí|potwierdz|akceptu|zgadzam|jasne|dobra|emite|emitir)\b/i;
+const CONFIRM_INTENT = /^\s*(tak|ok|si|sí|potwierdz|akceptu|zgadzam|jasne|dobra|emite|emitir)\b|\bpotwierd[zź]\s+(fakt|fv|factura|ostatni|preview|albaran|albarán|wz)/i;
 const SEND_EMAIL_INTENT = /\bwy[sś]lij (fakt|fv|factura) (mailem|mejlem|por mail|por correo|por email)|\bfakt\w* mailem\b|\benv[ií]a\b.*\b(factura|fv)\b/i;
 const PDF_TELEGRAM_INTENT_RE = new RegExp(
   /\btelegram\w*\b[\s\S]*\b(pdf|fakt\w*|fv|factura)\b/i.source + '|' +
