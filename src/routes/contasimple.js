@@ -41,6 +41,15 @@ async function getEsTelegramToken(prismaClient) {
   return r.token;
 }
 
+// chatId resolver dla ES — request.body.chatId → Config telegram_chat_id_es →
+// Config telegram_chat_id (fallback admin). Eliminuje 7-krotny duplikat w
+// pliku (preview/confirm/delete/PDF resend/send-email).
+async function getEsChatId(prismaClient, reqChatId) {
+  const { resolveChatId } = require('../services/telegram-helper');
+  const r = await resolveChatId(prismaClient, reqChatId, 'kanary');
+  return r.chatId;
+}
+
 // ============ SMOKE TEST ============
 //
 // After deploy, run:
@@ -742,9 +751,7 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   // agent napisze w swojej odpowiedzi). User widzi prawdziwe qty/ceny przed
   // potwierdzeniem. Best-effort.
   try {
-    const tgChatId = body.chatId
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgChatId = await getEsChatId(prisma, body.chatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (tgToken && tgChatId) {
       const lineRows = lines.map(l => {
@@ -880,14 +887,10 @@ async function confirmEsPreview(stored) {
   let pdfSent = false;
   let pdfError = null;
   try {
-    const tgChatCfg = storedChatId
-      ? { value: String(storedChatId) }
-      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-        || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgChat = await getEsChatId(prisma, storedChatId);
     const tgToken = await getEsTelegramToken(prisma);
-    const tgChat = tgChatCfg && tgChatCfg.value;
-    if (!tgToken) pdfError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_ES';
-    else if (!tgChat) pdfError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
+    if (!tgToken) pdfError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
+    else if (!tgChat) pdfError = 'chatId missing (request + Config telegram_chat_id_es/telegram_chat_id all empty)';
     else {
       const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
       const filename = `factura_${(invoice.number || invoice.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
@@ -1149,14 +1152,10 @@ async function executeDeleteForPreview(stored) {
   let tgSent = false;
   let tgError = null;
   try {
-    const tgChatCfg = storedChatId
-      ? { value: String(storedChatId) }
-      : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-        || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+    const tgChat = await getEsChatId(prisma, storedChatId);
     const tgToken = await getEsTelegramToken(prisma);
-    const tgChat = tgChatCfg && tgChatCfg.value;
     if (!tgToken) tgError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
-    else if (!tgChat) tgError = 'telegram_chat_id_es and telegram_chat_id both missing in Config';
+    else if (!tgChat) tgError = 'chatId missing (request + Config all empty)';
     else {
       const lines = [];
       if (deleted.length) {
@@ -1622,14 +1621,10 @@ router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
   }
-  const tgChatCfg = req.body && req.body.chatId
-    ? { value: String(req.body.chatId) }
-    : await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } })
-      || await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
+  const tgChat = await getEsChatId(prisma, req.body && req.body.chatId);
   const tgToken = await getEsTelegramToken(prisma);
-  const tgChat = tgChatCfg && tgChatCfg.value;
-  if (!tgToken) return res.status(503).json({ error: 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_ES' });
-  if (!tgChat) return res.status(503).json({ error: 'telegram_chat_id missing' });
+  if (!tgToken) return res.status(503).json({ error: 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY' });
+  if (!tgChat) return res.status(503).json({ error: 'chatId missing (request + Config all empty)' });
 
   const { buffer } = await cs.fetchInvoicePdf(resolved.period, resolved.id);
   const number = resolved.data.number || String(resolved.id);
@@ -2107,9 +2102,7 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
 
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV.
   try {
-    const tgChatId = body.chatId
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgChatId = await getEsChatId(prisma, body.chatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (tgToken && tgChatId) {
       const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
@@ -2194,10 +2187,7 @@ async function confirmAlbaran(req, res, previewId) {
   let pdfSent = false;
   let pdfError = null;
   try {
-    const tgChatId = storedChatId
-      || (req.body && req.body.chatId)
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+    const tgChatId = await getEsChatId(prisma, storedChatId || (req.body && req.body.chatId));
     const tgToken = await getEsTelegramToken(prisma);
     if (!tgToken) pdfError = 'telegram bot token missing';
     else if (!tgChatId) pdfError = 'telegram chatId missing';
@@ -2260,11 +2250,7 @@ router.post('/albaran-resend-pdf-telegram', asyncHandler(async (req, res) => {
   if (!id) return res.status(404).json({ error: 'albaran not found (podaj albaranId albo albaranNumber)' });
 
   const tgToken = await getEsTelegramToken(prisma);
-  const reqChatId = req.body && req.body.chatId;
-  const tgChat = reqChatId
-    ? String(reqChatId)
-    : (await prisma.config.findUnique({ where: { key: 'telegram_chat_id_es' } }))?.value
-      || (await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }))?.value;
+  const tgChat = await getEsChatId(prisma, req.body && req.body.chatId);
   if (!tgToken) return res.status(503).json({ error: 'telegram bot token missing — set TELEGRAM_BOT_TOKEN_KANARY' });
   if (!tgChat) return res.status(503).json({ error: 'chatId missing' });
 
