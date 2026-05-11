@@ -861,13 +861,11 @@ async function processAccount(account) {
     mails.sort((a, b) => a.uid - b.uid);
     let maxUid = lastUid;
 
-    // Get Telegram config once
-    const [tgTokenRow, tgChatRow] = await Promise.all([
-      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-    ]);
-    const tgToken = tgTokenRow ? tgTokenRow.value : null;
-    const tgChat = tgChatRow ? tgChatRow.value : null;
+    // Get Telegram config once (admin global — fallback Config OK)
+    const { resolveTelegram } = require('./services/telegram-helper');
+    const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg.token;
+    const tgChat = __tg.chatId;
 
     for (const mail of mails) {
       try {

@@ -532,13 +532,11 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
 
+    // STRICT routing: tylko per-request chatId, brak fallback Config.
     const reqChatId = req.body && req.body.chatId;
-    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    // STRICT routing: tylko per-request chatId, brak fallback Config. Bez tego
-    // PDF leciał zawsze do Config.telegram_chat_id (jednego usera) niezależnie
-    // od tego kto pisał. Master n8n MUSI przekazać chatId w body tool calla.
+    const { resolveToken } = require('../services/telegram-helper');
     const tgChat = reqChatId ? String(reqChatId) : null;
-    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
+    const tgToken = (await resolveToken(prisma, 'pl')).token || '';
     if (!tgChat) {
       console.warn('[ifirma confirm-latest] BRAK chatId w body żądania — Master n8n nie skonfigurowany. PDF nie zostanie wysłany.');
     }
@@ -772,11 +770,11 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     try {
       // STRICT: tylko per-request chatId. Bez fallback na Config.
       const reqChatId = req.body && req.body.chatId;
-      const tokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
+      const { resolveToken } = require('../services/telegram-helper');
       const chatId = reqChatId ? String(reqChatId) : null;
-      const token = (process.env.TELEGRAM_BOT_TOKEN || (tokenCfg && tokenCfg.value) || '').trim();
+      const token = (await resolveToken(prisma, 'pl')).token || '';
       if (!chatId) {
-        console.warn('[ifirma confirm] BRAK chatId w body żądania — PDF nie zostanie wysłany. Sprawdź konfigurację Master tool node w n8n.');
+        console.warn('[ifirma confirm] BRAK chatId w body żądania — PDF nie zostanie wysłany.');
       }
       console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${token.slice(-4)}`);
 
@@ -1337,12 +1335,11 @@ router.post('/payments/match', async (req, res) => {
     const date = req.body.date || new Date().toISOString().slice(0, 10);
     if (!amount || !currency || !sender) return res.status(400).json({ error: 'amount, currency, sender required' });
 
-    const [tgTokenCfg, tgChatCfg] = await Promise.all([
-      prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-      prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-    ]);
-    const tgToken = tgTokenCfg && tgTokenCfg.value;
-    const tgChat = tgChatCfg && tgChatCfg.value;
+    // Global admin notification (payment matched) — fallback Config OK
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = tg.token;
+    const tgChat = tg.chatId;
 
     // Find contractor by sender
     const all = await prisma.contractor.findMany({
@@ -1482,8 +1479,8 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
     const pdfBuffer = await fetchInvoicePdf(realNumber, rodzaj, invoice.ifirmaId);
 
     // STRICT: tylko per-request chatId.
-    const tgTokenCfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || (tgTokenCfg && tgTokenCfg.value) || '').trim();
+    const { resolveToken } = require('../services/telegram-helper');
+    const tgToken = (await resolveToken(prisma, 'pl')).token || '';
     const reqChatId = req.body && req.body.chatId;
     const tgChat = reqChatId ? String(reqChatId) : null;
     console.log(`[ifirma resend-pdf] tg → chat=${tgChat || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${tgToken.slice(-4)}`);
@@ -1666,6 +1663,41 @@ router.post('/invoices/backfill-country', async (req, res) => {
     res.json({ ok: true, scanned: contractors.length, updated, planSize: plan.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Diagnostyka miesiąca księgowego — sprawdza który klucz iFirma działa
+// dla modułu Abonent. Najpierw GET (read-only), potem opcjonalnie PUT.
+// Body: { test: 'get'|'set', miesiac?, rok?, keyType?: 'abonent'|'faktury' }
+// Bez body — default test=get z keyType=abonent (czyli env IFIRMA_API_KEY_ABONENT
+// → fallback IFIRMA_API_KEY).
+router.post('/ifirma/_diag-month', async (req, res) => {
+  const { test = 'get', miesiac, rok, keyType = 'abonent' } = req.body || {};
+  try {
+    const { getAccountingMonth, trySetAccountingMonth } = require('../ifirma-client');
+    const keyOverride = keyType === 'faktury' ? process.env.IFIRMA_API_KEY : null;
+    if (test === 'get') {
+      const r = await getAccountingMonth(keyOverride);
+      const envInfo = {
+        IFIRMA_USER: !!process.env.IFIRMA_USER,
+        IFIRMA_API_KEY_set: !!process.env.IFIRMA_API_KEY,
+        IFIRMA_API_KEY_last4: (process.env.IFIRMA_API_KEY || '').slice(-4),
+        IFIRMA_API_KEY_ABONENT_set: !!process.env.IFIRMA_API_KEY_ABONENT,
+        IFIRMA_API_KEY_ABONENT_last4: (process.env.IFIRMA_API_KEY_ABONENT || '').slice(-4),
+        keyUsedNow: keyType === 'faktury' ? 'IFIRMA_API_KEY (fakturowy)' : 'IFIRMA_API_KEY_ABONENT → fallback IFIRMA_API_KEY',
+      };
+      return res.json({ ok: true, test: 'get', env: envInfo, ifirmaResponse: r });
+    }
+    if (test === 'set') {
+      const now = new Date();
+      const m = miesiac || (now.getMonth() + 1);
+      const y = rok || now.getFullYear();
+      const r = await trySetAccountingMonth(m, y, keyOverride);
+      return res.json({ ok: true, test: 'set', target: { miesiac: m, rok: y }, ifirmaResponse: r });
+    }
+    res.status(400).json({ error: "test must be 'get' or 'set'" });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

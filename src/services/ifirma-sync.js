@@ -168,12 +168,10 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
   if (!dryRun && dataOd && dataDo && (invoicesCreated > 0 || invoicesUpdated > 0 || deleted.length > 0)) {
     try {
       const { sendTelegram } = require('../telegram-utils');
-      const [tgTokenCfg, tgChatCfg] = await Promise.all([
-        prisma.config.findUnique({ where: { key: 'telegram_bot_token' } }),
-        prisma.config.findUnique({ where: { key: 'telegram_chat_id' } }),
-      ]);
-      const tgToken = tgTokenCfg && tgTokenCfg.value;
-      const tgChat = tgChatCfg && tgChatCfg.value;
+      const { resolveTelegram } = require('./telegram-helper');
+      const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+      const tgToken = __tg.token;
+      const tgChat = __tg.chatId;
       if (tgToken && tgChat) {
         const localCount = dataOd ? (await prisma.invoice.count({
           where: { issueDate: { gte: new Date(dataOd), lte: new Date(dataDo + 'T23:59:59Z') } },
