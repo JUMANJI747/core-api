@@ -8,7 +8,7 @@
 // POST /api/agent/accounting-es.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const http = require('http');
+const { buildExecuteTool } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL =
@@ -353,55 +353,10 @@ const ENDPOINT_MAP = {
   cs_list_albarans: ['GET', '/api/contasimple/albarans'],
 };
 
-function selfCall(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const port = process.env.PORT || 3000;
-    const apiKey = (process.env.API_KEY || '').trim();
-    const data = body && method !== 'GET' ? JSON.stringify(body) : '';
-    const finalPath =
-      method === 'GET' && body ? `${path}?${new URLSearchParams(body).toString()}` : path;
-    const options = {
-      hostname: '127.0.0.1',
-      port,
-      path: finalPath,
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
-        ...(apiKey ? { 'x-api-key': apiKey } : {}),
-      },
-    };
-    const req = http.request(options, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString();
-        try { resolve({ status: res.statusCode, body: JSON.parse(text) }); }
-        catch (e) { resolve({ status: res.statusCode, body: text }); }
-      });
-    });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-async function executeTool(name, input, ctx = {}) {
-  const ep = ENDPOINT_MAP[name];
-  if (!ep) return { error: `Unknown tool: ${name}` };
-  const [method, path] = ep;
-  // Inject ctx.chatId on every body so endpoints that send Telegram (confirm,
-  // delete-confirm, resend-pdf-telegram) deliver to the user who actually
-  // initiated the request, not the global telegram_chat_id_es from Config.
-  const body = method === 'GET' ? input : { ...(input || {}), ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
-  try {
-    const resp = await selfCall(method, path, body);
-    return resp.body;
-  } catch (err) {
-    console.error(`[accounting-agent-es] tool ${name} error:`, err.message);
-    return { error: err.message };
-  }
-}
+const executeTool = buildExecuteTool({
+  endpointMap: ENDPOINT_MAP,
+  logPrefix: '[accounting-agent-es]',
+});
 
 // Force tool choice on unambiguous intents to suppress LLM detours.
 const PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj) (fakt|fv|factura)|\b(faktur|fv|factura) (dla|na|para)/i;

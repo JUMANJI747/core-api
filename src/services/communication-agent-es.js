@@ -10,7 +10,7 @@
 // - Per-request chatId propagacja (jak accounting-agent-es).
 
 const Anthropic = require('@anthropic-ai/sdk');
-const http = require('http');
+const { buildExecuteTool } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.COMMUNICATION_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -200,68 +200,20 @@ const ENDPOINT_MAP = {
   extract_nip: ['POST', '/api/emails/extract-nip'],
 };
 
-function selfCall(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const port = process.env.PORT || 3000;
-    const apiKey = (process.env.API_KEY || '').trim();
-    const data = body && method === 'POST' ? JSON.stringify(body) : '';
-    const finalPath = method === 'GET' && body
-      ? `${path}?${new URLSearchParams(Object.entries(body).filter(([, v]) => v != null && v !== '')).toString()}`
-      : path;
-    const options = {
-      hostname: '127.0.0.1',
-      port,
-      path: finalPath,
-      method: method === 'POST' ? 'POST' : 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
-        ...(apiKey ? { 'x-api-key': apiKey } : {}),
-      },
-    };
-    const req = http.request(options, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString();
-        try { resolve({ status: res.statusCode, body: JSON.parse(text) }); }
-        catch (e) { resolve({ status: res.statusCode, body: text }); }
-      });
-    });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
+// Auto-inject domyślnego nadawcy dla tooli wysyłających maila gdy user
+// (i agent) nie podał explicit. Reply-in-thread (emailId) sam dobiera from
+// z inboxu oryginału — tam zostawiamy puste.
+function transformBody(name, body) {
+  if (name === 'send_email' && !body.from && !body.emailId) body.from = DEFAULT_FROM;
+  else if (name === 'send_offer' && !body.from) body.from = DEFAULT_FROM;
+  return body;
 }
 
-async function executeTool(name, input, ctx = {}) {
-  const ep = ENDPOINT_MAP[name];
-  if (!ep) return { error: `Unknown tool: ${name}` };
-  // Auto-inject domyślnego nadawcy dla tooli wysyłających maila gdy
-  // user (i agent) nie podał explicit. Reply-in-thread (emailId) sam
-  // dobiera from z inboxu oryginału — tam zostawiamy puste.
-  let bodyOverrides = {};
-  if (name === 'send_email' && !input.from && !input.emailId) {
-    bodyOverrides.from = DEFAULT_FROM;
-  } else if (name === 'send_offer' && !input.from) {
-    bodyOverrides.from = DEFAULT_FROM;
-  }
-  const fullInput = { ...input, ...bodyOverrides, ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
-  try {
-    if (ep[0] === 'POST_PATH') {
-      const path = ep[1].replace(':emailId', encodeURIComponent(fullInput.emailId || ''));
-      const { emailId, ...rest } = fullInput;
-      const resp = await selfCall('POST', path, Object.keys(rest).length ? rest : null);
-      return resp.body;
-    }
-    const [method, path] = ep;
-    const resp = await selfCall(method, path, fullInput);
-    return resp.body;
-  } catch (err) {
-    console.error(`[communication-agent-es] tool ${name} error:`, err.message);
-    return { error: err.message };
-  }
-}
+const executeTool = buildExecuteTool({
+  endpointMap: ENDPOINT_MAP,
+  logPrefix: '[communication-agent-es]',
+  transformBody,
+});
 
 const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie mail|jakie mail|maile od)/iu;
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
