@@ -194,7 +194,7 @@ const ENDPOINT_MAP = {
   send_offer: ['POST', '/api/send-offer'],
   // ES wariant: faktury idą przez Contasimple, nie iFirma
   send_invoice_email: ['POST', '/api/contasimple/send-invoice-email'],
-  parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
+  parse_attachments: ['POST', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
   extract_nip: ['POST', '/api/emails/extract-nip'],

@@ -140,15 +140,15 @@ async function processOperationsQuery(query, ctx = {}) {
   let iterations = 0;
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
-    const toolUse = response.content.find(b => b.type === 'tool_use');
-    const result = await executeTool(toolUse.name, toolUse.input, ctx);
-    console.log(`[operations-agent] tool_use: ${toolUse.name}`, JSON.stringify(toolUse.input).slice(0, 200));
-
+    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+    const toolResultBlocks = [];
+    for (const tu of toolUseBlocks) {
+      console.log(`[operations-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 200));
+      const result = await executeTool(tu.name, tu.input, ctx);
+      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) });
+    }
     messages.push({ role: 'assistant', content: response.content });
-    messages.push({
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) }],
-    });
+    messages.push({ role: 'user', content: toolResultBlocks });
 
     response = await anthropic.messages.create({
       model: MODEL,

@@ -195,7 +195,7 @@ const ENDPOINT_MAP = {
   confirm_draft: ['POST', '/api/send-email/confirm-latest'],
   send_offer: ['POST', '/api/send-offer'],
   send_invoice_email: ['POST', '/api/ifirma/send-invoice-email'],
-  parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
+  parse_attachments: ['POST', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
   extract_nip: ['POST', '/api/emails/extract-nip'],
