@@ -31,26 +31,14 @@ const {
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 const { sendMail } = require('../mail-sender');
 const { notifyMailResult } = require('../services/notify-mail-result');
+const { resolveToken } = require('../services/telegram-helper');
 
-// Bot Telegrama dla firmy kanaryjskiej (osobny od bota PL). Kolejność:
-// 1. env TELEGRAM_BOT_TOKEN_ES (preferowane — single source of truth na Railway)
-// 2. Config key 'telegram_bot_token_es' (gdy chcesz override z UI)
-// 3. fallback Config 'telegram_bot_token' (token bota PL — jednobotowy setup, kompatybilność wsteczna)
+// Wrapper na resolveToken z scope='kanary' + log diagnostyczny — żeby
+// w Railway było widać który token został wybrany.
 async function getEsTelegramToken(prismaClient) {
-  // Akceptujemy oba aliasy env (KANARY / ES) — user mógł nazwać po swojemu w Railway.
-  const envToken = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
-  let token, source;
-  if (envToken) { token = envToken; source = process.env.TELEGRAM_BOT_TOKEN_KANARY ? 'env_KANARY' : 'env_ES'; }
-  else {
-    const esCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
-    if (esCfg && esCfg.value) { token = esCfg.value; source = 'config_telegram_bot_token_es'; }
-    else {
-      const plCfg = await prismaClient.config.findUnique({ where: { key: 'telegram_bot_token' } });
-      if (plCfg && plCfg.value) { token = plCfg.value; source = 'config_telegram_bot_token (FALLBACK PL!)'; }
-    }
-  }
-  console.log(`[cs telegram-token] using ${source || 'NONE'} (last4=${token ? token.slice(-4) : '-'})`);
-  return token;
+  const r = await resolveToken(prismaClient, 'kanary');
+  console.log(`[cs telegram-token] using ${r.source} (last4=${r.token ? r.token.slice(-4) : '-'})`);
+  return r.token;
 }
 
 // ============ SMOKE TEST ============

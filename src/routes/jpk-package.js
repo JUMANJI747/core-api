@@ -187,9 +187,11 @@ router.post('/build-package', async (req, res) => {
       },
     });
 
-    // e) Telegram
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    // e) Telegram (admin notification)
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg.token;
+    const tgChat = __tg.chatId;
     await sendTelegram(tgToken, tgChat,
       `📦 Pakiet za ${period}:\n• ${invoiceCount} faktur PDF\n• ${cmrCount} listów CMR\nStatus: gotowy`
     ).catch(e => console.error('[package] TG error:', e.message));
@@ -443,8 +445,10 @@ router.post('/send-package', async (req, res) => {
       data: { status: 'sent', sentTo: to, sentAt: new Date() },
     });
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const __tg2 = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg2.token;
+    const tgChat = __tg2.chatId;
     await sendTelegram(tgToken, tgChat,
       `📧 Pakiet za ${period} wysłany na ${to} — ${invoiceCount} faktur + ${cmrCount} CMR`
     ).catch(e => console.error('[package] TG error:', e.message));

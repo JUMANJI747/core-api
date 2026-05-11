@@ -333,21 +333,8 @@ router.post('/telegram-send', async (req, res) => {
   if (!chatId) return res.status(400).json({ ok: false, error: 'chatId required' });
   if (!text || typeof text !== 'string') return res.status(400).json({ ok: false, error: 'text (string) required' });
 
-  let token = '';
-  if (scope === 'kanary' || scope === 'es') {
-    token = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
-  if (!token) {
-    token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
+  const { resolveToken } = require('../services/telegram-helper');
+  const { token } = await resolveToken(prisma, scope);
   if (!token) return res.status(503).json({ ok: false, error: 'no telegram bot token configured' });
 
   const { sendTelegram } = require('../telegram-utils');

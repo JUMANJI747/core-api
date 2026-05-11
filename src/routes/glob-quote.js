@@ -1368,8 +1368,10 @@ router.post('/glob/order', async (req, res) => {
         const labelResult = await getOrderLabels(orderHash, 'A4');
         const pdfBuffer = labelResult && labelResult.body;
         if (pdfBuffer && pdfBuffer.length > 100) {
-          const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-          const tgChat = process.env.TELEGRAM_CHAT_ID;
+          const { resolveTelegram } = require('../services/telegram-helper');
+          const tg = await resolveTelegram(prisma, { reqChatId: req.body && req.body.chatId, scope: 'pl' });
+          const tgToken = tg.token;
+          const tgChat = tg.chatId;
           if (tgToken && tgChat) {
             const orderNum = result.number || orderHash.slice(0, 12);
             const boundary = '----FormBoundary' + Date.now();

@@ -158,12 +158,15 @@ router.get('/glob/labels/:hash', async (req, res) => {
 // ============ SEND LABEL TO TELEGRAM ============
 
 router.post('/glob/send-label', async (req, res) => {
+  const prisma = req.app.locals.prisma;
   try {
     const { hash: hashOrNumber, chatId, caption } = req.body || {};
     if (!hashOrNumber) return res.status(400).json({ ok: false, error: 'Brak hash / numeru zamówienia' });
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = chatId || process.env.TELEGRAM_CHAT_ID;
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const tg = await resolveTelegram(prisma, { reqChatId: chatId, scope: 'pl' });
+    const tgToken = tg.token;
+    const tgChat = tg.chatId;
     if (!tgToken || !tgChat) return res.status(500).json({ ok: false, error: 'Brak konfiguracji Telegram' });
 
     // Resolve hash from order number if needed. Real GK hashes are long

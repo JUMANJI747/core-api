@@ -8,6 +8,7 @@
 // chatId: per-request (z body sub-agenta) → fallback Config.telegram_chat_id.
 
 const { sendTelegram } = require('../telegram-utils');
+const { resolveTelegram } = require('./telegram-helper');
 
 async function notifyMailResult(prisma, {
   reqChatId, scope, ok,
@@ -15,27 +16,9 @@ async function notifyMailResult(prisma, {
   attachmentFilename, attachmentSizeKB, attachmentCount,
   error,
 }) {
-  let token = '';
-  if (scope === 'es' || scope === 'kanary') {
-    token = (process.env.TELEGRAM_BOT_TOKEN_KANARY || process.env.TELEGRAM_BOT_TOKEN_ES || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token_es' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
-  if (!token) {
-    token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (!token) {
-      const cfg = await prisma.config.findUnique({ where: { key: 'telegram_bot_token' } });
-      token = (cfg && cfg.value) || '';
-    }
-  }
-  let chatId = reqChatId;
-  if (!chatId) {
-    const cfg = await prisma.config.findUnique({ where: { key: 'telegram_chat_id' } });
-    chatId = cfg && cfg.value;
-  }
-  if (!token || !chatId) return { sent: false, reason: 'no_token_or_chat' };
+  const tg = await resolveTelegram(prisma, { reqChatId, scope });
+  if (!tg.ready) return { sent: false, reason: `no_token_or_chat (token=${tg.tokenSource}, chat=${tg.chatSource})` };
+  const { token, chatId } = tg;
 
   // Linijka załącznika — pokazuje nazwę+rozmiar (single PDF FV) ALBO liczbę
   // (multi-attachment) ALBO 'brak' żeby user widział wprost.

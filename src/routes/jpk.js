@@ -570,8 +570,10 @@ router.post('/start-monthly-review', async (req, res) => {
     const y = parseInt(req.query.year) || prevMonth.getFullYear();
     const m = parseInt(req.query.month) || (prevMonth.getMonth() + 1);
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg.token;
+    const tgChat = __tg.chatId;
 
     const { period, invoices, totalUnpaid, telegramMessage } = await getUnpaidInvoices(prisma, y, m);
 
@@ -660,8 +662,10 @@ router.post('/run-monthly', async (req, res) => {
     const m = (req.body && req.body.month) || (prevMonth.getMonth() + 1);
     const period = `${y}-${String(m).padStart(2, '0')}`;
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg.token;
+    const tgChat = __tg.chatId;
 
     const result = await runSyncAndMatching(prisma, y, m, tgToken, tgChat);
 
@@ -753,8 +757,10 @@ router.post('/manual-match', async (req, res) => {
     let learned = 0;
     const tgLines = [];
 
-    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const __tg = await resolveTelegram(prisma, { scope: 'pl' });
+    const tgToken = __tg.token;
+    const tgChat = __tg.chatId;
 
     for (const pair of pairs) {
       const invoiceNumber = pair.invoiceNumber;
