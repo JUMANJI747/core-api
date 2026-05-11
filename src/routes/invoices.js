@@ -1688,14 +1688,23 @@ router.post('/ifirma/_diag-month', async (req, res) => {
       };
       return res.json({ ok: true, test: 'get', env: envInfo, ifirmaResponse: r });
     }
+    if (test === 'step') {
+      // body: { direction: 'NAST'|'POPRZ', crossYear?: bool }
+      const dir = (req.body && req.body.direction) || 'NAST';
+      const cy = !!(req.body && req.body.crossYear);
+      const r = await trySetAccountingMonth(dir, cy, keyOverride);
+      return res.json({ ok: true, test: 'step', direction: dir, crossYear: cy, ifirmaResponse: r });
+    }
     if (test === 'set') {
+      // Pełne setAccountingMonth — auto-iteracja NAST/POPRZ żeby trafić w target
+      const { setAccountingMonth } = require('../ifirma-client');
       const now = new Date();
       const m = miesiac || (now.getMonth() + 1);
       const y = rok || now.getFullYear();
-      const r = await trySetAccountingMonth(m, y, keyOverride);
-      return res.json({ ok: true, test: 'set', target: { miesiac: m, rok: y }, ifirmaResponse: r });
+      const r = await setAccountingMonth(m, y);
+      return res.json({ ok: true, test: 'set', target: { miesiac: m, rok: y }, result: r });
     }
-    res.status(400).json({ error: "test must be 'get' or 'set'" });
+    res.status(400).json({ error: "test must be 'get', 'step' (NAST/POPRZ once), or 'set' (iterate to target)" });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

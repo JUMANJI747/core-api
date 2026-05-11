@@ -64,29 +64,75 @@ function httpsPutJson(url, headers, bodyObj) {
 // zwraca {response: {MiesiacKsiegowy: 4, RokKsiegowy: 2026}}). Wcześniej
 // próbowałem {MiesiacKsiegowy:{Miesiac,Rok}} (nested) i {miesiac,rok}
 // (flat lowercase) — oba odrzucone z "Niepoprawna zawartość żądania".
-async function setAccountingMonth(miesiac, rok) {
-  if (!login || !keyHexAbonent) {
-    throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway (lub fallback IFIRMA_API_KEY).');
-  }
+// PUT /iapi/abonent/miesiacksiegowy.json — przestawia miesiąc księgowy
+// iFirma akceptuje TYLKO relatywne kroki:
+//   { "MiesiacKsiegowy": "NAST" } — w przód o 1
+//   { "MiesiacKsiegowy": "POPRZ" } — w tył o 1
+//   { ..., "PrzeniesDaneZPoprzedniegoRoku": true } — przy przekroczeniu roku
+// NIE ma możliwości set-by-value. Implementacja: GET aktualnego stanu, obliczyć
+// delta, iterować NAST/POPRZ aż osiągniemy cel.
+//
+// Źródło: https://api.ifirma.pl/pobranie-i-zmiana-ustawionego-miesiaca-ksiegowego/
+
+async function stepAccountingMonth(direction, crossYear, keyOverride) {
+  const k = (keyOverride || keyHexAbonent || '').trim();
+  if (!login || !k) throw new Error('login or key missing');
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  // iFirma PUT shape: { "Miesiac": "05", "Rok": "2026" } — krótkie nazwy
-  // PascalCase, wartości jako STRINGI z leading zero. GET zwraca inaczej
-  // ({MiesiacKsiegowy, RokKsiegowy}) ale PUT chce innego shape.
-  const body = {
-    Miesiac: String(miesiac).padStart(2, '0'),
-    Rok: String(rok),
-  };
+  const body = { MiesiacKsiegowy: direction };
+  if (crossYear) body.PrzeniesDaneZPoprzedniegoRoku = true;
   const bodyStr = JSON.stringify(body);
-  const auth = generateAuthAbonent(url, bodyStr, login, keyHexAbonent);
-  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')} body=${bodyStr}`);
+  const auth = generateAuthAbonent(url, bodyStr, login, k);
+  console.log(`[ifirma] stepAccountingMonth → ${direction}${crossYear ? ' (cross-year)' : ''} body=${bodyStr}`);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
   const kod = resp && resp.response && resp.response.Kod;
   const informacja = resp && resp.response && resp.response.Informacja;
-  console.log(`[ifirma] setAccountingMonth status=${status} kod=${kod} info="${informacja}" raw=${JSON.stringify(resp).slice(0, 300)}`);
+  console.log(`[ifirma] stepAccountingMonth status=${status} kod=${kod} info="${informacja}"`);
   if (status !== 200 || (kod != null && kod !== 0)) {
-    throw new Error(`iFirma setAccountingMonth błąd (kod=${kod}): ${informacja || JSON.stringify(resp)}`);
+    throw new Error(`iFirma stepAccountingMonth błąd (kod=${kod}): ${informacja || JSON.stringify(resp)}`);
   }
   return { ok: true };
+}
+
+async function setAccountingMonth(targetMiesiac, targetRok) {
+  if (!login || !keyHexAbonent) {
+    throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway (lub fallback IFIRMA_API_KEY).');
+  }
+  // Pobierz aktualny stan
+  const current = await getAccountingMonth();
+  const curM = current.body && current.body.response && current.body.response.MiesiacKsiegowy;
+  const curR = current.body && current.body.response && current.body.response.RokKsiegowy;
+  if (!curM || !curR) throw new Error('Nie udało się odczytać aktualnego miesiąca księgowego iFirma');
+  console.log(`[ifirma] setAccountingMonth: current=${curR}-${String(curM).padStart(2,'0')} target=${targetRok}-${String(targetMiesiac).padStart(2,'0')}`);
+
+  // Oblicz delta w miesiącach (dodatnia = przód, ujemna = tył)
+  let delta = (targetRok - curR) * 12 + (targetMiesiac - curM);
+  if (delta === 0) return { ok: true, message: 'already at target' };
+
+  // Sanity: nie więcej niż 24 miesięcy iteracji
+  if (Math.abs(delta) > 24) {
+    throw new Error(`Differential too large (${delta} months) — set manually in iFirma UI`);
+  }
+
+  // Iteruj NAST/POPRZ
+  let m = curM, y = curR;
+  const direction = delta > 0 ? 'NAST' : 'POPRZ';
+  const steps = Math.abs(delta);
+  for (let i = 0; i < steps; i++) {
+    // Sprawdź czy ten krok przekracza rok
+    let crossYear = false;
+    if (direction === 'NAST') {
+      crossYear = (m === 12); // grudzień → styczeń
+      await stepAccountingMonth('NAST', crossYear);
+      m = m === 12 ? 1 : m + 1;
+      if (crossYear) y++;
+    } else {
+      crossYear = (m === 1); // styczeń → grudzień
+      await stepAccountingMonth('POPRZ', crossYear);
+      m = m === 1 ? 12 : m - 1;
+      if (crossYear) y--;
+    }
+  }
+  return { ok: true, message: `Przestawiono z ${curR}-${String(curM).padStart(2,'0')} na ${y}-${String(m).padStart(2,'0')}` };
 }
 
 function httpsGetRaw(url, headers) {
@@ -544,14 +590,13 @@ async function getAccountingMonth(keyOverride) {
   return { status, body: JSON.parse(body.toString()) };
 }
 
-async function trySetAccountingMonth(miesiac, rok, keyOverride) {
+// Diagnostyka — wykonuje JEDEN krok NAST/POPRZ. Body: {direction, crossYear?}.
+async function trySetAccountingMonth(direction, crossYear, keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  const body = {
-    Miesiac: String(miesiac).padStart(2, '0'),
-    Rok: String(rok),
-  };
+  const body = { MiesiacKsiegowy: direction };
+  if (crossYear) body.PrzeniesDaneZPoprzedniegoRoku = true;
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, k);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
