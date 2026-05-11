@@ -268,7 +268,7 @@ async function executeTool(name, input, ctx = {}) {
 
 // Force tool choice when intent is unambiguous to suppress LLM hallucination.
 const PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj) (fakt|fv)|\b(faktur|fv) (dla|na)/i;
-const CONFIRM_INTENT = /^\s*(tak|ok|potwierdz|akceptu|zgadzam|jasne|dobra)\b|\bpotwierd[zź] fakt/i;
+const CONFIRM_INTENT = /^\s*(tak|ok|potwierdz|akceptu|zgadzam|jasne|dobra)\b|\bpotwierd[zź]\s+(fakt|fv|ostatni|preview)/i;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv) (mailem|mejlem|do)|\bfakt\w* mailem\b/i;
 const PDF_TELEGRAM_INTENT =
   /\btelegram\w*\b[\s\S]*\b(pdf|fakt\w*|fv)\b/i      // explicit "telegram" + invoice keyword
