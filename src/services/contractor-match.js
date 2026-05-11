@@ -17,12 +17,23 @@ function scoreContractor(contractor, search) {
   const normSearch = normalizeContractorName(search);
   const normName = normalizeContractorName(contractor.name);
   const searchWords = normSearch.split(/\s+/).filter(w => w.length >= 3);
+  const nameWords = normName.split(/\s+/).filter(w => w.length >= 3);
 
   if (normName === normSearch) return 100;
   if (searchWords.length > 0 && searchWords.every(w => normName.includes(w))) return 90;
+
+  // Prefix-match z większym progiem — gdy user wpisze 'pozowince', słowo
+  // ma wspólny 4+ znakowy prefix z 'pozo' z 'pozo winds'. Wcześniej dawało
+  // tylko 40, teraz 85 jeśli WSZYSTKIE searchWords mają taki prefix match,
+  // bo to silny sygnał (literówka, częściowa nazwa).
+  const allHavePrefix = searchWords.length > 0 && searchWords.every(sw => {
+    const pfx = sw.slice(0, Math.min(4, sw.length));
+    return pfx.length >= 4 && nameWords.some(nw => nw.startsWith(pfx) || sw.startsWith(nw.slice(0, 4)));
+  });
+  if (allHavePrefix) return 85;
+
   if (searchWords.some(w => normName.includes(w))) return 80;
 
-  const nameWords = normName.split(/\s+/).filter(w => w.length >= 3);
   const has70 = searchWords.some(sw => nameWords.some(nw => nw.includes(sw) || sw.includes(nw)));
   if (has70) return 70;
 

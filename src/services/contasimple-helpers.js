@@ -83,8 +83,35 @@ function normalize(s) {
 // the whole 30-piece box.
 const BOX_KEYWORDS = /\b(box|pudelko|pudlo|kartonik|collection|coleccion|colecc)\b/;
 
+// Aliasy nazw produktów które klienci/Nikodem używają w innym brzmieniu
+// niż w katalogu Contasimple. Mapuje na fragment który znajdzie produkt
+// przez normalny token-match. Przeszukiwane przed głównym fuzzy.
+const PRODUCT_ALIASES = [
+  // Gel — różne brand-warianty
+  { match: /\b(clear gel|gel clear|hydro gel)\b/i, to: 'gel extreme' },
+  // Lip balm — wariant marki / EN
+  { match: /\b(lip balm|balm|lipbalm|lippen|pomadka)\b/i, to: 'lips lip balm' },
+  // Stick — literówki / żargon
+  { match: /\b(stixing|stixin|stix|stik)\b/i, to: 'stick' },
+  // Mascara — angielski wariant
+  { match: /\b(waterproof mascara)\b/i, to: 'mascara waterproof' },
+  // Daily — wariant
+  { match: /\b(daily cream|daily protection)\b/i, to: 'daily' },
+];
+
+function applyProductAliases(query) {
+  if (!query) return query;
+  let q = String(query);
+  for (const { match, to } of PRODUCT_ALIASES) {
+    q = q.replace(match, to);
+  }
+  return q;
+}
+
 function findEsProductFuzzy(catalog, query) {
   if (!query) return null;
+  // Najpierw expand aliasy — 'clear gel' → 'gel extreme', 'stixing' → 'stick'.
+  query = applyProductAliases(query);
   const q = normalize(query);
   if (!q) return null;
 

@@ -345,4 +345,116 @@ router.post('/transactions/reset', async (req, res) => {
   }
 });
 
+// POST /api/transactions/rematch
+// Przelatuje WSZYSTKIE istniejące Transaction i próbuje sparować te które
+// mają luki (brak invoiceId mimo istnienia FV w bazie, brak shipmentHash
+// mimo istnienia GK Order). Plus: przelatuje wszystkie Invoice które nie
+// mają jeszcze Transaction i odpala trackInvoice. Same dla GK Orders.
+//
+// dryRun=true zwraca plan bez modyfikacji.
+router.post('/transactions/rematch', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { dryRun = false } = req.body || {};
+  const report = {
+    invoicesScanned: 0,
+    invoicesAdded: 0,
+    invoicesAlreadyTracked: 0,
+    shipmentsScanned: 0,
+    shipmentsAdded: 0,
+    shipmentsAlreadyTracked: 0,
+    txMerged: 0,
+    samples: [],
+  };
+  try {
+    // 1. Invoices bez Transaction → trackInvoice (to też próbuje merge z open shipment)
+    const invoices = await prisma.invoice.findMany({
+      orderBy: { issueDate: 'desc' },
+      take: 500,
+      include: { contractor: { select: { name: true } } },
+    });
+    report.invoicesScanned = invoices.length;
+    for (const inv of invoices) {
+      const existing = await prisma.transaction.findFirst({ where: { invoiceId: inv.id } });
+      if (existing) { report.invoicesAlreadyTracked++; continue; }
+      if (dryRun) { report.invoicesAdded++; continue; }
+      const tx = await trackInvoice(prisma, inv, {
+        source: 'rematch',
+        contractorName: inv.contractor && inv.contractor.name,
+        itemsSummary: inv.extras && Array.isArray(inv.extras.items) && inv.extras.items.length
+          ? inv.extras.items.map(it => `${it.qty}× ${it.name || it.ean || '?'}`).slice(0, 3).join(', ') + (inv.extras.items.length > 3 ? `, +${inv.extras.items.length - 3}` : '')
+          : null,
+        itemsDetails: inv.extras && inv.extras.items ? inv.extras.items : null,
+      });
+      report.invoicesAdded++;
+      if (tx.shipmentHash) report.txMerged++;
+    }
+
+    // 2. GK Orders ostatnie 100 → trackShipment dla każdego co nie istnieje
+    let gkOrders = [];
+    try {
+      const data = await getOrders({ limit: 100 });
+      const list = (data && (data.results || data.items || data.data)) || (Array.isArray(data) ? data : []);
+      const unwrapped = Array.isArray(list) && list.length === 1 && list[0] && Array.isArray(list[0].results) ? list[0].results : list;
+      gkOrders = unwrapped || [];
+    } catch (e) {
+      console.error('[rematch] getOrders failed:', e.message);
+    }
+    report.shipmentsScanned = gkOrders.length;
+    for (const gk of gkOrders) {
+      const hash = gk.hash || gk.orderHash;
+      if (hash) {
+        const existing = await prisma.transaction.findFirst({ where: { shipmentHash: hash } });
+        if (existing) { report.shipmentsAlreadyTracked++; continue; }
+      }
+      if (dryRun) { report.shipmentsAdded++; continue; }
+      const contractor = await resolveContractorFromShipment(prisma, gk);
+      const tx = await trackShipment(prisma, gk, { source: 'rematch', contractor });
+      report.shipmentsAdded++;
+      if (tx.invoiceId) report.txMerged++;
+    }
+
+    // 3. Próba domknięcia luk w open Transaction — dla każdej z hasInvoice=false
+    //    z contractorId, szukaj invoice pasującej po dacie+amount; analogicznie
+    //    hasShipped=false → szukaj GK ordera z bazy GK po contractor+date.
+    const openInvoiceless = await prisma.transaction.findMany({
+      where: { invoiceId: null, contractorId: { not: null } },
+    });
+    for (const tx of openInvoiceless) {
+      // Szukaj invoice tej samej contractorId w ±30 dni od tx.occurredAt z amountem ±5%.
+      const since = new Date(tx.occurredAt); since.setDate(since.getDate() - 30);
+      const until = new Date(tx.occurredAt); until.setDate(until.getDate() + 30);
+      const candidates = await prisma.invoice.findMany({
+        where: { contractorId: tx.contractorId, issueDate: { gte: since, lte: until } },
+      });
+      for (const inv of candidates) {
+        // Sprawdź czy ta invoice nie jest już w innej Transaction
+        const taken = await prisma.transaction.findFirst({ where: { invoiceId: inv.id } });
+        if (taken) continue;
+        const amountMatch = !tx.amount || !inv.grossAmount ||
+          Math.abs(Number(tx.amount) - Number(inv.grossAmount)) / Number(inv.grossAmount) < 0.05;
+        if (!amountMatch) continue;
+        if (!dryRun) {
+          await prisma.transaction.update({
+            where: { id: tx.id },
+            data: {
+              invoiceId: inv.id, invoiceNumber: inv.number,
+              hasInvoice: true,
+              amount: tx.amount || inv.grossAmount, currency: tx.currency || inv.currency,
+              matchReason: (tx.matchReason || '') + ' | rematch: paired with invoice ' + inv.number,
+            },
+          });
+        }
+        report.txMerged++;
+        report.samples.push({ txId: tx.id, contractorName: tx.contractorName, paired: 'invoice ' + inv.number });
+        break;
+      }
+    }
+
+    res.json({ ok: true, dryRun, ...report });
+  } catch (e) {
+    console.error('[transactions/rematch]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
