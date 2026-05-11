@@ -1666,4 +1666,39 @@ router.post('/invoices/backfill-country', async (req, res) => {
   }
 });
 
+// Diagnostyka miesiąca księgowego — sprawdza który klucz iFirma działa
+// dla modułu Abonent. Najpierw GET (read-only), potem opcjonalnie PUT.
+// Body: { test: 'get'|'set', miesiac?, rok?, keyType?: 'abonent'|'faktury' }
+// Bez body — default test=get z keyType=abonent (czyli env IFIRMA_API_KEY_ABONENT
+// → fallback IFIRMA_API_KEY).
+router.post('/ifirma/_diag-month', async (req, res) => {
+  const { test = 'get', miesiac, rok, keyType = 'abonent' } = req.body || {};
+  try {
+    const { getAccountingMonth, trySetAccountingMonth } = require('../ifirma-client');
+    const keyOverride = keyType === 'faktury' ? process.env.IFIRMA_API_KEY : null;
+    if (test === 'get') {
+      const r = await getAccountingMonth(keyOverride);
+      const envInfo = {
+        IFIRMA_USER: !!process.env.IFIRMA_USER,
+        IFIRMA_API_KEY_set: !!process.env.IFIRMA_API_KEY,
+        IFIRMA_API_KEY_last4: (process.env.IFIRMA_API_KEY || '').slice(-4),
+        IFIRMA_API_KEY_ABONENT_set: !!process.env.IFIRMA_API_KEY_ABONENT,
+        IFIRMA_API_KEY_ABONENT_last4: (process.env.IFIRMA_API_KEY_ABONENT || '').slice(-4),
+        keyUsedNow: keyType === 'faktury' ? 'IFIRMA_API_KEY (fakturowy)' : 'IFIRMA_API_KEY_ABONENT → fallback IFIRMA_API_KEY',
+      };
+      return res.json({ ok: true, test: 'get', env: envInfo, ifirmaResponse: r });
+    }
+    if (test === 'set') {
+      const now = new Date();
+      const m = miesiac || (now.getMonth() + 1);
+      const y = rok || now.getFullYear();
+      const r = await trySetAccountingMonth(m, y, keyOverride);
+      return res.json({ ok: true, test: 'set', target: { miesiac: m, rok: y }, ifirmaResponse: r });
+    }
+    res.status(400).json({ error: "test must be 'get' or 'set'" });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

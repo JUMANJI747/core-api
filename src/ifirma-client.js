@@ -521,4 +521,33 @@ async function registerPayment(invoiceNumber, type, amount, currency, date) {
   return result;
 }
 
-module.exports = { generateAuth, fetchInvoices, fetchNbpRate, searchContractor, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice, registerPayment, setAccountingMonth };
+// Diagnostyka — pobiera aktualny miesiąc księgowy + próbuje PUT z różnymi
+// kluczami żeby sprawdzić który działa. Używane przez /api/ifirma/_diag-month.
+async function getAccountingMonth(keyOverride) {
+  const k = (keyOverride || keyHexAbonent || '').trim();
+  if (!login || !k) throw new Error('login or key missing');
+  const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
+  const auth = generateAuthAbonent(url, '', login, k);
+  const { status, body } = await httpsGetRaw(url, { Authentication: auth, Accept: 'application/json' });
+  return { status, body: JSON.parse(body.toString()) };
+}
+
+async function trySetAccountingMonth(miesiac, rok, keyOverride) {
+  const k = (keyOverride || keyHexAbonent || '').trim();
+  if (!login || !k) throw new Error('login or key missing');
+  const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
+  const body = { MiesiacKsiegowy: { Miesiac: miesiac, Rok: rok } };
+  const bodyStr = JSON.stringify(body);
+  const auth = generateAuthAbonent(url, bodyStr, login, k);
+  const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
+  return { status, body: resp };
+}
+
+module.exports = {
+  generateAuth, fetchInvoices, fetchNbpRate, searchContractor,
+  createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
+  registerPayment, setAccountingMonth,
+  getAccountingMonth, trySetAccountingMonth,
+};
+
+
