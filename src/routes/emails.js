@@ -620,6 +620,101 @@ router.post('/send-offer', async (req, res) => {
   }
 });
 
+// ============ EXTRACT NIP/VAT FROM EMAILS ============
+//
+// Przeszukuje Email.bodyFull po regex VAT prefiksów UE i zwraca znalezione.
+// Filtruje po fromEmail/fromDomain albo search po nadawcy/contractor name.
+// Używane gdy agent ma wystawić FV WDT (potrzebuje Ust-IdNr) i nie widzi
+// NIP w bodyPreview (300 znaków).
+const EU_VAT_REGEX = new RegExp([
+  '\\bAT[U]?\\d{8,9}\\b',
+  '\\bBE[01]?\\d{9}\\b',
+  '\\bBG\\d{9,10}\\b',
+  '\\bCY\\d{8}[A-Z]\\b',
+  '\\bCZ\\d{8,10}\\b',
+  '\\bDE\\d{9}\\b',
+  '\\bDK\\d{8}\\b',
+  '\\bEE\\d{9}\\b',
+  '\\bEL\\d{9}\\b',
+  '\\bES[A-Z0-9]\\d{7}[A-Z0-9]\\b',
+  '\\bFI\\d{8}\\b',
+  '\\bFR[A-Z0-9]{2}\\d{9}\\b',
+  '\\bGB\\d{9}(\\d{3})?\\b',
+  '\\bHR\\d{11}\\b',
+  '\\bHU\\d{8}\\b',
+  '\\bIE\\d[A-Z0-9+*]\\d{5}[A-Z]{1,2}\\b',
+  '\\bIT\\d{11}\\b',
+  '\\bLT(\\d{9}|\\d{12})\\b',
+  '\\bLU\\d{8}\\b',
+  '\\bLV\\d{11}\\b',
+  '\\bMT\\d{8}\\b',
+  '\\bNL\\d{9}B\\d{2}\\b',
+  '\\bPL\\d{10}\\b',
+  '\\bPT\\d{9}\\b',
+  '\\bRO\\d{2,10}\\b',
+  '\\bSE\\d{12}\\b',
+  '\\bSI\\d{8}\\b',
+  '\\bSK\\d{10}\\b',
+].join('|'), 'gi');
+
+router.post('/emails/extract-nip', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { fromEmail, fromDomain, search, limit = 50 } = req.body || {};
+  try {
+    const where = { direction: 'INBOUND', bodyFull: { not: null } };
+    if (fromEmail) where.fromEmail = { contains: fromEmail, mode: 'insensitive' };
+    else if (fromDomain) where.fromEmail = { contains: '@' + fromDomain, mode: 'insensitive' };
+    else if (search) {
+      where.OR = [
+        { fromEmail: { contains: search, mode: 'insensitive' } },
+        { fromName: { contains: search, mode: 'insensitive' } },
+        { subject: { contains: search, mode: 'insensitive' } },
+        { bodyFull: { contains: search, mode: 'insensitive' } },
+      ];
+    } else {
+      return res.status(400).json({ ok: false, error: 'pass fromEmail, fromDomain or search' });
+    }
+    const emails = await prisma.email.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(parseInt(limit) || 50, 200),
+      select: { id: true, fromEmail: true, fromName: true, subject: true, bodyFull: true, createdAt: true },
+    });
+    const found = new Map();
+    for (const em of emails) {
+      const matches = (em.bodyFull || '').match(EU_VAT_REGEX) || [];
+      for (const m of matches) {
+        const nip = m.toUpperCase();
+        if (!found.has(nip)) {
+          found.set(nip, {
+            nip,
+            firstSeenIn: {
+              emailId: em.id,
+              from: em.fromEmail,
+              fromName: em.fromName,
+              subject: em.subject,
+              ts: em.createdAt,
+              bodyFull: em.bodyFull,  // pełna treść — agent wyłuskuje adres/telefon/nazwę
+            },
+            occurrences: 1,
+          });
+        } else {
+          found.get(nip).occurrences++;
+        }
+      }
+    }
+    // Plus zwracamy próbkę bodyFull pierwszego pasującego maila nawet jeśli
+    // NIP nie znaleziony — żeby agent mógł zobaczyć kto pisał i co.
+    const sampleBody = emails.length && found.size === 0
+      ? { emailId: emails[0].id, from: emails[0].fromEmail, fromName: emails[0].fromName, subject: emails[0].subject, bodyFull: emails[0].bodyFull }
+      : null;
+    const list = [...found.values()].sort((a, b) => b.occurrences - a.occurrences);
+    res.json({ ok: true, emailsScanned: emails.length, vatsFound: list.length, vats: list, sampleBodyWhenNoVat: sampleBody });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ INBOX RESCAN (force fetch by date, ignore lastUid) ============
 //
 // Wymusza pełen fetch maili z konkretnej skrzynki od daty (default 3 dni).

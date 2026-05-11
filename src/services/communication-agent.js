@@ -65,6 +65,12 @@ ANALIZA LEADÓW (cold maile, follow-upy):
 - daysBack: domyślnie 7. "z dziś" → 1. "z tygodnia" → 7. "z miesiąca" → 30. "z 3 dni" → 3.
 - Tool zwraca gotową tabelę markdown — pokaż userowi DOSŁOWNIE z analysis pole. Nie dodawaj nic od siebie poza krótkim wstępem.
 
+ZNAJDOWANIE NIP / DANYCH KONTRAHENTA W MAILACH:
+- "znajdź NIP", "wyciągnij dane kontrahenta z maili", "dane do FV z maili od X" → extract_nip.
+- User może podać sam fragment nazwy zamiast pełnego maila: "ostatnie maile od pro shop" / "po nazwie ferret" → extract_nip {search:"pro shop"}.
+- ZAWSZE używaj extract_nip ZANIM powiesz "brak NIP w mailach" — bodyPreview (recent_emails) ma tylko 300 znaków, NIP często jest w stopce dalej. extract_nip skanuje całe bodyFull.
+- Response zwraca też pełną treść maila (firstSeenIn.bodyFull) — wyciągnij z niej adres / telefon / nazwę firmy do utworzenia kontrahenta (delegacja do Księgowość PL "Dodaj kontrahenta").
+
 ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj z historii.
 - response.error → pokaż DOSŁOWNIE.
@@ -168,6 +174,18 @@ const tools = [
       },
     },
   },
+  {
+    name: 'extract_nip',
+    description: 'Przeszukuje TREŚĆ (bodyFull) wszystkich maili od konkretnego nadawcy/domeny po regex NIP-ów UE (DE/FR/IT/ES/NL/AT/CZ/PL etc.). Używaj GDY agent musi wystawić FV WDT i nie widzi Ust-IdNr w bodyPreview. Zwraca listę znalezionych NIP-ów z odniesieniem do konkretnego maila.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fromEmail: { type: 'string', description: 'Adres email nadawcy (lub fragment, np. "fone-pro-shop")' },
+        fromDomain: { type: 'string', description: 'Domena nadawcy (np. "fone-pro-shop.de") — alternatywnie do fromEmail' },
+        search: { type: 'string', description: 'Fragment nazwy nadawcy / firmy do szerszego przeszukiwania (gdy fromEmail nieznany)' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -180,6 +198,7 @@ const ENDPOINT_MAP = {
   parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
+  extract_nip: ['POST', '/api/emails/extract-nip'],
 };
 
 function selfCall(method, path, body) {
@@ -241,6 +260,7 @@ async function executeTool(name, input, ctx = {}) {
 // Force tool choice for unambiguous intents.
 const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie mail|jakie mail|maile od)/iu;
 const ANALYZE_LEADS_INTENT = /\b(przeanaliz\w*\s+mail|status\s+lead|kto\s+czeka|co\s+wymaga|zaleg[lł]\w*\s+w[ąa]tk|kto\s+dosta[lł]\s+sample|martw\w*\s+w[ąa]tk|niedoko[nń]czon|wymaga\w*\s+akcj|do\s+odpis)/iu;
+const EXTRACT_NIP_INTENT = /\b(znajd[zź]\s+nip|wyci[ąa]gnij\s+nip|nip\s+w\s+mail|dane\s+kontrahenta\s+(po|z)\s+mail|znajd[zź]\s+ust[\s\-]?idnr|szukaj\s+nip|extract\s+vat)/iu;
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
 const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
@@ -261,6 +281,7 @@ async function processCommunicationQuery(query, ctx = {}) {
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';
+  else if (EXTRACT_NIP_INTENT.test(query)) forcedTool = 'extract_nip';
   else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';
   else if (PARSE_INTENT.test(query)) forcedTool = 'parse_attachments';
   else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'send_invoice_email';

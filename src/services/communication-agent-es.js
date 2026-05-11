@@ -172,6 +172,18 @@ const tools = [
       },
     },
   },
+  {
+    name: 'extract_nip',
+    description: 'Przeszukuje TREŚĆ (bodyFull) wszystkich maili od nadawcy/domeny/fragmentu nazwy po regex NIP-ów UE. Używaj GDY agent musi wystawić FV i nie zna NIP — albo gdy user mówi "znajdź NIP / dane kontrahenta po nazwie X w mailach". Zwraca też pełną treść maila gdzie NIP jest — agent może z niej wyłuskać adres/telefon/nazwę firmy.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fromEmail: { type: 'string' },
+        fromDomain: { type: 'string' },
+        search: { type: 'string', description: 'Fragment nazwy nadawcy / firmy (np. "pro shop" znajdzie fone-pro-shop.de)' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -185,6 +197,7 @@ const ENDPOINT_MAP = {
   parse_attachments: ['POST_PATH', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
+  extract_nip: ['POST', '/api/emails/extract-nip'],
 };
 
 function selfCall(method, path, body) {
