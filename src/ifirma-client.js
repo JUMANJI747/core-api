@@ -69,10 +69,16 @@ async function setAccountingMonth(miesiac, rok) {
     throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway (lub fallback IFIRMA_API_KEY).');
   }
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  const body = { MiesiacKsiegowy: miesiac, RokKsiegowy: rok };
+  // iFirma PUT shape: { "Miesiac": "05", "Rok": "2026" } — krótkie nazwy
+  // PascalCase, wartości jako STRINGI z leading zero. GET zwraca inaczej
+  // ({MiesiacKsiegowy, RokKsiegowy}) ale PUT chce innego shape.
+  const body = {
+    Miesiac: String(miesiac).padStart(2, '0'),
+    Rok: String(rok),
+  };
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, keyHexAbonent);
-  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')} body=${bodyStr} auth=${auth.slice(0, 60)}...`);
+  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')} body=${bodyStr}`);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
   const kod = resp && resp.response && resp.response.Kod;
   const informacja = resp && resp.response && resp.response.Informacja;
@@ -542,11 +548,14 @@ async function trySetAccountingMonth(miesiac, rok, keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  const body = { MiesiacKsiegowy: miesiac, RokKsiegowy: rok };
+  const body = {
+    Miesiac: String(miesiac).padStart(2, '0'),
+    Rok: String(rok),
+  };
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, k);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
-  return { status, body: resp };
+  return { status, body: resp, bodySent: body };
 }
 
 module.exports = {
