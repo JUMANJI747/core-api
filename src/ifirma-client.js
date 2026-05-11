@@ -58,12 +58,16 @@ function httpsPutJson(url, headers, bodyObj) {
 
 // PUT /iapi/abonent/miesiacksiegowy.json — przestawia bieżący miesiąc
 // księgowy konta. Wymagany klucz modułu "Abonent" (IFIRMA_API_KEY_ABONENT).
+//
+// FORMAT BODY: iFirma akceptuje flat lowercase: {"miesiac": N, "rok": Y}.
+// Wcześniej była próba z {MiesiacKsiegowy:{Miesiac,Rok}} (nested PascalCase) —
+// iFirma zwracała "Niepoprawna zawartość żądania - nie można utworzyć obiektu".
 async function setAccountingMonth(miesiac, rok) {
   if (!login || !keyHexAbonent) {
-    throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway.');
+    throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway (lub fallback IFIRMA_API_KEY).');
   }
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  const body = { MiesiacKsiegowy: { Miesiac: miesiac, Rok: rok } };
+  const body = { miesiac, rok };
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, keyHexAbonent);
   console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')}`);
@@ -536,7 +540,7 @@ async function trySetAccountingMonth(miesiac, rok, keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
   const url = 'https://www.ifirma.pl/iapi/abonent/miesiacksiegowy.json';
-  const body = { MiesiacKsiegowy: { Miesiac: miesiac, Rok: rok } };
+  const body = { miesiac, rok };
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, k);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
