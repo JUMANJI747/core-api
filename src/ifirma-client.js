@@ -72,13 +72,13 @@ async function setAccountingMonth(miesiac, rok) {
   const body = { MiesiacKsiegowy: miesiac, RokKsiegowy: rok };
   const bodyStr = JSON.stringify(body);
   const auth = generateAuthAbonent(url, bodyStr, login, keyHexAbonent);
-  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')}`);
+  console.log(`[ifirma] setAccountingMonth → ${rok}-${String(miesiac).padStart(2, '0')} body=${bodyStr} auth=${auth.slice(0, 60)}...`);
   const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
   const kod = resp && resp.response && resp.response.Kod;
   const informacja = resp && resp.response && resp.response.Informacja;
-  console.log(`[ifirma] setAccountingMonth status=${status} kod=${kod} info="${informacja}"`);
+  console.log(`[ifirma] setAccountingMonth status=${status} kod=${kod} info="${informacja}" raw=${JSON.stringify(resp).slice(0, 300)}`);
   if (status !== 200 || (kod != null && kod !== 0)) {
-    throw new Error(`iFirma setAccountingMonth błąd: ${informacja || JSON.stringify(resp)}`);
+    throw new Error(`iFirma setAccountingMonth błąd (kod=${kod}): ${informacja || JSON.stringify(resp)}`);
   }
   return { ok: true };
 }
