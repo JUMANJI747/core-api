@@ -28,81 +28,15 @@ const CENNIK = {
   },
 };
 
-// 2-literowe prefiksy NIP w UE (bez PL — lokalny krajowy nie wymaga rozpoznania).
-const EU_VAT_PREFIXES = new Set([
-  'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR',
-  'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE',
-  'SI', 'SK', 'XI', // XI = Northern Ireland post-Brexit
-]);
+// Country detection — centralizowane w services/country-helper.js (commit B).
+// Re-export pod starymi nazwami żeby reszta pliku działała bez zmian.
+const _country = require('../services/country-helper');
+const EU_VAT_PREFIXES = _country.EU_VAT_PREFIXES;
+const COUNTRY_NAME_TO_CODE = _country.COUNTRY_NAME_TO_ISO;
+const LEGAL_FORM_TO_COUNTRY = _country.LEGAL_FORM_TO_COUNTRY;
+const normalizeIso = _country.normalizeIso;
+const nipPrefixToCountry = _country.nipPrefixToCountry;
 
-const COUNTRY_NAME_TO_CODE = {
-  hiszpania: 'ES', hiszpańska: 'ES', spain: 'ES', españa: 'ES', espana: 'ES',
-  niemcy: 'DE', germany: 'DE', deutschland: 'DE',
-  francja: 'FR', france: 'FR',
-  włochy: 'IT', wlochy: 'IT', italy: 'IT', italia: 'IT',
-  holandia: 'NL', netherlands: 'NL',
-  portugalia: 'PT', portugal: 'PT',
-  belgia: 'BE', belgium: 'BE',
-  austria: 'AT',
-  dania: 'DK', denmark: 'DK', danmark: 'DK',
-  szwecja: 'SE', sweden: 'SE',
-  irlandia: 'IE', ireland: 'IE', éire: 'IE',
-  czechy: 'CZ', 'czech republic': 'CZ', česko: 'CZ',
-  słowacja: 'SK', slowacja: 'SK', slovakia: 'SK',
-  węgry: 'HU', wegry: 'HU', hungary: 'HU',
-  rumunia: 'RO', romania: 'RO',
-  bułgaria: 'BG', bulgaria: 'BG',
-  chorwacja: 'HR', croatia: 'HR',
-  słowenia: 'SI', slowenia: 'SI', slovenia: 'SI',
-  litwa: 'LT', lithuania: 'LT',
-  łotwa: 'LV', lotwa: 'LV', latvia: 'LV',
-  estonia: 'EE',
-  finlandia: 'FI', finland: 'FI',
-  cypr: 'CY', cyprus: 'CY',
-  malta: 'MT',
-  luksemburg: 'LU', luxembourg: 'LU',
-  grecja: 'GR', greece: 'GR',
-};
-
-const LEGAL_FORM_TO_COUNTRY = [
-  { re: /\b(s\.?\s?l\.?\s?u\.?|s\.?\s?l\.?|sociedad limitada)\b/i, country: 'ES' },
-  { re: /\b(s\.?\s?a\.?|sociedad an[oó]nima)\b/i, country: 'ES' },
-  { re: /\bgmbh\b/i, country: 'DE' },
-  { re: /\bag\b/i, country: 'DE' },
-  { re: /\bs\.?\s?r\.?\s?l\.?\b/i, country: 'IT' },
-  { re: /\bs\.?\s?p\.?\s?a\.?\b/i, country: 'IT' },
-  { re: /\bb\.?\s?v\.?\b/i, country: 'NL' },
-  { re: /\bs\.?\s?a\.?\s?s\.?\b/i, country: 'FR' },
-  { re: /\bs\.?\s?à\.?\s?r\.?\s?l\.?\b/i, country: 'FR' },
-  { re: /\bs\.?\s?p\.?\s?z\s?o\.?\s?o\.?\b/i, country: 'PL' },
-  { re: /\bltd\b/i, country: 'GB' },
-];
-
-// Sprowadza dowolny zapis kraju do ISO-2 ("Polska"/"POLSKA"/"Poland"/"PL"
-// → "PL"). Zwraca null gdy nie da się rozpoznać. Używamy WSZĘDZIE gdzie
-// czytamy country — bo iFirma/VIES zwracają pełne nazwy ("Polska",
-// "Hiszpania"), a w bazie Contractor mamy mix ("PL", "POLSKA", null).
-function normalizeIso(value) {
-  if (!value) return null;
-  const v = String(value).trim();
-  if (!v) return null;
-  if (/^[A-Za-z]{2}$/.test(v)) return v.toUpperCase();
-  const key = v.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  if (key === 'polska' || key === 'poland') return 'PL';
-  return COUNTRY_NAME_TO_CODE[key] || null;
-}
-
-// Wyciąga prefiks UE z NIP-u (np. "ES36100525R" → "ES"). Zwraca null
-// gdy NIP polski (10 cyfr) lub nie pasuje do schematu UE.
-function nipPrefixToCountry(nip) {
-  if (!nip) return null;
-  const clean = nip.replace(/[\s.-]/g, '').toUpperCase();
-  const m = clean.match(/^([A-Z]{2})[A-Z0-9]+$/);
-  if (!m) return null;
-  const prefix = m[1];
-  if (prefix === 'EL') return 'GR';
-  return EU_VAT_PREFIXES.has(prefix) ? prefix : null;
-}
 
 // Prosta derywacja kraju — TYLKO mocne, niepodważalne sygnały. Nie używamy
 // historii faktur (pojedyncza pomyłka EUR oznaczałaby PL klienta jako EU

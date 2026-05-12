@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const http = require('http');
+const { buildExecuteTool } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -217,57 +217,10 @@ const ENDPOINT_MAP = {
   find_delivery_address_in_gk_orders: ['POST', '/api/contractors/:contractorId/find-address-in-gk-orders'],
 };
 
-function selfCall(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const port = process.env.PORT || 3000;
-    const apiKey = (process.env.API_KEY || '').trim();
-    const data = body ? JSON.stringify(body) : '';
-    const options = {
-      hostname: '127.0.0.1',
-      port,
-      path,
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
-        ...(apiKey ? { 'x-api-key': apiKey } : {}),
-      },
-    };
-    const req = http.request(options, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString();
-        try { resolve({ status: res.statusCode, body: JSON.parse(text) }); }
-        catch (e) { resolve({ status: res.statusCode, body: text }); }
-      });
-    });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-async function executeTool(name, input, ctx = {}) {
-  const ep = ENDPOINT_MAP[name];
-  if (!ep) return { error: `Unknown tool: ${name}` };
-  const [method, pathTemplate] = ep;
-  let path = pathTemplate;
-  const body = { ...(input || {}), ...(ctx.chatId ? { chatId: ctx.chatId } : {}) };
-  path = path.replace(/:([a-zA-Z]+)/g, (_, key) => {
-    const val = body[key];
-    delete body[key];
-    if (!val) return '_';
-    return encodeURIComponent(val);
-  });
-  try {
-    const resp = await selfCall(method, path, body);
-    return resp.body;
-  } catch (err) {
-    console.error(`[logistics-agent] tool ${name} error:`, err.message);
-    return { error: err.message };
-  }
-}
+const executeTool = buildExecuteTool({
+  endpointMap: ENDPOINT_MAP,
+  logPrefix: '[logistics-agent]',
+});
 
 // Heuristic: a *fresh* shipping intent forces a quote_shipping call so the LLM
 // can't return a hallucinated quote from conversation memory. ORDER_INTENT is

@@ -625,37 +625,9 @@ router.post('/send-offer', async (req, res) => {
 // Przeszukuje Email.bodyFull po regex VAT prefiksów UE i zwraca znalezione.
 // Filtruje po fromEmail/fromDomain albo search po nadawcy/contractor name.
 // Używane gdy agent ma wystawić FV WDT (potrzebuje Ust-IdNr) i nie widzi
-// NIP w bodyPreview (300 znaków).
-const EU_VAT_REGEX = new RegExp([
-  '\\bAT[U]?\\d{8,9}\\b',
-  '\\bBE[01]?\\d{9}\\b',
-  '\\bBG\\d{9,10}\\b',
-  '\\bCY\\d{8}[A-Z]\\b',
-  '\\bCZ\\d{8,10}\\b',
-  '\\bDE\\d{9}\\b',
-  '\\bDK\\d{8}\\b',
-  '\\bEE\\d{9}\\b',
-  '\\bEL\\d{9}\\b',
-  '\\bES[A-Z0-9]\\d{7}[A-Z0-9]\\b',
-  '\\bFI\\d{8}\\b',
-  '\\bFR[A-Z0-9]{2}\\d{9}\\b',
-  '\\bGB\\d{9}(\\d{3})?\\b',
-  '\\bHR\\d{11}\\b',
-  '\\bHU\\d{8}\\b',
-  '\\bIE\\d[A-Z0-9+*]\\d{5}[A-Z]{1,2}\\b',
-  '\\bIT\\d{11}\\b',
-  '\\bLT(\\d{9}|\\d{12})\\b',
-  '\\bLU\\d{8}\\b',
-  '\\bLV\\d{11}\\b',
-  '\\bMT\\d{8}\\b',
-  '\\bNL\\d{9}B\\d{2}\\b',
-  '\\bPL\\d{10}\\b',
-  '\\bPT\\d{9}\\b',
-  '\\bRO\\d{2,10}\\b',
-  '\\bSE\\d{12}\\b',
-  '\\bSI\\d{8}\\b',
-  '\\bSK\\d{10}\\b',
-].join('|'), 'gi');
+// NIP w bodyPreview (300 znaków). EU_VAT_REGEX centralizowany w
+// services/country-helper.js (commit B).
+const { EU_VAT_REGEX } = require('../services/country-helper');
 
 router.post('/emails/extract-nip', async (req, res) => {
   const prisma = req.app.locals.prisma;
