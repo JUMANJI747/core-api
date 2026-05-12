@@ -6,6 +6,23 @@ const { fetchWithTimeout } = require('../http');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { scoreContractor } = require('../services/contractor-match');
+const { geocodeAndSave } = require('../services/geocode');
+
+// Fire-and-forget geocode after upsert. We don't block the response; if
+// Nominatim is slow / down we still return the contractor. The 1 req/sec
+// limiter inside geocode.js serializes everything globally.
+function scheduleGeocode(prisma, contractor) {
+  if (!contractor) return;
+  const addrChanged = contractor.address || contractor.city || contractor.country;
+  if (!addrChanged) return;
+  // Skip re-geocoding if we already have coords and the address-shaped fields
+  // didn't change since. Cheap heuristic: only refetch when lat/lng are missing.
+  if (contractor.lat != null && contractor.lng != null) return;
+  setImmediate(async () => {
+    try { await geocodeAndSave(prisma, contractor); }
+    catch (e) { console.error('[geocode] background failed:', e.message); }
+  });
+}
 
 // ============ ROUTES ============
 
@@ -147,6 +164,39 @@ router.post('/upsert', async (req, res) => {
       });
     }
     res.json(deliveryAddress ? { ...contractor, deliveryAddressAdded } : contractor);
+    scheduleGeocode(prisma, contractor);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Backfill: geocode every contractor that has an address but no coords yet.
+// Respects Nominatim's 1 req/sec policy (handled in geocode service).
+// Skips rows already marked geocodingStatus = 'ok' or 'not_found' so reruns
+// are cheap. Pass { force: true } to retry not_found / error rows.
+router.post('/geocode-all', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const force = req.body && req.body.force === true;
+  try {
+    const where = force
+      ? { OR: [{ address: { not: null } }, { city: { not: null } }] }
+      : {
+          AND: [
+            { OR: [{ address: { not: null } }, { city: { not: null } }] },
+            { OR: [{ geocodingStatus: null }, { geocodingStatus: 'error' }] },
+          ],
+        };
+    const candidates = await prisma.contractor.findMany({
+      where,
+      select: { id: true, name: true, address: true, city: true, country: true },
+    });
+    const stats = { total: candidates.length, ok: 0, not_found: 0, error: 0, skipped: 0 };
+    for (const c of candidates) {
+      const r = await geocodeAndSave(prisma, c);
+      stats[r.status] = (stats[r.status] || 0) + 1;
+      console.log(`[geocode-all] ${c.name} → ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
+    }
+    res.json({ ok: true, stats });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

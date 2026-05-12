@@ -20,6 +20,11 @@ function auth(req, res, next) {
 }
 app.use('/api', auth);
 
+// ============ PUBLIC MAP (no /api prefix → no auth middleware) ============
+// /map serves the Leaflet HTML page; /map-data returns GeoJSON. Both work
+// anonymously (jitter + no popups) by default. Pass ?key=API_KEY for full data.
+app.use('/', require('./routes/map'));
+
 // ============ HEALTH ============
 app.get('/health', async (req, res) => {
   try {
