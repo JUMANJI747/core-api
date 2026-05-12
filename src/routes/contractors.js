@@ -171,31 +171,47 @@ router.post('/upsert', async (req, res) => {
 });
 
 // Backfill: geocode every contractor that has an address but no coords yet.
-// Respects Nominatim's 1 req/sec policy (handled in geocode service).
-// Skips rows already marked geocodingStatus = 'ok' or 'not_found' so reruns
-// are cheap. Pass { force: true } to retry not_found / error rows.
+// Hits both PL Contractor and ES EsContractor models. Respects Nominatim's
+// 1 req/sec policy (handled in geocode service). Skips rows already marked
+// geocodingStatus = 'ok' or 'not_found' so reruns are cheap.
+// Pass { force: true } to retry not_found / error rows.
 router.post('/geocode-all', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const force = req.body && req.body.force === true;
   try {
-    const where = force
-      ? { OR: [{ address: { not: null } }, { city: { not: null } }] }
-      : {
-          AND: [
-            { OR: [{ address: { not: null } }, { city: { not: null } }] },
-            { OR: [{ geocodingStatus: null }, { geocodingStatus: 'error' }] },
-          ],
-        };
-    const candidates = await prisma.contractor.findMany({
-      where,
-      select: { id: true, name: true, address: true, city: true, country: true },
+    // PL: address/city are required, but extras may also carry locations[] /
+    // billingAddress — we filter generously here and let the geocode service
+    // reject rows that yield empty queries (status: 'skipped').
+    const plWhere = force
+      ? {}
+      : { OR: [{ geocodingStatus: null }, { geocodingStatus: 'error' }] };
+    const pl = await prisma.contractor.findMany({
+      where: plWhere,
+      select: { id: true, name: true, address: true, city: true, country: true, extras: true },
     });
-    const stats = { total: candidates.length, ok: 0, not_found: 0, error: 0, skipped: 0 };
-    for (const c of candidates) {
-      const r = await geocodeAndSave(prisma, c);
-      stats[r.status] = (stats[r.status] || 0) + 1;
-      console.log(`[geocode-all] ${c.name} → ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
+
+    const esWhere = force
+      ? {}
+      : { OR: [{ geocodingStatus: null }, { geocodingStatus: 'error' }] };
+    const es = await prisma.esContractor.findMany({
+      where: esWhere,
+      select: { id: true, name: true, address: true, city: true, province: true, country: true, postalCode: true, extras: true },
+    });
+
+    const stats = { pl: { total: pl.length, ok: 0, not_found: 0, error: 0, skipped: 0 },
+                    es: { total: es.length, ok: 0, not_found: 0, error: 0, skipped: 0 } };
+
+    for (const c of pl) {
+      const r = await geocodeAndSave(prisma, c, 'contractor');
+      stats.pl[r.status] = (stats.pl[r.status] || 0) + 1;
+      console.log(`[geocode-all/pl] ${c.name} → ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
     }
+    for (const c of es) {
+      const r = await geocodeAndSave(prisma, c, 'esContractor');
+      stats.es[r.status] = (stats.es[r.status] || 0) + 1;
+      console.log(`[geocode-all/es] ${c.name} → ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
+    }
+
     res.json({ ok: true, stats });
   } catch (e) {
     res.status(500).json({ error: e.message });

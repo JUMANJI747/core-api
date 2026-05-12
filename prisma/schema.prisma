@@ -405,6 +405,10 @@ model EsContractor {
   postalCode      String?
   documentCulture String? // es-ES | en-US | ca-ES — language for invoices to this customer
   notes           String?
+  lat             Float?
+  lng             Float?
+  geocodedAt      DateTime?
+  geocodingStatus String? // ok | not_found | error | skipped
   extras          Json    @default("{}") // customField1/2, latitude, longitude, discountPercentage, bankAccounts, ...
 
   invoices EsInvoice[]
