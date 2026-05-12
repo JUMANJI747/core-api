@@ -7,6 +7,8 @@ const { findAddressInContractorEmails, saveAddressToContractorLocations } = requ
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { scoreContractor } = require('../services/contractor-match');
 const { geocodeAndSave } = require('../services/geocode');
+const { geocodeContractor } = require('../services/geocode');
+const { normalizeAddress } = require('../services/llm-geocode');
 const { searchContractor: ifirmaSearchContractor } = require('../ifirma-client');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
@@ -283,6 +285,94 @@ router.post('/import-addresses-ifirma', async (req, res) => {
     }
     res.json({ ok: true, stats });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// LLM fallback for rows Nominatim couldn't geocode. We take whatever
+// address text we have (extras.billingAddress / direct cols), pass it to
+// Claude Haiku to extract clean { city, country, postalCode }, then ask
+// Nominatim for "city, country" — that almost never fails. Precision
+// drops to city-level (~1-3km) which is fine for the map.
+// Body: { dryRun?: bool, limit?: number, model?: 'pl'|'es'|'both' }
+router.post('/geocode-llm-fallback', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const dryRun = req.body && req.body.dryRun === true;
+  const limit = req.body && Number(req.body.limit) > 0 ? Number(req.body.limit) : null;
+  const which = (req.body && req.body.model) || 'both';
+  try {
+    const stats = {
+      pl: { total: 0, llm_ok: 0, llm_fail: 0, geocoded: 0, still_missing: 0 },
+      es: { total: 0, llm_ok: 0, llm_fail: 0, geocoded: 0, still_missing: 0 },
+    };
+    const examples = [];
+
+    async function processBatch(rows, kind, modelName) {
+      stats[kind].total = rows.length;
+      for (const c of rows) {
+        // Build the raw text we send to LLM — best signal available.
+        let raw = '';
+        if (kind === 'pl') {
+          const ba = c.extras && c.extras.billingAddress;
+          if (ba) raw = [ba.street, ba.postCode, ba.city, ba.country].filter(Boolean).join(', ');
+          if (!raw) raw = [c.address, c.city, c.country].filter(Boolean).join(', ');
+        } else {
+          raw = [c.address, c.postalCode, c.city, c.province, c.country].filter(Boolean).join(', ');
+        }
+        if (!raw) { stats[kind].still_missing++; continue; }
+
+        const norm = await normalizeAddress(raw);
+        if (!norm || !norm.city || !norm.country) {
+          stats[kind].llm_fail++;
+          examples.push({ kind, name: c.name, raw, llm: norm });
+          continue;
+        }
+        stats[kind].llm_ok++;
+
+        // Geocode the clean "city, country" form (skip postal — adding it
+        // sometimes makes Nominatim too literal).
+        const fake = { address: '', city: norm.city, country: norm.country };
+        const r = await geocodeContractor(fake);
+        if (r.status === 'ok') {
+          if (!dryRun) {
+            await prisma[modelName].update({
+              where: { id: c.id },
+              data: {
+                lat: r.lat,
+                lng: r.lng,
+                geocodedAt: new Date(),
+                geocodingStatus: 'ok_llm', // distinguish so we can audit later
+              },
+            });
+          }
+          stats[kind].geocoded++;
+        } else {
+          stats[kind].still_missing++;
+          examples.push({ kind, name: c.name, raw, llm: norm, geocode: r });
+        }
+      }
+    }
+
+    if (which === 'pl' || which === 'both') {
+      const pl = await prisma.contractor.findMany({
+        where: { geocodingStatus: { in: ['not_found', 'error'] } },
+        select: { id: true, name: true, address: true, city: true, country: true, extras: true },
+        ...(limit ? { take: limit } : {}),
+      });
+      await processBatch(pl, 'pl', 'contractor');
+    }
+    if (which === 'es' || which === 'both') {
+      const es = await prisma.esContractor.findMany({
+        where: { geocodingStatus: { in: ['not_found', 'error'] } },
+        select: { id: true, name: true, address: true, city: true, province: true, country: true, postalCode: true, extras: true },
+        ...(limit ? { take: limit } : {}),
+      });
+      await processBatch(es, 'es', 'esContractor');
+    }
+
+    res.json({ ok: true, dryRun, stats, examples: examples.slice(0, 10) });
+  } catch (e) {
+    console.error('[geocode-llm-fallback] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
