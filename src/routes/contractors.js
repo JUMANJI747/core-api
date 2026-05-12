@@ -7,6 +7,7 @@ const { findAddressInContractorEmails, saveAddressToContractorLocations } = requ
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { scoreContractor } = require('../services/contractor-match');
 const { geocodeAndSave } = require('../services/geocode');
+const { searchContractor: ifirmaSearchContractor } = require('../ifirma-client');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
 // Nominatim is slow / down we still return the contractor. The 1 req/sec
@@ -212,6 +213,74 @@ router.post('/geocode-all', async (req, res) => {
       console.log(`[geocode-all/es] ${c.name} → ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
     }
 
+    res.json({ ok: true, stats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pulls billing addresses from iFirma for every PL contractor that has a
+// NIP but no usable address yet, then geocodes them. iFirma stores full
+// address per NIP — we just lazily import on demand.
+// Body: { force?: boolean, limit?: number }
+// `force: true` re-fetches even if extras.billingAddress already exists.
+// `limit` caps how many contractors to process (default: all).
+router.post('/import-addresses-ifirma', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const force = req.body && req.body.force === true;
+  const limit = req.body && Number(req.body.limit) > 0 ? Number(req.body.limit) : null;
+  try {
+    const where = force
+      ? { nip: { not: null } }
+      : {
+          AND: [
+            { nip: { not: null } },
+            { OR: [{ address: null }, { address: '' }] },
+            { OR: [{ city: null }, { city: '' }] },
+          ],
+        };
+    const all = await prisma.contractor.findMany({
+      where,
+      select: { id: true, name: true, nip: true, country: true, extras: true },
+    });
+    const candidates = limit ? all.slice(0, limit) : all;
+    const stats = { total: candidates.length, fetched: 0, no_data: 0, ifirma_error: 0,
+                    geocoded_ok: 0, geocoded_not_found: 0, geocoded_error: 0, geocoded_skipped: 0 };
+
+    for (const c of candidates) {
+      // 1) iFirma fetch — 1 req/sec to be polite (sleep before each request).
+      await new Promise(r => setTimeout(r, 1000));
+      let ifirmaRow = null;
+      try {
+        ifirmaRow = await ifirmaSearchContractor(c.nip);
+      } catch (e) {
+        console.error(`[import-addr/ifirma] ${c.name} (${c.nip}) → error:`, e.message);
+        stats.ifirma_error++;
+        continue;
+      }
+      if (!ifirmaRow || (!ifirmaRow.Ulica && !ifirmaRow.Miejscowosc)) {
+        stats.no_data++;
+        console.log(`[import-addr/ifirma] ${c.name} (${c.nip}) → no_data`);
+        continue;
+      }
+      const billingAddress = {
+        street: [ifirmaRow.Ulica, ifirmaRow.NumerDomu].filter(Boolean).join(' ').trim(),
+        city: ifirmaRow.Miejscowosc || '',
+        postCode: ifirmaRow.KodPocztowy || '',
+        country: ifirmaRow.Kraj || ifirmaRow.KrajKod || c.country || 'Polska',
+        source: 'ifirma',
+        importedAt: new Date().toISOString(),
+      };
+      const newExtras = { ...(c.extras || {}), billingAddress };
+      await prisma.contractor.update({ where: { id: c.id }, data: { extras: newExtras } });
+      stats.fetched++;
+      console.log(`[import-addr/ifirma] ${c.name} → ${billingAddress.street}, ${billingAddress.city}`);
+
+      // 2) Geocode right away. buildQuery now reads extras.billingAddress.
+      const r = await geocodeAndSave(prisma, { ...c, extras: newExtras }, 'contractor');
+      const key = `geocoded_${r.status}`;
+      stats[key] = (stats[key] || 0) + 1;
+    }
     res.json({ ok: true, stats });
   } catch (e) {
     res.status(500).json({ error: e.message });
