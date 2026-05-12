@@ -23,6 +23,10 @@ model Contractor {
   extras    Json     @default("{}")
   tags      String[] @default([])
   source    String? // mailing, scraping, manual, referral
+  lat              Float?
+  lng              Float?
+  geocodedAt       DateTime?
+  geocodingStatus  String? // ok | not_found | error | skipped
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
