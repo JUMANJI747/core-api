@@ -324,6 +324,12 @@ router.post('/geocode-llm-fallback', async (req, res) => {
         const norm = await normalizeAddress(raw);
         if (!norm || !norm.city || !norm.country) {
           stats[kind].llm_fail++;
+          if (!dryRun) {
+            await prisma[modelName].update({
+              where: { id: c.id },
+              data: { geocodingStatus: 'llm_failed', geocodedAt: new Date() },
+            });
+          }
           examples.push({ kind, name: c.name, raw, llm: norm });
           continue;
         }
@@ -348,6 +354,12 @@ router.post('/geocode-llm-fallback', async (req, res) => {
           stats[kind].geocoded++;
         } else {
           stats[kind].still_missing++;
+          if (!dryRun) {
+            await prisma[modelName].update({
+              where: { id: c.id },
+              data: { geocodingStatus: 'llm_failed', geocodedAt: new Date() },
+            });
+          }
           examples.push({ kind, name: c.name, raw, llm: norm, geocode: r });
         }
       }
