@@ -25,39 +25,64 @@ router.get('/map-data', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const authed = isAuthed(req);
   try {
-    const contractors = await prisma.contractor.findMany({
+    const pl = await prisma.contractor.findMany({
       where: { lat: { not: null }, lng: { not: null }, geocodingStatus: 'ok' },
       select: {
         id: true, name: true, lat: true, lng: true,
         ...(authed ? { address: true, city: true, country: true, phone: true, email: true } : {}),
       },
     });
+    const es = await prisma.esContractor.findMany({
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: 'ok' },
+      select: {
+        id: true, name: true, lat: true, lng: true,
+        ...(authed ? { address: true, city: true, province: true, country: true, postalCode: true, phone: true, mobile: true, email: true } : {}),
+      },
+    });
 
     let invoiceById = new Map();
     let openTxById = new Map();
+    let esInvoiceById = new Map();
     if (authed) {
-      const ids = contractors.map(c => c.id);
-      const lastInvoices = await prisma.$queryRaw`
-        SELECT DISTINCT ON ("contractorId") "contractorId", "number", "issueDate", "grossAmount", "currency"
-        FROM "Invoice"
-        WHERE "contractorId" = ANY(${ids})
-        ORDER BY "contractorId", "issueDate" DESC
-      `;
-      lastInvoices.forEach(r => invoiceById.set(r.contractorId, r));
+      const plIds = pl.map(c => c.id);
+      if (plIds.length) {
+        const lastInvoices = await prisma.$queryRaw`
+          SELECT DISTINCT ON ("contractorId") "contractorId", "number", "issueDate", "grossAmount", "currency"
+          FROM "Invoice"
+          WHERE "contractorId" = ANY(${plIds})
+          ORDER BY "contractorId", "issueDate" DESC
+        `;
+        lastInvoices.forEach(r => invoiceById.set(r.contractorId, r));
 
-      const openCounts = await prisma.transaction.groupBy({
-        by: ['contractorId'],
-        where: { contractorId: { in: ids }, OR: [{ hasPayment: false }, { hasDelivered: false }] },
-        _count: { _all: true },
-      });
-      openCounts.forEach(r => openTxById.set(r.contractorId, r._count._all));
+        const openCounts = await prisma.transaction.groupBy({
+          by: ['contractorId'],
+          where: { contractorId: { in: plIds }, OR: [{ hasPayment: false }, { hasDelivered: false }] },
+          _count: { _all: true },
+        });
+        openCounts.forEach(r => openTxById.set(r.contractorId, r._count._all));
+      }
+
+      const esIds = es.map(c => c.id);
+      if (esIds.length) {
+        // EsInvoice may not have the exact same column names — best-effort fetch.
+        try {
+          const lastEsInvoices = await prisma.$queryRaw`
+            SELECT DISTINCT ON ("contractorId") "contractorId", "number", "issueDate", "totalAmount", "currency"
+            FROM "EsInvoice"
+            WHERE "contractorId" = ANY(${esIds})
+            ORDER BY "contractorId", "issueDate" DESC
+          `;
+          lastEsInvoices.forEach(r => esInvoiceById.set(r.contractorId, r));
+        } catch (_) { /* schema mismatch — skip last-invoice for ES */ }
+      }
     }
 
-    const features = contractors.map(c => {
+    const plFeatures = pl.map(c => {
       const [lat, lng] = authed ? [c.lat, c.lng] : jitter300m(c.lat, c.lng);
       const props = authed
         ? {
             id: c.id,
+            company: 'PL',
             name: c.name,
             address: c.address || null,
             city: c.city || null,
@@ -76,7 +101,38 @@ router.get('/map-data', async (req, res) => {
       return { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: props };
     });
 
-    res.json({ type: 'FeatureCollection', features, mode: authed ? 'private' : 'public' });
+    const esFeatures = es.map(c => {
+      const [lat, lng] = authed ? [c.lat, c.lng] : jitter300m(c.lat, c.lng);
+      const props = authed
+        ? {
+            id: c.id,
+            company: 'ES',
+            name: c.name,
+            address: c.address || null,
+            city: c.city || null,
+            province: c.province || null,
+            postalCode: c.postalCode || null,
+            country: c.country || null,
+            phone: c.phone || c.mobile || null,
+            email: c.email || null,
+            lastInvoice: esInvoiceById.has(c.id) ? {
+              number: esInvoiceById.get(c.id).number,
+              date: esInvoiceById.get(c.id).issueDate,
+              amount: esInvoiceById.get(c.id).totalAmount,
+              currency: esInvoiceById.get(c.id).currency,
+            } : null,
+            openTransactions: 0,
+          }
+        : {};
+      return { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: props };
+    });
+
+    res.json({
+      type: 'FeatureCollection',
+      features: [...plFeatures, ...esFeatures],
+      mode: authed ? 'private' : 'public',
+      counts: { pl: plFeatures.length, es: esFeatures.length },
+    });
   } catch (e) {
     console.error('[map-data] error:', e.message);
     res.status(500).json({ error: e.message });
@@ -135,9 +191,12 @@ const MAP_HTML = `<!doctype html>
     const m = L.marker([lat, lng]);
     if (isPrivate) {
       const p = f.properties;
-      const addr = [p.address, p.city, p.country].filter(Boolean).join(', ');
+      const cityLine = [p.postalCode, p.city, p.province].filter(Boolean).join(' ');
+      const addr = [p.address, cityLine, p.country].filter(Boolean).join(', ');
       const gmaps = addr ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr) : null;
-      let html = '<div class="popup"><b>' + escapeHtml(p.name) + '</b>';
+      let html = '<div class="popup"><b>' + escapeHtml(p.name);
+      if (p.company === 'ES') html += ' <span class="badge">ES</span>';
+      html += '</b>';
       if (addr) html += escapeHtml(addr) + '<br>';
       if (p.phone) html += '☎ ' + escapeHtml(p.phone) + '<br>';
       if (p.email) html += '✉ ' + escapeHtml(p.email) + '<br>';

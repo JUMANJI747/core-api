@@ -16,9 +16,31 @@ async function rateLimit() {
 }
 
 function buildQuery(c) {
-  const parts = [c.address, c.city, c.country].filter(Boolean).map(s => s.trim());
-  if (!parts.length) return null;
-  return parts.join(', ');
+  // Direct columns first — strongest signal.
+  const direct = [c.address, c.postalCode, c.city, c.province, c.country]
+    .filter(Boolean).map(s => String(s).trim());
+  if (direct.length >= 2 || (direct.length === 1 && c.address)) return direct.join(', ');
+
+  // Fall back to whatever address-shaped data lives in `extras`.
+  const extras = c.extras && typeof c.extras === 'object' ? c.extras : null;
+  if (extras) {
+    if (Array.isArray(extras.locations) && extras.locations.length) {
+      const loc = extras.locations[0];
+      const street = [loc.street, loc.houseNumber].filter(Boolean).join(' ');
+      const parts = [street, loc.postCode, loc.city, loc.country].filter(Boolean);
+      if (parts.length) return parts.join(', ');
+    }
+    if (extras.billingAddress && typeof extras.billingAddress === 'object') {
+      const b = extras.billingAddress;
+      const street = [b.street, b.houseNumber].filter(Boolean).join(' ');
+      const parts = [street, b.postCode || b.postalCode, b.city, b.country].filter(Boolean);
+      if (parts.length) return parts.join(', ');
+    }
+  }
+
+  // Last resort: whatever single field we have.
+  if (direct.length) return direct.join(', ');
+  return null;
 }
 
 async function geocodeContractor(c) {
@@ -47,15 +69,16 @@ async function geocodeContractor(c) {
 }
 
 // Geocode + persist. Always sets geocodingStatus + geocodedAt so we know we
-// tried, so the backfill job doesn't keep retrying the same misses forever.
-async function geocodeAndSave(prisma, contractor) {
+// tried — that way the backfill job doesn't keep retrying the same misses.
+// `model` is the Prisma delegate name: 'contractor' (PL) or 'esContractor' (ES).
+async function geocodeAndSave(prisma, contractor, model = 'contractor') {
   const r = await geocodeContractor(contractor);
   const data = {
     geocodedAt: new Date(),
     geocodingStatus: r.status,
     ...(r.status === 'ok' ? { lat: r.lat, lng: r.lng } : {}),
   };
-  await prisma.contractor.update({ where: { id: contractor.id }, data });
+  await prisma[model].update({ where: { id: contractor.id }, data });
   return r;
 }
 
