@@ -26,14 +26,14 @@ router.get('/map-data', async (req, res) => {
   const authed = isAuthed(req);
   try {
     const pl = await prisma.contractor.findMany({
-      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: 'ok' },
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
       select: {
         id: true, name: true, lat: true, lng: true,
         ...(authed ? { address: true, city: true, country: true, phone: true, email: true } : {}),
       },
     });
     const es = await prisma.esContractor.findMany({
-      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: 'ok' },
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
       select: {
         id: true, name: true, lat: true, lng: true,
         ...(authed ? { address: true, city: true, province: true, country: true, postalCode: true, phone: true, mobile: true, email: true } : {}),
