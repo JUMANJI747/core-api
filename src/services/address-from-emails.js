@@ -10,15 +10,24 @@ const MODEL = process.env.ADDRESS_EXTRACTOR_MODEL || 'claude-haiku-4-5-20251001'
 // no saved location for X, search their email signatures / body text for
 // a real delivery address and persist it.
 //
+// Match emails by contractorId AND/OR fromEmail. Post-hoc-created contractors
+// won't have their old emails linked (inbox-poller links at ingest time only),
+// so passing `email` lets us search orphan emails too. Either contractorId or
+// email is required.
+//
 // Returns: { found: true, address: { street, houseNumber, city, postCode, country, contactPerson, phone, source: 'email <id>' } }
 //       or { found: false, reason }
-async function findAddressInContractorEmails(prisma, contractorId, opts = {}) {
+async function findAddressInContractorEmails(prisma, where, opts = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { found: false, reason: 'no_api_key' };
-  if (!contractorId) return { found: false, reason: 'no_contractor_id' };
+  const { contractorId, email } = where || {};
+  if (!contractorId && !email) return { found: false, reason: 'no_contractor_or_email' };
 
   const limit = opts.limit || 10;
+  const or = [];
+  if (contractorId) or.push({ contractorId });
+  if (email) or.push({ fromEmail: { equals: email, mode: 'insensitive' } });
   const emails = await prisma.email.findMany({
-    where: { contractorId, direction: 'INBOUND' },
+    where: { direction: 'INBOUND', OR: or },
     orderBy: { createdAt: 'desc' },
     take: limit,
     select: { id: true, fromEmail: true, fromName: true, subject: true, bodyFull: true, bodyPreview: true, createdAt: true },
