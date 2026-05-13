@@ -572,15 +572,18 @@ router.post('/:id/find-address-in-emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const c = await resolveContractorFromRequest(prisma, req);
-    if (!c) return res.status(404).json({ error: 'contractor not found (provide :id or body.contractorName)' });
+    const fallbackEmail = (req.body && req.body.email) || null;
+    if (!c && !fallbackEmail) {
+      return res.status(404).json({ error: 'contractor not found — provide :id, body.contractorName, or body.email' });
+    }
 
     const limit = (req.body && Number(req.body.limit)) || 10;
-    const result = await findAddressInContractorEmails(prisma, c.id, { limit });
+    const result = await findAddressInContractorEmails(prisma, { contractorId: c && c.id, email: (c && c.email) || fallbackEmail }, { limit });
     if (!result.found) {
-      return res.json({ ok: false, found: false, reason: result.reason || 'not_found', contractor: { id: c.id, name: c.name } });
+      return res.json({ ok: false, found: false, reason: result.reason || 'not_found', contractor: c ? { id: c.id, name: c.name } : null });
     }
-    const saved = await saveAddressToContractorLocations(prisma, c.id, result.address);
-    res.json({ ok: true, found: true, address: result.address, savedToLocations: saved, contractor: { id: c.id, name: c.name } });
+    const saved = c ? await saveAddressToContractorLocations(prisma, c.id, result.address) : false;
+    res.json({ ok: true, found: true, address: result.address, savedToLocations: saved, contractor: c ? { id: c.id, name: c.name } : null });
   } catch (e) {
     console.error('[find-address-in-emails] error:', e.message);
     res.status(500).json({ error: e.message });

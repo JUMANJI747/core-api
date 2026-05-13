@@ -58,7 +58,7 @@ ZASADY:
 - gdy user wybierze opcję dotyczącą szukania adresu (cyfra "1"/"2"/.../ słowo "maile"/"poprzednie wysyłki"/"VIES"/"ręcznie"):
   KROK 1: zidentyfikuj NAZWĘ KONTRAHENTA z poprzedniego query w tej rozmowie ("Wycen paczkę do X" → contractorName="X"). Master agent powinien przekazywać kontekst.
   KROK 2: wywołaj odpowiedni tool — preferowane z contractorId, ale jeśli go nie znasz, podaj contractorName (backend zrobi fuzzy lookup):
-    - "z maili" → find_delivery_address_in_emails {"contractorName": "X"}
+    - "z maili" → find_delivery_address_in_emails {"contractorName": "X"} (lub {"email": "..."} gdy kontrahent jeszcze nie istnieje w bazie a masz jego email z konwersacji)
     - "z poprzednich wysyłek" / "historii GK" → find_delivery_address_in_gk_orders {"contractorName": "X"}
   KROK 3: jeśli found=true → ponów quote_shipping z tymi samymi parametrami; adres jest zapisany w bazie.
   KROK 4: jeśli found=false → pokaż user-owi reason + matchMethod + scanned. Zaproponuj kolejną opcję.
@@ -185,12 +185,13 @@ const tools = [
   },
   {
     name: 'find_delivery_address_in_emails',
-    description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach od kontrahenta — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj TYLKO gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Znaleziony adres zostaje zapisany do bazy.',
+    description: 'Szuka adresu DOSTAWY (street, miasto, kod) w INBOUND mailach — w stopkach, podpisach, wzmiankach "ship to/dostawa". Kosztuje token (Haiku). Wywołuj gdy quote_shipping zwrócił needsAddress=true I user wybrał opcję "z maili" / "szukaj w mailach". Jeśli kontrahent jeszcze nie istnieje (np. user dopiero o nim wspomniał), podaj sam `email` — adres zostanie znaleziony ale nie zapisany (savedToLocations=false), bo nie ma do czego.',
     input_schema: {
       type: 'object',
       properties: {
-        contractorId: { type: 'string', description: 'ID kontrahenta z odpowiedzi needsAddress (preferowane gdy znane)' },
-        contractorName: { type: 'string', description: 'Nazwa kontrahenta (alternatywa gdy nie znasz ID — backend zrobi fuzzy lookup po nazwie)' },
+        contractorId: { type: 'string', description: 'ID kontrahenta (preferowane gdy znane)' },
+        contractorName: { type: 'string', description: 'Nazwa kontrahenta (fuzzy lookup po nazwie)' },
+        email: { type: 'string', description: 'Adres mailowy odbiorcy — używaj gdy kontrahent nie istnieje w bazie ale masz jego email z konwersacji (orphan inbound emails też zostaną przeszukane)' },
       },
     },
   },
