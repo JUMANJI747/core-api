@@ -2,6 +2,7 @@
 
 const nodemailer = require('nodemailer');
 const prisma = require('./db');
+const { appendToSent } = require('./imap-sent');
 
 const SMTP_HOST = process.env.SMTP_HOST || 'h22.seohost.pl';
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465');
@@ -94,6 +95,19 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
     ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
   };
 
+  // Generate the raw RFC822 first so we can also APPEND it to the IMAP
+  // Sent folder after SMTP delivery succeeds (Thunderbird / other IMAP
+  // clients only see messages they find on the server — SMTP send alone
+  // doesn't make them appear in Sent).
+  let rawMessage = null;
+  try {
+    const streamTransport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+    const generated = await streamTransport.sendMail(mailOptions);
+    rawMessage = generated.message; // Buffer
+  } catch (e) {
+    console.error('[mail-sender] raw generation failed, APPEND to Sent will be skipped:', e.message);
+  }
+
   const result = await transporter.sendMail(mailOptions);
   const sentMessageId = result.messageId || null;
   // SMTP server accepted the message AND returned a Message-ID. Bez tego
@@ -145,6 +159,13 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
       contractorId,
     },
   });
+
+  // Fire-and-forget: APPEND to IMAP Sent so it shows up in Thunderbird /
+  // webmail. We don't await — SMTP already succeeded and the user shouldn't
+  // wait for a second connection cycle. Failures are logged inside.
+  if (rawMessage) {
+    setImmediate(() => { appendToSent(account, rawMessage); });
+  }
 
   return saved;
 }
