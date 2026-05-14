@@ -163,7 +163,11 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
   // Fire-and-forget: APPEND to IMAP Sent so it shows up in Thunderbird /
   // webmail. We don't await — SMTP already succeeded and the user shouldn't
   // wait for a second connection cycle. Failures are logged inside.
-  if (rawMessage) {
+  // GATED: opt-in via APPEND_TO_SENT=1 in env. Disabled by default after a
+  // 2026-05-15 incident where user reported missing Sent history right after
+  // running /emails/backfill-sent. We haven't identified the root cause yet
+  // — keeping the live path off until we do.
+  if (rawMessage && process.env.APPEND_TO_SENT === '1') {
     setImmediate(() => { appendToSent(account, rawMessage); });
   }
 
