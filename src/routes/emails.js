@@ -4,6 +4,8 @@ const https = require('https');
 const crypto = require('crypto');
 const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
+const { appendToSent } = require('../imap-sent');
+const nodemailer = require('nodemailer');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
 const { scoreContractor } = require('../services/contractor-match');
@@ -865,6 +867,73 @@ ${tline}`;
     analysis: text,
     tokensUsed: llm.usage,
   });
+});
+
+// Backfill: take the last N OUTBOUND mails from the DB and APPEND them to
+// the IMAP Sent folder so they show up in Thunderbird / webmail. Only the
+// body text + threading headers are reconstructed — original attachments
+// (e.g. invoice PDFs) are not in our DB for OUTBOUND, so the appended
+// copy is "stub" by design. Idempotent: skips rows whose extras already
+// carry { appendedToSentAt }.
+// Body: { limit?: number (default 10), force?: bool }
+router.post('/emails/backfill-sent', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const limit = Number((req.body && req.body.limit)) || 10;
+  const force = !!(req.body && req.body.force);
+  try {
+    const recent = await prisma.email.findMany({
+      where: { direction: 'OUTBOUND' },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+    const streamTransport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+    const results = [];
+
+    for (const m of recent) {
+      const already = m.extras && m.extras.appendedToSentAt;
+      if (already && !force) {
+        results.push({ id: m.id, to: m.toEmail, status: 'already_appended', at: already });
+        continue;
+      }
+      const account = findAccount(m.fromEmail);
+      if (!account) { results.push({ id: m.id, to: m.toEmail, status: 'no_account' }); continue; }
+
+      const mailOptions = {
+        from: m.fromEmail,
+        to: m.toEmail,
+        subject: m.subject || '',
+        text: m.bodyFull || m.bodyPreview || '',
+        date: m.createdAt,
+        ...(m.messageId ? { messageId: m.messageId } : {}),
+        ...(m.inReplyTo ? { inReplyTo: m.inReplyTo, references: m.references || m.inReplyTo } : {}),
+      };
+
+      let rawMessage;
+      try {
+        const generated = await streamTransport.sendMail(mailOptions);
+        rawMessage = generated.message;
+      } catch (e) {
+        results.push({ id: m.id, to: m.toEmail, status: 'compose_failed', error: e.message });
+        continue;
+      }
+
+      const appendResult = await appendToSent(account, rawMessage);
+      if (appendResult.ok) {
+        await prisma.email.update({
+          where: { id: m.id },
+          data: { extras: { ...(m.extras || {}), appendedToSentAt: new Date().toISOString(), appendedFolder: appendResult.folder } },
+        });
+        results.push({ id: m.id, to: m.toEmail, status: 'appended', folder: appendResult.folder });
+      } else {
+        results.push({ id: m.id, to: m.toEmail, status: 'append_failed', error: appendResult.reason });
+      }
+    }
+
+    res.json({ ok: true, processed: results.length, results });
+  } catch (e) {
+    console.error('[backfill-sent] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

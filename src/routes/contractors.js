@@ -389,6 +389,88 @@ router.post('/geocode-llm-fallback', async (req, res) => {
   }
 });
 
+// Lists rows whose geocoded location is suspiciously far from the centre
+// of Europe. Tunable — Bonaire / US / other intentional exports stay
+// visible until the user explicitly clears them.
+// Query: ?radiusKm=4000 (default), ?lat=50&lng=10 (default centre)
+router.get('/geocode-outliers', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const centreLat = Number(req.query.lat) || 50;
+  const centreLng = Number(req.query.lng) || 10;
+  const radiusKm = Number(req.query.radiusKm) || 4000;
+
+  // Haversine in km
+  function distanceKm(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const toRad = d => (d * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  try {
+    const pl = await prisma.contractor.findMany({
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
+      select: { id: true, name: true, country: true, city: true, lat: true, lng: true, geocodingStatus: true, extras: true },
+    });
+    const es = await prisma.esContractor.findMany({
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
+      select: { id: true, name: true, country: true, province: true, city: true, lat: true, lng: true, geocodingStatus: true },
+    });
+
+    const outliers = [];
+    for (const c of pl) {
+      const d = distanceKm(centreLat, centreLng, c.lat, c.lng);
+      if (d > radiusKm) {
+        const ba = c.extras && c.extras.billingAddress;
+        outliers.push({
+          kind: 'pl', id: c.id, name: c.name,
+          country: c.country, city: c.city,
+          billingAddress: ba ? `${ba.street || ''}, ${ba.postCode || ''} ${ba.city || ''}, ${ba.country || ''}` : null,
+          lat: c.lat, lng: c.lng, distanceKm: Math.round(d),
+          geocodingStatus: c.geocodingStatus,
+        });
+      }
+    }
+    for (const c of es) {
+      const d = distanceKm(centreLat, centreLng, c.lat, c.lng);
+      if (d > radiusKm) {
+        outliers.push({
+          kind: 'es', id: c.id, name: c.name,
+          country: c.country, province: c.province, city: c.city,
+          lat: c.lat, lng: c.lng, distanceKm: Math.round(d),
+          geocodingStatus: c.geocodingStatus,
+        });
+      }
+    }
+    outliers.sort((a, b) => b.distanceKm - a.distanceKm);
+    res.json({ ok: true, count: outliers.length, outliers });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Clears lat/lng + marks status as 'suspect_outlier' for the given ids.
+// Idempotent — useful after /geocode-outliers review to drop bogus pins.
+// Body: { ids: ['uuid', ...], kind: 'pl' | 'es' }
+router.post('/geocode-clear', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const kind = (req.body && req.body.kind) || 'pl';
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+  const model = kind === 'es' ? 'esContractor' : 'contractor';
+  try {
+    const r = await prisma[model].updateMany({
+      where: { id: { in: ids } },
+      data: { lat: null, lng: null, geocodingStatus: 'suspect_outlier' },
+    });
+    res.json({ ok: true, cleared: r.count });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/import-ifirma', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {

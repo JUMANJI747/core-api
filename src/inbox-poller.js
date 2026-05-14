@@ -432,7 +432,15 @@ Rules:
 - COURIER_ALERT: courier notification requiring action (problem, delay, customs)
 - COURIER_OK: courier notification, delivery confirmed or in transit, no action needed
 - SPAM: commercial, promotional, newsletter
-- AUTO_REPLY: automatic system message, out-of-office`;
+- AUTO_REPLY: automatic system message, out-of-office
+
+Country detection priority (use the strongest signal available):
+1. VAT/NIP/NIF number prefix (e.g. NL854...→NL, FR078...→FR)
+2. Explicit address / postal code / phone prefix in body
+3. **Subject language (KEY SIGNAL for replies to our outbound mailing).** We send mailing campaigns with the subject translated to the target country's language. If the SUBJECT contains words in a specific European language (e.g. "Zonnebescherming"→NL, "Sonnenschutz"→DE, "Protection solaire"→FR, "Protección solar"→ES, "Protezione solare"→IT, "Proteção solar"→PT, "Ochrona przed słońcem"→PL), the reply is from a customer in THAT country — even if the body is in English. Do not infer country from body language alone if subject points elsewhere.
+4. Body language (only when subject is non-distinctive, e.g. "Re: order" / "Re: hello")
+5. Sender email TLD (.fr/.es/.de/.it/.pt) — weakest signal
+Return "UNKNOWN" only if none of the above apply.`;
 
   const response = await httpsPost(
     'https://api.anthropic.com/v1/messages',
