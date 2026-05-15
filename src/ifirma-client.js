@@ -321,24 +321,19 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
     const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
     console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)', p.isDelivery ? '(delivery)' : '');
-    // Delivery/shipping lines: service unit, no GTU (GTU is for goods/specific
-    // classes — pure transport service doesn't fall under any GTU code).
+    // GTU per pozycja:
+    //   - delivery / transport → GTU_13 (świadczenie usług transportowych)
+    //   - reszta (towary kosmetyczne) → GTU_12 (zachowane zachowanie istniejące)
+    // iFirma odrzuca pustą wartość GTU gdy pole obecne, dlatego ZAWSZE
+    // ustawiamy któryś kod — nie omijamy pola na delivery.
     const isDelivery = !!p.isDelivery;
+    const gtuCode = isDelivery ? 'GTU_13' : 'GTU_12';
     const Jednostka = isDelivery ? 'usł.' : 'szt.';
-    const base = { Ilosc: p.ilosc, CenaJednostkowa, NazwaPelna, Jednostka };
+    const base = { GTU: gtuCode, Ilosc: p.ilosc, CenaJednostkowa, NazwaPelna, Jednostka };
     if (isWdt) {
-      return {
-        TypStawkiVat: 'NP',
-        ...(isDelivery ? {} : { GTU: 'GTU_12' }),
-        ...base,
-      };
+      return { TypStawkiVat: 'NP', ...base };
     }
-    return {
-      StawkaVat: 0.23,
-      TypStawkiVat: 'PRC',
-      ...(isDelivery ? {} : { GTU: 'GTU_12' }),
-      ...base,
-    };
+    return { StawkaVat: 0.23, TypStawkiVat: 'PRC', ...base };
   });
 
   const Kontrahent = {
