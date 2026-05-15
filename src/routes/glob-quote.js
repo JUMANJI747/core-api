@@ -1460,6 +1460,7 @@ router.post('/glob/order', async (req, res) => {
                 await new Promise(r => setTimeout(r, 5000));
                 try {
                   const t = await getOrderTracking(orderHash);
+                  console.log(`[glob/order] getOrderTracking poll #${i + 1} response:`, JSON.stringify(t).slice(0, 800));
                   const candidate = t && (t.trackingNumber || t.tracking
                     || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
                     || (Array.isArray(t) && t[0] && t[0].trackingNumber));
