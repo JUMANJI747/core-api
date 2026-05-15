@@ -1104,9 +1104,39 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
               : 'no shipment for this customer in our tracker or GK history'),
       };
     }
-    // Sort newest first by createdAt / orderDate / id
-    items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
-    const shipment = items[0];
+    // When the user passed a specific tracking number (long digit string)
+    // or GK number, lock to the shipment that has THAT exact number — no
+    // "newest" fallback. Otherwise bot can pick a different parcel for
+    // the same contractor (case: Benjamin has two shipments, user asked
+    // about DHL 30983589308, bot sent DPD 13109408486451).
+    const looksLikeTracking = /^(?:GK)?\d{9,}$/i.test(search.trim());
+    let shipment;
+    if (looksLikeTracking) {
+      const wanted = search.trim();
+      shipment = items.find(o =>
+        String(o.trackingNumber || '').trim() === wanted ||
+        String(o.tracking || '').trim() === wanted ||
+        String(o.orderNumber || '').trim() === wanted ||
+        String(o.number || '').trim() === wanted ||
+        String(o.hash || '').trim() === wanted
+      );
+      if (!shipment) {
+        return {
+          ok: false,
+          error: `tracking-send blocked: search "${wanted}" looks like a specific tracking number but GK returned ${items.length} shipment(s) with different numbers — refusing to substitute a wrong parcel`,
+          search,
+          attempted: searches,
+          gotShipmentNumbers: items.slice(0, 5).map(o => ({
+            orderNumber: o.orderNumber || o.number,
+            tracking: o.trackingNumber || o.tracking,
+            recvName: (o.receiver || o.receiverAddress || {}).name,
+          })),
+        };
+      }
+    } else {
+      items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
+      shipment = items[0];
+    }
 
     const recv = shipment.receiver || shipment.recipient || {};
     const send = shipment.sender || {};
