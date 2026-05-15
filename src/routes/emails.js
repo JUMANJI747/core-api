@@ -1216,7 +1216,19 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     // 4) Send via the shared tracking-notify helper — same template the
     //    automatic post-createOrder hook uses, so the brand voice is
     //    consistent whether it's auto or user-triggered.
-    const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    //    Country resolution chain (for language picker):
+    //      resolvedContractor.country > recv.country (often null on raw GK)
+    //      > Contractor.country looked up by recipient email
+    let country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    if (!country && toEmail) {
+      try {
+        const c = await prisma.contractor.findFirst({
+          where: { email: { equals: toEmail, mode: 'insensitive' } },
+          select: { country: true },
+        });
+        if (c && c.country) country = c.country;
+      } catch (_) {}
+    }
     const r = await sendTrackingNotification({
       toEmail,
       country,
