@@ -1483,6 +1483,15 @@ router.post('/glob/order', async (req, res) => {
               console.log(`[glob/order] tracking-draft skipped — carrier tracking number not yet assigned (GK# ${result.number || orderHash})`);
               return;
             }
+            // Pre-validation: skip if status indicates parcel is registered
+            // but not yet with carrier (link would be empty).
+            const { validateShipmentReady } = require('../services/tracking-notify');
+            const status = result.status || result.statusName || '';
+            const v = validateShipmentReady({ trackingNumber, status, recvName: receiver && receiver.name, expectedName: resolvedContractorName });
+            if (!v.ok) {
+              console.log(`[glob/order] tracking-draft skipped — ${v.reason}`);
+              return;
+            }
             const trackingUrl = buildTrackingUrl(carrierName, trackingNumber, resolvedCountry);
             const { subject, text } = compose({ country: resolvedCountry, trackingNumber, carrier: carrierName, trackingUrl });
 

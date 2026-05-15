@@ -7,7 +7,7 @@ const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-se
 const { appendToSent } = require('../imap-sent');
 const nodemailer = require('nodemailer');
 const { buildTrackingUrl } = require('../services/tracking-urls');
-const { sendTrackingNotification } = require('../services/tracking-notify');
+const { sendTrackingNotification, validateShipmentReady } = require('../services/tracking-notify');
 const { getOrders } = require('../glob-client');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
@@ -1104,9 +1104,39 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
               : 'no shipment for this customer in our tracker or GK history'),
       };
     }
-    // Sort newest first by createdAt / orderDate / id
-    items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
-    const shipment = items[0];
+    // When the user passed a specific tracking number (long digit string)
+    // or GK number, lock to the shipment that has THAT exact number — no
+    // "newest" fallback. Otherwise bot can pick a different parcel for
+    // the same contractor (case: Benjamin has two shipments, user asked
+    // about DHL 30983589308, bot sent DPD 13109408486451).
+    const looksLikeTracking = /^(?:GK)?\d{9,}$/i.test(search.trim());
+    let shipment;
+    if (looksLikeTracking) {
+      const wanted = search.trim();
+      shipment = items.find(o =>
+        String(o.trackingNumber || '').trim() === wanted ||
+        String(o.tracking || '').trim() === wanted ||
+        String(o.orderNumber || '').trim() === wanted ||
+        String(o.number || '').trim() === wanted ||
+        String(o.hash || '').trim() === wanted
+      );
+      if (!shipment) {
+        return {
+          ok: false,
+          error: `tracking-send blocked: search "${wanted}" looks like a specific tracking number but GK returned ${items.length} shipment(s) with different numbers — refusing to substitute a wrong parcel`,
+          search,
+          attempted: searches,
+          gotShipmentNumbers: items.slice(0, 5).map(o => ({
+            orderNumber: o.orderNumber || o.number,
+            tracking: o.trackingNumber || o.tracking,
+            recvName: (o.receiver || o.receiverAddress || {}).name,
+          })),
+        };
+      }
+    } else {
+      items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
+      shipment = items[0];
+    }
 
     const recv = shipment.receiver || shipment.recipient || {};
     const send = shipment.sender || {};
@@ -1136,7 +1166,22 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
       };
     }
 
-    // 3) Send via the shared tracking-notify helper — same template the
+    // 3) Pre-send validation: status sane + tracking is a real carrier
+    //    number, not GK internal. Saves us from sending broken links.
+    const status = shipment.status || shipment.statusName || '';
+    const expectedName = (resolvedContractor && resolvedContractor.name) || null;
+    const v = validateShipmentReady({ trackingNumber, status, recvName: recv.name, expectedName });
+    if (!v.ok) {
+      return {
+        ok: false,
+        error: `tracking-send blocked: ${v.reason}`,
+        search,
+        shipment: { trackingNumber, name: recv.name, city: recv.city, country: recv.country, status },
+        resolvedContractor: resolvedContractor ? { id: resolvedContractor.id, name: resolvedContractor.name } : null,
+      };
+    }
+
+    // 4) Send via the shared tracking-notify helper — same template the
     //    automatic post-createOrder hook uses, so the brand voice is
     //    consistent whether it's auto or user-triggered.
     const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';

@@ -36,6 +36,13 @@ WYSYŁKA TRACKINGU:
 - ZAWSZE używaj **send_tracking_to_customer** (single) lub **send_tracking_to_customers_batch** (lista). NIE buduj sam draftu z send_email.
 - Te tooly automatycznie ustawiają from='delivery@surfstickbell.com', resolve email klienta z bazy, dobierają język, generują link do kuriera. JEDEN call.
 - send_email używaj TYLKO do "klasycznych" maili (odpowiedzi na notyfikacje, oferty), NIE do trackingu.
+
+KOREKTA DRAFT-u (user dopisuje "z delivery", "język angielski", "krótszy"):
+- confirm_draft WYSYŁA draft as-is — nie aplikuje korekt. Jeśli user dorzucił warunki PO utworzeniu drafta:
+  1. ZIGNORUJ stary draft (po 30 min sam wygaśnie)
+  2. UTWORZ NOWY draft z send_email lub send_tracking_to_customer z odpowiednimi argumentami (from, language)
+  3. Pokaż nowy draft, czekaj na "tak"
+- NIE wywołuj confirm_draft jeśli treść/parametry mają być inne niż w pierwotnym drafcie.
    - Nawiąż do kontekstu, rozwiń skróty w pełne zdania (biznesowo)
    - Zakończ: "Pozdrawiam,\\nMichał Pałyska\\nSurf Stick Bell" (lub w lang)
    - 3-6 zdań
