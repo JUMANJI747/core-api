@@ -1424,6 +1424,51 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
+    // Auto-notification to the customer: short, friendly tracking email
+    // in their language from delivery@. Fire-and-forget — we don't make
+    // the user wait, and a failed mail must not unwind a successful
+    // GK order. Disable with env DISABLE_TRACKING_NOTIFY=1.
+    if (process.env.DISABLE_TRACKING_NOTIFY !== '1') {
+      const trackingNumber = result.trackingNumber || result.tracking || result.number || result.orderNumber;
+      const carrierName = (selectedOffer && selectedOffer.carrier) || result.productName || '';
+      const recvCountry = (receiver && (receiver.country || receiver.countryCode)) || '';
+      // Recipient email: receiver.email from GK if present, else contractor.email
+      // (resolved earlier in the flow as receiverContractor). Skip silently if
+      // neither — caller can use /api/send-tracking-email later.
+      let recipientEmail = (receiver && receiver.email) || null;
+      const receiverContractorId = receiver && receiver.contractorId;
+      let resolvedCountry = recvCountry;
+      if ((!recipientEmail || !resolvedCountry) && receiverContractorId) {
+        try {
+          const c = await prisma.contractor.findUnique({ where: { id: receiverContractorId }, select: { email: true, country: true } });
+          if (c) {
+            if (!recipientEmail && c.email) recipientEmail = c.email;
+            if (!resolvedCountry && c.country) resolvedCountry = c.country;
+          }
+        } catch (_) {}
+      }
+      if (recipientEmail && trackingNumber) {
+        const { sendTrackingNotification } = require('../services/tracking-notify');
+        setImmediate(async () => {
+          try {
+            const r = await sendTrackingNotification({
+              toEmail: recipientEmail,
+              country: resolvedCountry,
+              trackingNumber,
+              carrier: carrierName,
+              prisma,
+              reqChatId: req.body && req.body.chatId,
+            });
+            console.log(`[glob/order] auto-tracking-notify → ${recipientEmail}: ${r.ok ? 'ok' : 'fail: ' + r.error}`);
+          } catch (e) {
+            console.error('[glob/order] auto-tracking-notify threw:', e.message);
+          }
+        });
+      } else {
+        console.log(`[glob/order] auto-tracking-notify skipped (email=${recipientEmail || 'none'}, tracking=${trackingNumber || 'none'})`);
+      }
+    }
+
     res.json({
       ok: true,
       order: result,

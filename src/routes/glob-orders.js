@@ -24,13 +24,42 @@ function extractOrdersResults(data) {
 async function handleSearchOrders(req, res) {
   try {
     const params = { ...req.query, ...(req.body || {}) };
-    const { search, status, limit = 50, offset = 0 } = params;
+    let { search, status, limit = 50, offset = 0 } = params;
+    const prisma = req.app.locals.prisma;
     const data = await getOrders({ limit: Math.min(parseInt(limit) || 50, 100), offset: parseInt(offset) || 0, status });
     let orders = extractOrdersResults(data);
     const allOrders = Array.isArray(orders) ? orders.slice() : [];
 
     if (!Array.isArray(orders)) {
       return res.json({ ok: true, orders: [], total: 0, note: 'Unexpected response from GlobKurier' });
+    }
+
+    // Email shortcut: GK doesn't index recipient emails, so when the user
+    // (or an agent) passes "info@something.de", first resolve to the
+    // contractor in our DB and use their name for the match. The original
+    // email is kept as a fallback probe via additionalProbes.
+    let resolvedContractor = null;
+    const additionalProbes = [];
+    const isEmail = typeof search === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(search.trim());
+    if (isEmail && prisma) {
+      try {
+        resolvedContractor = await prisma.contractor.findFirst({
+          where: { email: { equals: search.trim(), mode: 'insensitive' } },
+          select: { id: true, name: true, email: true },
+        });
+        if (resolvedContractor && resolvedContractor.name) {
+          additionalProbes.push(search); // keep original as a probe
+          search = resolvedContractor.name;
+          console.log(`[glob/orders] email "${additionalProbes[0]}" → contractor "${resolvedContractor.name}"`);
+        }
+      } catch (e) {
+        console.error('[glob/orders] email→contractor lookup failed:', e.message);
+      }
+      // Domain-root as last-resort probe even when contractor lookup misses.
+      if (!resolvedContractor) {
+        const domainRoot = (search.split('@')[1] || '').split('.')[0];
+        if (domainRoot) additionalProbes.push(domainRoot.replace(/[._-]+/g, ' '));
+      }
     }
 
     if (search) {
@@ -41,25 +70,37 @@ async function handleSearchOrders(req, res) {
       //      slu" because both collapse to "holaolaribadeoslu".
       //   3. all-tokens (≥3 chars) present — "ocean republik" hits a record
       //      named "Ocean Republik School" even when there's a third word.
-      const q = normalizeText(search);
-      const qCollapsed = q.replace(/\s+/g, '');
-      const qTokens = q.split(/\s+/).filter(t => t.length >= 3);
-      orders = orders.filter(o => {
-        const recv = o.receiverAddress || o.receiver || {};
-        const send = o.senderAddress || o.sender || {};
-        const fields = [
-          o.orderNumber, o.number, o.hash, o.trackingNumber, o.tracking,
-          recv.name, recv.companyName, recv.contactPerson, recv.city, recv.country,
-          send.name, send.companyName, send.city,
-        ].filter(Boolean).map(normalizeText);
-        if (fields.some(f => f.includes(q))) return true;
-        if (qCollapsed.length >= 4 && fields.some(f => f.replace(/\s+/g, '').includes(qCollapsed))) return true;
-        if (qTokens.length >= 1) {
-          const haystack = fields.join(' ');
-          if (qTokens.every(t => haystack.includes(t))) return true;
+      // Try each probe in priority order — main search first, then any
+      // additionalProbes (e.g. raw email, domain root) if main missed.
+      const probes = [search, ...additionalProbes];
+      let matchedOrders = null;
+      for (const probe of probes) {
+        const q = normalizeText(probe);
+        const qCollapsed = q.replace(/\s+/g, '');
+        const qTokens = q.split(/\s+/).filter(t => t.length >= 3);
+        const filtered = orders.filter(o => {
+          const recv = o.receiverAddress || o.receiver || {};
+          const send = o.senderAddress || o.sender || {};
+          const fields = [
+            o.orderNumber, o.number, o.hash, o.trackingNumber, o.tracking,
+            recv.name, recv.companyName, recv.contactPerson, recv.city, recv.country,
+            recv.email, recv.contactEmail, // GK sometimes returns these
+            send.name, send.companyName, send.city,
+          ].filter(Boolean).map(normalizeText);
+          if (fields.some(f => f.includes(q))) return true;
+          if (qCollapsed.length >= 4 && fields.some(f => f.replace(/\s+/g, '').includes(qCollapsed))) return true;
+          if (qTokens.length >= 1) {
+            const haystack = fields.join(' ');
+            if (qTokens.every(t => haystack.includes(t))) return true;
+          }
+          return false;
+        });
+        if (filtered.length > 0) {
+          matchedOrders = filtered;
+          break;
         }
-        return false;
-      });
+      }
+      orders = matchedOrders || [];
 
       // LLM fallback for fuzzy matches the deterministic filter missed —
       // typical case is a voice-transcription typo ("Okean Republik" vs
