@@ -1027,12 +1027,80 @@ router.post('/send-tracking-email', async (req, res) => {
   if (!search || typeof search !== 'string') return res.status(400).json({ error: 'search required' });
 
   try {
-    // 1) Find recent GK shipments matching the hint.
-    const gkRes = await getOrders({ search, limit: 20 });
-    const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
-      || (Array.isArray(gkRes) ? gkRes : []);
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.json({ ok: false, error: 'no shipments matched', search });
+    // 1) Resolve the contractor — by email if hint looks like one, else
+    //    by name fuzzy. We use this both to look up local Transaction
+    //    history (the strongest signal — we know the exact GK number)
+    //    and to fall back to GK search by name.
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(search.trim());
+    let resolvedContractor = null;
+    if (isEmail) {
+      resolvedContractor = await prisma.contractor.findFirst({
+        where: { email: { equals: search.trim(), mode: 'insensitive' } },
+        select: { id: true, name: true, email: true, country: true },
+      });
+    } else {
+      resolvedContractor = await prisma.contractor.findFirst({
+        where: { name: { contains: search.split(/\s+/)[0], mode: 'insensitive' } },
+        select: { id: true, name: true, email: true, country: true },
+      });
+    }
+
+    // 1a) Prefer the local Transaction table — we record shipmentNumber
+    //     whenever createOrder succeeds. Pulling by contractorId is far
+    //     more reliable than fuzzy GK search.
+    let txShipmentNumber = null;
+    if (resolvedContractor) {
+      const tx = await prisma.transaction.findFirst({
+        where: { contractorId: resolvedContractor.id, shipmentNumber: { not: null } },
+        orderBy: { createdAt: 'desc' },
+        select: { shipmentNumber: true, trackingNumber: true },
+      });
+      if (tx && tx.shipmentNumber) txShipmentNumber = tx.shipmentNumber;
+    }
+
+    // 2) Build search probes — strongest signals first.
+    const searches = [];
+    if (txShipmentNumber) searches.push(txShipmentNumber); // exact match in GK
+    if (resolvedContractor && resolvedContractor.name) {
+      searches.push(resolvedContractor.name);
+      const firstWord = resolvedContractor.name.split(/\s+/)[0];
+      if (firstWord && firstWord !== resolvedContractor.name) searches.push(firstWord);
+    }
+    if (isEmail) {
+      const localPart = search.split('@')[0];
+      const domainRoot = search.split('@')[1].split('.')[0];
+      searches.push(localPart.replace(/[._-]+/g, ' '));
+      searches.push(domainRoot.replace(/[._-]+/g, ' '));
+    } else {
+      searches.push(search);
+    }
+
+    let items = [];
+    let usedSearch = null;
+    for (const q of [...new Set(searches.filter(Boolean))]) {
+      const gkRes = await getOrders({ search: q, limit: 20 });
+      const got = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
+        || (Array.isArray(gkRes) ? gkRes : []);
+      if (Array.isArray(got) && got.length > 0) {
+        items = got;
+        usedSearch = q;
+        break;
+      }
+    }
+    if (items.length === 0) {
+      return res.json({
+        ok: false,
+        error: 'no shipments matched',
+        search,
+        attempted: searches,
+        resolvedContractor: resolvedContractor ? { id: resolvedContractor.id, name: resolvedContractor.name } : null,
+        localTransactionShipmentNumber: txShipmentNumber,
+        suggestion: txShipmentNumber
+          ? `tracker has shipmentNumber=${txShipmentNumber} but GK doesn't know it — possibly canceled, or recorded without actually being placed`
+          : (isEmail && !resolvedContractor
+              ? 'email not in Contractor table — add the customer first or pass their name'
+              : 'no shipment for this customer in our tracker or GK history'),
+      });
     }
     // Sort newest first by createdAt / orderDate / id
     items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
@@ -1044,9 +1112,10 @@ router.post('/send-tracking-email', async (req, res) => {
     const carrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
     const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
 
-    // 2) Resolve recipient email — explicit override > GK receiver email >
-    //    local Contractor by name fuzzy.
+    // 3) Resolve recipient email — explicit override > already-resolved
+    //    contractor > GK receiver email > local Contractor by name fuzzy.
     let toEmail = contractorEmail || null;
+    if (!toEmail && resolvedContractor && resolvedContractor.email) toEmail = resolvedContractor.email;
     if (!toEmail && recv.email) toEmail = recv.email;
     if (!toEmail && recv.name) {
       const c = await prisma.contractor.findFirst({
@@ -1097,6 +1166,9 @@ router.post('/send-tracking-email', async (req, res) => {
       sent: { from, to: toEmail, subject: T.subject, messageId: saved.messageId },
       shipment: { trackingNumber, carrier: carrierName, trackingUrl, city: recv.city, country: recv.country, name: recv.name },
       matchedCount: items.length,
+      usedSearch,
+      resolvedContractor: resolvedContractor ? { id: resolvedContractor.id, name: resolvedContractor.name } : null,
+      localTransactionShipmentNumber: txShipmentNumber,
     });
   } catch (e) {
     console.error('[send-tracking-email] error:', e.message);
