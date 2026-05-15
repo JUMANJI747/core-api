@@ -7,7 +7,7 @@ const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-se
 const { appendToSent } = require('../imap-sent');
 const nodemailer = require('nodemailer');
 const { buildTrackingUrl } = require('../services/tracking-urls');
-const { sendTrackingNotification } = require('../services/tracking-notify');
+const { sendTrackingNotification, validateShipmentReady } = require('../services/tracking-notify');
 const { getOrders } = require('../glob-client');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
@@ -1136,7 +1136,22 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
       };
     }
 
-    // 3) Send via the shared tracking-notify helper — same template the
+    // 3) Pre-send validation: status sane + tracking is a real carrier
+    //    number, not GK internal. Saves us from sending broken links.
+    const status = shipment.status || shipment.statusName || '';
+    const expectedName = (resolvedContractor && resolvedContractor.name) || null;
+    const v = validateShipmentReady({ trackingNumber, status, recvName: recv.name, expectedName });
+    if (!v.ok) {
+      return {
+        ok: false,
+        error: `tracking-send blocked: ${v.reason}`,
+        search,
+        shipment: { trackingNumber, name: recv.name, city: recv.city, country: recv.country, status },
+        resolvedContractor: resolvedContractor ? { id: resolvedContractor.id, name: resolvedContractor.name } : null,
+      };
+    }
+
+    // 4) Send via the shared tracking-notify helper — same template the
     //    automatic post-createOrder hook uses, so the brand voice is
     //    consistent whether it's auto or user-triggered.
     const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';

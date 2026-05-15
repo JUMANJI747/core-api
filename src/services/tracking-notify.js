@@ -89,6 +89,35 @@ function pickLang(country) {
   return LANG_BY_COUNTRY[String(country).toUpperCase()] || 'en';
 }
 
+// Pre-send validation: confirm the shipment is actually trackable by the
+// customer before we send them a link. Three checks:
+//   1) trackingNumber must NOT be a GK internal id (GK260... → carrier
+//      portals don't know it, page would say "no data").
+//   2) Status must indicate the parcel is with the carrier (in transit,
+//      delivered). 'Registered'/'awaiting pickup' means the courier hasn't
+//      picked it up yet — link returns no data, customer gets confused.
+//   3) Recipient name should match expected (best-effort substring check).
+// Returns { ok: true } or { ok: false, reason } so the caller can log /
+// surface a clear error instead of sending a broken link.
+function validateShipmentReady({ trackingNumber, status, recvName, expectedName }) {
+  if (!trackingNumber) return { ok: false, reason: 'no carrier tracking number assigned yet' };
+  if (/^GK\d{9,}/i.test(String(trackingNumber).trim())) {
+    return { ok: false, reason: `tracking number "${trackingNumber}" looks like a GK internal id, not a carrier tracking — wait for GK to populate the real number` };
+  }
+  const s = String(status || '').toLowerCase();
+  const NOT_READY = ['register', 'zarejestrow', 'awaiting', 'pickup', 'oczek', 'nowe', 'new ', 'pre-shipment'];
+  if (NOT_READY.some(t => s.includes(t))) {
+    return { ok: false, reason: `status "${status}" indicates parcel is registered but not yet picked up by carrier — tracking page will show no data` };
+  }
+  if (expectedName && recvName) {
+    const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (!norm(recvName).includes(norm(expectedName).slice(0, 5)) && !norm(expectedName).includes(norm(recvName).slice(0, 5))) {
+      return { ok: false, reason: `recipient mismatch — GK receiver "${recvName}" doesn't match expected "${expectedName}"` };
+    }
+  }
+  return { ok: true };
+}
+
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -179,4 +208,4 @@ async function sendTrackingNotification({
   }
 }
 
-module.exports = { compose, pickLang, sendTrackingNotification };
+module.exports = { compose, pickLang, sendTrackingNotification, validateShipmentReady };
