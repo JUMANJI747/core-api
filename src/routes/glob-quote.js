@@ -1424,48 +1424,110 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
-    // Auto-notification to the customer: short, friendly tracking email
-    // in their language from delivery@. Fire-and-forget — we don't make
-    // the user wait, and a failed mail must not unwind a successful
-    // GK order. Disable with env DISABLE_TRACKING_NOTIFY=1.
+    // Build a tracking-email DRAFT (NOT auto-send). After GK assigns the
+    // real carrier number we save the draft + push a preview to user's
+    // Telegram with the live tracking link — user clicks to verify the
+    // link works, then says "tak" and the existing globalny Potwierdź
+    // flow (confirm-latest) sends it to the customer.
+    // Disable with env DISABLE_TRACKING_NOTIFY=1.
     if (process.env.DISABLE_TRACKING_NOTIFY !== '1') {
-      const trackingNumber = result.trackingNumber || result.tracking || result.number || result.orderNumber;
       const carrierName = (selectedOffer && selectedOffer.carrier) || result.productName || '';
       const recvCountry = (receiver && (receiver.country || receiver.countryCode)) || '';
-      // Recipient email: receiver.email from GK if present, else contractor.email
-      // (resolved earlier in the flow as receiverContractor). Skip silently if
-      // neither — caller can use /api/send-tracking-email later.
       let recipientEmail = (receiver && receiver.email) || null;
       const receiverContractorId = receiver && receiver.contractorId;
       let resolvedCountry = recvCountry;
+      let resolvedContractorName = (receiver && receiver.name) || null;
       if ((!recipientEmail || !resolvedCountry) && receiverContractorId) {
         try {
-          const c = await prisma.contractor.findUnique({ where: { id: receiverContractorId }, select: { email: true, country: true } });
+          const c = await prisma.contractor.findUnique({ where: { id: receiverContractorId }, select: { email: true, country: true, name: true } });
           if (c) {
             if (!recipientEmail && c.email) recipientEmail = c.email;
             if (!resolvedCountry && c.country) resolvedCountry = c.country;
+            if (!resolvedContractorName) resolvedContractorName = c.name;
           }
         } catch (_) {}
       }
-      if (recipientEmail && trackingNumber) {
-        const { sendTrackingNotification } = require('../services/tracking-notify');
+      if (recipientEmail) {
+        const { compose } = require('../services/tracking-notify');
+        const { buildTrackingUrl } = require('../services/tracking-urls');
+        const { getOrderTracking } = require('../glob-client');
+        const { resolveTelegram } = require('../services/telegram-helper');
+        const { sendTelegram } = require('../telegram-utils');
+        const trackingFrom = process.env.TRACKING_NOTIFY_FROM || 'delivery@surfstickbell.com';
+        const reqChatId = req.body && req.body.chatId;
         setImmediate(async () => {
           try {
-            const r = await sendTrackingNotification({
-              toEmail: recipientEmail,
-              country: resolvedCountry,
-              trackingNumber,
-              carrier: carrierName,
-              prisma,
-              reqChatId: req.body && req.body.chatId,
+            // Wait for the carrier to assign a real tracking number — GK260...
+            // is their internal id, not something DPD/DHL portals recognise.
+            let trackingNumber = result.trackingNumber || result.tracking || null;
+            if (!trackingNumber && orderHash) {
+              for (let i = 0; i < 4; i++) {
+                await new Promise(r => setTimeout(r, 5000));
+                try {
+                  const t = await getOrderTracking(orderHash);
+                  console.log(`[glob/order] getOrderTracking poll #${i + 1} response:`, JSON.stringify(t).slice(0, 800));
+                  const candidate = t && (t.trackingNumber || t.tracking
+                    || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+                    || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+                  if (candidate && String(candidate).trim()) {
+                    trackingNumber = String(candidate).trim();
+                    console.log(`[glob/order] carrier tracking resolved (poll #${i + 1}): ${trackingNumber}`);
+                    break;
+                  }
+                } catch (e) {
+                  console.error(`[glob/order] getOrderTracking poll #${i + 1} failed:`, e.message);
+                }
+              }
+            }
+            if (!trackingNumber) {
+              console.log(`[glob/order] tracking-draft skipped — carrier tracking number not yet assigned (GK# ${result.number || orderHash})`);
+              return;
+            }
+            const trackingUrl = buildTrackingUrl(carrierName, trackingNumber, resolvedCountry);
+            const { subject, text } = compose({ country: resolvedCountry, trackingNumber, carrier: carrierName, trackingUrl });
+
+            // Save as DRAFT so the existing /send-email/confirm-latest tool
+            // can pick it up when the user says "tak". 30-minute window
+            // matches what that endpoint expects.
+            await prisma.email.create({
+              data: {
+                direction: 'DRAFT',
+                inbox: trackingFrom.split('@')[0],
+                fromEmail: trackingFrom,
+                toEmail: recipientEmail,
+                subject,
+                bodyPreview: text.slice(0, 300),
+                bodyFull: text,
+                contractorId: receiverContractorId || null,
+                tags: ['tracking_notify'],
+                extras: { trackingNumber, carrier: carrierName, country: resolvedCountry, trackingUrl },
+              },
             });
-            console.log(`[glob/order] auto-tracking-notify → ${recipientEmail}: ${r.ok ? 'ok' : 'fail: ' + r.error}`);
+
+            // Push preview to the operator's Telegram with the LIVE link so
+            // they can click → verify → only then approve.
+            const tg = await resolveTelegram(prisma, { reqChatId, scope: 'pl' });
+            if (tg.ready) {
+              const msg =
+                `📦 Tracking gotowy — wymaga potwierdzenia\n` +
+                `- Klient: ${resolvedContractorName || recipientEmail}\n` +
+                `- Do: ${recipientEmail}\n` +
+                `- Kurier: ${carrierName || '—'} #${trackingNumber}\n` +
+                `- Link: ${trackingUrl || '(brak)'}\n` +
+                `- Temat: ${subject}\n\n` +
+                `Sprawdź link. Wyślij? "tak" / "wyślij tracking"`;
+              try { await sendTelegram(tg.token, String(tg.chatId), msg); }
+              catch (e) { console.error('[glob/order] tracking-draft tg push failed:', e.message); }
+            } else {
+              console.log('[glob/order] tracking-draft saved but no Telegram chat configured');
+            }
+            console.log(`[glob/order] tracking-draft → ${recipientEmail} (awaiting user approval)`);
           } catch (e) {
-            console.error('[glob/order] auto-tracking-notify threw:', e.message);
+            console.error('[glob/order] tracking-draft threw:', e.message);
           }
         });
       } else {
-        console.log(`[glob/order] auto-tracking-notify skipped (email=${recipientEmail || 'none'}, tracking=${trackingNumber || 'none'})`);
+        console.log(`[glob/order] tracking-draft skipped (no recipient email)`);
       }
     }
 
