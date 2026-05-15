@@ -1140,8 +1140,30 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
 
     const recv = shipment.receiver || shipment.recipient || {};
     const send = shipment.sender || {};
-    const trackingNumber = shipment.trackingNumber || shipment.tracking || shipment.number || shipment.orderNumber;
     const carrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
+
+    // GK /v1/orders sometimes returns shipments without trackingNumber populated
+    // (the carrier number lives on a separate /v1/order/tracking?orderNumber=...
+    // endpoint). Fall back to that when the list view doesn't have it.
+    let trackingNumber = shipment.trackingNumber || shipment.tracking;
+    if (!trackingNumber) {
+      const orderNumber = shipment.number || shipment.orderNumber;
+      if (orderNumber) {
+        try {
+          const { getOrderTracking } = require('../glob-client');
+          const t = await getOrderTracking(orderNumber);
+          const candidate = t && (t.trackingNumber || t.tracking
+            || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+            || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+          if (candidate && String(candidate).trim()) {
+            trackingNumber = String(candidate).trim();
+            console.log(`[send-tracking-email] fetched tracking for ${orderNumber}: ${trackingNumber}`);
+          }
+        } catch (e) {
+          console.error('[send-tracking-email] getOrderTracking lookup failed:', e.message);
+        }
+      }
+    }
     const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
 
     // 3) Resolve recipient email — explicit override > already-resolved

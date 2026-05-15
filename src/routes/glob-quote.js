@@ -1460,11 +1460,12 @@ router.post('/glob/order', async (req, res) => {
             // Wait for the carrier to assign a real tracking number — GK260...
             // is their internal id, not something DPD/DHL portals recognise.
             let trackingNumber = result.trackingNumber || result.tracking || null;
-            if (!trackingNumber && orderHash) {
+            const orderNumberForTracking = result.number || result.orderNumber;
+            if (!trackingNumber && orderNumberForTracking) {
               for (let i = 0; i < 4; i++) {
                 await new Promise(r => setTimeout(r, 5000));
                 try {
-                  const t = await getOrderTracking(orderHash);
+                  const t = await getOrderTracking(orderNumberForTracking);
                   console.log(`[glob/order] getOrderTracking poll #${i + 1} response:`, JSON.stringify(t).slice(0, 800));
                   const candidate = t && (t.trackingNumber || t.tracking
                     || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)

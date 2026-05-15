@@ -83,10 +83,13 @@ async function getOrders(params = {}) {
   return resp.body;
 }
 
-async function getOrderTracking(orderHash) {
+// GK tracking endpoint: GET /v1/order/tracking?orderNumber=GK260...
+// (NOT orderHash — earlier we passed the hash and GK returned empty.)
+// Response shape per docs: { trackingNumber, status, ... } per carrier.
+async function getOrderTracking(orderNumber) {
   const token = await getToken();
-  const url = `https://api.globkurier.pl/v1/order/tracking?orderHash=${encodeURIComponent(orderHash)}`;
-  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token });
+  const url = `https://api.globkurier.pl/v1/order/tracking?orderNumber=${encodeURIComponent(orderNumber)}`;
+  const resp = await httpsRequest(url, 'GET', { 'X-Auth-Token': token, 'Accept-Language': 'pl' });
   return resp.body;
 }
 
