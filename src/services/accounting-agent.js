@@ -46,6 +46,18 @@ FLOW WYSTAWIENIA FV:
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
 
+DOSTAWA / DELIVERY JAKO POZYCJA:
+Gdy user mówi "dodaj delivery za 18 EUR" / "doliczy dostawę 25 PLN" / "wysyłka 30 zł":
+Dodaj do items kolejną pozycję z type="delivery", name="Delivery" (lub "Dostawa"), qty=1, price=<kwota>.
+NIE szukaj "delivery" w katalogu produktów — backend automatycznie obsłuży jako usługę transportową
+(no GTU, Jednostka="usł.", standardowy VAT 23% dla krajowej / 0% NP dla WDT).
+
+Przykład: "Wystaw fv dla Nuno 5 boxów sticków i delivery 18 EUR":
+  items=[
+    { name: "stick box", qty: 5 },
+    { name: "Delivery", qty: 1, price: 18, type: "delivery" }
+  ]
+
 PONOWNE WYSŁANIE PDF FAKTURY NA TELEGRAM:
 SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest listing/search/preview.
 - "daj fv 65" / "daj fakturę 65/2026" / "przyślij fv 65" / "ponownie pdf 64/2026"
@@ -85,15 +97,16 @@ const tools = [
         contractorId: { type: 'string', description: 'UUID kontrahenta (gdy znany dokładnie — pomija fuzzy search)' },
         items: {
           type: 'array',
-          description: 'Lista pozycji faktury — każda z {name LUB ean, qty, opcjonalnie priceNetto/priceBrutto}',
+          description: 'Lista pozycji faktury — każda z {name LUB ean, qty, opcjonalnie priceNetto/priceBrutto}. Dla dostawy/transportu dodaj pozycję z type="delivery" + price (omija lookup w katalogu produktów).',
           items: {
             type: 'object',
             properties: {
-              name: { type: 'string', description: 'Nazwa produktu (np. "stick generic", "mascara pink")' },
+              name: { type: 'string', description: 'Nazwa produktu (np. "stick generic", "mascara pink") lub dostawy ("Delivery", "Dostawa")' },
               ean: { type: 'string', description: 'EAN konkretnego produktu lub box (np. "BOX-STICK-30")' },
-              qty: { type: 'number', description: 'Ilość sztuk' },
+              qty: { type: 'number', description: 'Ilość sztuk (dla delivery zwykle 1)' },
               priceNetto: { type: 'number', description: 'Cena netto per szt (opcjonalne)' },
               priceBrutto: { type: 'number', description: 'Cena brutto per szt (opcjonalne)' },
+              type: { type: 'string', enum: ['delivery', 'shipping', 'dostawa'], description: 'Typ pozycji — gdy "delivery"/"shipping"/"dostawa" backend pomija katalog produktów i dodaje jako usługę transportową (no GTU, Jednostka="usł."). Wymaga price/priceNetto/priceBrutto.' },
             },
           },
         },

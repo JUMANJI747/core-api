@@ -312,7 +312,37 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const catalog = await prisma.product.findMany({ where: { active: true } });
 
     const pozycje = [];
+    // Match delivery / shipping line items (not in product catalog) so the
+    // agent can say "dodaj delivery za 18 EUR" without us inventing an
+    // imaginary catalog entry. Trigger: explicit type='delivery'/'shipping'
+    // OR name starts with one of the keywords below. Must have a price set.
+    const DELIVERY_RE = /^(delivery|dostawa|wysy[lł]ka|shipping|transport|fracht)\b/i;
+    function isDeliveryItem(item) {
+      const t = String(item.type || '').toLowerCase();
+      if (t === 'delivery' || t === 'shipping' || t === 'dostawa') return true;
+      const name = item.name || item.productName || item.product || '';
+      return DELIVERY_RE.test(String(name).trim());
+    }
+
     for (const item of parsedItems) {
+      // Delivery / shipping line — skip catalog, build pozycja directly.
+      if (isDeliveryItem(item)) {
+        const rawPrice = item.priceNetto != null ? item.priceNetto
+          : (item.priceBrutto != null ? item.priceBrutto
+          : (item.price != null ? item.price : item.cena));
+        if (rawPrice == null) {
+          return res.status(400).json({ error: `delivery line "${item.name || 'delivery'}" requires price (price / priceNetto / priceBrutto)` });
+        }
+        const itemCenaNetto = item.priceNetto != null ? parseFloat(item.priceNetto) : null;
+        const itemCena = (item.priceBrutto != null || item.price != null || item.cena != null)
+          ? parseFloat(item.priceBrutto || item.price || item.cena) : null;
+        // Synthetic product so the downstream code keeps working unchanged.
+        const fakeProduct = { ean: null, name: item.name || 'Delivery', variant: null, category: 'delivery' };
+        pozycje.push({ product: fakeProduct, ilosc: item.qty || 1, itemCena, itemCenaNetto, isDelivery: true });
+        console.log(`[invoice-preview] delivery line: "${fakeProduct.name}" × ${item.qty || 1} @ ${itemCenaNetto != null ? itemCenaNetto + ' netto' : itemCena + ' brutto'}`);
+        continue;
+      }
+
       // Fuzzy product lookup: try EAN first, then name+variant
       const ean = item.productEan || item.ean;
       let product = null;
@@ -394,11 +424,11 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const priceMode = hasNetto ? 'netto' : 'brutto';
     console.log(`[invoice-preview] Price mode: ${priceMode}`);
 
-    const linee = pozycje.map(({ product: p, ilosc, itemCena, itemCenaNetto }) => {
+    const linee = pozycje.map(({ product: p, ilosc, itemCena, itemCenaNetto, isDelivery }) => {
       const { cena, isNetto, source } = resolvePrice(itemCena, itemCenaNetto, contractor.name, contractor.extras);
       console.log(`[invoice-preview] price for ${contractor.name}: ${cena} ${isNetto ? 'netto' : 'brutto'} (source: ${source})`);
       const wartosc = Math.round(cena * ilosc * 100) / 100;
-      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, cenaNetto: isNetto ? cena : null, wartosc, priceSource: source };
+      return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, cenaNetto: isNetto ? cena : null, wartosc, priceSource: source, isDelivery: !!isDelivery };
     });
 
     let brutto, netto, vat;

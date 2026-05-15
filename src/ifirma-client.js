@@ -320,22 +320,24 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     const isRealEan = p.ean && /^\d/.test(p.ean);
     const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
     const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
-    console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)');
-    return isWdt ? {
-      TypStawkiVat: 'NP',
-      GTU: 'GTU_12',
-      Ilosc: p.ilosc,
-      CenaJednostkowa,
-      NazwaPelna,
-      Jednostka: 'szt.',
-    } : {
+    console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)', p.isDelivery ? '(delivery)' : '');
+    // Delivery/shipping lines: service unit, no GTU (GTU is for goods/specific
+    // classes — pure transport service doesn't fall under any GTU code).
+    const isDelivery = !!p.isDelivery;
+    const Jednostka = isDelivery ? 'usł.' : 'szt.';
+    const base = { Ilosc: p.ilosc, CenaJednostkowa, NazwaPelna, Jednostka };
+    if (isWdt) {
+      return {
+        TypStawkiVat: 'NP',
+        ...(isDelivery ? {} : { GTU: 'GTU_12' }),
+        ...base,
+      };
+    }
+    return {
       StawkaVat: 0.23,
       TypStawkiVat: 'PRC',
-      GTU: 'GTU_12',
-      Ilosc: p.ilosc,
-      CenaJednostkowa,
-      NazwaPelna,
-      Jednostka: 'szt.',
+      ...(isDelivery ? {} : { GTU: 'GTU_12' }),
+      ...base,
     };
   });
 
