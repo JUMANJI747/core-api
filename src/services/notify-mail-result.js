@@ -31,6 +31,16 @@ async function notifyMailResult(prisma, {
     attachmentLine = `- Załącznik: brak`;
   }
 
+  // Backend signature: short hex tag of (boot timestamp + secret salt). Stable
+  // for the lifetime of this process so user can recognise it visually, but
+  // not predictable by an LLM agent that doesn't see process state. Agents
+  // can't fake the same tag — they'd have to guess random hex.
+  if (!global.__backendNotifySig) {
+    const seed = `${process.pid}:${process.env.RAILWAY_DEPLOYMENT_ID || ''}:${Date.now()}`;
+    global.__backendNotifySig = require('crypto').createHash('sha256').update(seed).digest('hex').slice(0, 6);
+  }
+  const sig = `🔧 backend:${global.__backendNotifySig}`;
+
   let text;
   if (ok) {
     text = `✉️ Mail wysłany (SMTP potwierdził)\n` +
@@ -38,14 +48,16 @@ async function notifyMailResult(prisma, {
       `- Od: ${from}\n` +
       `- Temat: ${subject || '-'}\n` +
       `${attachmentLine}\n` +
-      `- MessageId: ${messageId || '(brak)'}`;
+      `- MessageId: ${messageId || '(brak)'}\n` +
+      sig;
   } else {
     text = `❌ Błąd wysyłki maila\n` +
       `- Do: ${to || '-'}\n` +
       `- Od: ${from || '-'}\n` +
       `- Temat: ${subject || '-'}\n` +
       `${attachmentLine}\n` +
-      `- Powód: ${error || 'unknown'}`;
+      `- Powód: ${error || 'unknown'}\n` +
+      sig;
   }
   try {
     const resp = await sendTelegram(token, String(chatId), text);
