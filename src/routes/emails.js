@@ -1079,10 +1079,20 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
 
     let items = [];
     let usedSearch = null;
+    // GK's /v1/orders sometimes wraps the page as [{offset,total,limit,results:[...]}]
+    // — that wrapper-array shape was the cause of an early dropped-100-records
+    // bug. Unwrap it consistently with glob-orders.js extractOrdersResults.
+    function unwrapGkOrders(data) {
+      if (!data) return [];
+      if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+        return data[0].results;
+      }
+      if (Array.isArray(data)) return data;
+      return data.results || data.items || data.data || [];
+    }
     for (const q of [...new Set(searches.filter(Boolean))]) {
       const gkRes = await getOrders({ search: q, limit: 20 });
-      const got = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
-        || (Array.isArray(gkRes) ? gkRes : []);
+      const got = unwrapGkOrders(gkRes);
       if (Array.isArray(got) && got.length > 0) {
         items = got;
         usedSearch = q;
