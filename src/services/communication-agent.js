@@ -186,6 +186,19 @@ const tools = [
       },
     },
   },
+  {
+    name: 'send_tracking_to_customer',
+    description: 'End-to-end: znajdź ostatnią paczkę w GlobKurier po fragmencie (nazwa kontrahenta / miasto / GK260...), zbuduj mail z linkiem do trackingu w języku klienta (PL/DE/FR/ES/IT/NL/PT/EN po contractor.country) i wyślij do contractor.email. Używaj GDY user mówi "wyślij tracking paczki do X klientowi mailem" — JEDEN call zamiast łańcucha search_shipments → send_email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        search: { type: 'string', description: 'Fragment do wyszukania paczki: nazwa firmy / miasto / numer GK' },
+        contractorEmail: { type: 'string', description: 'Opcjonalny override adresu — domyślnie używa contractor.email z bazy' },
+        from: { type: 'string', description: 'Opcjonalny nadawca — domyślnie pierwsze konto z IMAP_ACCOUNTS (zwykle info@)' },
+      },
+      required: ['search'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -199,6 +212,7 @@ const ENDPOINT_MAP = {
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
   extract_nip: ['POST', '/api/emails/extract-nip'],
+  send_tracking_to_customer: ['POST', '/api/send-tracking-email'],
 };
 
 const executeTool = buildExecuteTool({

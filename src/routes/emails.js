@@ -6,6 +6,8 @@ const router = require('express').Router();
 const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-sender');
 const { appendToSent } = require('../imap-sent');
 const nodemailer = require('nodemailer');
+const { buildTrackingUrl } = require('../services/tracking-urls');
+const { getOrders } = require('../glob-client');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
 const { scoreContractor } = require('../services/contractor-match');
@@ -1011,6 +1013,95 @@ router.post('/emails/imap-diag', async (req, res) => {
     report.push(acc);
   }
   res.json({ ok: true, accounts: report });
+});
+
+// End-to-end: find a recent GK shipment by hint (contractor / city / GK
+// number), resolve the customer's email from the contractor record, send
+// a tracking-link email to them. Replaces the manual coordination
+// (search_shipments → get hash → resolve email → send_email) the Master
+// agent kept failing at when the user said "wyślij tracking do X mailem".
+// Body: { search?: string, contractorEmail?: string (override), from?: string }
+router.post('/send-tracking-email', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { search, contractorEmail, from: fromOverride } = req.body || {};
+  if (!search || typeof search !== 'string') return res.status(400).json({ error: 'search required' });
+
+  try {
+    // 1) Find recent GK shipments matching the hint.
+    const gkRes = await getOrders({ search, limit: 20 });
+    const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
+      || (Array.isArray(gkRes) ? gkRes : []);
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.json({ ok: false, error: 'no shipments matched', search });
+    }
+    // Sort newest first by createdAt / orderDate / id
+    items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
+    const shipment = items[0];
+
+    const recv = shipment.receiver || shipment.recipient || {};
+    const send = shipment.sender || {};
+    const trackingNumber = shipment.trackingNumber || shipment.tracking || shipment.number || shipment.orderNumber;
+    const carrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
+    const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
+
+    // 2) Resolve recipient email — explicit override > GK receiver email >
+    //    local Contractor by name fuzzy.
+    let toEmail = contractorEmail || null;
+    if (!toEmail && recv.email) toEmail = recv.email;
+    if (!toEmail && recv.name) {
+      const c = await prisma.contractor.findFirst({
+        where: { name: { contains: recv.name.split(' ')[0], mode: 'insensitive' } },
+        select: { email: true, country: true },
+      });
+      if (c && c.email) toEmail = c.email;
+    }
+    if (!toEmail) {
+      return res.json({
+        ok: false,
+        error: 'recipient email not found',
+        shipment: { trackingNumber, name: recv.name, city: recv.city, country: recv.country },
+        suggestion: 'pass contractorEmail in body, or set Contractor.email for this customer',
+      });
+    }
+
+    // 3) Pick language — contractor.country if known, else English.
+    const country = (recv.country || '').toUpperCase();
+    const LANG = { DE: 'de', FR: 'fr', ES: 'es', IT: 'it', NL: 'nl', PT: 'pt', PL: 'pl' };
+    const lang = LANG[country] || 'en';
+    const T = {
+      en: { subject: 'Your shipment is on the way', greeting: 'Hello,', body: 'Your package is on its way. You can track it here:', carrier: 'Carrier', sign: 'Best regards,\nSurf Stick Bell' },
+      pl: { subject: 'Twoja paczka jest w drodze', greeting: 'Dzień dobry,', body: 'Twoja paczka jest w drodze. Możesz śledzić tutaj:', carrier: 'Kurier', sign: 'Pozdrawiamy,\nSurf Stick Bell' },
+      de: { subject: 'Ihre Sendung ist unterwegs', greeting: 'Hallo,', body: 'Ihr Paket ist unterwegs. Sie können es hier verfolgen:', carrier: 'Kurier', sign: 'Mit freundlichen Grüßen,\nSurf Stick Bell' },
+      fr: { subject: 'Votre colis est en route', greeting: 'Bonjour,', body: 'Votre colis est en route. Vous pouvez le suivre ici :', carrier: 'Transporteur', sign: 'Cordialement,\nSurf Stick Bell' },
+      es: { subject: 'Tu paquete está en camino', greeting: 'Hola,', body: 'Tu paquete está en camino. Puedes seguirlo aquí:', carrier: 'Transportista', sign: 'Saludos,\nSurf Stick Bell' },
+      it: { subject: 'Il tuo pacco è in viaggio', greeting: 'Ciao,', body: 'Il tuo pacco è in viaggio. Puoi tracciarlo qui:', carrier: 'Corriere', sign: 'Cordiali saluti,\nSurf Stick Bell' },
+      nl: { subject: 'Uw pakket is onderweg', greeting: 'Hallo,', body: 'Uw pakket is onderweg. U kunt het hier volgen:', carrier: 'Vervoerder', sign: 'Met vriendelijke groet,\nSurf Stick Bell' },
+      pt: { subject: 'A sua encomenda está a caminho', greeting: 'Olá,', body: 'A sua encomenda está a caminho. Pode segui-la aqui:', carrier: 'Transportadora', sign: 'Cumprimentos,\nSurf Stick Bell' },
+    }[lang];
+
+    const lines = [T.greeting, '', T.body];
+    if (trackingUrl) lines.push(trackingUrl);
+    if (trackingNumber) lines.push(`${T.carrier}: ${carrierName || '?'}, #${trackingNumber}`);
+    lines.push('', T.sign);
+    const body = lines.join('\n');
+
+    // 4) Send. Sender = explicit override, else first IMAP account (info@ usually).
+    const accounts = getAccounts();
+    const from = fromOverride || (accounts[0] && accounts[0].user) || null;
+    if (!from) return res.status(400).json({ error: 'no sender configured (IMAP_ACCOUNTS empty)' });
+
+    const saved = await sendMail({ from, to: toEmail, subject: T.subject, body });
+
+    res.json({
+      ok: true,
+      sent: { from, to: toEmail, subject: T.subject, messageId: saved.messageId },
+      shipment: { trackingNumber, carrier: carrierName, trackingUrl, city: recv.city, country: recv.country, name: recv.name },
+      matchedCount: items.length,
+    });
+  } catch (e) {
+    console.error('[send-tracking-email] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
