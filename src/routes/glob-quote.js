@@ -700,20 +700,38 @@ router.post('/glob/quote', async (req, res) => {
     } catch (_) {}
     const mergedIds = { ...COUNTRY_IDS, ...dynamicIds };
 
-    const senderCountryId = sender.countryId || mergedIds[sender.country] || 1;
-    const receiverCountryIdMapped = receiver.countryId || mergedIds[receiver.country];
+    let senderCountryId = sender.countryId || mergedIds[sender.country] || 1;
+    let receiverCountryIdMapped = receiver.countryId || mergedIds[receiver.country];
 
-    // Hard-block: jeśli kraj odbiorcy nie ma znanego countryId w GlobKurier,
-    // GK API i tak zwróci ofertę PL→PL (silent fallback) — ceny są wtedy
+    // Auto-discovery: jeśli kraj odbiorcy nie ma countryId w mapie, ale
+    // user wysyłał już do tego kraju (nawet manualnie przez GK panel), to
+    // odbiorca jest w bazie GK z prawidłowym countryId. Wystarczy odpalić
+    // discovery i ponownie sprawdzić — saves the user from manually
+    // calling /glob/discover-countries.
+    if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
+      console.log(`[glob/quote] auto-discovery: ${receiver.country} brakuje, skanuje historię GK...`);
+      try {
+        const r = await runCountryDiscovery(prisma);
+        const newMerged = { ...COUNTRY_IDS, ...(r.merged || {}) };
+        receiverCountryIdMapped = newMerged[receiver.country];
+        if (receiverCountryIdMapped) {
+          console.log(`[glob/quote] auto-discovery: ${receiver.country} → ${receiverCountryIdMapped} (scan ${r.totalScanned} receivers)`);
+        }
+      } catch (e) {
+        console.error('[glob/quote] auto-discovery failed:', e.message);
+      }
+    }
+
+    // Hard-block: jeśli nawet po discovery kraj odbiorcy nie ma countryId,
+    // GK API zwróciłby ofertę PL→PL (silent fallback) — ceny są wtedy
     // BEZUŻYTECZNE bo kurier nie zabierze paczki za PL-stawkę za granicę.
-    // Lepiej w ogóle nie odpalać quote niż wprowadzać usera w błąd.
     if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
       const supported = Object.keys(mergedIds).join(', ');
       return res.status(200).json({
         ok: false,
-        error: `GlobKurier countryId nieznane dla "${receiver.country}". Wycena PL→${receiver.country} nie jest możliwa — GK zwróciłby błędne ceny PL→PL.`,
+        error: `GlobKurier countryId nieznane dla "${receiver.country}" (auto-discovery też nie znalazło). Wycena PL→${receiver.country} nie jest możliwa.`,
         supportedCountries: supported,
-        suggestion: `Sprawdź czy GlobKurier obsługuje ${receiver.country} — jeśli tak, dodaj countryId do COUNTRY_IDS (src/routes/glob-helpers.js). Jeśli nie, użyj innego operatora (DHL/UPS bezpośrednio).`,
+        suggestion: `Wyślij jedną paczkę do ${receiver.country} ręcznie przez panel GK, potem auto-discovery wykryje countryId przy kolejnej wycenie.`,
       });
     }
 
@@ -1448,75 +1466,77 @@ function phoneToIso(phone) {
 }
 // Pobiera bazę odbiorców z GK (paginowana), wyciąga unikalne pary
 // {countryCode → countryId}, scala z istniejącą mapą i zapisuje w
+// Skanuje historię odbiorców GK i mapuje countryId → ISO przez prefix
+// telefonu odbiorcy. Idempotent — merguje wynik z Config 'gk_country_ids'.
+// Wyciągnięte z /glob/discover-countries żeby quote mogło auto-retry
+// gdy kraj brakuje w mapie.
+async function runCountryDiscovery(prisma) {
+  const discovered = {};
+  const samples = {};
+  const idToIsoVotes = {};
+  let offset = 0;
+  const pageSize = 200;
+  let totalScanned = 0;
+  while (offset < 5000) {
+    const gkRes = await getReceivers(offset, pageSize, '');
+    const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
+      || (Array.isArray(gkRes) ? gkRes : []);
+    if (!Array.isArray(items) || items.length === 0) break;
+    for (const r of items) {
+      totalScanned++;
+      const id = r.countryId || (r.country && typeof r.country === 'object' ? r.country.id : null);
+      if (!id) continue;
+      const iso = phoneToIso(r.phone);
+      if (!iso) continue;
+      if (!idToIsoVotes[id]) idToIsoVotes[id] = {};
+      idToIsoVotes[id][iso] = (idToIsoVotes[id][iso] || 0) + 1;
+      if (!samples[iso]) {
+        samples[iso] = { receiverName: r.name || '?', city: r.city || '?', phone: r.phone, countryId: id };
+      }
+    }
+    if (items.length < pageSize) break;
+    offset += pageSize;
+  }
+  for (const [id, votes] of Object.entries(idToIsoVotes)) {
+    const sorted = Object.entries(votes).sort((a, b) => b[1] - a[1]);
+    const winner = sorted[0];
+    if (winner) discovered[winner[0]] = parseInt(id, 10);
+  }
+  const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+  let previous = {};
+  if (existing && existing.value) {
+    try {
+      const parsed = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value;
+      if (parsed && typeof parsed === 'object') previous = parsed;
+    } catch (_) {}
+  }
+  const merged = { ...previous, ...discovered };
+  await prisma.config.upsert({
+    where: { key: 'gk_country_ids' },
+    update: { value: JSON.stringify(merged) },
+    create: { key: 'gk_country_ids', value: JSON.stringify(merged) },
+  });
+  return { discovered, merged, samples, totalScanned, idToIsoVotes };
+}
+
 // Config pod 'gk_country_ids'. Discovery raz po deploy + ad-hoc gdy
 // dorzucisz nowy kraj do GK i chcesz go aktywować.
 router.post('/glob/discover-countries', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const discovered = {};
-    const samples = {};
-    let offset = 0;
-    const pageSize = 200;
-    let totalScanned = 0;
-    let firstSample = null;
-    // {countryId → {ISO: hits}} — głosowanie po prefiksie telefonicznym
-    // (multiple odbiorców per countryId, czasem ktoś wpisze zły numer).
-    const idToIsoVotes = {};
-    while (offset < 5000) {
-      const gkRes = await getReceivers(offset, pageSize, '');
-      const items = (gkRes && (gkRes.results || gkRes.items || gkRes.data))
-        || (Array.isArray(gkRes) ? gkRes : []);
-      if (!firstSample && items.length > 0) firstSample = items[0];
-      if (!Array.isArray(items) || items.length === 0) break;
-      for (const r of items) {
-        totalScanned++;
-        const id = r.countryId || (r.country && typeof r.country === 'object' ? r.country.id : null);
-        if (!id) continue;
-        const iso = phoneToIso(r.phone);
-        if (!iso) continue;
-        if (!idToIsoVotes[id]) idToIsoVotes[id] = {};
-        idToIsoVotes[id][iso] = (idToIsoVotes[id][iso] || 0) + 1;
-        if (!samples[iso]) {
-          samples[iso] = { receiverName: r.name || '?', city: r.city || '?', phone: r.phone, countryId: id };
-        }
-      }
-      if (items.length < pageSize) break;
-      offset += pageSize;
-    }
-    // Wybierz dla każdego countryId najpopularniejszy ISO i odwróć: ISO → countryId
-    for (const [id, votes] of Object.entries(idToIsoVotes)) {
-      const sorted = Object.entries(votes).sort((a, b) => b[1] - a[1]);
-      const winner = sorted[0];
-      if (winner) discovered[winner[0]] = parseInt(id, 10);
-    }
-    const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
-    let previous = {};
-    if (existing && existing.value) {
-      try {
-        const parsed = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value;
-        if (parsed && typeof parsed === 'object') previous = parsed;
-      } catch (_) {}
-    }
-    const merged = { ...previous, ...discovered };
-    await prisma.config.upsert({
-      where: { key: 'gk_country_ids' },
-      update: { value: JSON.stringify(merged) },
-      create: { key: 'gk_country_ids', value: JSON.stringify(merged) },
-    });
-    const newKeys = Object.keys(discovered).filter(k => !previous[k]);
+    const before = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+    const previousMap = (() => { try { return before && before.value ? JSON.parse(before.value) : {}; } catch (_) { return {}; } })();
+    const r = await runCountryDiscovery(prisma);
+    const newKeys = Object.keys(r.discovered).filter(k => !previousMap[k]);
     res.json({
       ok: true,
-      receiversScanned: totalScanned,
-      discovered,
-      samples,
+      receiversScanned: r.totalScanned,
+      discovered: r.discovered,
+      samples: r.samples,
       newCountriesAdded: newKeys,
-      mergedMap: merged,
+      mergedMap: r.merged,
       hardcodedMap: COUNTRY_IDS,
-      // Podgląd surowego pierwszego rekordu — diagnostyka kształtu odpowiedzi GK
-      // gdy discovered jest puste a totalScanned > 0.
-      firstReceiverSample: firstSample ? Object.keys(firstSample) : null,
-      firstReceiverFull: firstSample,
-      idToIsoVotes, // diagnostyka — gdy jeden countryId ma głosy na 2+ ISO, widać w którą stronę zwycięstwo
+      idToIsoVotes: r.idToIsoVotes,
     });
   } catch (e) {
     console.error('[glob/discover-countries] error:', e.message);
