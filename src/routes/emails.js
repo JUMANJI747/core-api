@@ -7,6 +7,7 @@ const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-se
 const { appendToSent } = require('../imap-sent');
 const nodemailer = require('nodemailer');
 const { buildTrackingUrl } = require('../services/tracking-urls');
+const { sendTrackingNotification } = require('../services/tracking-notify');
 const { getOrders } = require('../glob-client');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
@@ -1133,37 +1134,23 @@ router.post('/send-tracking-email', async (req, res) => {
       });
     }
 
-    // 3) Pick language — contractor.country if known, else English.
-    const country = (recv.country || '').toUpperCase();
-    const LANG = { DE: 'de', FR: 'fr', ES: 'es', IT: 'it', NL: 'nl', PT: 'pt', PL: 'pl' };
-    const lang = LANG[country] || 'en';
-    const T = {
-      en: { subject: 'Your shipment is on the way', greeting: 'Hello,', body: 'Your package is on its way. You can track it here:', carrier: 'Carrier', sign: 'Best regards,\nSurf Stick Bell' },
-      pl: { subject: 'Twoja paczka jest w drodze', greeting: 'Dzień dobry,', body: 'Twoja paczka jest w drodze. Możesz śledzić tutaj:', carrier: 'Kurier', sign: 'Pozdrawiamy,\nSurf Stick Bell' },
-      de: { subject: 'Ihre Sendung ist unterwegs', greeting: 'Hallo,', body: 'Ihr Paket ist unterwegs. Sie können es hier verfolgen:', carrier: 'Kurier', sign: 'Mit freundlichen Grüßen,\nSurf Stick Bell' },
-      fr: { subject: 'Votre colis est en route', greeting: 'Bonjour,', body: 'Votre colis est en route. Vous pouvez le suivre ici :', carrier: 'Transporteur', sign: 'Cordialement,\nSurf Stick Bell' },
-      es: { subject: 'Tu paquete está en camino', greeting: 'Hola,', body: 'Tu paquete está en camino. Puedes seguirlo aquí:', carrier: 'Transportista', sign: 'Saludos,\nSurf Stick Bell' },
-      it: { subject: 'Il tuo pacco è in viaggio', greeting: 'Ciao,', body: 'Il tuo pacco è in viaggio. Puoi tracciarlo qui:', carrier: 'Corriere', sign: 'Cordiali saluti,\nSurf Stick Bell' },
-      nl: { subject: 'Uw pakket is onderweg', greeting: 'Hallo,', body: 'Uw pakket is onderweg. U kunt het hier volgen:', carrier: 'Vervoerder', sign: 'Met vriendelijke groet,\nSurf Stick Bell' },
-      pt: { subject: 'A sua encomenda está a caminho', greeting: 'Olá,', body: 'A sua encomenda está a caminho. Pode segui-la aqui:', carrier: 'Transportadora', sign: 'Cumprimentos,\nSurf Stick Bell' },
-    }[lang];
-
-    const lines = [T.greeting, '', T.body];
-    if (trackingUrl) lines.push(trackingUrl);
-    if (trackingNumber) lines.push(`${T.carrier}: ${carrierName || '?'}, #${trackingNumber}`);
-    lines.push('', T.sign);
-    const body = lines.join('\n');
-
-    // 4) Send. Sender = explicit override, else first IMAP account (info@ usually).
-    const accounts = getAccounts();
-    const from = fromOverride || (accounts[0] && accounts[0].user) || null;
-    if (!from) return res.status(400).json({ error: 'no sender configured (IMAP_ACCOUNTS empty)' });
-
-    const saved = await sendMail({ from, to: toEmail, subject: T.subject, body });
+    // 3) Send via the shared tracking-notify helper — same template the
+    //    automatic post-createOrder hook uses, so the brand voice is
+    //    consistent whether it's auto or user-triggered.
+    const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    const r = await sendTrackingNotification({
+      toEmail,
+      country,
+      trackingNumber,
+      carrier: carrierName,
+      from: fromOverride,
+      prisma,
+    });
+    if (!r.ok) return res.status(500).json({ error: r.error });
 
     res.json({
       ok: true,
-      sent: { from, to: toEmail, subject: T.subject, messageId: saved.messageId },
+      sent: r.sent,
       shipment: { trackingNumber, carrier: carrierName, trackingUrl, city: recv.city, country: recv.country, name: recv.name },
       matchedCount: items.length,
       usedSearch,
