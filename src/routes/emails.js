@@ -936,4 +936,81 @@ router.post('/emails/backfill-sent', async (req, res) => {
   }
 });
 
+// Diagnostic: connects to the IMAP server with the same credentials we
+// use for sending and lists every folder with message counts. Read-only
+// (just LIST + STATUS). Useful when the user can't reach webmail and we
+// need to know whether messages are actually on the server or just
+// missing from Thunderbird's local cache.
+// Body: { inbox?: string }  // empty = run for every IMAP_ACCOUNTS entry
+router.post('/emails/imap-diag', async (req, res) => {
+  const Imap = require('imap');
+  const accounts = getAccounts();
+  const target = (req.body && req.body.inbox) || null;
+  const picked = target ? accounts.filter(a => a.inbox === target) : accounts;
+  if (!picked.length) return res.status(400).json({ error: `no account for inbox=${target}` });
+
+  function connect(account) {
+    return new Promise((resolve, reject) => {
+      const imap = new Imap({
+        user: account.user, password: account.pass,
+        host: account.host, port: account.port,
+        tls: true, tlsOptions: { rejectUnauthorized: false },
+        connTimeout: 20000, authTimeout: 15000,
+      });
+      imap.once('ready', () => resolve(imap));
+      imap.once('error', reject);
+      imap.connect();
+    });
+  }
+  function listBoxes(imap) {
+    return new Promise((resolve, reject) => {
+      imap.getBoxes((err, boxes) => err ? reject(err) : resolve(boxes));
+    });
+  }
+  function statusBox(imap, name) {
+    return new Promise((resolve, reject) => {
+      imap.openBox(name, true, (err, box) => {
+        if (err) return resolve({ error: err.message });
+        resolve({
+          total: box.messages.total,
+          new: box.messages.new,
+          unseen: box.messages.unseen,
+          uidvalidity: box.uidvalidity,
+          uidnext: box.uidnext,
+        });
+      });
+    });
+  }
+  function flatten(boxes, prefix = '') {
+    const out = [];
+    for (const [name, box] of Object.entries(boxes || {})) {
+      const fullName = prefix ? prefix + box.delimiter + name : name;
+      out.push({ name: fullName, attribs: box.attribs || [] });
+      if (box.children) out.push(...flatten(box.children, fullName));
+    }
+    return out;
+  }
+
+  const report = [];
+  for (const account of picked) {
+    const acc = { inbox: account.inbox, user: account.user, host: account.host, folders: [] };
+    let imap;
+    try {
+      imap = await connect(account);
+      const boxes = await listBoxes(imap);
+      const flat = flatten(boxes);
+      for (const f of flat) {
+        const st = await statusBox(imap, f.name);
+        acc.folders.push({ name: f.name, attribs: f.attribs, ...st });
+      }
+      try { imap.end(); } catch (_) {}
+    } catch (e) {
+      acc.error = e.message;
+      try { if (imap) imap.end(); } catch (_) {}
+    }
+    report.push(acc);
+  }
+  res.json({ ok: true, accounts: report });
+});
+
 module.exports = router;
