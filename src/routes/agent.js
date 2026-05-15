@@ -8,6 +8,7 @@ const { processAccountingEsQuery } = require('../services/accounting-agent-es');
 const { processCommunicationQuery } = require('../services/communication-agent');
 const { processCommunicationEsQuery } = require('../services/communication-agent-es');
 const { processOperationsQuery } = require('../services/operations-agent');
+const { processSudoQuery } = require('../services/sudo-agent');
 
 // Stateless agent endpoints. Master agent (n8n) sends a self-contained query
 // (with any context it wants the sub-agent to see), gets back a text reply.
@@ -63,6 +64,18 @@ router.post('/agent/operations', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'query (string) required' });
   }
   const result = await processOperationsQuery(query, { chatId });
+  res.json(result);
+}));
+
+// Sudo / power agent — pełen dostęp do bazy + każdego endpointu backendu
+// + GK API. Wywoływane gdy zwykły flow zawodzi albo user chce wprost
+// wymuszenie ("sudo X" / "wymuś Y" / "@admin Z" w prompcie Master).
+router.post('/agent/sudo', asyncHandler(async (req, res) => {
+  const { query, chatId } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'query (string) required' });
+  }
+  const result = await processSudoQuery(query, { chatId });
   res.json(result);
 }));
 
