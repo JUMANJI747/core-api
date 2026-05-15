@@ -1429,12 +1429,8 @@ router.post('/glob/order', async (req, res) => {
     // the user wait, and a failed mail must not unwind a successful
     // GK order. Disable with env DISABLE_TRACKING_NOTIFY=1.
     if (process.env.DISABLE_TRACKING_NOTIFY !== '1') {
-      const trackingNumber = result.trackingNumber || result.tracking || result.number || result.orderNumber;
       const carrierName = (selectedOffer && selectedOffer.carrier) || result.productName || '';
       const recvCountry = (receiver && (receiver.country || receiver.countryCode)) || '';
-      // Recipient email: receiver.email from GK if present, else contractor.email
-      // (resolved earlier in the flow as receiverContractor). Skip silently if
-      // neither — caller can use /api/send-tracking-email later.
       let recipientEmail = (receiver && receiver.email) || null;
       const receiverContractorId = receiver && receiver.contractorId;
       let resolvedCountry = recvCountry;
@@ -1447,10 +1443,40 @@ router.post('/glob/order', async (req, res) => {
           }
         } catch (_) {}
       }
-      if (recipientEmail && trackingNumber) {
+      if (recipientEmail) {
         const { sendTrackingNotification } = require('../services/tracking-notify');
+        const { getOrderTracking } = require('../glob-client');
         setImmediate(async () => {
           try {
+            // Carrier tracking number is often NOT populated in createOrder
+            // response — GK assigns it after label generation / pickup
+            // scheduling. result.number / result.orderNumber would be
+            // GK260... (their internal), which most carrier portals don't
+            // recognise. We poll getOrderTracking until the real carrier
+            // tracking is set, or give up and skip the notify.
+            let trackingNumber = result.trackingNumber || result.tracking || null;
+            if (!trackingNumber && orderHash) {
+              for (let i = 0; i < 4; i++) {
+                await new Promise(r => setTimeout(r, 5000));
+                try {
+                  const t = await getOrderTracking(orderHash);
+                  const candidate = t && (t.trackingNumber || t.tracking
+                    || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+                    || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+                  if (candidate && String(candidate).trim()) {
+                    trackingNumber = String(candidate).trim();
+                    console.log(`[glob/order] carrier tracking resolved (poll #${i + 1}): ${trackingNumber}`);
+                    break;
+                  }
+                } catch (e) {
+                  console.error(`[glob/order] getOrderTracking poll #${i + 1} failed:`, e.message);
+                }
+              }
+            }
+            if (!trackingNumber) {
+              console.log(`[glob/order] auto-tracking-notify skipped — carrier tracking number not yet assigned (GK# ${result.number || orderHash})`);
+              return;
+            }
             const r = await sendTrackingNotification({
               toEmail: recipientEmail,
               country: resolvedCountry,
@@ -1465,7 +1491,7 @@ router.post('/glob/order', async (req, res) => {
           }
         });
       } else {
-        console.log(`[glob/order] auto-tracking-notify skipped (email=${recipientEmail || 'none'}, tracking=${trackingNumber || 'none'})`);
+        console.log(`[glob/order] auto-tracking-notify skipped (no recipient email)`);
       }
     }
 
