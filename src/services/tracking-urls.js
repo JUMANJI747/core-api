@@ -19,19 +19,19 @@ function buildTrackingUrl(carrierName, trackingNumber, country) {
     return `https://inpost.pl/sledzenie-przesylek?number=${encodeURIComponent(tn)}`;
   }
   if (c.includes('dpd')) {
-    // DPD international: tracking.dpd.de works for every DPD country with
-    // a storeId-style locale. PL store + recipient's language is closest
-    // to what they'd see in webmail.
-    const dpdLocale = { PL: 'PL.pl_PL', DE: 'DE.de_DE', FR: 'FR.fr_FR', ES: 'ES.es_ES',
-                       IT: 'IT.it_IT', NL: 'NL.nl_NL', PT: 'PT.pt_PT', BE: 'BE.nl_BE' }[cc] || 'PL.en_EN';
-    return `https://tracking.dpd.de/parcelstatus?storeId=${dpdLocale}&query=${encodeURIComponent(tn)}`;
+    // DPD's tracking is split per-country (each national DPD hosts its own
+    // parcel database). Polish-origin parcels live only on tracktrace.dpd.com.pl
+    // and won't resolve on tracking.dpd.de — so we use the PL endpoint
+    // regardless of recipient country. Customer sees Polish UI but the
+    // data displays correctly.
+    return `https://tracktrace.dpd.com.pl/findParcel?q=${encodeURIComponent(tn)}`;
   }
   if (c.includes('dhl')) {
-    // DHL global tracker — locale auto-detects from browser, but we set
-    // it from country when possible. dhl.com uses dash-separated locale.
-    const dhlLocale = { PL: 'pl-pl', DE: 'de-de', FR: 'fr-fr', ES: 'es-es',
-                        IT: 'it-it', NL: 'nl-nl', PT: 'pt-pt', GB: 'en-gb' }[cc] || 'global-en';
-    return `https://www.dhl.com/${dhlLocale}/home/tracking/tracking-parcel.html?submit=1&tracking-id=${encodeURIComponent(tn)}`;
+    // DHL has one global database; the page locale just affects UI text.
+    // Use the global-en page so customers in any country get a working
+    // link in a neutral language (auto-detect doesn't always pick up
+    // recipient locale and PL-pl on a French recipient is ugly).
+    return `https://www.dhl.com/global-en/home/tracking.html?tracking-id=${encodeURIComponent(tn)}`;
   }
   if (c.includes('fedex')) {
     // FedEx auto-detects locale; trknbr lands directly on the history page.
