@@ -1148,8 +1148,8 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
       shipment = items[0];
     }
 
-    const recv = shipment.receiver || shipment.recipient || {};
-    const send = shipment.sender || {};
+    const recv = shipment.receiverAddress || shipment.receiver || shipment.recipient || {};
+    const send = shipment.senderAddress || shipment.sender || {};
     const carrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
 
     // GK /v1/orders sometimes returns shipments without trackingNumber populated
