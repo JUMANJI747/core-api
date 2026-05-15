@@ -1145,6 +1145,7 @@ router.post('/send-tracking-email', async (req, res) => {
       carrier: carrierName,
       from: fromOverride,
       prisma,
+      reqChatId: req.body && req.body.chatId,
     });
     if (!r.ok) return res.status(500).json({ error: r.error });
 

@@ -1456,6 +1456,8 @@ router.post('/glob/order', async (req, res) => {
               country: resolvedCountry,
               trackingNumber,
               carrier: carrierName,
+              prisma,
+              reqChatId: req.body && req.body.chatId,
             });
             console.log(`[glob/order] auto-tracking-notify → ${recipientEmail}: ${r.ok ? 'ok' : 'fail: ' + r.error}`);
           } catch (e) {

@@ -2,6 +2,7 @@
 
 const { sendMail, findAccount, getAccounts } = require('../mail-sender');
 const { buildTrackingUrl } = require('./tracking-urls');
+const { notifyMailResult } = require('./notify-mail-result');
 
 const DEFAULT_FROM = process.env.TRACKING_NOTIFY_FROM || 'delivery@surfstickbell.com';
 
@@ -14,102 +15,72 @@ const LANG_BY_COUNTRY = {
 
 // Short friendly tracking-notification copy per language. User-facing tone
 // is intentionally casual (Surf Stick Team brand voice) — no formal sign-off.
+// Each entry returns BOTH plain text (text) and HTML (html with clickable
+// <a href>). Clients that don't render HTML fall back to text automatically.
 const TEMPLATES = {
   pl: {
     subject: 'Twoje Surf Sticki są już w drodze',
-    body: (link, carrier, number) =>
-`Cześć!
-
-Twoja paczka jest już w drodze. Możesz ją śledzić tutaj:
-${link || '(link niedostępny)'}
-Kurier: ${carrier || '—'}${number ? ', numer: ' + number : ''}
-
-Słonecznego dnia,
-Surf Stick Team`,
+    intro: 'Cześć!',
+    paragraph: 'Twoja paczka jest już w drodze. Możesz ją śledzić tutaj:',
+    carrierLabel: 'Kurier',
+    numberLabel: 'numer',
+    signOff: 'Słonecznego dnia,\nSurf Stick Team',
   },
   en: {
     subject: 'Your Surf Sticks are on their way',
-    body: (link, carrier, number) =>
-`Hey!
-
-Your package is on its way. You can track it here:
-${link || '(tracking link unavailable)'}
-Carrier: ${carrier || '—'}${number ? ', tracking #: ' + number : ''}
-
-Sunny days,
-Surf Stick Team`,
+    intro: 'Hey!',
+    paragraph: "Your package is on its way. You can track it here:",
+    carrierLabel: 'Carrier',
+    numberLabel: 'tracking #',
+    signOff: 'Sunny days,\nSurf Stick Team',
   },
   de: {
     subject: 'Deine Surf Sticks sind unterwegs',
-    body: (link, carrier, number) =>
-`Hi!
-
-Dein Paket ist unterwegs. Du kannst es hier verfolgen:
-${link || '(Tracking-Link nicht verfügbar)'}
-Kurier: ${carrier || '—'}${number ? ', Sendungsnummer: ' + number : ''}
-
-Sonnige Tage,
-das Surf Stick Team`,
+    intro: 'Hi!',
+    paragraph: 'Dein Paket ist unterwegs. Du kannst es hier verfolgen:',
+    carrierLabel: 'Kurier',
+    numberLabel: 'Sendungsnummer',
+    signOff: 'Sonnige Tage,\ndas Surf Stick Team',
   },
   fr: {
     subject: 'Tes Surf Sticks sont en route',
-    body: (link, carrier, number) =>
-`Salut !
-
-Ton colis est en route. Tu peux le suivre ici :
-${link || '(lien de suivi indisponible)'}
-Transporteur : ${carrier || '—'}${number ? ', numéro : ' + number : ''}
-
-Belle journée ensoleillée,
-l'équipe Surf Stick`,
+    intro: 'Salut !',
+    paragraph: 'Ton colis est en route. Tu peux le suivre ici :',
+    carrierLabel: 'Transporteur',
+    numberLabel: 'numéro',
+    signOff: "Belle journée ensoleillée,\nl'équipe Surf Stick",
   },
   es: {
     subject: 'Tus Surf Sticks están en camino',
-    body: (link, carrier, number) =>
-`¡Hola!
-
-Tu paquete está en camino. Puedes seguirlo aquí:
-${link || '(enlace de seguimiento no disponible)'}
-Transportista: ${carrier || '—'}${number ? ', número: ' + number : ''}
-
-Día soleado,
-el equipo Surf Stick`,
+    intro: '¡Hola!',
+    paragraph: 'Tu paquete está en camino. Puedes seguirlo aquí:',
+    carrierLabel: 'Transportista',
+    numberLabel: 'número',
+    signOff: 'Día soleado,\nel equipo Surf Stick',
   },
   it: {
     subject: 'I tuoi Surf Stick sono in viaggio',
-    body: (link, carrier, number) =>
-`Ciao!
-
-Il tuo pacco è in viaggio. Puoi tracciarlo qui:
-${link || '(link di tracciamento non disponibile)'}
-Corriere: ${carrier || '—'}${number ? ', numero: ' + number : ''}
-
-Buona giornata di sole,
-il Surf Stick Team`,
+    intro: 'Ciao!',
+    paragraph: 'Il tuo pacco è in viaggio. Puoi tracciarlo qui:',
+    carrierLabel: 'Corriere',
+    numberLabel: 'numero',
+    signOff: 'Buona giornata di sole,\nil Surf Stick Team',
   },
   nl: {
     subject: 'Je Surf Sticks zijn onderweg',
-    body: (link, carrier, number) =>
-`Hoi!
-
-Je pakket is onderweg. Je kunt het hier volgen:
-${link || '(volglink niet beschikbaar)'}
-Vervoerder: ${carrier || '—'}${number ? ', volgnummer: ' + number : ''}
-
-Zonnige dag,
-het Surf Stick Team`,
+    intro: 'Hoi!',
+    paragraph: 'Je pakket is onderweg. Je kunt het hier volgen:',
+    carrierLabel: 'Vervoerder',
+    numberLabel: 'volgnummer',
+    signOff: 'Zonnige dag,\nhet Surf Stick Team',
   },
   pt: {
     subject: 'Os teus Surf Sticks estão a caminho',
-    body: (link, carrier, number) =>
-`Olá!
-
-A tua encomenda está a caminho. Podes segui-la aqui:
-${link || '(link de seguimento indisponível)'}
-Transportadora: ${carrier || '—'}${number ? ', número: ' + number : ''}
-
-Dia ensolarado,
-a equipa Surf Stick`,
+    intro: 'Olá!',
+    paragraph: 'A tua encomenda está a caminho. Podes segui-la aqui:',
+    carrierLabel: 'Transportadora',
+    numberLabel: 'número',
+    signOff: 'Dia ensolarado,\na equipa Surf Stick',
   },
 };
 
@@ -118,23 +89,53 @@ function pickLang(country) {
   return LANG_BY_COUNTRY[String(country).toUpperCase()] || 'en';
 }
 
-// Compose subject + body for the given delivery context.
-function compose({ country, trackingNumber, carrier, trackingUrl }) {
-  const t = TEMPLATES[pickLang(country)] || TEMPLATES.en;
-  return { subject: t.subject, body: t.body(trackingUrl, carrier, trackingNumber) };
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
-// Send the notification. Best-effort — caller should not await unless the
-// reply depends on it. Returns { ok, error?, sent? } so the orchestrator
-// (e.g. /api/send-tracking-email) can surface details.
-async function sendTrackingNotification({ toEmail, country, trackingNumber, carrier, from, prisma }) {
+function compose({ country, trackingNumber, carrier, trackingUrl }) {
+  const t = TEMPLATES[pickLang(country)] || TEMPLATES.en;
+  const linkOrFallback = trackingUrl || '(tracking link unavailable)';
+  const text = [
+    t.intro,
+    '',
+    t.paragraph,
+    linkOrFallback,
+    `${t.carrierLabel}: ${carrier || '—'}${trackingNumber ? ', ' + t.numberLabel + ': ' + trackingNumber : ''}`,
+    '',
+    t.signOff,
+  ].join('\n');
+
+  const linkHtml = trackingUrl
+    ? `<a href="${escapeHtml(trackingUrl)}">${escapeHtml(trackingUrl)}</a>`
+    : escapeHtml(linkOrFallback);
+  const htmlLines = [
+    `<p>${escapeHtml(t.intro)}</p>`,
+    `<p>${escapeHtml(t.paragraph)}<br>${linkHtml}</p>`,
+    `<p>${escapeHtml(t.carrierLabel)}: ${escapeHtml(carrier || '—')}${trackingNumber ? `, ${escapeHtml(t.numberLabel)}: ${escapeHtml(trackingNumber)}` : ''}</p>`,
+    `<p style="white-space:pre-line">${escapeHtml(t.signOff)}</p>`,
+  ];
+  const html =
+    '<!doctype html><html><body style="font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222">'
+    + htmlLines.join('\n') +
+    '</body></html>';
+
+  return { subject: t.subject, text, html };
+}
+
+// Send the customer-facing tracking email AND notify our Telegram with a
+// confirmation that includes the active link, so we can see exactly what
+// went out. Best-effort — caller doesn't need to await unless it cares.
+async function sendTrackingNotification({
+  toEmail, country, trackingNumber, carrier, from, prisma, reqChatId,
+}) {
   if (!toEmail) return { ok: false, error: 'no recipient email' };
   if (!trackingNumber) return { ok: false, error: 'no tracking number' };
-  const trackingUrl = buildTrackingUrl(carrier, trackingNumber);
-  const { subject, body } = compose({ country, trackingNumber, carrier, trackingUrl });
+  const trackingUrl = buildTrackingUrl(carrier, trackingNumber, country);
+  const { subject, text, html } = compose({ country, trackingNumber, carrier, trackingUrl });
 
-  // Sender: explicit override → delivery@ if configured in IMAP_ACCOUNTS →
-  // first account. We accept that delivery@ might not exist on every setup.
   let fromEmail = from || DEFAULT_FROM;
   if (!findAccount(fromEmail)) {
     const accounts = getAccounts();
@@ -142,10 +143,38 @@ async function sendTrackingNotification({ toEmail, country, trackingNumber, carr
   }
 
   try {
-    const saved = await sendMail({ from: fromEmail, to: toEmail, subject, body });
-    return { ok: true, sent: { from: fromEmail, to: toEmail, subject, messageId: saved && saved.messageId, trackingUrl } };
+    const saved = await sendMail({ from: fromEmail, to: toEmail, subject, body: text, html });
+    const messageId = saved && saved.messageId;
+
+    // Telegram confirmation to the operator (us). Reuses the same helper
+    // used everywhere else for "mail sent" notifications so the format
+    // is identical. We append the tracking URL line so the operator can
+    // see/click what was sent without opening webmail.
+    if (prisma) {
+      try {
+        await notifyMailResult(prisma, {
+          reqChatId,
+          ok: true,
+          to: toEmail, from: fromEmail,
+          subject: `${subject}\n- Tracking: ${trackingUrl || '(no link)'}`,
+          messageId,
+        });
+      } catch (e) {
+        console.error('[tracking-notify] tg confirm failed:', e.message);
+      }
+    }
+
+    return { ok: true, sent: { from: fromEmail, to: toEmail, subject, messageId, trackingUrl } };
   } catch (e) {
     console.error('[tracking-notify] send failed:', e.message);
+    if (prisma) {
+      try {
+        await notifyMailResult(prisma, {
+          reqChatId, ok: false, to: toEmail, from: fromEmail, subject,
+          error: e.message,
+        });
+      } catch (_) {}
+    }
     return { ok: false, error: e.message };
   }
 }
