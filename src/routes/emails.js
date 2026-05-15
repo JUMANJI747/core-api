@@ -91,9 +91,15 @@ router.get('/emails/recent', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const take = Math.min(Math.max(1, parseInt(req.query.limit) || 50), 100);
   const skip = Math.max(0, parseInt(req.query.offset) || 0);
+  // direction filter — 'OUTBOUND' / 'INBOUND' / 'DRAFT' (case-insensitive).
+  // Default: no filter, returns all.
+  const dirRaw = (req.query.direction || '').toString().toUpperCase();
+  const where = ['INBOUND', 'OUTBOUND', 'DRAFT', 'FAILED'].includes(dirRaw) ? { direction: dirRaw } : {};
   const emails = await prisma.email.findMany({
+    where,
     select: {
-      id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true,
+      id: true, direction: true, fromEmail: true, fromName: true, toEmail: true,
+      subject: true, bodyPreview: true, messageId: true,
       tags: true, inbox: true, createdAt: true, extras: true,
       contractor: { select: { name: true, country: true } },
       _count: { select: { attachments: true } },
