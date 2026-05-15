@@ -1016,17 +1016,12 @@ router.post('/emails/imap-diag', async (req, res) => {
   res.json({ ok: true, accounts: report });
 });
 
-// End-to-end: find a recent GK shipment by hint (contractor / city / GK
-// number), resolve the customer's email from the contractor record, send
-// a tracking-link email to them. Replaces the manual coordination
-// (search_shipments → get hash → resolve email → send_email) the Master
-// agent kept failing at when the user said "wyślij tracking do X mailem".
-// Body: { search?: string, contractorEmail?: string (override), from?: string }
-router.post('/send-tracking-email', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  const { search, contractorEmail, from: fromOverride } = req.body || {};
-  if (!search || typeof search !== 'string') return res.status(400).json({ error: 'search required' });
-
+// Worker: process a single tracking-email request. Pulled out of the
+// route handler so the batch endpoint can call it in a loop without
+// going through Express. Returns the same shape the single-call route
+// returns, plus the input search string for the batch summary.
+async function processTrackingSearch(prisma, { search, contractorEmail, from: fromOverride, reqChatId }) {
+  if (!search || typeof search !== 'string') return { ok: false, error: 'search required', search };
   try {
     // 1) Resolve the contractor — by email if hint looks like one, else
     //    by name fuzzy. We use this both to look up local Transaction
@@ -1089,7 +1084,7 @@ router.post('/send-tracking-email', async (req, res) => {
       }
     }
     if (items.length === 0) {
-      return res.json({
+      return {
         ok: false,
         error: 'no shipments matched',
         search,
@@ -1101,7 +1096,7 @@ router.post('/send-tracking-email', async (req, res) => {
           : (isEmail && !resolvedContractor
               ? 'email not in Contractor table — add the customer first or pass their name'
               : 'no shipment for this customer in our tracker or GK history'),
-      });
+      };
     }
     // Sort newest first by createdAt / orderDate / id
     items.sort((a, b) => new Date(b.createdAt || b.orderDate || 0) - new Date(a.createdAt || a.orderDate || 0));
@@ -1126,12 +1121,13 @@ router.post('/send-tracking-email', async (req, res) => {
       if (c && c.email) toEmail = c.email;
     }
     if (!toEmail) {
-      return res.json({
+      return {
         ok: false,
         error: 'recipient email not found',
+        search,
         shipment: { trackingNumber, name: recv.name, city: recv.city, country: recv.country },
         suggestion: 'pass contractorEmail in body, or set Contractor.email for this customer',
-      });
+      };
     }
 
     // 3) Send via the shared tracking-notify helper — same template the
@@ -1145,23 +1141,66 @@ router.post('/send-tracking-email', async (req, res) => {
       carrier: carrierName,
       from: fromOverride,
       prisma,
-      reqChatId: req.body && req.body.chatId,
+      reqChatId,
     });
-    if (!r.ok) return res.status(500).json({ error: r.error });
+    if (!r.ok) return { ok: false, error: r.error, search };
 
-    res.json({
+    return {
       ok: true,
       sent: r.sent,
+      search,
       shipment: { trackingNumber, carrier: carrierName, trackingUrl, city: recv.city, country: recv.country, name: recv.name },
       matchedCount: items.length,
       usedSearch,
       resolvedContractor: resolvedContractor ? { id: resolvedContractor.id, name: resolvedContractor.name } : null,
       localTransactionShipmentNumber: txShipmentNumber,
-    });
+    };
   } catch (e) {
     console.error('[send-tracking-email] error:', e.message);
-    res.status(500).json({ error: e.message });
+    return { ok: false, error: e.message, search };
   }
+}
+
+// End-to-end single-shot — find shipment by hint (contractor / city / GK#
+// / email), resolve customer email, send tracking link in their language.
+// Body: { search?, contractorEmail?, from?, chatId? }
+router.post('/send-tracking-email', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const result = await processTrackingSearch(prisma, {
+    search: (req.body || {}).search,
+    contractorEmail: (req.body || {}).contractorEmail,
+    from: (req.body || {}).from,
+    reqChatId: (req.body || {}).chatId,
+  });
+  res.status(result.ok ? 200 : 200).json(result);
+});
+
+// Batch version: take a list of search hints (mixed GK numbers / names /
+// emails) and process them sequentially. One HTTP call from the master
+// agent instead of N calls in a loop — eliminates the per-step "Bad
+// request" path we kept hitting in the Master n8n flow. Returns a
+// per-input result + roll-up counts.
+// Body: { searches: string[], from?: string, chatId?: string,
+//         stopOnError?: bool (default false) }
+router.post('/send-tracking-emails-batch', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const body = req.body || {};
+  const list = Array.isArray(body.searches) ? body.searches.filter(s => typeof s === 'string' && s.trim()) : [];
+  if (!list.length) return res.status(400).json({ error: 'searches[] required (non-empty)' });
+  const stopOnError = body.stopOnError === true;
+  const results = [];
+  const counts = { ok: 0, fail: 0 };
+  for (const search of list) {
+    const r = await processTrackingSearch(prisma, {
+      search: search.trim(),
+      from: body.from,
+      reqChatId: body.chatId,
+    });
+    results.push(r);
+    if (r.ok) counts.ok++; else counts.fail++;
+    if (!r.ok && stopOnError) break;
+  }
+  res.json({ ok: true, total: list.length, processed: results.length, counts, results });
 });
 
 module.exports = router;

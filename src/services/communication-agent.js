@@ -199,6 +199,23 @@ const tools = [
       required: ['search'],
     },
   },
+  {
+    name: 'send_tracking_to_customers_batch',
+    description: 'Wyślij tracking mailem do WIELU klientów jednym wywołaniem. Idealne gdy user wkleja listę numerów GK ("wyślij tracking do GK260..., GK260..., GK260...") albo prosi "wyślij wszystkim w transporcie". Backend leci przez listę sekwencyjnie, zwraca wynik per pozycja. NIE wywołuj send_tracking_to_customer w pętli — Master agent gubi się na 2-3 kroku.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        searches: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Lista fragmentów (mieszanka: nazwy / miasta / numery GK / emaile). Każdy zostanie przerobiony osobno.',
+        },
+        from: { type: 'string', description: 'Opcjonalny nadawca' },
+        stopOnError: { type: 'boolean', description: 'Default false — kontynuuje mimo błędu. true = stop przy pierwszym fail' },
+      },
+      required: ['searches'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -213,6 +230,7 @@ const ENDPOINT_MAP = {
   analyze_leads: ['POST', '/api/leads/analyze'],
   extract_nip: ['POST', '/api/emails/extract-nip'],
   send_tracking_to_customer: ['POST', '/api/send-tracking-email'],
+  send_tracking_to_customers_batch: ['POST', '/api/send-tracking-emails-batch'],
 };
 
 const executeTool = buildExecuteTool({
