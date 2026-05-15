@@ -21,10 +21,11 @@ function buildTrackingUrl(carrierName, trackingNumber, country) {
   if (c.includes('dpd')) {
     // DPD's tracking is split per-country (each national DPD hosts its own
     // parcel database). Polish-origin parcels live only on tracktrace.dpd.com.pl
-    // and won't resolve on tracking.dpd.de — so we use the PL endpoint
-    // regardless of recipient country. Customer sees Polish UI but the
-    // data displays correctly.
-    return `https://tracktrace.dpd.com.pl/findParcel?q=${encodeURIComponent(tn)}`;
+    // and won't resolve on tracking.dpd.de.
+    // parcelDetails (typ=1, p1=<number>) lands directly on the shipment
+    // page — findParcel?q= was a search-page redirect that sometimes
+    // didn't resolve.
+    return `https://tracktrace.dpd.com.pl/parcelDetails?typ=1&p1=${encodeURIComponent(tn)}`;
   }
   if (c.includes('dhl')) {
     // DHL has one global database; the page locale just affects UI text.
