@@ -50,6 +50,7 @@ app.use('/api', require('./routes/parse-document'));
 app.use('/api', require('./routes/analytics'));
 app.use('/api', require('./routes/glob'));
 app.use('/api', require('./routes/agent'));
+app.use('/api', require('./routes/admin'));
 app.use('/api', require('./routes/transactions'));
 app.use('/api/contasimple', require('./routes/contasimple'));
 
