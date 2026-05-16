@@ -60,8 +60,8 @@ model ContractorContact {
   contractorId String
   contractor   Contractor @relation(fields: [contractorId], references: [id], onDelete: Cascade)
 
-  type       String  // 'email' | 'phone' | 'mobile' | 'fax' | 'whatsapp'
-  value      String  // znormalizowane (email lowercase; tel z prefiksem +48...)
+  type       String // 'email' | 'phone' | 'mobile' | 'fax' | 'whatsapp'
+  value      String // znormalizowane (email lowercase; tel z prefiksem +48...)
   label      String? // 'office' | 'sales' | 'accounting' | 'shipping' | 'owner' | 'support' | wolny tekst
   personName String? // "Jan Kowalski"
   isPrimary  Boolean @default(false)
@@ -85,22 +85,22 @@ model ContractorAddress {
   contractorId String
   contractor   Contractor @relation(fields: [contractorId], references: [id], onDelete: Cascade)
 
-  type            String    // 'billing' | 'delivery' | 'office' | 'warehouse' | 'other'
-  label           String?   // "glowny magazyn", "biuro Madryt"
+  type            String // 'billing' | 'delivery' | 'office' | 'warehouse' | 'other'
+  label           String? // "glowny magazyn", "biuro Madryt"
   isPrimary       Boolean   @default(false)
-  recipientName   String?   // dla GK — kogo wpisac jako odbiorce
+  recipientName   String? // dla GK — kogo wpisac jako odbiorce
   street          String?
   houseNumber     String?
   postalCode      String?
   city            String?
-  region          String?   // wojewodztwo / provincia / state
-  country         String?   // ISO-2 preferowane, ale tolerancyjne
-  countryName     String?   // "Niemcy" / "Germany" — co wpisal user, do display
-  fullAddress     String?   // znormalizowany jednolinijkowy (do geocode + GK)
+  region          String? // wojewodztwo / provincia / state
+  country         String? // ISO-2 preferowane, ale tolerancyjne
+  countryName     String? // "Niemcy" / "Germany" — co wpisal user, do display
+  fullAddress     String? // znormalizowany jednolinijkowy (do geocode + GK)
   lat             Float?
   lng             Float?
   geocodedAt      DateTime?
-  geocodingStatus String?   // ok | not_found | error | skipped
+  geocodingStatus String? // ok | not_found | error | skipped
   source          String?
   extras          Json      @default("{}")
 
@@ -134,11 +134,24 @@ model Invoice {
   ifirmaType         String?
   bankReference      String?
   bankDate           DateTime?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+
+  // CRM v2 Etap 2.1 — denormalized contractor snapshot.
+  // Kontrahent moze zmienic adres/nazwe za rok, FV historyczna ma pokazywac
+  // prawde z momentu transakcji. Dodatkowo (contractorCountry, issueDate)
+  // index pozwala BI queries (analytics/revenue per kraj per okres) puscic
+  // bez joina do Contractor.
+  contractorName    String?
+  contractorNip     String?
+  contractorCountry String? // ISO-2
+  contractorCity    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([contractorId])
   @@index([number])
+  @@index([contractorCountry, issueDate])
+  @@index([currency, issueDate])
 }
 
 // ============ PIPELINE (STATUSY KLIENTÓW) ============
@@ -515,12 +528,23 @@ model EsInvoice {
   extras             Json      @default("{}") // lines, payments, customer snapshot, raw response
   source             String?   @default("contasimple")
 
+  // CRM v2 Etap 2.1 — denormalized contractor snapshot (mirror Invoice).
+  // NIF jako "nip" zeby BI queries mogly join'owac/uniowac PL+ES po jednym
+  // polu. Rename do "contractorNif" rozwazymy w v2.x jak BI stanie sie
+  // krytyczne.
+  contractorName    String?
+  contractorNip     String? // NIF/CIF/NIE
+  contractorCountry String? // ISO-2
+  contractorCity    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([contractorId])
   @@index([number])
   @@index([period])
+  @@index([contractorCountry, invoiceDate])
+  @@index([currency, invoiceDate])
 }
 
 // Local product catalog for the Canarias company. Synced from Contasimple

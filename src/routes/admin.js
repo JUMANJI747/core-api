@@ -4,6 +4,7 @@ const router = require('express').Router();
 const { getToken: getGkToken } = require('../glob-client');
 const { runBackfill: runContractorV2Backfill } = require('../services/contractor-v2-backfill');
 const { runBackfill: runContractorContactsBackfill } = require('../services/contractor-contacts-backfill');
+const { runBackfill: runInvoiceSnapshotsBackfill } = require('../services/invoice-snapshot-backfill');
 const https = require('https');
 
 // ============ ADMIN ENDPOINTS ============
@@ -167,6 +168,27 @@ router.post('/admin/backfill/contractor-contacts', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[admin/backfill/contractor-contacts] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Etap 2.1: Invoice + EsInvoice contractor snapshot (contractorName/Nip/
+// Country/City) wypelniony z aktualnego stanu (Es)Contractor. Idempotentny —
+// nadpisuje tylko puste pola, wiec reczne korekty z NocoDB przezyja kolejne
+// uruchomienie.
+router.post('/admin/backfill/invoice-snapshots', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  const verbose = req.body && req.body.verbose === true;
+  console.log(`[admin/backfill/invoice-snapshots] apply=${apply} verbose=${verbose}`);
+  try {
+    const result = await runInvoiceSnapshotsBackfill(prisma, {
+      apply, verbose,
+      log: (msg) => console.log(`[backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/invoice-snapshots] error:', e);
     res.status(500).json({ error: e.message });
   }
 });

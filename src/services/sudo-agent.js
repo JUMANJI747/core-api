@@ -65,6 +65,11 @@ ZNANE MIGRACJE / BACKFILLE (CRM v2):
   (contractorId, type, value) i normalized (type+street+city+postCode).
   Response: {scanned, touchedContractors, contactsCreated, contactsSkipped,
   addressesCreated, sample[]}.
+- POST /api/admin/backfill/invoice-snapshots — body {} (dry-run) lub
+  {"apply": true}. Wypelnia Invoice + EsInvoice snapshot kontrahenta
+  (contractorName/Nip/Country/City) z aktualnego stanu (Es)Contractor.
+  Tylko puste pola — reczne korekty z NocoDB sa bezpieczne.
+  Response: {pl: {scanned, touched, sample[]}, es: {...}}.
 
 Workflow KAZDEGO backfillu: ZAWSZE najpierw dry-run, pokaż liczby + sample,
 poczekaj na "ok", potem apply:true. To jest standard.

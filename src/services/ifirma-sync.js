@@ -71,6 +71,11 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
     const paidAmount = parseFloat(inv.Zaplacono || 0);
     const currency = (inv.Waluta || 'PLN').toUpperCase();
     const status = paidAmount >= grossAmount ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid';
+    // CRM v2 Etap 2.1 — snapshot kontrahenta z momentu wystawienia. City
+    // nie istnieje w payloadzie iFirmy listy FV — uzupelni go backfill po
+    // Contractor.city, ale nie blokujemy importu.
+    const snapshotName = (inv.NazwaKontrahenta || '').replace(/^-+\s*/, '').trim() || null;
+    const snapshotCountry = guessCountryFromInv(inv) || null;
 
     const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
     if (existing) {
@@ -103,6 +108,9 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
             ifirmaType: inv.Rodzaj || null,
             source: 'ifirma_sync',
             ifirmaContractorId: inv.IdentyfikatorKontrahenta ? String(inv.IdentyfikatorKontrahenta) : null,
+            contractorName: snapshotName,
+            contractorNip: rawNip || null,
+            contractorCountry: snapshotCountry,
             extras: (() => {
               const e = { kontrahentNazwa: inv.NazwaKontrahenta || inv.KontrahentNazwa || '' };
               const positions = inv.Pozycje || inv.Positions || inv.Items;

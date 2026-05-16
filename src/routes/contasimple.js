@@ -339,6 +339,11 @@ router.post('/invoices', asyncHandler(async (req, res) => {
           uiCulture: inv.uiCulture || null,
           numberingFormatId: inv.numberingFormatId || null,
           operationType: inv.operationType || null,
+          // CRM v2 Etap 2.1 — contractor snapshot z lokalnego EsContractor.
+          contractorName: local ? local.name : null,
+          contractorNip: local ? local.nif : null,
+          contractorCountry: local ? local.country : null,
+          contractorCity: local ? local.city : null,
           extras: { lines: inv.lines || [], payments: inv.payments || [] },
         },
       });
@@ -873,6 +878,11 @@ async function confirmEsPreview(stored) {
         uiCulture: invoice.uiCulture || 'es-ES',
         numberingFormatId: invoice.numberingFormatId || null,
         operationType: invoice.operationType || null,
+        // CRM v2 Etap 2.1 — contractor snapshot z momentu wystawienia.
+        contractorName: contractor.name || null,
+        contractorNip: contractor.nif || null,
+        contractorCountry: contractor.country || null,
+        contractorCity: contractor.city || null,
         extras: { lines: invoice.lines || [], payments: invoice.payments || [], previewLines: lines },
       },
     });
