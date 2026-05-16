@@ -35,6 +35,10 @@ SZUKANIE MAILI:
 - Jeśli nie ma w 50 → offset=50, potem 100. Max 3 strony.
 - Gdy pokazujesz znaleziony mail → na końcu DOPISZ: [ctx: emailId=<id>, from=<email>, lang=<en/pl/fr/es/pt/ca>]
 
+PEŁNA TREŚĆ MAILA:
+- recent_emails zwraca tylko bodyPreview (~300 znaków). Gdy user mówi "pokaż całą treść", "pełna treść", "oryginał maila", "co dokładnie napisał", "cały mail" → WYWOŁAJ get_email(emailId=<id>) i pokaż bodyFull DOSŁOWNIE (zachowaj formatowanie, łamania linii).
+- NIGDY nie mów "system nie ma narzędzia do pełnej treści" / "preview limit 300 znaków" — masz get_email.
+
 ZAŁĄCZNIKI:
 - mail.attachmentCount > 0 → AUTOMATYCZNIE parse_attachments z emailId.
 - Wykryto zamówienie → pokaż pozycje z cenami + zapytaj "Wystawić fakturę?" (przez Contasimple).
@@ -85,6 +89,17 @@ const tools = [
         limit: { type: 'number', description: 'Ile pobrać (default 50, max 100)' },
         offset: { type: 'number', description: 'Przesunięcie (0=najnowsze, 50=kolejne 50 starszych)' },
       },
+    },
+  },
+  {
+    name: 'get_email',
+    description: 'Pobierz PEŁNĄ treść maila po emailId (z bodyFull, nie preview). Użyj zawsze gdy user prosi "pokaż całą treść / oryginał maila / co napisał klient w całości" albo musisz zacytować dokładnie. Zwraca id, fromEmail, fromName, toEmail, subject, bodyPreview, bodyFull, attachments[], contractor.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        emailId: { type: 'string', description: 'UUID maila z [ctx: emailId=...] / recent_emails.' },
+      },
+      required: ['emailId'],
     },
   },
   {
@@ -188,6 +203,7 @@ const tools = [
 
 const ENDPOINT_MAP = {
   recent_emails: ['GET', '/api/emails/recent'],
+  get_email: ['GET', '/api/emails/:emailId'],
   list_drafts: ['GET', '/api/send-email/drafts'],
   send_email: ['POST', '/api/send-email'],
   confirm_draft: ['POST', '/api/send-email/confirm-latest'],
