@@ -290,22 +290,77 @@ model ActivityEvent {
 mail.received          mail.sent           mail.sent_external     mail.draft.created
 mail.failed            mail.bounce         mail.classified
 
-invoice.created        invoice.sent        invoice.pdf_to_telegram
-invoice.paid           invoice.overdue     invoice.canceled
+invoice.created             invoice.sent            invoice.pdf_to_telegram
+invoice.paid                invoice.overdue         invoice.canceled
+invoice.pdf_downloaded      invoice.reminder_sent
 
-es_invoice.created     es_invoice.sent     es_invoice.paid
+es_invoice.created          es_invoice.sent         es_invoice.pdf_to_telegram
+es_invoice.paid             es_invoice.canceled     es_invoice.pdf_downloaded
 
-shipment.quote_built   shipment.created    shipment.canceled
-tracking.notify.draft  tracking.notify.sent tracking.delivered
+shipment.quote_requested    shipment.quote_built    shipment.created
+shipment.canceled           shipment.label_printed  shipment.delivered
 
-contractor.created     contractor.updated  contractor.merged
-contractor.linked_es
+tracking.checked            tracking.notify.draft   tracking.notify.sent
 
-agent.tool_call                    // opcjonalne, gated env ACTIVITY_LOG_AGENT_CALLS=1
-admin.mutate           admin.api_call     admin.gk_raw
+contractor.created          contractor.updated      contractor.merged
+contractor.linked_es        contractor.geocoded     contractor.geocode_failed
 
-telegram.in            telegram.out       // opcjonalne, ACTIVITY_LOG_TELEGRAM=1
+product.created             product.updated
+
+mailing.sent                mailing.bounced         mailing.unsubscribed
+mailing.replied
+
+sync.ifirma.started         sync.ifirma.finished    sync.ifirma.failed
+sync.contasimple.started    sync.contasimple.finished   sync.contasimple.failed
+sync.gk_receivers.started   sync.gk_receivers.finished  sync.gk_receivers.failed
+sync.sheets.pushed          sync.sheets.failed
+sync.imap.poll              sync.imap.poll_sent
+
+agent.tool_call             agent.confirmation_resolved     agent.recent_activity_pulled
+
+admin.mutate                admin.api_call          admin.gk_raw
+
+telegram.in                 telegram.out            telegram.file_sent
+
+api.error                   api.slow_request         // gated, ACTIVITY_LOG_OBSERVABILITY=1
 ```
+
+**Filozofia "każda akcja backendu = log":** każdy hot path (sendMail, createInvoice, createOrder, geocode, sync runs, agent tool calls) emituje event. Volumin → wysoki ale akceptowalny dzięki:
+- `setImmediate` (zero blokady),
+- per-kategoria env gating (patrz 4.2.1),
+- partycjonowanie/retention (patrz 4.2.2).
+
+#### 4.2.1 Env gates (per-kategoria opt-out)
+
+Wszystko **default ON** w produkcji, żeby agent miał pełen kontekst. Wyłączane tylko gdy zauważymy szum.
+
+```
+ACTIVITY_LOG_MAIL=1
+ACTIVITY_LOG_INVOICE=1
+ACTIVITY_LOG_SHIPMENT=1
+ACTIVITY_LOG_TRACKING=1
+ACTIVITY_LOG_CONTRACTOR=1
+ACTIVITY_LOG_PRODUCT=1
+ACTIVITY_LOG_MAILING=1
+ACTIVITY_LOG_SYNC=1
+ACTIVITY_LOG_AGENT_CALLS=1
+ACTIVITY_LOG_ADMIN=1
+ACTIVITY_LOG_TELEGRAM=1
+ACTIVITY_LOG_OBSERVABILITY=0     ← default OFF (api.error / api.slow_request — dużo szumu)
+```
+
+`logActivity` sprawdza prefix typu (`mail.*` → `ACTIVITY_LOG_MAIL`) i pomija jeśli `0`.
+
+#### 4.2.2 Retention
+
+Tabela rośnie. Cron raz dziennie:
+- `agent.tool_call` / `agent.recent_activity_pulled` / `sync.imap.poll*` — **30 dni** (debug, nie biznes),
+- `telegram.*` — **90 dni**,
+- `admin.*` — **forever** (security trail),
+- reszta (`mail.*`, `invoice.*`, `shipment.*`, `contractor.*`, `sync.<system>.{started,finished,failed}`) — **forever** (biznes),
+- `api.error` / `api.slow_request` — **14 dni**.
+
+Skrypt `scripts/prune-activity.js` + cron `0 4 * * *`.
 
 ### 4.3 Helper
 
@@ -327,32 +382,122 @@ async function logActivity(prisma, evt) {
 module.exports = { logActivity, VALID_TYPES };
 ```
 
-### 4.4 Miejsca wstrzyknięcia (mapa hooków)
+### 4.4 Miejsca wstrzyknięcia (mapa hooków — "każda akcja backendu = log")
 
-| Plik | Punkt | Typ ActivityEvent |
-|---|---|---|
-| `src/services/mail-sender.js` (lub gdzie sendMail) | po `sendMail` ok | `mail.sent` |
-| ten sam plik | po sendMail fail | `mail.failed` |
-| imap consumer (INBOX) | po zapisie INBOUND email | `mail.received` |
-| imap consumer (Sent folder, **nowy poller**) | po zapisie OUTBOUND email **bez** `extras.appendedToSentAt` → wysłany ręcznie z Thunderbirda/innego klienta | `mail.sent_external` |
-| imap consumer (Sent folder) | po zapisie OUTBOUND **z** `extras.appendedToSentAt` → nasz `sendMail` już to zalogował, **skip** (idempotent — patrz 4.7) | — |
-| `tracking-notify.js` | po stworzeniu DRAFT | `tracking.notify.draft` |
-| `tracking-notify.js` | po `confirm-latest` → wysyłka | `tracking.notify.sent` |
-| `ifirma-sync.js` createInvoice | sukces | `invoice.created` |
-| invoice-confirm-latest | po `sendInvoicePdf` (telegram) | `invoice.pdf_to_telegram` |
-| invoice send to customer | po sendMail z PDF | `invoice.sent` |
-| iFirma payment webhook (jak będzie) | | `invoice.paid` |
-| `contasimple-helpers.js` create | sukces | `es_invoice.created` |
-| `glob-quote` createOrder | sukces (już istnieje matcher Transaction — dorzucamy log) | `shipment.created` |
-| glob `delete-order` | sukces | `shipment.canceled` |
-| `contractors/upsert` | nowy rekord | `contractor.created` |
-| `contractors/upsert` | update istniejącego | `contractor.updated` |
-| `/api/admin/contractors/merge` | sukces | `contractor.merged` |
-| `/api/admin/mutate` | sukces | `admin.mutate` |
-| `/api/admin/call-endpoint` | sukces | `admin.api_call` |
-| `/api/admin/gk-raw` | sukces | `admin.gk_raw` |
+#### Mail (10)
 
-Łącznie **~17 punktów**. Każdy = jedno wywołanie `logActivity(prisma, {...})`. Zero await.
+| Plik / punkt | Typ |
+|---|---|
+| `mail-sender.sendMail` ok | `mail.sent` |
+| `mail-sender.sendMail` fail | `mail.failed` |
+| imap consumer INBOX | `mail.received` |
+| imap consumer Sent (bez `appendedToSentAt`) | `mail.sent_external` |
+| imap consumer Sent (z `appendedToSentAt`) | — (idempotent skip) |
+| email classifier (sub-agent) | `mail.classified` |
+| bounce parsing (jak dorobimy) | `mail.bounce` |
+| draft builder (tracking-notify / agent compose) | `mail.draft.created` |
+| imap poll run (per inbox) | `sync.imap.poll` |
+| sent-folder poll run (per inbox) | `sync.imap.poll_sent` |
+
+#### Invoice PL (iFirma) (8)
+
+| Plik / punkt | Typ |
+|---|---|
+| `ifirma-sync.createInvoice` sukces | `invoice.created` |
+| invoice-confirm-latest → `sendInvoicePdf` (Telegram) | `invoice.pdf_to_telegram` |
+| invoice send to customer (sendMail z PDF) | `invoice.sent` |
+| download PDF z iFirma (cache) | `invoice.pdf_downloaded` |
+| iFirma payment webhook / status sync flip → paid | `invoice.paid` |
+| nightly scan past dueDate, status unpaid | `invoice.overdue` |
+| cancel (jak dorobimy) | `invoice.canceled` |
+| reminder mail wysłany | `invoice.reminder_sent` |
+
+#### Invoice ES (Contasimple) (6) — mirror PL
+
+| Plik / punkt | Typ |
+|---|---|
+| `contasimple-helpers.create` sukces | `es_invoice.created` |
+| `sendInvoicePdf` (Telegram) — **nowy hook po stronie ES** | `es_invoice.pdf_to_telegram` |
+| send to customer (sendMail z PDF) — **nowy hook** | `es_invoice.sent` |
+| download PDF z Contasimple | `es_invoice.pdf_downloaded` |
+| payment status flip → Payed | `es_invoice.paid` |
+| cancel | `es_invoice.canceled` |
+
+#### Shipment / Tracking (8)
+
+| Plik / punkt | Typ |
+|---|---|
+| `glob-quote` getQuote | `shipment.quote_requested` |
+| `glob-quote` buildQuote preview | `shipment.quote_built` |
+| `glob-quote` createOrder sukces | `shipment.created` |
+| `glob-client` delete-order sukces | `shipment.canceled` |
+| `glob-client` print label | `shipment.label_printed` |
+| `getOrderTracking` polling (per check) | `tracking.checked` |
+| `tracking-notify.js` DRAFT created | `tracking.notify.draft` |
+| `tracking-notify.js` confirm-latest → wysyłka | `tracking.notify.sent` |
+| (webhook delivery confirmation, jak dorobimy) | `shipment.delivered` |
+
+#### Contractor / CRM (6)
+
+| Plik / punkt | Typ |
+|---|---|
+| `contractors/upsert` nowy rekord | `contractor.created` |
+| `contractors/upsert` update | `contractor.updated` |
+| `/api/admin/contractors/merge` | `contractor.merged` |
+| `/api/admin/contractors/:id/link-es` | `contractor.linked_es` |
+| `geocode-all` / `geocode-llm-fallback` ok | `contractor.geocoded` |
+| geocode error | `contractor.geocode_failed` |
+
+#### Product (2)
+
+| Plik / punkt | Typ |
+|---|---|
+| `Product` / `EsProduct` insert | `product.created` |
+| update | `product.updated` |
+
+#### Mailing (4)
+
+| Plik / punkt | Typ |
+|---|---|
+| mailing campaign sendMail ok | `mailing.sent` |
+| bounce detect z IMAP | `mailing.bounced` |
+| unsubscribe link clicked / mail | `mailing.unsubscribed` |
+| reply detected od `MailingContact` | `mailing.replied` |
+
+#### Sync (cron — patrz Etap 6) (8)
+
+| Job | Typy |
+|---|---|
+| daily iFirma pull | `sync.ifirma.started` → `finished` / `failed` |
+| daily Contasimple pull | `sync.contasimple.started` → `finished` / `failed` |
+| daily GK receivers sync | `sync.gk_receivers.started` → `finished` / `failed` |
+| Google Sheets push (każdy push) | `sync.sheets.pushed` / `sync.sheets.failed` |
+
+#### Agent (3)
+
+| Plik / punkt | Typ |
+|---|---|
+| `agent-runtime.js` przed każdym `tool_use` | `agent.tool_call` (z `payload: { agent, tool, input }`, opcjonalnie truncate input >2KB) |
+| `/api/agent/resolve-confirmation` rozstrzygnięcie | `agent.confirmation_resolved` |
+| `/api/agent/recent-activity` query | `agent.recent_activity_pulled` |
+
+#### Admin / Sudo (3)
+
+| Plik / punkt | Typ |
+|---|---|
+| `/api/admin/mutate` | `admin.mutate` |
+| `/api/admin/call-endpoint` | `admin.api_call` |
+| `/api/admin/gk-raw` | `admin.gk_raw` |
+
+#### Telegram (3)
+
+| Plik / punkt | Typ |
+|---|---|
+| Master → backend (przyjęta wiadomość user-a, jeśli n8n nam ją echo'uje przez webhook lub backend wysyła z agent flow) | `telegram.in` |
+| `notify-mail-result` / wszystkie `sendMessage` z `telegram-helper.js` | `telegram.out` |
+| wysłany dokument/PDF (sendDocument) | `telegram.file_sent` |
+
+**Łącznie ~57 punktów** (vs 17 w poprzedniej wersji). Każdy = jedno `logActivity(prisma, {...})`. Zero await dzięki `setImmediate`. Gating per-kategoria (4.2.1) pozwala wyciszyć każdą grupę bez deploya kodu.
 
 ### 4.5 Backfill historyczny
 
@@ -568,6 +713,59 @@ Decyzja: dorzucamy w etapie 5 razem z UI. Backend gotowy do tego z 4.8.4.
 
 ---
 
+## Etap 6 — Scheduled syncs (cron — automat ≥1×/dzień)
+
+**Cel:** żeby agent miał świeże dane bez pytania user-a "kliknij sync". iFirma i Contasimple ciągniemy z automatu raz dziennie, plus okazjonalne lekkie polly w ciągu dnia.
+
+### 6.1 Stack
+
+Railway nie ma natywnego crona przy Node service. Opcje:
+- **A. Railway cron service** (osobny deploy z `cron: "..."` w `railway.json`) — natywne, czysto, każdy job osobny container. **Rekomendacja.**
+- **B. `node-cron` w głównym procesie** — prościej, ale śpi razem z deployem przy redeploy i konsumuje pamięć głównego API.
+- **C. External (GitHub Actions, cron-job.org)** — uderzają w `/api/cron/<job>?key=...`. Najmniej narzutu na nasz side, ale zewnętrzna zależność.
+
+**Propozycja:** **C** na start (najszybsze do uruchomienia, łatwo zmienić cadence bez deploya), migracja do **A** jak rozbudujemy o ciężkie joby. Endpoint pattern: `POST /api/cron/<job>` z headerem `X-Cron-Key`.
+
+### 6.2 Joby
+
+| Job | Endpoint | Cadence | Co robi | Events |
+|---|---|---|---|---|
+| iFirma daily pull | `POST /api/cron/sync-ifirma` | `0 3 * * *` (03:00 PL) | pobiera FV od `lastSync` (state w `Config`), upsert `Invoice`, upsert `Contractor`, kontakty/adresy, backfill `InvoiceLineItem`, contractor snapshots | `sync.ifirma.started` → `finished {count, durationMs}` / `failed {error}` |
+| Contasimple daily pull | `POST /api/cron/sync-contasimple` | `30 3 * * *` (03:30 PL) | analogicznie dla `EsInvoice` / `EsContractor` / `EsInvoiceLineItem` | `sync.contasimple.started` → `finished` / `failed` |
+| GK receivers sync | `POST /api/cron/sync-gk-receivers` | `0 4 * * *` (04:00 PL) | refresh listy odbiorców z GK, upsert do `Contractor` po NIP/mailu, dorzuć `gkReceiverId` do `externalIds` | `sync.gk_receivers.*` |
+| Invoice overdue scan | `POST /api/cron/scan-overdue` | `0 7 * * 1` (poniedziałek 07:00) | znajdź `Invoice` `status=unpaid`, `dueDate < now()-3d` → emit `invoice.overdue` + tag `urgent`, opcjonalny Telegram notify | `invoice.overdue` |
+| Activity prune | `POST /api/cron/prune-activity` | `0 4 * * *` | retention zgodnie z 4.2.2 | `sync.activity_pruned {deleted}` |
+| Tracking poll (active shipments) | `POST /api/cron/poll-tracking` | `*/30 * * * *` (co 30 min, godz 8-20) | dla `Transaction` z `hasShipped && !hasDelivered` <14 dni → odpytaj kuriera, na delivery → `shipment.delivered` + `tracking.notify` flow | `tracking.checked`, `shipment.delivered` |
+| IMAP poll INBOX | already-running interval (nie cron) | co ~30s | jak dziś + `sync.imap.poll` event z `payload: { new: N }` | `sync.imap.poll`, `mail.received` |
+| IMAP poll Sent (Thunderbird capture) | already-running interval | co ~30s | jak 4.7 | `sync.imap.poll_sent`, `mail.sent_external` |
+
+### 6.3 Idempotency + lock
+
+Każdy job:
+1. Bierze advisory lock (`SELECT pg_try_advisory_lock(<hash(jobName)>)`) — gdyby dwa zewnętrzne triggery uderzyły jednocześnie, tylko jeden leci, drugi loguje skip.
+2. Zapisuje `Config.key = 'cron:<job>:lastRunAt'` na koniec.
+3. State (cursor / `lastSync`) per job w `Config`.
+
+### 6.4 Health surface
+
+`GET /api/cron/health` zwraca dla każdego znanego joba:
+```json
+{
+  "sync-ifirma": { "lastRunAt": "...", "lastStatus": "ok", "lastDurationMs": 4321, "lastCount": 12, "nextExpected": "..." },
+  "sync-contasimple": { ... },
+  ...
+  "warnings": ["sync-gk-receivers: missed expected run window (>26h since last ok)"]
+}
+```
+
+Agent (sudo i operations) dostaje tool `cron_status` → "kiedy ostatnio leciał sync iFirmy" bez Railway dashboard.
+
+### 6.5 Telegram notify on failure
+
+Każdy `sync.*.failed` event → `notify-mail-result`-style Telegram do Master chatu z `🔧 backend:<hex>` (już mamy). User wie że trzeba interweniować bez logowania do Railway.
+
+---
+
 ## Etap 5 — Frontend (decyzja, nie kod)
 
 **Etap 5a (do uruchomienia w tygodniu CRM v2):** NocoDB jako Railway service nad tym samym Postgres. CRUD nad `Contractor`, `ContractorContact`, `ContractorAddress`, `Invoice`, `Product`, `EsContractor`. Read-only viewy do `ActivityEvent`, `Transaction`, `Email`. Kilka godzin do live.
@@ -584,7 +782,7 @@ Pytanie do Ciebie po etapie 4: które widoki najpierw?
 
 ## Kolejność commitów (proponowana)
 
-1. `feat(prisma): add preferredLanguage/primaryEmail/externalIds/aliases/linkedEsContractorId on Contractor` + migration + backfill skript dla extras→pola
+1. `feat(prisma): add preferredLanguage/primaryEmail/externalIds/aliases/linkedEsContractorId on Contractor` + backfill skript dla extras→pola
 2. `feat(prisma): add ContractorContact and ContractorAddress models` + backfill z Contractor.email/phone/address/extras.locations
 3. `feat(contractors): /api/contractors/:id/360 endpoint` (jeszcze bez activity)
 4. `feat(prisma): denormalize contractor snapshot fields on Invoice + EsInvoice` + backfill
@@ -592,11 +790,22 @@ Pytanie do Ciebie po etapie 4: które widoki najpierw?
 6. `feat(analytics): /api/analytics/revenue + top-customers + products-sold endpoints`
 7. `feat(sync): ifirma-sync + contasimple-sync + gk hook upsert ContractorContact/Address` + alias matching
 8. `feat(admin): contractors/merge + contractors/:id/link-es endpoints`
-9. `feat(prisma): add ActivityEvent model` + helper `src/services/activity-log.js` z walidacją typów
-10. `feat(activity): inject logActivity in 17 hot paths` (jeden commit lub podzielony per-domain: mail / invoice / shipment / contractor / admin)
-11. `feat(activity): /api/activity endpoint`
-12. `feat(activity): backfill historical events from Email/Invoice/Transaction/Contractor`
+9. `feat(prisma): add ActivityEvent + tags + searchText (pg_trgm)` + helper `src/services/activity-log.js` z walidacją typów i env gates
+10. `feat(activity): inject logActivity per-domain` — podzielony na sub-commity:
+    - 10a mail (10 hooków)
+    - 10b invoice PL (8 hooków)
+    - 10c invoice ES (6 hooków, w tym **nowe** `es_invoice.sent` + `pdf_to_telegram`)
+    - 10d shipment + tracking (9 hooków)
+    - 10e contractor + product (8 hooków)
+    - 10f mailing (4 hooki)
+    - 10g agent + admin + telegram (9 hooków)
+11. `feat(activity): /api/activity endpoint z filtrami, wildcardami, facets`
+11b. `feat(imap): poll Sent folder per inbox; capture Thunderbird-sent → mail.sent_external`
+12. `feat(activity): backfill historical events from Email/Invoice/EsInvoice/Transaction/Contractor`
 13. `feat(360): include activity timeline in /api/contractors/:id/360`
+14. `feat(cron): scheduled syncs — sync-ifirma + sync-contasimple + sync-gk-receivers + scan-overdue + prune-activity + poll-tracking endpoints`
+15. `feat(cron): /api/cron/health + agent tool cron_status; Telegram notify on sync.*.failed`
+16. `feat(agent): search_activity tool dla wszystkich subagentów + Master prompt update (n8n side oddzielnie)`
 
 Każdy commit z testem ręcznym (curl + opis w body PR-a) i logiem Railway.
 
@@ -632,5 +841,8 @@ Risk: dodawanie kolumn `NOT NULL` bez defaulta wywali `db push`. Więc:
 5. **`Contractor` stare pola (`address`, `city`, `country`, `lat`, `lng`)** — kasować w PR-ze `unlock` po zakończeniu migracji wszystkich call-sites, czy zostawić "na zawsze" jako quick-access denormalized?
 6. **`Activity` (per-Deal)** — zostawiamy nietkniętą, czy migrujemy do `ActivityEvent` z `dealId` jako kolejny FK i kasujemy starą? (Wpływ: wszystkie miejsca które piszą do `Activity` w deal flow.)
 7. **Tagi — kanoniczna lista czy free-form?** Proponuję: kanoniczna lista (tabela `ActivityTagDictionary` lub stała w kodzie) dla `country:`, `lang:`, `carrier:`, `inbox:` (auto-generowane z danych) + free-form dla biznesowych (`urgent`, `complaint`, `follow_up`). Agent dostaje listę kanonicznych w prompcie, free-form proponuje przy klasyfikacji. OK?
+8. **Cron trigger — A (Railway cron service), B (`node-cron` w głównym procesie), czy C (external GH Actions / cron-job.org → POST `/api/cron/<job>`)?** Proponuję **C** na start (1 dzień do uruchomienia, łatwo zmieniać cadence bez deploya, klucz w env). Migracja do A gdy będziemy mieli >5 jobów albo długie (>5min).
+9. **`agent.tool_call` volume** — KAŻDE wywołanie tool-a przez subagenta = 1 event. Przy intensywnej rozmowie to setki dziennie. Default ON (żeby debug/audit), retention 30 dni (4.2.2). Akceptujesz, czy wolisz default OFF i włączać ad-hoc gdy debugujesz?
+10. **`telegram.in` vs `telegram.out`** — `out` mamy łatwo (każdy `telegram-helper.sendMessage` → log). `in` wymaga: albo n8n echo'uje user-message webhookiem do backendu, albo Master agent przy każdym tool call dorzuca `userMessage` w payload (i wtedy logujemy z tego). Wybierasz: A) tylko `out` na start, B) dorobimy webhook z n8n do backendu, C) Master agent przekazuje user-message?
 
 Po Twoim OK / odpowiedziach → ruszamy od commitu 1.
