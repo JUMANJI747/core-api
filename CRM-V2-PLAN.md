@@ -287,8 +287,8 @@ model ActivityEvent {
 ### 4.2 Słownik typów (lista zamknięta — stała w `src/services/activity-log.js`)
 
 ```
-mail.received          mail.sent           mail.draft.created     mail.failed
-mail.bounce            mail.classified
+mail.received          mail.sent           mail.sent_external     mail.draft.created
+mail.failed            mail.bounce         mail.classified
 
 invoice.created        invoice.sent        invoice.pdf_to_telegram
 invoice.paid           invoice.overdue     invoice.canceled
@@ -333,7 +333,9 @@ module.exports = { logActivity, VALID_TYPES };
 |---|---|---|
 | `src/services/mail-sender.js` (lub gdzie sendMail) | po `sendMail` ok | `mail.sent` |
 | ten sam plik | po sendMail fail | `mail.failed` |
-| imap consumer | po zapisie INBOUND email | `mail.received` |
+| imap consumer (INBOX) | po zapisie INBOUND email | `mail.received` |
+| imap consumer (Sent folder, **nowy poller**) | po zapisie OUTBOUND email **bez** `extras.appendedToSentAt` → wysłany ręcznie z Thunderbirda/innego klienta | `mail.sent_external` |
+| imap consumer (Sent folder) | po zapisie OUTBOUND **z** `extras.appendedToSentAt` → nasz `sendMail` już to zalogował, **skip** (idempotent — patrz 4.7) | — |
 | `tracking-notify.js` | po stworzeniu DRAFT | `tracking.notify.draft` |
 | `tracking-notify.js` | po `confirm-latest` → wysyłka | `tracking.notify.sent` |
 | `ifirma-sync.js` createInvoice | sukces | `invoice.created` |
@@ -355,7 +357,12 @@ module.exports = { logActivity, VALID_TYPES };
 ### 4.5 Backfill historyczny
 
 `scripts/backfill-activity.js`:
-- `Email` → `mail.received` / `mail.sent` / `mail.draft.created` (po `direction`),
+- `Email` → klasyfikacja po `direction` + `extras.appendedToSentAt`:
+  - `INBOUND` → `mail.received`,
+  - `OUTBOUND` z `extras.appendedToSentAt` (nasz sendMail) → `mail.sent`,
+  - `OUTBOUND` bez `extras.appendedToSentAt` (Thunderbird / inny zewnętrzny klient — w bazie są bo `backfill-sent`/Sent-poller je zaciągnął) → `mail.sent_external`,
+  - `DRAFT` → `mail.draft.created`,
+  - `FAILED` → `mail.failed`,
 - `Invoice` → `invoice.created` (createdAt jako event time),
 - `EsInvoice` → `es_invoice.created`,
 - `Transaction` → `shipment.created` jeśli `hasShipped`, `tracking.notify.sent` jeśli mamy `trackingNumber`,
@@ -370,6 +377,194 @@ GET /api/activity?contractorId=X&type=Y&since=Z&until=...&limit=50&offset=0
 ```
 
 Limit cap 500. Sortowanie `createdAt desc`.
+
+### 4.7 Sent-folder polling (nowe — Thunderbird capture)
+
+**Problem:** dziś IMAP poller czyta tylko INBOX po `lastUid` z `ImapState`. Maile wysłane przez Thunderbirda (lub Twój telefon, webmail, dowolny klient IMAP) trafiają do Sent foldera ale nie do naszej bazy. Agent ich nie widzi → kontekst niepełny przy następnym pytaniu o klienta.
+
+**Rozwiązanie:** rozszerzyć IMAP poller o drugi worker per inbox, który ciągnie z folderu Sent (folder name detect — patrz `imap-diag` które już mamy).
+
+**Detale:**
+
+1. **`ImapState` rozszerzenie:**
+   ```prisma
+   model ImapState {
+     inbox        String   @id      // np. "info"
+     lastUid      Int      @default(0)   // INBOX
+     sentFolder   String?              // wykryte: "Sent" | "Sent Items" | "INBOX.Sent" | "[Gmail]/Wysłane" — cache po pierwszym imap-diag
+     sentLastUid  Int      @default(0)   // pozycja w Sent folderze
+     updatedAt    DateTime @updatedAt
+   }
+   ```
+
+2. **Worker `pollSentFolder(inbox)`** w tym samym module co INBOX poller (`src/services/imap-poller.js` lub gdzie to siedzi):
+   - SELECT `sentFolder`, FETCH UID > `sentLastUid`,
+   - Dla każdej wiadomości: parsuj headers + body,
+   - **Idempotency check 1:** jeśli `messageId` istnieje w `Email` → już mamy (nasz sendMail zapisał + zrobił APPEND, ten APPEND wraca jako "nowy" z perspektywy Sent UID) → **skip**, tylko bumpuj `sentLastUid`,
+   - **Idempotency check 2:** jeśli `messageId` brak → nowy mail z Thunderbirda → INSERT do `Email` z `direction='OUTBOUND'`, `inbox=<konto>`, `extras: { source: 'thunderbird_sent_poller' }` (BEZ `appendedToSentAt` — nas tam nie było),
+   - **Po INSERT:** `logActivity('mail.sent_external', { contractorId: <auto-match>, emailId, actorType: 'user', actorId: 'thunderbird', payload: { fromEmail, toEmail, subject } })`,
+   - **Auto-match contractor:** odpalamy ten sam classifier co dla INBOUND (po `toEmail` przez `ContractorContact.value` lub fallback do `Contractor.email`/`primaryEmail`).
+
+3. **Częstotliwość:** ten sam interval co INBOX (~30s). Sent folder zwykle ma niski volume, narzut minimalny.
+
+4. **Gating env:**
+   - `IMAP_POLL_SENT=1` (default 1) — możliwość wyłączenia per deploy,
+   - `IMAP_POLL_SENT_INBOXES=info,niko,delivery` (default = wszystkie z `IMAP_ACCOUNTS`) — żeby na start włączyć tylko na koncie głównym, sprawdzić czy idempotency działa, potem rozszerzyć.
+
+5. **Bootstrap dla istniejących Sent folderów:**
+   - `POST /api/emails/backfill-sent-full?inbox=info&since=2026-01-01` — jednorazowy zaciąg historycznych Sent (nie polega na UID, robi SEARCH SINCE date),
+   - Idempotent po `messageId`,
+   - Każdy nowo zapisany OUTBOUND (bez `appendedToSentAt`) → `mail.sent_external` event dorobi backfill-activity skript w 4.5.
+
+6. **Kontrakt dla agenta po implementacji:**
+   - `GET /api/contractors/:id/360` zwraca w `emails[]` zarówno INBOUND, OUTBOUND (nasz), jak i sent_external (Thunderbird) — agent widzi pełną korespondencję,
+   - `GET /api/activity?contractorId=X` pokazuje `mail.sent_external` w timeline z `actorId: 'thunderbird'` (lub identyfikatorem klienta jeśli da się wyciągnąć z headera `User-Agent`/`X-Mailer`),
+   - Sub-agent `communication` przy generowaniu nowej odpowiedzi widzi co już zostało wysłane ręcznie i nie powtarza tematu / nie kontruje Twojej decyzji.
+
+7. **Edge case — race condition:** Twój `sendMail` robi INSERT do `Email` + IMAP APPEND niemal równocześnie. Sent-poller może zobaczyć ten APPEND zanim baza zaindeksuje `messageId`. Mitygacja: w `pollSentFolder` przed INSERT robimy:
+   ```sql
+   SELECT id FROM Email WHERE messageId = $1
+   ```
+   Jeśli pusto → 200ms retry (jednorazowy), potem INSERT. Akceptowalne ryzyko duplikatu marginalne.
+
+**Nowa pozycja w kolejce commitów (między 11 a 12):**
+
+11b. `feat(imap): poll Sent folder per inbox; capture Thunderbird-sent emails as OUTBOUND with source=thunderbird_sent_poller; emit mail.sent_external ActivityEvent`
+
+### 4.8 Kategoryzacja i wyszukiwanie (taxonomy + search UX)
+
+Cel: Ty i agent macie znaleźć "wszystko co dotyczy klienta X w ostatnim miesiącu", "wszystkie tracking notify do Niemiec", "co poszło z konta delivery@ ręcznie z Thunderbirda", bez grzebania w Postgresie.
+
+**4.8.1 Hierarchia typu (`type` jest już namespace'owany)**
+
+Format: `<domain>.<action>[.<modifier>]`. Lista domen zamknięta:
+
+| Domain | Co tam idzie | Przykłady akcji |
+|---|---|---|
+| `mail` | wszystko email-owe | `received`, `sent`, `sent_external`, `draft.created`, `failed`, `bounce`, `classified` |
+| `invoice` | PL FV (iFirma) | `created`, `sent`, `pdf_to_telegram`, `paid`, `overdue`, `canceled` |
+| `es_invoice` | ES FV (Contasimple) | `created`, `sent`, `paid` |
+| `shipment` | przesyłka GK | `quote_built`, `created`, `canceled` |
+| `tracking` | komunikacja śledzenia | `notify.draft`, `notify.sent`, `delivered` |
+| `contractor` | CRM | `created`, `updated`, `merged`, `linked_es` |
+| `agent` | działania subagentów | `tool_call`, `confirmation_resolved` |
+| `admin` | sudo + admin endpoints | `mutate`, `api_call`, `gk_raw` |
+| `telegram` | (opt) bridge n8n→backend | `in`, `out` |
+
+Skutek: filtr `type=mail.*` daje wszystko mailowe; `type=tracking.notify.*` daje cały lifecycle tracking notify.
+
+**4.8.2 Tagi (cross-cutting)**
+
+```prisma
+// dodajemy do ActivityEvent
+tags  String[] @default([])
+```
+
+Lista zalecanych tagów (luźna, ale Master prompt powinien znać kanoniczne):
+
+| Tag | Sens |
+|---|---|
+| `inbox:info` / `inbox:niko` / `inbox:delivery` / ... | konto IMAP którego dotyczy |
+| `country:de` / `country:pl` / `country:es` / ... | kraj kontrahenta (ISO-2) |
+| `lang:pl` / `lang:en` / `lang:de` / ... | język komunikacji |
+| `carrier:dpd` / `carrier:inpost` / `carrier:dhl` / `carrier:gls` / ... | kurier (dla `shipment.*` / `tracking.*`) |
+| `manual` | zdarzenie zainicjowane przez Ciebie ręcznie (Thunderbird, sudo, frontend) |
+| `automated` | zainicjowane przez webhook/scheduler/agent bez user input |
+| `complaint` | reklamacja (klasyfikator maila albo agent oznaczył) |
+| `urgent` | termin w 24h / status overdue / blocker |
+| `follow_up` | wymaga reakcji z naszej strony |
+| `internal` | komunikacja wewnętrzna (np. mail między naszymi kontami) |
+
+Index na `tags`:
+```prisma
+@@index([tags])  // GIN — Postgres array search
+```
+
+Tag-set ustawia każdy hook na podstawie kontekstu (np. `tracking-notify.js` po sukcesie woła `logActivity({ type: 'tracking.notify.sent', tags: ['carrier:dpd', 'country:de', 'lang:de', 'inbox:delivery'] })`).
+
+**4.8.3 Pole `searchText` (denormalizowany blob do full-text)**
+
+```prisma
+searchText  String?   // konkatenacja: summary + payload.subject + payload.contractorName + payload.toEmail + payload.fromEmail + payload.invoiceNumber + payload.shipmentNumber + payload.trackingNumber
+
+@@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin)  // pg_trgm dla LIKE/ILIKE
+```
+
+(Ekstension `pg_trgm` — Railway Postgres ma go domyślnie. Sprawdzimy `CREATE EXTENSION IF NOT EXISTS pg_trgm` jako pierwszy krok migracji.)
+
+Helper `logActivity` automatycznie buduje `searchText` z `summary` + wybranych pól `payload` żeby hook nie musiał pamiętać.
+
+**4.8.4 Endpoint `/api/activity` rozszerzony filtrami**
+
+```
+GET /api/activity
+  ?contractorId=...
+  &type=mail.*                        ← wildcard z prawej (LIKE 'mail.%')
+  &type=tracking.notify.sent          ← albo dokładny match
+  &types=mail.sent,mail.sent_external ← albo lista
+  &tags=country:de,carrier:dpd        ← AND po tagach
+  &tagsAny=urgent,follow_up           ← OR po tagach
+  &source=thunderbird_sent_poller
+  &actorType=user
+  &q=ACME                             ← ILIKE na searchText
+  &since=2026-04-01
+  &until=2026-05-16
+  &limit=50
+  &offset=0
+  &order=desc                         ← desc default, asc dla "od najstarszego"
+```
+
+Response zawiera też `facets` (jak Algolia/Meilisearch):
+```json
+{
+  "items": [...],
+  "total": 1247,
+  "facets": {
+    "type": { "mail.received": 423, "mail.sent": 102, "tracking.notify.sent": 67, ... },
+    "tags": { "country:de": 89, "carrier:dpd": 54, "urgent": 12, ... },
+    "source": { "imap": 525, "ifirma": 134, "gk": 67, ... }
+  }
+}
+```
+
+Facets pozwalają agentowi (i Tobie) szybko zorientować się "w czym tu szukać dalej" bez odpalania kolejnych queries.
+
+**4.8.5 Wyszukiwanie w stylu agenta**
+
+Dodajemy do `agent-runtime.js` (wszystkie subagenty + sudo) tool `search_activity`:
+
+```js
+{
+  name: 'search_activity',
+  description: 'Search activity events / timeline. Use to recall what happened with a customer, find emails sent manually from Thunderbird, list shipments to a country, etc.',
+  input_schema: {
+    contractorId, type, tags, q, since, until, limit
+  }
+}
+```
+
+Master prompt update: gdy user pyta "co było z X w ostatnim tygodniu" / "pokaż maile do DE" / "co wczoraj wysłałem ręcznie" → router idzie do agenta który ma `search_activity`. Wstępnie: każdy subagent dostaje narzędzie (czytanie taniego logu), bo każdy może potrzebować historii.
+
+**4.8.6 Skróty wyszukiwania (zapisane filtry — opcjonalne, etap 5b z frontendem)**
+
+Tabela `ActivityFilter` (named queries):
+```prisma
+model ActivityFilter {
+  id        String   @id @default(uuid())
+  name      String   // "Maile ręczne ostatnie 7 dni", "Tracking DPD do DE"
+  query     Json     // ten sam shape co query params
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+```
+
+Frontend (NocoDB / Next.js): sidebar z pinned filters → klik → wynik. Agent: tool `list_activity_filters` + `run_activity_filter(name)`.
+
+Decyzja: dorzucamy w etapie 5 razem z UI. Backend gotowy do tego z 4.8.4.
+
+---
+
+**Wpływ na otwarte pytania:** dochodzi pytanie #7 (poniżej).
 
 ---
 
@@ -436,5 +631,6 @@ Risk: dodawanie kolumn `NOT NULL` bez defaulta wywali `db push`. Więc:
 4. **NocoDB self-hosted czy płatny SaaS?** Self-hosted Railway = darmowo ale jeden więcej service do utrzymania. SaaS = ~10$/mc.
 5. **`Contractor` stare pola (`address`, `city`, `country`, `lat`, `lng`)** — kasować w PR-ze `unlock` po zakończeniu migracji wszystkich call-sites, czy zostawić "na zawsze" jako quick-access denormalized?
 6. **`Activity` (per-Deal)** — zostawiamy nietkniętą, czy migrujemy do `ActivityEvent` z `dealId` jako kolejny FK i kasujemy starą? (Wpływ: wszystkie miejsca które piszą do `Activity` w deal flow.)
+7. **Tagi — kanoniczna lista czy free-form?** Proponuję: kanoniczna lista (tabela `ActivityTagDictionary` lub stała w kodzie) dla `country:`, `lang:`, `carrier:`, `inbox:` (auto-generowane z danych) + free-form dla biznesowych (`urgent`, `complaint`, `follow_up`). Agent dostaje listę kanonicznych w prompcie, free-form proponuje przy klasyfikacji. OK?
 
 Po Twoim OK / odpowiedziach → ruszamy od commitu 1.
