@@ -999,6 +999,21 @@ async function processAccount(account) {
           },
         });
 
+        // CRM v2 Etap 4.4 — mail.received activity event.
+        try {
+          const { logActivity } = require('./services/activity-log');
+          logActivity(prisma, {
+            type: 'mail.received',
+            summary: `Mail z ${mail.fromEmail}: ${mail.subject || '(brak tematu)'}`,
+            source: 'imap',
+            contractorId,
+            emailId: savedEmail.id,
+            actorType: 'system',
+            payload: { fromEmail: mail.fromEmail, fromName: mail.fromName, toEmail, subject: mail.subject, inbox, category, country: effectiveCountry, language: effectiveLanguage },
+            tags: [`inbox:${inbox}`, effectiveCountry ? `country:${effectiveCountry.toLowerCase()}` : null, effectiveLanguage ? `lang:${effectiveLanguage.toLowerCase()}` : null].filter(Boolean),
+          });
+        } catch (_) {}
+
         // Link email to contractor
         if (contractorId) {
           await prisma.email.update({
@@ -1326,7 +1341,7 @@ async function processSentItems(account) {
         }).catch(() => null);
         if (contractor) contractorId = contractor.id;
 
-        await prisma.email.create({
+        const savedSent = await prisma.email.create({
           data: {
             direction: 'OUTBOUND',
             inbox,
@@ -1342,6 +1357,26 @@ async function processSentItems(account) {
             contractorId,
           },
         });
+
+        // CRM v2 Etap 4.7 — mail wyslany "z zewnatrz" (Thunderbird,
+        // webmail), zapisany z folderu SENT przez tego pollera. Nasz
+        // sendMail dodaje messageId do bazy zanim mail trafia do Sent,
+        // wiec dedup po messageId go zawsze zlapie wczesniej — tu lecimy
+        // tylko gdy to byl zewnetrzny klient.
+        try {
+          const { logActivity } = require('./services/activity-log');
+          logActivity(prisma, {
+            type: 'mail.sent_external',
+            summary: `Mail wyslany (zewnetrzny): ${mail.subject || '(brak)'} → ${mail.toEmail}`,
+            source: 'imap',
+            contractorId,
+            emailId: savedSent.id,
+            actorType: 'user',
+            actorId: 'thunderbird',
+            payload: { fromEmail: mail.fromEmail, toEmail: mail.toEmail, subject: mail.subject, inbox },
+            tags: [`inbox:${inbox}`, 'manual'],
+          });
+        } catch (_) {}
       } catch (mailErr) {
         console.error(`[inbox-poller] ${sentKey}: error uid=${mail.uid}:`, mailErr.message);
       }

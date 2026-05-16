@@ -653,6 +653,25 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     });
     await createInvoiceLineItems(prisma, invoice, pozycje);
 
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'invoice.created',
+        summary: `FV ${pelnyNumer} wystawiona dla ${contractor.name} (${brutto} ${waluta})`,
+        source: 'ifirma',
+        contractorId: contractor.id,
+        invoiceId: invoice.id,
+        actorType: 'user',
+        actorId: req.body && req.body.chatId ? String(req.body.chatId) : null,
+        payload: {
+          number: pelnyNumer, ifirmaId: ifirmaIdNum, grossAmount: String(brutto),
+          currency: waluta, type: rodzaj, contractorName: contractor.name, contractorNip: contractor.nip,
+          lineCount: pozycje.length,
+        },
+        tags: [`country:${(contractor.country || 'pl').toLowerCase()}`, `currency:${waluta.toLowerCase()}`],
+      });
+    } catch (_) {}
+
     // Operations tracker — link to existing Transaction (matched against an
     // already-created shipment) or open a new one. Best-effort, never fail
     // the request because of it.
@@ -792,6 +811,25 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       },
     });
     await createInvoiceLineItems(prisma, invoice, pozycje);
+
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'invoice.created',
+        summary: `FV ${pelnyNumer} wystawiona dla ${contractor.name} (${brutto} ${waluta})`,
+        source: 'ifirma',
+        contractorId: contractor.id,
+        invoiceId: invoice.id,
+        actorType: 'user',
+        actorId: req.body && req.body.chatId ? String(req.body.chatId) : null,
+        payload: {
+          number: pelnyNumer, ifirmaId, grossAmount: String(brutto),
+          currency: waluta, type: rodzaj, contractorName: contractor.name, contractorNip: contractor.nip,
+          lineCount: pozycje.length,
+        },
+        tags: [`country:${(contractor.country || 'pl').toLowerCase()}`, `currency:${waluta.toLowerCase()}`],
+      });
+    } catch (_) {}
 
     const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj);
 

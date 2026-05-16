@@ -115,7 +115,7 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
   // tak żeby caller mógł powiadomić użytkownika.
   if (!sentMessageId) {
     console.error(`[mail-sender] WARN: sendMail returned no messageId, treating as failure. Response:`, JSON.stringify(result).slice(0, 500));
-    await prisma.email.create({
+    const failedEmail = await prisma.email.create({
       data: {
         direction: 'FAILED',
         inbox: extractInbox(from),
@@ -130,6 +130,18 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
         contractorId: null,
       },
     });
+    try {
+      const { logActivity } = require('./services/activity-log');
+      logActivity(prisma, {
+        type: 'mail.failed',
+        summary: `Mail FAILED: ${subject || '(brak tematu)'} → ${to}`,
+        source: 'system',
+        emailId: failedEmail.id,
+        actorType: 'system',
+        payload: { subject, fromEmail: from, toEmail: to, reason: 'SMTP nie zwrócił Message-ID' },
+        tags: [`inbox:${extractInbox(from)}`],
+      });
+    } catch (_) {}
     const err = new Error('SMTP nie zwrócił Message-ID — wysyłka niepotwierdzona');
     err.smtpResponse = result;
     throw err;
@@ -159,6 +171,21 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
       contractorId,
     },
   });
+
+  // CRM v2 Etap 4.4 — activity event. setImmediate w helperze, nie blokuje.
+  try {
+    const { logActivity } = require('./services/activity-log');
+    logActivity(prisma, {
+      type: 'mail.sent',
+      summary: `Mail wysłany: ${subject || '(brak tematu)'} → ${to}`,
+      source: 'system',
+      contractorId,
+      emailId: saved.id,
+      actorType: 'system',
+      payload: { subject, fromEmail: from, toEmail: to, messageId: sentMessageId, hasAttachments: !!(attachments && attachments.length) },
+      tags: [`inbox:${extractInbox(from)}`],
+    });
+  } catch (_) {}
 
   // Fire-and-forget: APPEND to IMAP Sent so messages show up in Thunderbird
   // / webmail. SMTP already succeeded so we don't await this. The previous

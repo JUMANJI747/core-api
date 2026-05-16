@@ -1382,6 +1382,29 @@ router.post('/glob/order', async (req, res) => {
         console.error('[glob/order] tracker error:', e.message);
       }
 
+      // CRM v2 Etap 4.4 — shipment.created activity event.
+      try {
+        const { logActivity } = require('../services/activity-log');
+        const carrierTag = selectedOffer && selectedOffer.carrier ? `carrier:${String(selectedOffer.carrier).toLowerCase()}` : null;
+        const countryTag = receiver && receiver.country ? `country:${String(receiver.country).toLowerCase()}` : null;
+        logActivity(prisma, {
+          type: 'shipment.created',
+          summary: `Paczka GK${result.number || orderHash} ${selectedOffer ? selectedOffer.carrier : ''} → ${(receiver && (receiver.name || receiver.city)) || '?'}`,
+          source: 'gk',
+          contractorId: (receiver && receiver.contractorId) || (contractor && contractor.id) || null,
+          shipmentNumber: result.number || null,
+          actorType: 'user',
+          actorId: req.body && req.body.chatId ? String(req.body.chatId) : null,
+          payload: {
+            orderHash, number: result.number || null, carrier: selectedOffer && selectedOffer.carrier,
+            price: selectedOffer && selectedOffer.price, currency: selectedOffer && selectedOffer.currency,
+            receiverName: receiver && receiver.name, receiverCity: receiver && receiver.city,
+            receiverCountry: receiver && receiver.country,
+          },
+          tags: [carrierTag, countryTag].filter(Boolean),
+        });
+      } catch (_) {}
+
       // CRM v2 Etap 1.5 — sync hook. Adres dostawy + telefon shipping
       // upsertujemy do ContractorContact/Address. Receiver moze byc
       // przepisany na innego niz orginalny kontrahent (np. dropshipping)
@@ -1554,7 +1577,7 @@ router.post('/glob/order', async (req, res) => {
             // Save as DRAFT so the existing /send-email/confirm-latest tool
             // can pick it up when the user says "tak". 30-minute window
             // matches what that endpoint expects.
-            await prisma.email.create({
+            const trackingDraftEmail = await prisma.email.create({
               data: {
                 direction: 'DRAFT',
                 inbox: trackingFrom.split('@')[0],
@@ -1568,6 +1591,21 @@ router.post('/glob/order', async (req, res) => {
                 extras: { trackingNumber, carrier: carrierName, country: resolvedCountry, trackingUrl },
               },
             });
+            try {
+              const { logActivity } = require('../services/activity-log');
+              logActivity(prisma, {
+                type: 'tracking.notify.draft',
+                summary: `Tracking draft: ${carrierName} ${trackingNumber} → ${recipientEmail}`,
+                source: 'system',
+                contractorId: receiverContractorId || null,
+                emailId: trackingDraftEmail.id,
+                shipmentNumber: result.number || null,
+                trackingNumber,
+                actorType: 'system',
+                payload: { trackingNumber, trackingUrl, carrier: carrierName, country: resolvedCountry, recipientEmail, subject },
+                tags: [carrierName ? `carrier:${String(carrierName).toLowerCase()}` : null, resolvedCountry ? `country:${String(resolvedCountry).toLowerCase()}` : null].filter(Boolean),
+              });
+            } catch (_) {}
 
             // Push preview to the operator's Telegram with the LIVE link so
             // they can click → verify → only then approve.

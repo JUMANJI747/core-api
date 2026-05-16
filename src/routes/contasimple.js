@@ -442,6 +442,23 @@ router.post('/invoices', asyncHandler(async (req, res) => {
       // CRM v2 Etap 2.2 — EsInvoiceLineItem z Contasimple response (fallback,
       // bo na tej sciezce nie mamy lokalnych previewLines).
       await createEsInvoiceLineItems(prisma, persisted, null, inv.lines || []);
+      try {
+        const { logActivity } = require('../services/activity-log');
+        logActivity(prisma, {
+          type: 'es_invoice.created',
+          summary: `FV ES ${persisted.number || persisted.contasimpleId} wystawiona (${persisted.totalAmount} ${persisted.currency})`,
+          source: 'contasimple',
+          contractorId: local ? local.id : null,
+          esInvoiceId: persisted.id,
+          actorType: 'user',
+          payload: {
+            number: persisted.number, contasimpleId: persisted.contasimpleId,
+            totalAmount: String(persisted.totalAmount), currency: persisted.currency,
+            contractorName: local ? local.name : null, contractorNip: local ? local.nif : null,
+          },
+          tags: [`country:${(local && local.country ? local.country : 'es').toLowerCase()}`, `currency:${(persisted.currency || 'eur').toLowerCase()}`],
+        });
+      } catch (_) {}
     }
   } catch (persistErr) {
     console.error('[contasimple] local invoice persist failed:', persistErr.message);
@@ -984,6 +1001,24 @@ async function confirmEsPreview(stored) {
     // CRM v2 Etap 2.2 — EsInvoiceLineItem z previewLines (preferowane,
     // zawiera ean+variant z lokalnego katalogu) z fallbackiem na CS lines.
     await createEsInvoiceLineItems(prisma, localInvoice, lines, invoice.lines || []);
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'es_invoice.created',
+        summary: `FV ES ${localInvoice.number || localInvoice.contasimpleId} wystawiona dla ${contractor.name} (${localInvoice.totalAmount} ${localInvoice.currency})`,
+        source: 'contasimple',
+        contractorId: contractor.id,
+        esInvoiceId: localInvoice.id,
+        actorType: 'user',
+        payload: {
+          number: localInvoice.number, contasimpleId: localInvoice.contasimpleId,
+          totalAmount: String(localInvoice.totalAmount), currency: localInvoice.currency,
+          contractorName: contractor.name, contractorNip: contractor.nif,
+          lineCount: lines ? lines.length : 0,
+        },
+        tags: [`country:${(contractor.country || 'es').toLowerCase()}`, `currency:${(localInvoice.currency || 'eur').toLowerCase()}`],
+      });
+    } catch (_) {}
   } catch (e) {
     console.error('[cs invoice-confirm] local persist failed:', e.message);
   }

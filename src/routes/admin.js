@@ -371,6 +371,20 @@ router.post('/admin/contractors/merge', async (req, res) => {
       },
     });
 
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'contractor.merged',
+        summary: `Merge ${drop.name} → ${keep.name}`,
+        source: 'sudo',
+        contractorId: keepId,
+        actorType: 'user',
+        payload: { keepId, dropId, keepName: keep.name, dropName: drop.name,
+          emails: emails.count, invoices: invoices.count, transactions: transactions.count,
+          contactsMoved, addressesMoved, aliasesAdded: stats.aliasesAdded, linkedEsMigrated },
+      });
+    } catch (_) {}
+
     res.json({
       ok: true, keepId, dropId,
       contractor: { id: updatedKeep.id, name: updatedKeep.name, aliases: updatedKeep.aliases.length, externalIds: Object.keys(updatedKeep.externalIds || {}).length },
@@ -435,6 +449,17 @@ router.post('/admin/contractors/:id/link-es', async (req, res) => {
         payload: { plName: pl.name, plNip: pl.nip, esContractorId, esName: es.name, esNif: es.nif },
       },
     });
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'contractor.linked_es',
+        summary: `Linked PL ${pl.name} ↔ ES ${es.name}`,
+        source: 'sudo',
+        contractorId: id,
+        actorType: 'user',
+        payload: { plName: pl.name, plNip: pl.nip, esContractorId, esName: es.name, esNif: es.nif },
+      });
+    } catch (_) {}
 
     res.json({
       ok: true, id, linkedEsContractorId: esContractorId,
@@ -467,6 +492,17 @@ router.post('/admin/contractors/:id/unlink-es', async (req, res) => {
         payload: { plName: pl.name, previousEsContractorId: previousLink },
       },
     });
+    try {
+      const { logActivity } = require('../services/activity-log');
+      logActivity(prisma, {
+        type: 'contractor.unlinked_es',
+        summary: `Unlinked PL ${pl.name} from ES ${previousLink}`,
+        source: 'sudo',
+        contractorId: id,
+        actorType: 'user',
+        payload: { plName: pl.name, previousEsContractorId: previousLink },
+      });
+    } catch (_) {}
     res.json({ ok: true, id, previousLink });
   } catch (e) {
     console.error('[admin/contractors/:id/unlink-es] error:', e);

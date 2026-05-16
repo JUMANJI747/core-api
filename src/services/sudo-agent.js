@@ -214,40 +214,80 @@ async function processSudoQuery(query, ctx = {}) {
   // n8n juz wyciol, nic sie nie dzieje.
   const cleanQuery = query.replace(/^\s*(xxx|@?sudo)\b[:\s,-]*/i, '').trim() || query;
 
-  const messages = [{ role: 'user', content: cleanQuery }];
-  let response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    tools,
-    messages,
+  // CRM v2 Etap 4.4 — run-level logging. Wszystkie tool calls + final
+  // text trzymamy w runRecord do agent.run_finished payload.
+  const prisma = require('../db');
+  const { logActivity } = require('./activity-log');
+  const runId = require('crypto').randomUUID();
+  const startedAt = Date.now();
+  const toolCalls = [];
+  logActivity(prisma, {
+    type: 'agent.run_started',
+    summary: `sudo run start: ${cleanQuery.slice(0, 120)}`,
+    source: 'agent',
+    actorType: 'user',
+    actorId: ctx.chatId ? String(ctx.chatId) : null,
+    payload: { agent: 'sudo', runId, userQuery: cleanQuery.slice(0, 2000) },
+    tags: ['agent:sudo'],
   });
 
-  const MAX_ITER = 12; // sudo może chodzić długo: find + plan + execute + per-item handling
-  let iterations = 0;
-  while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
-    iterations++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
-      console.log(`[sudo-agent] tool_use #${iterations}: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input, ctx);
-      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result).slice(0, 8000) });
-    }
-    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
-    messages.push({ role: 'user', content: toolResultBlocks });
-
-    response = await anthropic.messages.create({
+  try {
+    const messages = [{ role: 'user', content: cleanQuery }];
+    let response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
       tools,
       messages,
     });
-  }
 
-  const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-  return { text: finalText, iterations, stopReason: response.stop_reason };
+    const MAX_ITER = 12; // sudo może chodzić długo: find + plan + execute + per-item handling
+    let iterations = 0;
+    while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
+      iterations++;
+      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+      const toolResultBlocks = [];
+      for (const tu of toolUseBlocks) {
+        console.log(`[sudo-agent] tool_use #${iterations}: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
+        const result = await executeTool(tu.name, tu.input, ctx);
+        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result).slice(0, 8000) });
+        toolCalls.push({ tool: tu.name, input: tu.input, output: typeof result === 'object' ? JSON.stringify(result).slice(0, 500) : String(result).slice(0, 500) });
+      }
+      messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
+      messages.push({ role: 'user', content: toolResultBlocks });
+
+      response = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        system: SYSTEM_PROMPT,
+        tools,
+        messages,
+      });
+    }
+
+    const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+    logActivity(prisma, {
+      type: 'agent.run_finished',
+      summary: `sudo run finished (${iterations} tool calls, ${Date.now() - startedAt}ms)`,
+      source: 'agent',
+      actorType: 'user',
+      actorId: ctx.chatId ? String(ctx.chatId) : null,
+      payload: { agent: 'sudo', runId, userQuery: cleanQuery.slice(0, 500), toolCalls, finalText: finalText.slice(0, 2000), durationMs: Date.now() - startedAt, stopReason: response.stop_reason },
+      tags: ['agent:sudo'],
+    });
+    return { text: finalText, iterations, stopReason: response.stop_reason };
+  } catch (err) {
+    logActivity(prisma, {
+      type: 'agent.run_failed',
+      summary: `sudo run failed: ${err.message}`,
+      source: 'agent',
+      actorType: 'user',
+      actorId: ctx.chatId ? String(ctx.chatId) : null,
+      payload: { agent: 'sudo', runId, userQuery: cleanQuery.slice(0, 500), toolCallsBefore: toolCalls, error: err.message, durationMs: Date.now() - startedAt },
+      tags: ['agent:sudo'],
+    });
+    throw err;
+  }
 }
 
 module.exports = { processSudoQuery };

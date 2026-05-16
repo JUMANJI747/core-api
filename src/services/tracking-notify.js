@@ -175,6 +175,25 @@ async function sendTrackingNotification({
     const saved = await sendMail({ from: fromEmail, to: toEmail, subject, body: text, html });
     const messageId = saved && saved.messageId;
 
+    // CRM v2 Etap 4.4 — tracking.notify.sent activity event.
+    if (prisma) {
+      try {
+        const { logActivity } = require('./activity-log');
+        logActivity(prisma, {
+          type: 'tracking.notify.sent',
+          summary: `Tracking ${trackingNumber} → ${toEmail}`,
+          source: 'system',
+          contractorId: (saved && saved.contractorId) || null,
+          emailId: saved && saved.id,
+          trackingNumber,
+          actorType: 'user',
+          actorId: reqChatId ? String(reqChatId) : null,
+          payload: { toEmail, fromEmail, subject, trackingNumber, trackingUrl, carrier, country, messageId },
+          tags: [carrier ? `carrier:${String(carrier).toLowerCase()}` : null, country ? `country:${String(country).toLowerCase()}` : null].filter(Boolean),
+        });
+      } catch (_) {}
+    }
+
     // Telegram confirmation to the operator (us). Reuses the same helper
     // used everywhere else for "mail sent" notifications so the format
     // is identical. We append the tracking URL line so the operator can
