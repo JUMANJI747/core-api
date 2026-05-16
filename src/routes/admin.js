@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const { getToken: getGkToken } = require('../glob-client');
 const { runBackfill: runContractorV2Backfill } = require('../services/contractor-v2-backfill');
+const { runBackfill: runContractorContactsBackfill } = require('../services/contractor-contacts-backfill');
 const https = require('https');
 
 // ============ ADMIN ENDPOINTS ============
@@ -147,6 +148,25 @@ router.post('/admin/backfill/contractor-v2', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[admin/backfill/contractor-v2] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Etap 1.2 + 1.3: ContractorContact + ContractorAddress backfill z flat
+// fields (email/phone/address) + extras.locations[].
+router.post('/admin/backfill/contractor-contacts', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  const verbose = req.body && req.body.verbose === true;
+  console.log(`[admin/backfill/contractor-contacts] apply=${apply} verbose=${verbose}`);
+  try {
+    const result = await runContractorContactsBackfill(prisma, {
+      apply, verbose,
+      log: (msg) => console.log(`[backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/contractor-contacts] error:', e);
     res.status(500).json({ error: e.message });
   }
 });

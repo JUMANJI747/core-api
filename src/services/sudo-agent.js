@@ -55,11 +55,19 @@ ZASADY:
 
 ZNANE MIGRACJE / BACKFILLE (CRM v2):
 - POST /api/admin/backfill/contractor-v2 — body {} (dry-run) lub {"apply": true}.
-  Backfilluje aliases / externalIds / primaryEmail na Contractor z extras + email.
-  Idempotentny, nadpisuje tylko puste pola. Response: {scanned, touched,
-  setAliases, setExternalIds, setPrimaryEmail, sample[]}.
-  Workflow: ZAWSZE najpierw dry-run, pokaż liczby + sample, poczekaj na "ok",
-  potem apply:true. To jest standard dla wszystkich backfill endpointów.
+  Backfilluje aliases / externalIds.ifirmaIdentifier / primaryEmail na
+  Contractor z extras + email. Idempotentny, nadpisuje tylko puste pola.
+  Response: {scanned, touched, setAliases, setExternalIds, setPrimaryEmail, sample[]}.
+- POST /api/admin/backfill/contractor-contacts — body {} (dry-run) lub
+  {"apply": true}. Tworzy rekordy ContractorContact (email/phone) i
+  ContractorAddress (billing z flat fields, delivery z extras.locations[])
+  dla wszystkich kontrahentow. Idempotentny — pomija duplikaty per
+  (contractorId, type, value) i normalized (type+street+city+postCode).
+  Response: {scanned, touchedContractors, contactsCreated, contactsSkipped,
+  addressesCreated, sample[]}.
+
+Workflow KAZDEGO backfillu: ZAWSZE najpierw dry-run, pokaż liczby + sample,
+poczekaj na "ok", potem apply:true. To jest standard.
 
 LIMITS:
 - max_tokens 4096 — masz luz na multi-step

@@ -43,11 +43,74 @@ model Contractor {
   emails       Email[]
   invoices     Invoice[]
   transactions Transaction[]
+  contacts     ContractorContact[]
+  addresses    ContractorAddress[]
 
   @@index([country])
   @@index([tags])
   @@index([primaryEmail])
   @@index([linkedEsContractorId])
+}
+
+// CRM v2 Etap 1.2 — multi-email/phone/whatsapp na kontrahencie.
+// Zastepuje pojedyncze Contractor.email/phone (te zostaja jako
+// quick-access denorm dla list/grepow).
+model ContractorContact {
+  id           String     @id @default(uuid())
+  contractorId String
+  contractor   Contractor @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+
+  type       String  // 'email' | 'phone' | 'mobile' | 'fax' | 'whatsapp'
+  value      String  // znormalizowane (email lowercase; tel z prefiksem +48...)
+  label      String? // 'office' | 'sales' | 'accounting' | 'shipping' | 'owner' | 'support' | wolny tekst
+  personName String? // "Jan Kowalski"
+  isPrimary  Boolean @default(false)
+  source     String? // 'ifirma', 'contasimple', 'gk', 'mailing', 'manual', 'backfill', 'extras.locations'
+  notes      String?
+  extras     Json    @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([contractorId, type, value])
+  @@index([contractorId])
+  @@index([type, value])
+}
+
+// CRM v2 Etap 1.3 — multi-adresy na kontrahencie (billing / delivery /
+// office / warehouse). Zastepuje extras.locations[] (zostaje jako
+// legacy podczas migracji).
+model ContractorAddress {
+  id           String     @id @default(uuid())
+  contractorId String
+  contractor   Contractor @relation(fields: [contractorId], references: [id], onDelete: Cascade)
+
+  type            String    // 'billing' | 'delivery' | 'office' | 'warehouse' | 'other'
+  label           String?   // "glowny magazyn", "biuro Madryt"
+  isPrimary       Boolean   @default(false)
+  recipientName   String?   // dla GK — kogo wpisac jako odbiorce
+  street          String?
+  houseNumber     String?
+  postalCode      String?
+  city            String?
+  region          String?   // wojewodztwo / provincia / state
+  country         String?   // ISO-2 preferowane, ale tolerancyjne
+  countryName     String?   // "Niemcy" / "Germany" — co wpisal user, do display
+  fullAddress     String?   // znormalizowany jednolinijkowy (do geocode + GK)
+  lat             Float?
+  lng             Float?
+  geocodedAt      DateTime?
+  geocodingStatus String?   // ok | not_found | error | skipped
+  source          String?
+  extras          Json      @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contractorId])
+  @@index([type])
+  @@index([city])
+  @@index([country])
 }
 
 // ============ FAKTURY (iFirma) ============
