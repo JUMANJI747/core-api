@@ -33,7 +33,7 @@ model Contractor {
   primaryEmail         String? // wskaźnik "główny" — redundant z ContractorContact ale wygodny w listach
   externalIds          Json     @default("{}") // { ifirmaId, gkReceiverId, contasimpleId, ... }
   aliases              String[] @default([]) // alternatywne nazwy + potoczne ("ACME", "Janusz", "ten od Krakowa")
-  linkedEsContractorId String?  @unique // cross-ref PL ↔ ES (Canarias); rename do linkedCnContractorId w commicie #17
+  linkedEsContractorId String? // cross-ref PL ↔ ES (Canarias); @unique dodajemy w commicie #8 razem z /api/admin/contractors/:id/link-es; rename do linkedCnContractorId w commicie #17
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
