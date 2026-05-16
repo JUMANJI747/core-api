@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const { getToken: getGkToken } = require('../glob-client');
+const { runBackfill: runContractorV2Backfill } = require('../services/contractor-v2-backfill');
 const https = require('https');
 
 // ============ ADMIN ENDPOINTS ============
@@ -124,6 +125,28 @@ router.post('/admin/gk-raw', async (req, res) => {
     if (data) proxyReq.write(data);
     proxyReq.end();
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ CRM v2 BACKFILLS ============
+// Jednorazowe migracje danych — idempotentne (nadpisuja tylko puste pola).
+// Dry-run domyslnie; { "apply": true } zapisuje.
+
+// Etap 1: Contractor extras + flat fields -> aliases/externalIds/primaryEmail.
+router.post('/admin/backfill/contractor-v2', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  const verbose = req.body && req.body.verbose === true;
+  console.log(`[admin/backfill/contractor-v2] apply=${apply} verbose=${verbose}`);
+  try {
+    const result = await runContractorV2Backfill(prisma, {
+      apply, verbose,
+      log: (msg) => console.log(`[backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/contractor-v2] error:', e);
     res.status(500).json({ error: e.message });
   }
 });
