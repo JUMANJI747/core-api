@@ -510,6 +510,45 @@ model AuditLog {
   @@index([createdAt])
 }
 
+// CRM v2 Etap 4 — os czasu zdarzen biznesowych (mail wyslany, FV
+// wystawiona, paczka nadana, tracking wyslany). Wszystkie hot paths
+// emituja przez src/services/activity-log.js (setImmediate, gating
+// per-kategoria env). AuditLog zostaje na admin/security trail (sudo
+// mutate, gk-raw, admin api), ActivityEvent dla biznesowej historii.
+model ActivityEvent {
+  id      String @id @default(uuid())
+  type    String // patrz VALID_TYPES w src/services/activity-log.js
+  summary String
+  source  String // 'ifirma' | 'contasimple' | 'gk' | 'imap' | 'mailing' | 'agent' | 'sudo' | 'webhook' | 'system' | 'backfill'
+
+  contractorId   String?
+  emailId        String?
+  invoiceId      String?
+  esInvoiceId    String?
+  transactionId  String?
+  shipmentNumber String?
+  trackingNumber String?
+
+  actorType String  @default("system") // 'user' | 'agent' | 'system' | 'webhook'
+  actorId   String? // n8n chatId, agent name ("logistics"), worker id
+  payload   Json    @default("{}") // truncated to 10KB; raw size in payload._meta.originalSize
+
+  tags       String[] @default([])
+  searchText String? // denormalized blob: summary + payload.subject + contractorName + numbers, ILIKE search
+
+  createdAt DateTime @default(now())
+
+  @@index([contractorId, createdAt(sort: Desc)])
+  @@index([type, createdAt(sort: Desc)])
+  @@index([source, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([invoiceId])
+  @@index([esInvoiceId])
+  @@index([transactionId])
+  @@index([shipmentNumber])
+  @@index([tags])
+}
+
 // ============ CONTASIMPLE (ES Canarias — druga księgowość, IGIC) ============
 //
 // Druga firma na Wyspach Kanaryjskich obsługiwana przez Contasimple
