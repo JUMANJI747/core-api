@@ -299,8 +299,10 @@ es_invoice.paid             es_invoice.canceled     es_invoice.pdf_downloaded
 
 shipment.quote_requested    shipment.quote_built    shipment.created
 shipment.canceled           shipment.label_printed  shipment.delivered
+shipment.stale
 
 tracking.checked            tracking.notify.draft   tracking.notify.sent
+sync.tracking.poll_batch
 
 contractor.created          contractor.updated      contractor.merged
 contractor.linked_es        contractor.geocoded     contractor.geocode_failed
@@ -735,7 +737,7 @@ Railway nie ma natywnego crona przy Node service. Opcje:
 | GK receivers sync | `POST /api/cron/sync-gk-receivers` | `0 4 * * *` (04:00 PL) | refresh listy odbiorców z GK, upsert do `Contractor` po NIP/mailu, dorzuć `gkReceiverId` do `externalIds` | `sync.gk_receivers.*` |
 | Invoice overdue scan | `POST /api/cron/scan-overdue` | `0 7 * * 1` (poniedziałek 07:00) | znajdź `Invoice` `status=unpaid`, `dueDate < now()-3d` → emit `invoice.overdue` + tag `urgent`, opcjonalny Telegram notify | `invoice.overdue` |
 | Activity prune | `POST /api/cron/prune-activity` | `0 4 * * *` | retention zgodnie z 4.2.2 | `sync.activity_pruned {deleted}` |
-| Tracking poll (active shipments) | `POST /api/cron/poll-tracking` | `*/30 * * * *` (co 30 min, godz 8-20) | dla `Transaction` z `hasShipped && !hasDelivered` <14 dni → odpytaj kuriera, na delivery → `shipment.delivered` + `tracking.notify` flow | `tracking.checked`, `shipment.delivered` |
+| Tracking batch poll | `POST /api/cron/poll-tracking-batch` | `0 8,16 * * *` (2×/dzień: 08:00 i 16:00 PL) | dla wszystkich `Transaction` z `hasShipped && !hasDelivered && shipmentDate > now()-21d` zbiera `orderNumber[]`, jeden batch call do `GET /v1/order/tracking/list?orderList[][orderNumber]=...`, diff względem `lastKnownStatus` w `extras` → eventy `tracking.checked` (zawsze) + `shipment.delivered` (gdy status terminalny). **2 calle do GK/dzień łącznie**, nie per-shipment | `tracking.checked`, `shipment.delivered`, `sync.tracking.poll_batch` |
 | IMAP poll INBOX | already-running interval (nie cron) | co ~30s | jak dziś + `sync.imap.poll` event z `payload: { new: N }` | `sync.imap.poll`, `mail.received` |
 | IMAP poll Sent (Thunderbird capture) | already-running interval | co ~30s | jak 4.7 | `sync.imap.poll_sent`, `mail.sent_external` |
 
@@ -763,6 +765,56 @@ Agent (sudo i operations) dostaje tool `cron_status` → "kiedy ostatnio leciał
 ### 6.5 Telegram notify on failure
 
 Każdy `sync.*.failed` event → `notify-mail-result`-style Telegram do Master chatu z `🔧 backend:<hex>` (już mamy). User wie że trzeba interweniować bez logowania do Railway.
+
+### 6.6 Tracking — strategia hybrydowa (mail-driven + batch poll fallback)
+
+**Założenie:** GK wysyła powiadomienia mailowe na `delivery@` przy każdej zmianie statusu paczki (pickup / in transit / out for delivery / delivered / problem). To darmowy real-time signal — nie ma sensu hammerować ich API jeśli można czytać maile które i tak przychodzą.
+
+**A. Primary: parser maili GK na `delivery@`**
+
+Dodajemy do email-classifier nową regułę:
+- `fromEmail` matchuje GK domain (`@globkurier.pl` / `@noreply.globkurier.pl` / inne sprawdzimy w prod inbox-ie),
+- Wyciągamy z body: `orderNumber` (GK260...), `status`, opcjonalnie `trackingNumber` jeśli pierwsza paczka,
+- Update `Transaction` po `shipmentNumber`: `extras.lastKnownStatus`, ewentualnie `hasDelivered=true` + `deliveredAt`,
+- Emit `tracking.checked` (zawsze) + `shipment.delivered` (gdy terminal status) z `source: 'gk_email'`, `actorType: 'webhook'`.
+
+Implementacja: nowy worker `src/services/gk-email-parser.js` wywoływany po zapisie `Email` z `inbox='delivery'` i `fromEmail` matching GK. Zero polling, zero callów do API.
+
+**B. Fallback: batch poll 2×/dzień**
+
+W razie gdyby mail się zgubił / GK go nie wysłał / klasyfikator pominął:
+
+**Endpoint GK:**
+```
+GET /v1/order/tracking/list
+Query: orderList[][orderNumber]=GK260... (array, multi)
+       orderList[][carrier]=DPD          (optional, gdy numer ambiguous między kurierami)
+Header: Accept-Language: pl
+Response: 200, application/json, mapa { [orderNumber]: { status, history[], ... } }
+```
+
+**Job:** `POST /api/cron/poll-tracking-batch` (08:00 + 16:00 PL):
+
+1. SELECT `Transaction` WHERE `hasShipped = true AND hasDelivered = false AND occurredAt > now() - interval '21 days'` → lista `shipmentNumber`,
+2. Zbuduj query: `orderList[][orderNumber]=GK260...` per shipment (carrier opcjonalnie z `Transaction.extras.carrier`),
+3. **Pojedynczy call** do GK z całą listą — limit 50 per call (do potwierdzenia w docs, jak >50 to chunkujemy),
+4. Iteruj response, diff vs `Transaction.extras.lastKnownStatus`:
+   - Status zmieniony → update + emit `tracking.checked` z `payload: { from: old, to: new }`,
+   - Status terminalny (`delivered`/`returned`/`canceled`) → `hasDelivered=true`/`canceled flag` + emit `shipment.delivered` (lub odpowiednio),
+   - Bez zmian → bump `extras.lastPolledAt`, **nie emitujemy** (cisza w logach),
+5. Emit `sync.tracking.poll_batch` z `payload: { shipmentsChecked, statusChanges, errors }`.
+
+**Koszt:** 2 calle/dzień do GK niezależnie od liczby aktywnych shipments. Bardzo bezpieczne dla rate limita.
+
+**C. User-triggered (już mamy)**
+
+Gdy user / agent prosi o tracking konkretnej paczki, wołamy `getOrderTracking(orderNumber)` (single, używany dziś w tracking-notify flow). To zostaje.
+
+**D. Cleanup po 21 dniach**
+
+Transactions starsze niż 21 dni bez delivery → emit `shipment.stale` + Telegram notify "paczka GK260... nie ma confirmed delivery, sprawdź ręcznie", flag `extras.staleNotified=true` żeby nie spamować. Nie usuwamy z DB.
+
+**Wpływ na słownik typów (4.2):** dorzucam `sync.tracking.poll_batch`, `shipment.stale`. Email-driven update używa istniejących `tracking.checked` / `shipment.delivered` z różnym `source`.
 
 ---
 
