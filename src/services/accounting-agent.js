@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool } = require('./agent-runtime');
+const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -294,7 +294,7 @@ async function processAccountingQuery(query, ctx = {}) {
         content: JSON.stringify(result),
       });
     }
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
     messages.push({ role: 'user', content: toolResultBlocks });
 
     response = await anthropic.messages.create({

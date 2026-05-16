@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool } = require('./agent-runtime');
+const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.SUDO_AGENT_MODEL || 'claude-opus-4-7';
@@ -179,7 +179,7 @@ async function processSudoQuery(query, ctx = {}) {
       const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result).slice(0, 8000) });
     }
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
     messages.push({ role: 'user', content: toolResultBlocks });
 
     response = await anthropic.messages.create({

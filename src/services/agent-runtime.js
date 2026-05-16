@@ -79,4 +79,16 @@ function buildExecuteTool({ endpointMap, logPrefix, transformBody }) {
   };
 }
 
-module.exports = { selfCall, expandPath, buildExecuteTool };
+// Anthropic API rzuca 400 "text content blocks must be non-empty" jak w
+// historii pojawi sie text-block z pustym .text. Model czasem emituje
+// {type:'text', text:''} obok tool_use — odfiltrujmy zanim pchniemy
+// response.content z powrotem do messages.
+function sanitizeAssistantContent(content) {
+  if (!Array.isArray(content)) return content;
+  return content.filter(b => {
+    if (b && b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0;
+    return true;
+  });
+}
+
+module.exports = { selfCall, expandPath, buildExecuteTool, sanitizeAssistantContent };
