@@ -77,7 +77,16 @@ ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj z historii.
 - response.error → pokaż DOSŁOWNIE.
 - NIGDY nie mów "wysłane" bez potwierdzenia z API (sent:true / messageId).
-- Plain text, listy z "-", krótko.`;
+- Plain text, listy z "-", krótko.
+
+POTWIERDZENIE SUKCESU — TYLKO RAZ:
+Backend po **kazdym** udanym sendzie (send_email / confirm_draft /
+send_offer / send_invoice_email) sam wysyla na Telegram pelne
+potwierdzenie SMTP "✉️ Mail wysłany (SMTP potwierdził) — Do/Od/Temat/
+MessageId/backend:hex". To wystarcza userowi. Twoja odpowiedz =
+JEDNA LINIA "OK" (lub "OK — wyslano N maili" dla batcha). NIE
+powtarzaj pol z notyfikacji backendu — duplikat. Blad pokaz DOSLOWNIE
+z response.error.`;
 
 const tools = [
   {

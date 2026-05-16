@@ -1506,29 +1506,37 @@ router.post('/glob/order', async (req, res) => {
           try {
             // Wait for the carrier to assign a real tracking number — GK260...
             // is their internal id, not something DPD/DHL portals recognise.
+            // DPD/UPS/DHL czesto mielo 2-3 min zanim API GK ma numer kuriera.
+            // Predykcyjnie odpalamy z env (default 18 prob x 15s = 4.5 min)
+            // zeby zlapac wiekszosc przypadkow bez koniecznosci recznej
+            // interwencji usera "wyslij tracking".
             let trackingNumber = result.trackingNumber || result.tracking || null;
             const orderNumberForTracking = result.number || result.orderNumber;
+            const pollAttempts = parseInt(process.env.TRACKING_DRAFT_POLL_ATTEMPTS || '18', 10);
+            const pollIntervalMs = parseInt(process.env.TRACKING_DRAFT_POLL_INTERVAL_MS || '15000', 10);
             if (!trackingNumber && orderNumberForTracking) {
-              for (let i = 0; i < 4; i++) {
-                await new Promise(r => setTimeout(r, 5000));
+              for (let i = 0; i < pollAttempts; i++) {
+                await new Promise(r => setTimeout(r, pollIntervalMs));
                 try {
                   const t = await getOrderTracking(orderNumberForTracking);
-                  console.log(`[glob/order] getOrderTracking poll #${i + 1} response:`, JSON.stringify(t).slice(0, 800));
+                  if (i === 0 || i === pollAttempts - 1 || i % 4 === 0) {
+                    console.log(`[glob/order] getOrderTracking poll #${i + 1}/${pollAttempts} response:`, JSON.stringify(t).slice(0, 400));
+                  }
                   const candidate = t && (t.trackingNumber || t.tracking
                     || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
                     || (Array.isArray(t) && t[0] && t[0].trackingNumber));
                   if (candidate && String(candidate).trim()) {
                     trackingNumber = String(candidate).trim();
-                    console.log(`[glob/order] carrier tracking resolved (poll #${i + 1}): ${trackingNumber}`);
+                    console.log(`[glob/order] carrier tracking resolved (poll #${i + 1}/${pollAttempts}): ${trackingNumber}`);
                     break;
                   }
                 } catch (e) {
-                  console.error(`[glob/order] getOrderTracking poll #${i + 1} failed:`, e.message);
+                  console.error(`[glob/order] getOrderTracking poll #${i + 1}/${pollAttempts} failed:`, e.message);
                 }
               }
             }
             if (!trackingNumber) {
-              console.log(`[glob/order] tracking-draft skipped — carrier tracking number not yet assigned (GK# ${result.number || orderHash})`);
+              console.log(`[glob/order] tracking-draft skipped after ${pollAttempts} attempts (~${Math.round(pollAttempts * pollIntervalMs / 60000)} min) — carrier tracking number still not assigned (GK# ${result.number || orderHash})`);
               return;
             }
             // Pre-validation: skip if status indicates parcel is registered

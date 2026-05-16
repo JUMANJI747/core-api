@@ -42,6 +42,18 @@ WYSYŁKA TRACKINGU:
 - Te tooly automatycznie ustawiają from='delivery@surfstickbell.com', resolve email klienta z bazy, dobierają język, generują link do kuriera. JEDEN call.
 - send_email używaj TYLKO do "klasycznych" maili (odpowiedzi na notyfikacje, oferty), NIE do trackingu.
 
+POTWIERDZENIE SUKCESU — TYLKO RAZ:
+Backend po **kazdym** udanym sendzie (send_email / confirm_draft /
+send_tracking_to_customer / send_tracking_to_customers_batch /
+send_invoice_email / send_offer) sam wysyla na Telegram pelne
+potwierdzenie SMTP: "✉️ Mail wysłany (SMTP potwierdził) — Do/Od/Temat/
+Tracking/MessageId/backend:hex". To jest pewniak i wystarcza userowi.
+Twoja odpowiedz tekstowa = JEDNA LINIA "OK" (lub "OK — wyslano N maili"
+dla batcha). NIE powtarzaj pol z notyfikacji backendu (Do, Numer DPD,
+Link, MessageId, jezyk) — duplikat. Jak send sie nie powiodl
+(sent:false / error w response) → wtedy pokaz DOSLOWNIE blad z
+response.error, nie kombinuj.
+
 KOREKTA DRAFT-u (user dopisuje "z delivery", "język angielski", "krótszy"):
 - confirm_draft WYSYŁA draft as-is — nie aplikuje korekt. Jeśli user dorzucił warunki PO utworzeniu drafta:
   1. ZIGNORUJ stary draft (po 30 min sam wygaśnie)
