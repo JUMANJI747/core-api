@@ -10,23 +10,31 @@ datasource db {
 // ============ KONTRAHENCI (CRM) ============
 
 model Contractor {
-  id        String   @id @default(uuid())
-  type      String   @default("BUSINESS") // BUSINESS | PERSON
-  name      String
-  nip       String?  @unique
-  phone     String?
-  email     String?
-  country   String?
-  city      String?
-  address   String?
-  notes     String?
-  extras    Json     @default("{}")
-  tags      String[] @default([])
-  source    String? // mailing, scraping, manual, referral
-  lat              Float?
-  lng              Float?
-  geocodedAt       DateTime?
-  geocodingStatus  String? // ok | not_found | error | skipped
+  id              String    @id @default(uuid())
+  type            String    @default("BUSINESS") // BUSINESS | PERSON
+  name            String
+  nip             String?   @unique
+  phone           String?
+  email           String?
+  country         String?
+  city            String?
+  address         String?
+  notes           String?
+  extras          Json      @default("{}")
+  tags            String[]  @default([])
+  source          String? // mailing, scraping, manual, referral
+  lat             Float?
+  lng             Float?
+  geocodedAt      DateTime?
+  geocodingStatus String? // ok | not_found | error | skipped
+
+  // CRM v2 — Etap 1 normalization (backfilled from extras + flat fields)
+  preferredLanguage    String? // ISO-2 (pl, en, de, nl, es, fr, it, pt) — używane przez tracking-notify, mailing
+  primaryEmail         String? // wskaźnik "główny" — redundant z ContractorContact ale wygodny w listach
+  externalIds          Json     @default("{}") // { ifirmaId, gkReceiverId, contasimpleId, ... }
+  aliases              String[] @default([]) // alternatywne nazwy + potoczne ("ACME", "Janusz", "ten od Krakowa")
+  linkedEsContractorId String?  @unique // cross-ref PL ↔ ES (Canarias); rename do linkedCnContractorId w commicie #17
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -38,6 +46,8 @@ model Contractor {
 
   @@index([country])
   @@index([tags])
+  @@index([primaryEmail])
+  @@index([linkedEsContractorId])
 }
 
 // ============ FAKTURY (iFirma) ============
@@ -386,9 +396,9 @@ model AuditLog {
 // zero migracji istniejących danych, zero ryzyka regresji w iFirma flow.
 
 model EsContractor {
-  id              String  @id @default(uuid())
-  contasimpleId   Int?    @unique // ID kontrahenta po stronie Contasimple
-  type            String  @default("Issuer") // Contasimple entity type
+  id              String    @id @default(uuid())
+  contasimpleId   Int?      @unique // ID kontrahenta po stronie Contasimple
+  type            String    @default("Issuer") // Contasimple entity type
   organization    String? // nazwa firmy
   firstname       String?
   lastname        String?
@@ -409,7 +419,7 @@ model EsContractor {
   lng             Float?
   geocodedAt      DateTime?
   geocodingStatus String? // ok | not_found | error | skipped
-  extras          Json    @default("{}") // customField1/2, latitude, longitude, discountPercentage, bankAccounts, ...
+  extras          Json      @default("{}") // customField1/2, latitude, longitude, discountPercentage, bankAccounts, ...
 
   invoices EsInvoice[]
 
