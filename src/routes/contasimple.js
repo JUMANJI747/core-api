@@ -31,6 +31,61 @@ const {
 const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 const { sendMail } = require('../mail-sender');
 const { notifyMailResult } = require('../services/notify-mail-result');
+const {
+  buildEsLinesFromPreview,
+  buildEsLinesFromContasimple,
+  resolveEsProductIdByEan,
+} = require('../services/invoice-lines-backfill');
+
+// Wspolny sync write helper — po EsInvoice.create budujemy EsInvoiceLineItem
+// z previewLines (preferowane bo zawiera ean+variant) albo z contasimple
+// lines fallback. Best-effort, glowna sciezka (create FV + send PDF) wazniejsza.
+async function createEsInvoiceLineItems(prisma, esInvoice, previewLines, fallbackLines) {
+  if (!esInvoice) return;
+  try {
+    const stub = {
+      currency: esInvoice.currency,
+      invoiceDate: esInvoice.invoiceDate,
+    };
+    let lines = null;
+    if (Array.isArray(previewLines) && previewLines.length) {
+      lines = buildEsLinesFromPreview(stub, previewLines);
+    } else if (Array.isArray(fallbackLines) && fallbackLines.length) {
+      lines = buildEsLinesFromContasimple(stub, fallbackLines);
+    }
+    if (!lines || !lines.length) return;
+    const productCache = new Map();
+    const records = [];
+    for (const l of lines) {
+      const productId = await resolveEsProductIdByEan(prisma, l.ean, productCache);
+      records.push({
+        esInvoiceId: esInvoice.id,
+        productId,
+        ean: l.ean,
+        name: l.name,
+        unit: l.unit,
+        qty: l.qty,
+        unitPriceNetto: l.unitPriceNetto,
+        vatRate: l.vatRate,
+        vatAmount: l.vatAmount,
+        totalNetto: l.totalNetto,
+        totalGross: l.totalGross,
+        currency: esInvoice.currency || 'EUR',
+        contractorId: esInvoice.contractorId,
+        contractorCountry: esInvoice.contractorCountry,
+        invoiceDate: esInvoice.invoiceDate,
+        contasimpleLineId: null,
+        position: l.position,
+        extras: { ...l.extras, source: 'cs-invoice-confirm' },
+      });
+    }
+    if (records.length) {
+      await prisma.esInvoiceLineItem.createMany({ data: records });
+    }
+  } catch (e) {
+    console.error('[cs invoice-confirm] createEsInvoiceLineItems failed:', e.message);
+  }
+}
 const { resolveToken } = require('../services/telegram-helper');
 
 // Wrapper na resolveToken z scope='kanary' + log diagnostyczny — żeby
@@ -323,7 +378,7 @@ router.post('/invoices', asyncHandler(async (req, res) => {
       const local = await prisma.esContractor.findUnique({
         where: { contasimpleId: targetEntityId },
       });
-      await prisma.esInvoice.create({
+      const persisted = await prisma.esInvoice.create({
         data: {
           contasimpleId: inv.id,
           contractorId: local ? local.id : null,
@@ -347,6 +402,9 @@ router.post('/invoices', asyncHandler(async (req, res) => {
           extras: { lines: inv.lines || [], payments: inv.payments || [] },
         },
       });
+      // CRM v2 Etap 2.2 — EsInvoiceLineItem z Contasimple response (fallback,
+      // bo na tej sciezce nie mamy lokalnych previewLines).
+      await createEsInvoiceLineItems(prisma, persisted, null, inv.lines || []);
     }
   } catch (persistErr) {
     console.error('[contasimple] local invoice persist failed:', persistErr.message);
@@ -886,6 +944,9 @@ async function confirmEsPreview(stored) {
         extras: { lines: invoice.lines || [], payments: invoice.payments || [], previewLines: lines },
       },
     });
+    // CRM v2 Etap 2.2 — EsInvoiceLineItem z previewLines (preferowane,
+    // zawiera ean+variant z lokalnego katalogu) z fallbackiem na CS lines.
+    await createEsInvoiceLineItems(prisma, localInvoice, lines, invoice.lines || []);
   } catch (e) {
     console.error('[cs invoice-confirm] local persist failed:', e.message);
   }

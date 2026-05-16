@@ -5,6 +5,7 @@ const { getToken: getGkToken } = require('../glob-client');
 const { runBackfill: runContractorV2Backfill } = require('../services/contractor-v2-backfill');
 const { runBackfill: runContractorContactsBackfill } = require('../services/contractor-contacts-backfill');
 const { runBackfill: runInvoiceSnapshotsBackfill } = require('../services/invoice-snapshot-backfill');
+const { runBackfill: runInvoiceLinesBackfill } = require('../services/invoice-lines-backfill');
 const https = require('https');
 
 // ============ ADMIN ENDPOINTS ============
@@ -189,6 +190,28 @@ router.post('/admin/backfill/invoice-snapshots', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[admin/backfill/invoice-snapshots] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Etap 2.2/2.3: InvoiceLineItem + EsInvoiceLineItem backfill z extras.
+// PL: extras.pozycje (preferowane, ma cene) -> extras.items (proporcjonalnie
+// po qty, vatRate + price inferred). ES: extras.previewLines (preferowane,
+// ma EAN) -> extras.lines (Contasimple response shape). Idempotent — FV z
+// istniejacymi line itemami pomijane bezwarunkowo.
+router.post('/admin/backfill/invoice-lines', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  const verbose = req.body && req.body.verbose === true;
+  console.log(`[admin/backfill/invoice-lines] apply=${apply} verbose=${verbose}`);
+  try {
+    const result = await runInvoiceLinesBackfill(prisma, {
+      apply, verbose,
+      log: (msg) => console.log(`[backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/invoice-lines] error:', e);
     res.status(500).json({ error: e.message });
   }
 });

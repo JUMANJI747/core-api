@@ -148,10 +148,54 @@ model Invoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  lineItems InvoiceLineItem[]
+
   @@index([contractorId])
   @@index([number])
   @@index([contractorCountry, issueDate])
   @@index([currency, issueDate])
+}
+
+// CRM v2 Etap 2.2 — pozycje FV PL (VAT 0/5/8/23). Mirror EsInvoiceLineItem.
+// Snapshot kontrahenta + issueDate denormalized zeby analytics BI (top
+// produkty per kraj per okres) lecial bez joina do Invoice/Contractor.
+// ifirmaLineId opcjonalne — backfill historyczny moze nie znac line-id
+// z iFirma (nie zawsze go zwracaja w API listy FV / nie pulled z PDF).
+model InvoiceLineItem {
+  id        String  @id @default(uuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  ean            String?
+  name           String
+  unit           String  @default("szt")
+  qty            Decimal @db.Decimal(12, 3)
+  unitPriceNetto Decimal @db.Decimal(12, 2)
+  vatRate        String // "23" | "8" | "5" | "0" | "ZW" | "NP"
+  vatAmount      Decimal @db.Decimal(12, 2)
+  totalNetto     Decimal @db.Decimal(12, 2)
+  totalGross     Decimal @db.Decimal(12, 2)
+  currency       String  @default("PLN")
+
+  // denormalization for BI without joins
+  contractorId      String?
+  contractorCountry String?
+  issueDate         DateTime
+  ifirmaLineId      Int?
+
+  position  Int // kolejnosc na FV (1, 2, 3...)
+  extras    Json     @default("{}") // GTU_13, jednostka zrodlowa, raw line, inferred:true
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@index([ean])
+  @@index([contractorId, issueDate])
+  @@index([contractorCountry, issueDate])
+  @@index([ean, issueDate])
 }
 
 // ============ PIPELINE (STATUSY KLIENTÓW) ============
@@ -368,6 +412,8 @@ model Product {
   extras    Json     @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  lineItems InvoiceLineItem[]
 }
 
 // ============ SYSTEM EVENTS ============
@@ -540,11 +586,53 @@ model EsInvoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  lineItems EsInvoiceLineItem[]
+
   @@index([contractorId])
   @@index([number])
   @@index([period])
   @@index([contractorCountry, invoiceDate])
   @@index([currency, invoiceDate])
+}
+
+// CRM v2 Etap 2.2 — pozycje FV ES (IGIC 0/3/7/9.5/15/20). Mirror
+// InvoiceLineItem. Inny VAT regime (IGIC vs PL VAT), inny katalog (EsProduct),
+// dlatego osobna tabela. Wspolne BI queries beda union'em z dwoch tabel
+// po contractorCountry + currency + period.
+model EsInvoiceLineItem {
+  id          String    @id @default(uuid())
+  esInvoiceId String
+  esInvoice   EsInvoice @relation(fields: [esInvoiceId], references: [id], onDelete: Cascade)
+
+  productId String?
+  product   EsProduct? @relation(fields: [productId], references: [id])
+
+  ean            String?
+  name           String
+  unit           String  @default("szt")
+  qty            Decimal @db.Decimal(12, 3)
+  unitPriceNetto Decimal @db.Decimal(12, 2)
+  vatRate        String // "0" | "3" | "7" | "9.5" | "15" | "20" | "EX"
+  vatAmount      Decimal @db.Decimal(12, 2)
+  totalNetto     Decimal @db.Decimal(12, 2)
+  totalGross     Decimal @db.Decimal(12, 2)
+  currency       String  @default("EUR")
+
+  contractorId      String?
+  contractorCountry String?
+  invoiceDate       DateTime
+  contasimpleLineId Int?
+
+  position  Int
+  extras    Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([esInvoiceId])
+  @@index([productId])
+  @@index([ean])
+  @@index([contractorId, invoiceDate])
+  @@index([contractorCountry, invoiceDate])
+  @@index([ean, invoiceDate])
 }
 
 // Local product catalog for the Canarias company. Synced from Contasimple
@@ -564,6 +652,8 @@ model EsProduct {
   extras        Json     @default("{}") // {composition: [{name, contasimpleId, qty}], totalQty, isTemplate, aliases}
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
+  lineItems EsInvoiceLineItem[]
 
   @@index([category])
 }

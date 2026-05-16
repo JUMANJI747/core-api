@@ -649,13 +649,21 @@ router.get('/:id/360', async (req, res) => {
         where: { contractorId: id },
         orderBy: { issueDate: 'desc' },
         take: limitInvoices,
-        select: { id: true, number: true, issueDate: true, dueDate: true, grossAmount: true, currency: true, status: true, type: true, ifirmaId: true },
+        select: {
+          id: true, number: true, issueDate: true, dueDate: true,
+          grossAmount: true, currency: true, status: true, type: true, ifirmaId: true,
+          _count: { select: { lineItems: true } },
+        },
       }),
       linkedEs ? prisma.esInvoice.findMany({
         where: { contractorId: linkedEs.id },
         orderBy: { invoiceDate: 'desc' },
         take: limitInvoices,
-        select: { id: true, number: true, invoiceDate: true, expirationDate: true, totalAmount: true, currency: true, status: true, contasimpleId: true },
+        select: {
+          id: true, number: true, invoiceDate: true, expirationDate: true,
+          totalAmount: true, currency: true, status: true, contasimpleId: true,
+          _count: { select: { lineItems: true } },
+        },
       }) : Promise.resolve([]),
       prisma.email.findMany({
         where: emailWhere,
@@ -702,10 +710,18 @@ router.get('/:id/360', async (req, res) => {
       hasAttachments: (e._count && e._count.attachments > 0) || false,
     }));
 
-    // lineCount celowo null — InvoiceLineItem dochodzi w commicie #5
-    // (Etap 2.2). UI ma stabilny ksztalt od dnia 1.
-    const invoicesPlShaped = invoicesPl.map(i => ({ ...i, lineCount: null }));
-    const invoicesEsShaped = invoicesEs.map(i => ({ ...i, lineCount: null }));
+    // lineCount z _count.lineItems (InvoiceLineItem / EsInvoiceLineItem
+    // dochodzi w commicie #5 — Etap 2.2). UI dostaje rzeczywista liczbe
+    // pozycji per FV, 0 oznacza "brak danych w bazie" (legacy + nie
+    // backfilled).
+    const invoicesPlShaped = invoicesPl.map(({ _count, ...i }) => ({
+      ...i,
+      lineCount: (_count && _count.lineItems) || 0,
+    }));
+    const invoicesEsShaped = invoicesEs.map(({ _count, ...i }) => ({
+      ...i,
+      lineCount: (_count && _count.lineItems) || 0,
+    }));
 
     // lastContactAt — bierzemy najnowszy email niezaleznie od direction.
     const lastContactAt = emailsShaped.length ? emailsShaped[0].createdAt : null;

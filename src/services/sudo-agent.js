@@ -70,6 +70,15 @@ ZNANE MIGRACJE / BACKFILLE (CRM v2):
   (contractorName/Nip/Country/City) z aktualnego stanu (Es)Contractor.
   Tylko puste pola — reczne korekty z NocoDB sa bezpieczne.
   Response: {pl: {scanned, touched, sample[]}, es: {...}}.
+- POST /api/admin/backfill/invoice-lines — body {} (dry-run) lub
+  {"apply": true}. Tworzy InvoiceLineItem (PL) + EsInvoiceLineItem (ES)
+  z extras starych FV. PL: extras.pozycje (preferowane, ma cene) →
+  extras.items (proporcjonalnie po qty, vatRate+price inferred z
+  flagami w extras). ES: extras.previewLines (preferowane, ma EAN) →
+  extras.lines (Contasimple response). Idempotent — FV z istniejacymi
+  lineItems pomijane bezwarunkowo (force-rerun wymaga manual delete).
+  Response: {pl: {scanned, withExisting, withoutSource, touched,
+  linesCreated, sample, sampleSkipped}, es: {...}}.
 
 Workflow KAZDEGO backfillu: ZAWSZE najpierw dry-run, pokaż liczby + sample,
 poczekaj na "ok", potem apply:true. To jest standard.
