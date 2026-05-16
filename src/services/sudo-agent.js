@@ -146,7 +146,12 @@ async function processSudoQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   if (!query || typeof query !== 'string') return { text: 'Brak query.', error: 'no_query' };
 
-  const messages = [{ role: 'user', content: query }];
+  // Strip Telegram trigger prefixes ("xxx" / "sudo" / "@sudo") jesli n8n
+  // przekazal cala wiadomosc bez wycinania prefixu. Idempotentne — jak
+  // n8n juz wyciol, nic sie nie dzieje.
+  const cleanQuery = query.replace(/^\s*(xxx|@?sudo)\b[:\s,-]*/i, '').trim() || query;
+
+  const messages = [{ role: 'user', content: cleanQuery }];
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 4096,
