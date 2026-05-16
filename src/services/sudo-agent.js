@@ -4,7 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { buildExecuteTool } = require('./agent-runtime');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.SUDO_AGENT_MODEL || 'claude-sonnet-4-6-20250929';
+const MODEL = process.env.SUDO_AGENT_MODEL || 'claude-sonnet-4-6';
 
 const SYSTEM_PROMPT = `Jesteś SUDO AGENTEM SurfStickBell — agent ostatniej szansy. Plain text PL, krótko.
 
