@@ -1,5 +1,7 @@
 'use strict';
 
+const { appendAlias } = require('./contractor-sync-helpers');
+
 function guessCountryFromInv(inv) {
   const rodzaj = (inv.Rodzaj || '').toLowerCase();
   const waluta = (inv.Waluta || 'PLN').toUpperCase();
@@ -33,6 +35,13 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
     if (existing) {
       contractorsSkipped++;
       nipToContractorId.set(nip, existing.id);
+      // CRM v2 Etap 1.5 — alias bump. iFirma czesto ma rozne nazwy tej
+      // samej firmy (Ltd vs Sp. z o.o. vs skrot), wiec dorzucamy NazwaKontrahenta
+      // do aliases jak novel. Sanity + dedup w helperze.
+      if (!dryRun) {
+        const altName = (inv.NazwaKontrahenta || '').replace(/^-+\s*/, '').trim();
+        if (altName) appendAlias(prisma, existing.id, altName, 'ifirma-sync').catch(() => {});
+      }
     } else if (!dryRun) {
       const rawName = (inv.NazwaKontrahenta || '').replace(/^-+\s*/, '').trim();
       const country = guessCountryFromInv(inv);

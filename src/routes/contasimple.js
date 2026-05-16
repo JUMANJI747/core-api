@@ -36,6 +36,11 @@ const {
   buildEsLinesFromContasimple,
   resolveEsProductIdByEan,
 } = require('../services/invoice-lines-backfill');
+const {
+  upsertContact: upsertCrmContact,
+  upsertAddress: upsertCrmAddress,
+  tryAutoLinkEs,
+} = require('../services/contractor-sync-helpers');
 
 // Wspolny sync write helper — po EsInvoice.create budujemy EsInvoiceLineItem
 // z previewLines (preferowane bo zawiera ean+variant) albo z contasimple
@@ -223,12 +228,44 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
     const existing = await prisma.esContractor.findUnique({
       where: { contasimpleId: c.id },
     });
+    let saved;
     if (existing) {
-      await prisma.esContractor.update({ where: { id: existing.id }, data });
+      saved = await prisma.esContractor.update({ where: { id: existing.id }, data });
       updated++;
     } else {
-      await prisma.esContractor.create({ data });
+      saved = await prisma.esContractor.create({ data });
       created++;
+    }
+
+    // CRM v2 Etap 1.5 — sync hooks. Auto-link PL<->ES po NIF + upsert
+    // ContractorContact/Address na PL Contractor jak istnieje linked.
+    try {
+      const linked = await tryAutoLinkEs(prisma, saved);
+      if (linked) {
+        const pl = await prisma.contractor.findFirst({
+          where: { linkedEsContractorId: saved.id },
+          select: { id: true },
+        });
+        if (pl) {
+          if (c.email) await upsertCrmContact(prisma, pl.id, { type: 'email', value: c.email, source: 'contasimple' });
+          if (c.phone) await upsertCrmContact(prisma, pl.id, { type: 'phone', value: c.phone, source: 'contasimple' });
+          if (c.mobile) await upsertCrmContact(prisma, pl.id, { type: 'mobile', value: c.mobile, source: 'contasimple' });
+          if (c.address || c.city || c.postalCode) {
+            await upsertCrmAddress(prisma, pl.id, {
+              type: 'billing',
+              street: c.address || null,
+              city: c.city || null,
+              postalCode: c.postalCode || null,
+              region: c.province || null,
+              country: c.country || null,
+              fullAddress: [c.address, c.postalCode, c.city, c.country].filter(Boolean).join(', ') || null,
+              source: 'contasimple',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[sync-customers] CRM hook failed for', c.id, ':', e.message);
     }
   }
 

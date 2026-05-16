@@ -5,6 +5,10 @@ const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, getAddons, getOrderLabels, createOrder, getOrders } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { scoreContractor } = require('../services/contractor-match');
+const {
+  upsertContact: upsertCrmContact,
+  upsertAddress: upsertCrmAddress,
+} = require('../services/contractor-sync-helpers');
 
 // ============ PRESETS ============
 
@@ -1376,6 +1380,49 @@ router.post('/glob/order', async (req, res) => {
         });
       } catch (e) {
         console.error('[glob/order] tracker error:', e.message);
+      }
+
+      // CRM v2 Etap 1.5 — sync hook. Adres dostawy + telefon shipping
+      // upsertujemy do ContractorContact/Address. Receiver moze byc
+      // przepisany na innego niz orginalny kontrahent (np. dropshipping)
+      // → preferujemy receiver.contractorId, fallback do contractor.id.
+      const crmContractorId = (receiver && receiver.contractorId) || (contractor && contractor.id);
+      if (crmContractorId) {
+        try {
+          if (receiver && receiver.phone) {
+            await upsertCrmContact(prisma, crmContractorId, {
+              type: 'phone',
+              value: receiver.phone,
+              label: 'shipping',
+              personName: receiver.name || null,
+              source: 'gk',
+            });
+          }
+          if (receiver && receiver.email) {
+            await upsertCrmContact(prisma, crmContractorId, {
+              type: 'email',
+              value: receiver.email,
+              label: 'shipping',
+              source: 'gk',
+            });
+          }
+          const hasAddr = receiver && (receiver.street || receiver.city || receiver.postCode);
+          if (hasAddr) {
+            await upsertCrmAddress(prisma, crmContractorId, {
+              type: 'delivery',
+              recipientName: receiver.name || null,
+              street: receiver.street || null,
+              houseNumber: receiver.houseNumber || null,
+              postalCode: receiver.postCode || null,
+              city: receiver.city || null,
+              country: receiver.country || null,
+              fullAddress: [receiver.street, receiver.postCode, receiver.city, receiver.country].filter(Boolean).join(', ') || null,
+              source: 'gk',
+            });
+          }
+        } catch (e) {
+          console.error('[glob/order] CRM hook failed:', e.message);
+        }
       }
     }
 
