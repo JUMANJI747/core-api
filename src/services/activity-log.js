@@ -47,6 +47,7 @@ const VALID_TYPES = new Set([
   'sync.sheets.pushed', 'sync.sheets.failed',
   'sync.imap.poll', 'sync.imap.poll_sent',
   'sync.activity_pruned',
+  'sync.activity_pruned.started', 'sync.activity_pruned.finished', 'sync.activity_pruned.failed',
   // agent run-level (NIE per tool-call)
   'agent.run_started', 'agent.run_finished', 'agent.run_failed',
   'agent.confirmation_resolved', 'agent.recent_activity_pulled',

@@ -591,6 +591,7 @@ router.get('/:id/360', async (req, res) => {
   const limitInvoices = Math.min(parseInt(req.query.limitInvoices) || 20, 200);
   const limitEmails = Math.min(parseInt(req.query.limitEmails) || 20, 200);
   const limitTransactions = Math.min(parseInt(req.query.limitTransactions) || 20, 200);
+  const limitActivity = Math.min(parseInt(req.query.limitActivity) || 50, 500);
 
   try {
     const contractor = await prisma.contractor.findUnique({
@@ -741,13 +742,25 @@ router.get('/:id/360', async (req, res) => {
     const eurSum = (Number(totalRevenueEUR_pl || 0) + Number(totalRevenueEUR_es || 0));
     const totalRevenueEUR = (Math.round(eurSum * 100) / 100).toFixed(2);
 
+    // CRM v2 etap 4.6 — activity timeline. Wyciagamy ostatnie N eventow
+    // bezposrednio po contractorId, juz po Etapie 4 hookach + backfillu.
+    let activity = [];
+    try {
+      activity = await prisma.activityEvent.findMany({
+        where: { contractorId: id },
+        orderBy: { createdAt: 'desc' },
+        take: limitActivity,
+        select: { id: true, type: true, summary: true, source: true, actorType: true, actorId: true, tags: true, createdAt: true, emailId: true, invoiceId: true, esInvoiceId: true, transactionId: true, shipmentNumber: true, trackingNumber: true },
+      });
+    } catch (_) { activity = []; }
+
     res.json({
       contractor,
       linkedEs,
       invoices: { pl: invoicesPlShaped, es: invoicesEsShaped },
       emails: emailsShaped,
       transactions,
-      activity: [], // commit #13: dolaczymy timeline z ActivityEvent
+      activity,
       stats: {
         totalRevenuePLN,
         totalRevenueEUR,

@@ -6,6 +6,8 @@ const { runBackfill: runContractorV2Backfill } = require('../services/contractor
 const { runBackfill: runContractorContactsBackfill } = require('../services/contractor-contacts-backfill');
 const { runBackfill: runInvoiceSnapshotsBackfill } = require('../services/invoice-snapshot-backfill');
 const { runBackfill: runInvoiceLinesBackfill } = require('../services/invoice-lines-backfill');
+const { runBackfill: runActivityBackfill } = require('../services/activity-backfill');
+const { runPrune: runActivityPrune } = require('../services/activity-prune');
 const https = require('https');
 
 // ============ ADMIN ENDPOINTS ============
@@ -212,6 +214,42 @@ router.post('/admin/backfill/invoice-lines', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[admin/backfill/invoice-lines] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Etap 4.5: Backfill historycznych ActivityEvent z Email/Invoice/EsInvoice/
+// Transaction/Contractor. Idempotent — usuwa source='backfill' przed
+// re-runem.
+router.post('/admin/backfill/activity', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  console.log(`[admin/backfill/activity] apply=${apply}`);
+  try {
+    const result = await runActivityBackfill(prisma, {
+      apply,
+      log: (msg) => console.log(`[activity-backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/activity] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Etap 4.2.2: Retention prune. Bezparametrowo (default dry-run), z apply
+// kasuje wg POLICIES. Cron: POST /api/cron/prune-activity (Etap 6.2).
+router.post('/admin/activity/prune', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && req.body.apply === true;
+  try {
+    const result = await runActivityPrune(prisma, {
+      apply,
+      log: (msg) => console.log(`[activity-prune] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/activity/prune] error:', e);
     res.status(500).json({ error: e.message });
   }
 });

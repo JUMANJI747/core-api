@@ -104,6 +104,21 @@ manual data), push padnie. Zrob "query_db SELECT linkedEsContractorId,
 COUNT(*) FROM Contractor WHERE linkedEsContractorId IS NOT NULL
 GROUP BY linkedEsContractorId HAVING COUNT(*) > 1" — pusty wynik = OK.
 
+ACTIVITY TIMELINE (CRM v2 etap 4):
+- search_activity to TWOJE pierwsze narzedzie do pytan "co bylo z X w
+  zeszlym tygodniu" / "pokaz wszystkie wysylki do DE" / "co zrobil agent
+  o 14:00". Korzystaj zamiast grzebac w query_db po Email/Invoice.
+- Typy w slowniku zamknietym (mail.* / invoice.* / es_invoice.* /
+  shipment.* / tracking.* / contractor.* / agent.* / sync.* / admin.* /
+  telegram.*). Patrz src/services/activity-log.js.
+- Tagi kanoniczne: country:DE, lang:pl, carrier:dpd, inbox:info, manual,
+  automated, urgent, follow_up, internal, complaint.
+- cron_status: kiedy ostatnio leciaol sync-ifirma/contasimple/prune.
+- /admin/backfill/activity — przepieprza Email/Invoice/EsInvoice/
+  Transaction/Contractor na ActivityEvent. Idempotent, source='backfill'.
+- /admin/activity/prune — ad-hoc cleanup wedlug POLICIES (cron robi to
+  raz dziennie POST /api/cron/prune-activity).
+
 ANALITYKA (CRM v2 etap 3.2) — deterministyczne BI z indexow snapshotow,
 bez joinow. Wolaj przez call_endpoint method:'GET':
 - /api/analytics/revenue?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl
@@ -193,6 +208,33 @@ const tools = [
       },
     },
   },
+  {
+    name: 'search_activity',
+    description: 'Szukaj w ActivityEvent timeline (mail/invoice/shipment/tracking/contractor/agent runs). Filtry: contractorId, type ("mail.*" wildcard ok), tags (AND po przecinku), q (ILIKE na searchText), since/until. Zwraca items[] + total + facets jak facets=1.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorId: { type: 'string' },
+        type: { type: 'string', description: 'pojedynczy typ ("mail.sent") lub wildcard ("mail.*", "tracking.notify.*")' },
+        types: { type: 'string', description: 'lista typow po przecinku — alternatywa dla type' },
+        tags: { type: 'string', description: 'AND po przecinku, np. "country:de,carrier:dpd"' },
+        tagsAny: { type: 'string', description: 'OR po przecinku' },
+        source: { type: 'string', description: 'ifirma|contasimple|gk|imap|agent|sudo|webhook|system|backfill' },
+        actorType: { type: 'string', description: 'user|agent|system|webhook' },
+        q: { type: 'string', description: 'ILIKE na summary + payload denorm' },
+        since: { type: 'string', description: 'ISO date / datetime' },
+        until: { type: 'string' },
+        limit: { type: 'number', description: 'default 50, cap 500' },
+        offset: { type: 'number' },
+        facets: { type: 'string', description: '"1" zeby dodac groupBy type+source z countami' },
+      },
+    },
+  },
+  {
+    name: 'cron_status',
+    description: 'Pokaz stan zaplanowanych jobow (sync-ifirma, sync-contasimple, prune-activity): kiedy ostatnio leciaol, czy ok, co failed. Wraping over GET /api/cron/health.',
+    input_schema: { type: 'object', properties: {} },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -201,6 +243,8 @@ const ENDPOINT_MAP = {
   call_endpoint: ['POST', '/api/admin/call-endpoint'],
   gk_raw: ['POST', '/api/admin/gk-raw'],
   recent_activity: ['GET', '/api/agent/recent-activity'],
+  search_activity: ['GET', '/api/activity'],
+  cron_status: ['GET', '/api/cron/health'],
 };
 
 const executeTool = buildExecuteTool({ endpointMap: ENDPOINT_MAP, logPrefix: '[sudo-agent]' });
