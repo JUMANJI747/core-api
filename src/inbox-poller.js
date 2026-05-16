@@ -107,8 +107,17 @@ function hardFilter(mail) {
   // Block auto-submitted (except "no")
   if (autoSubmitted && autoSubmitted !== 'no') return false;
 
-  // Block own domain
-  if (fromEmail.endsWith('@surfstickbell.com')) return false;
+  // Block own domain — except web-order notifications from the B2B
+  // panel. WooCommerce wysyla "New customer quote request #(N)" /
+  // "Order request #N" z From=info@surfstickbell.com To=info@..., bo
+  // panel uzywa naszego SMTP. Bez tego wyjatku hardFilter ucinal je
+  // przed processWebOrder → VIES → Telegram (poller mial je za
+  // self-loop). Subject deterministycznie identyfikuje notyfikacje
+  // panela; pozostale wewnetrzne maile dalej blokujemy.
+  if (fromEmail.endsWith('@surfstickbell.com')) {
+    const isOrderNotification = /quote request|order request|new customer quote/i.test(mail.subject || '');
+    if (!isOrderNotification) return false;
+  }
 
   // Block from keywords
   if (BLOCKED_FROM_KEYWORDS.some(k => fromEmail.includes(k))) return false;
