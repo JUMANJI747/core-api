@@ -83,6 +83,26 @@ ZNANE MIGRACJE / BACKFILLE (CRM v2):
 Workflow KAZDEGO backfillu: ZAWSZE najpierw dry-run, pokaż liczby + sample,
 poczekaj na "ok", potem apply:true. To jest standard.
 
+ANALITYKA (CRM v2 etap 3.2) — deterministyczne BI z indexow snapshotow,
+bez joinow. Wolaj przez call_endpoint method:'GET':
+- /api/analytics/revenue?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl
+  → buckets[{source, period, currency, amount, invoice_count}].
+  Granularity: day|week|month|quarter|year (default month). source: pl|es (default oba).
+- /api/analytics/top-customers?year=2026&country=PL&limit=20&source=pl
+  → customers[{source, contractorId, contractor_name, contractor_country,
+  currency, total_revenue, invoice_count, last_invoice_at}].
+- /api/analytics/products-sold?ean=...&from=...&to=...&granularity=month
+  → time series konkretnego EAN-u: buckets[{source, period, currency,
+  qty, revenue_netto, revenue_gross, line_count}].
+- /api/analytics/products-sold?from=...&to=...&country=DE&limit=50
+  → top EANy po qty: products[{source, ean, name, currency, qty,
+  revenue_netto, revenue_gross, invoice_count}].
+
+Pamietaj: products-sold leci po InvoiceLineItem/EsInvoiceLineItem.
+Stare FV bez backfilled lineItems nie wpadaja → jak liczby wygladaja
+podejrzanie nisko, sprawdz czy backfill /admin/backfill/invoice-lines
+zostal apply'owany.
+
 LIMITS:
 - max_tokens 4096 — masz luz na multi-step
 - query_db max 500 wierszy per call

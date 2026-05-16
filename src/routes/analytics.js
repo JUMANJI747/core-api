@@ -237,4 +237,324 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
   }
 });
 
+// ============ CRM v2 BI ENDPOINTS (etap 3.2) ============
+//
+// Wszystkie ponizsze leca po denormalizowanych snapshotach na Invoice /
+// EsInvoice / InvoiceLineItem / EsInvoiceLineItem (Etap 2.1 + 2.2). Bez
+// joinow do Contractor — indexy ([contractorCountry, issueDate],
+// [currency, issueDate], [ean, issueDate]) zalatwiaja prace, raw SQL
+// $queryRaw kontroluje GROUP BY + date_trunc po stronie Postgresa.
+//
+// Wszystkie zapytania parametryzowane Prisma tagged-template ($queryRaw)
+// — SQL injection-safe (placeholderowane $1, $2... w drivierze pg).
+
+function parseRange(req) {
+  const now = new Date();
+  let from = req.query.from ? new Date(req.query.from) : null;
+  let to = req.query.to ? new Date(req.query.to) : null;
+  const year = req.query.year ? parseInt(req.query.year, 10) : null;
+  if (year && !from && !to) {
+    from = new Date(Date.UTC(year, 0, 1));
+    to = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
+  }
+  if (!from) from = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  if (!to) to = now;
+  // 'to' inclusive — przesun na koniec dnia jak user podal sama date.
+  if (req.query.to && req.query.to.length === 10) {
+    to.setUTCHours(23, 59, 59, 999);
+  }
+  return { from, to };
+}
+
+function parseGranularity(req) {
+  const g = (req.query.granularity || 'month').toLowerCase();
+  if (!['day', 'week', 'month', 'quarter', 'year'].includes(g)) return 'month';
+  return g;
+}
+
+// GET /api/analytics/revenue
+//   ?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl|es
+// Zwraca buckets per (period, currency, source).
+router.get('/analytics/revenue', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const granularity = parseGranularity(req);
+    const country = req.query.country ? String(req.query.country).toUpperCase() : null;
+    const currency = req.query.currency ? String(req.query.currency).toUpperCase() : null;
+    const source = req.query.source ? String(req.query.source).toLowerCase() : null; // 'pl' | 'es' | null
+
+    const wantPl = !source || source === 'pl';
+    const wantEs = !source || source === 'es';
+
+    const trunc = granularity;
+    const queries = [];
+    if (wantPl) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'pl'::text                                                   AS source,
+          to_char(date_trunc(${trunc}, "issueDate"), 'YYYY-MM-DD')      AS period,
+          currency,
+          SUM("grossAmount")                                            AS amount,
+          COUNT(*)                                                      AS invoice_count
+        FROM "Invoice"
+        WHERE "issueDate" BETWEEN ${from} AND ${to}
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+        GROUP BY period, currency
+        ORDER BY period, currency
+      `);
+    }
+    if (wantEs) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'es'::text                                                   AS source,
+          to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
+          currency,
+          SUM("totalAmount")                                            AS amount,
+          COUNT(*)                                                      AS invoice_count
+        FROM "EsInvoice"
+        WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+        GROUP BY period, currency
+        ORDER BY period, currency
+      `);
+    }
+
+    const results = await Promise.all(queries);
+    const buckets = serializeForJson(results.flat());
+
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      granularity,
+      country,
+      currency,
+      source,
+      buckets,
+    });
+  } catch (e) {
+    console.error('[analytics/revenue] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/analytics/top-customers
+//   ?year=2026&country=DE&from=...&to=...&limit=20&source=pl|es
+// Zwraca top kontrahentow per (contractorId, currency). PL+ES osobno bo
+// rozne tabele kontrahentow (Contractor vs EsContractor) i sortowanie
+// miedzywalutowe wymagaloby FX rates — out of scope dla v2.
+router.get('/analytics/top-customers', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const country = req.query.country ? String(req.query.country).toUpperCase() : null;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 200);
+    const source = req.query.source ? String(req.query.source).toLowerCase() : null;
+    const wantPl = !source || source === 'pl';
+    const wantEs = !source || source === 'es';
+
+    const queries = [];
+    if (wantPl) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'pl'::text                       AS source,
+          "contractorId",
+          MAX("contractorName")            AS contractor_name,
+          MAX("contractorCountry")         AS contractor_country,
+          currency,
+          SUM("grossAmount")               AS total_revenue,
+          COUNT(*)                         AS invoice_count,
+          MAX("issueDate")                 AS last_invoice_at
+        FROM "Invoice"
+        WHERE "issueDate" BETWEEN ${from} AND ${to}
+          AND "contractorId" IS NOT NULL
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+        GROUP BY "contractorId", currency
+        ORDER BY total_revenue DESC
+        LIMIT ${limit}
+      `);
+    }
+    if (wantEs) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'es'::text                       AS source,
+          "contractorId",
+          MAX("contractorName")            AS contractor_name,
+          MAX("contractorCountry")         AS contractor_country,
+          currency,
+          SUM("totalAmount")               AS total_revenue,
+          COUNT(*)                         AS invoice_count,
+          MAX("invoiceDate")               AS last_invoice_at
+        FROM "EsInvoice"
+        WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+          AND "contractorId" IS NOT NULL
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+        GROUP BY "contractorId", currency
+        ORDER BY total_revenue DESC
+        LIMIT ${limit}
+      `);
+    }
+
+    const results = await Promise.all(queries);
+    const customers = serializeForJson(results.flat());
+
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      country,
+      limit,
+      source,
+      customers,
+    });
+  } catch (e) {
+    console.error('[analytics/top-customers] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/analytics/products-sold
+// Tryby:
+//   - ?ean=5901234567890&from=...&to=...&granularity=month
+//     → time series sprzedazy konkretnego EAN-u (PL + ES jednoczesnie).
+//   - ?from=...&to=...&country=DE&limit=50
+//     → top-N EANy w okresie (sortowanie po qty).
+//
+// Bazujemy na InvoiceLineItem + EsInvoiceLineItem (Etap 2.2). FV bez
+// backfilled lineItems nie wpadaja — UI powinien wyswietlic ostrzezenie
+// "Niekompletne dane: X% FV w okresie bez pozycji" jak to zauwazymy.
+router.get('/analytics/products-sold', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const ean = req.query.ean ? String(req.query.ean) : null;
+    const country = req.query.country ? String(req.query.country).toUpperCase() : null;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+    const source = req.query.source ? String(req.query.source).toLowerCase() : null;
+    const wantPl = !source || source === 'pl';
+    const wantEs = !source || source === 'es';
+
+    if (ean) {
+      // Time series per (period, currency, source) dla jednego EAN-u.
+      const granularity = parseGranularity(req);
+      const queries = [];
+      if (wantPl) {
+        queries.push(prisma.$queryRaw`
+          SELECT
+            'pl'::text                                                      AS source,
+            to_char(date_trunc(${granularity}, "issueDate"), 'YYYY-MM-DD')  AS period,
+            currency,
+            SUM(qty)                                                        AS qty,
+            SUM("totalNetto")                                               AS revenue_netto,
+            SUM("totalGross")                                               AS revenue_gross,
+            COUNT(*)                                                        AS line_count
+          FROM "InvoiceLineItem"
+          WHERE ean = ${ean}
+            AND "issueDate" BETWEEN ${from} AND ${to}
+            AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          GROUP BY period, currency
+          ORDER BY period, currency
+        `);
+      }
+      if (wantEs) {
+        queries.push(prisma.$queryRaw`
+          SELECT
+            'es'::text                                                      AS source,
+            to_char(date_trunc(${granularity}, "invoiceDate"), 'YYYY-MM-DD') AS period,
+            currency,
+            SUM(qty)                                                        AS qty,
+            SUM("totalNetto")                                               AS revenue_netto,
+            SUM("totalGross")                                               AS revenue_gross,
+            COUNT(*)                                                        AS line_count
+          FROM "EsInvoiceLineItem"
+          WHERE ean = ${ean}
+            AND "invoiceDate" BETWEEN ${from} AND ${to}
+            AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          GROUP BY period, currency
+          ORDER BY period, currency
+        `);
+      }
+      const results = await Promise.all(queries);
+      // Lookup nazwy produktu (best effort z lokalnego katalogu).
+      let productName = null;
+      const prod = await prisma.product.findUnique({ where: { ean }, select: { name: true } }).catch(() => null);
+      if (prod) productName = prod.name;
+      if (!productName) {
+        const esProd = await prisma.esProduct.findUnique({ where: { ean }, select: { name: true } }).catch(() => null);
+        if (esProd) productName = esProd.name;
+      }
+
+      return res.json({
+        ean,
+        name: productName,
+        from: from.toISOString(),
+        to: to.toISOString(),
+        granularity,
+        country,
+        source,
+        buckets: serializeForJson(results.flat()),
+      });
+    }
+
+    // Top-N po qty (sortowane desc) per source. Currency idzie w wynikach
+    // zeby BI wiedzial walute revenue.
+    const queries = [];
+    if (wantPl) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'pl'::text         AS source,
+          ean,
+          MAX(name)          AS name,
+          currency,
+          SUM(qty)           AS qty,
+          SUM("totalNetto")  AS revenue_netto,
+          SUM("totalGross")  AS revenue_gross,
+          COUNT(DISTINCT "invoiceId") AS invoice_count
+        FROM "InvoiceLineItem"
+        WHERE "issueDate" BETWEEN ${from} AND ${to}
+          AND ean IS NOT NULL
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+        GROUP BY ean, currency
+        ORDER BY qty DESC
+        LIMIT ${limit}
+      `);
+    }
+    if (wantEs) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'es'::text         AS source,
+          ean,
+          MAX(name)          AS name,
+          currency,
+          SUM(qty)           AS qty,
+          SUM("totalNetto")  AS revenue_netto,
+          SUM("totalGross")  AS revenue_gross,
+          COUNT(DISTINCT "esInvoiceId") AS invoice_count
+        FROM "EsInvoiceLineItem"
+        WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+          AND ean IS NOT NULL
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+        GROUP BY ean, currency
+        ORDER BY qty DESC
+        LIMIT ${limit}
+      `);
+    }
+
+    const results = await Promise.all(queries);
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      country,
+      limit,
+      source,
+      products: serializeForJson(results.flat()),
+    });
+  } catch (e) {
+    console.error('[analytics/products-sold] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 module.exports = router;
