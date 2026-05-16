@@ -577,6 +577,179 @@ router.get('/:id', async (req, res) => {
   res.json(c);
 });
 
+// CRM v2 Etap 3.1 — Customer 360 bundle. Jeden call zwraca pelny widok
+// kontrahenta: dane + kontakty + adresy + linked Canarias + FV PL/ES +
+// maile (zarowno po contractorId jak i po dopasowaniu adresu z
+// ContractorContact, bo nie wszystkie maile sa juz zlinkowane) +
+// transakcje + stats. ActivityEvent timeline dolaczamy w commicie #13
+// po wdrozeniu Etapu 4.
+//
+// Query params: limitInvoices, limitEmails, limitTransactions (cap 200).
+router.get('/:id/360', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { id } = req.params;
+  const limitInvoices = Math.min(parseInt(req.query.limitInvoices) || 20, 200);
+  const limitEmails = Math.min(parseInt(req.query.limitEmails) || 20, 200);
+  const limitTransactions = Math.min(parseInt(req.query.limitTransactions) || 20, 200);
+
+  try {
+    const contractor = await prisma.contractor.findUnique({
+      where: { id },
+      include: {
+        contacts: { orderBy: [{ isPrimary: 'desc' }, { type: 'asc' }, { createdAt: 'asc' }] },
+        addresses: { orderBy: [{ isPrimary: 'desc' }, { type: 'asc' }, { createdAt: 'asc' }] },
+      },
+    });
+    if (!contractor) return res.status(404).json({ error: 'not found' });
+
+    // Linked Canarias contractor (cross-ref PL <-> ES, jednokierunkowo z PL).
+    const linkedEs = contractor.linkedEsContractorId
+      ? await prisma.esContractor.findUnique({ where: { id: contractor.linkedEsContractorId } })
+      : null;
+
+    // Email pool po adresach z ContractorContact + flat email/primaryEmail.
+    // Nie wszystkie maile maja contractorId (np. info@ web-orders, nowe
+    // konwersacje przed auto-matchem), wiec dorzucamy match po fromEmail/
+    // toEmail z wszystkich znanych adresow tego kontrahenta. Dedup po
+    // Email.id w resp.
+    const emailValues = new Set();
+    for (const ct of contractor.contacts) {
+      if (ct.type === 'email' && ct.value) emailValues.add(ct.value.toLowerCase());
+    }
+    if (contractor.primaryEmail) emailValues.add(contractor.primaryEmail.toLowerCase());
+    if (contractor.email) emailValues.add(contractor.email.toLowerCase());
+    const emailAddrs = [...emailValues];
+
+    const emailWhere = emailAddrs.length
+      ? { OR: [
+          { contractorId: id },
+          { fromEmail: { in: emailAddrs, mode: 'insensitive' } },
+          { toEmail: { in: emailAddrs, mode: 'insensitive' } },
+        ] }
+      : { contractorId: id };
+
+    // Invoices PL — wszystkie polaczone z tym Contractor.
+    // Invoices ES — przez linkedEs (jak null to pusto).
+    // Transactions — po contractorId. Wszystkie tasks w parallel.
+    const [
+      invoicesPl,
+      invoicesEs,
+      emails,
+      transactions,
+      invoiceCountPl,
+      invoiceCountEs,
+      lastInvoicePl,
+      lastInvoiceEs,
+      lastShipment,
+      revenuePlAgg,
+      revenueEurPlAgg,
+      revenueEsAgg,
+    ] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { contractorId: id },
+        orderBy: { issueDate: 'desc' },
+        take: limitInvoices,
+        select: { id: true, number: true, issueDate: true, dueDate: true, grossAmount: true, currency: true, status: true, type: true, ifirmaId: true },
+      }),
+      linkedEs ? prisma.esInvoice.findMany({
+        where: { contractorId: linkedEs.id },
+        orderBy: { invoiceDate: 'desc' },
+        take: limitInvoices,
+        select: { id: true, number: true, invoiceDate: true, expirationDate: true, totalAmount: true, currency: true, status: true, contasimpleId: true },
+      }) : Promise.resolve([]),
+      prisma.email.findMany({
+        where: emailWhere,
+        orderBy: { createdAt: 'desc' },
+        take: limitEmails,
+        select: {
+          id: true, direction: true, inbox: true, fromEmail: true, fromName: true, toEmail: true,
+          subject: true, bodyPreview: true, createdAt: true, tags: true,
+          _count: { select: { attachments: true } },
+        },
+      }),
+      prisma.transaction.findMany({
+        where: { contractorId: id },
+        orderBy: { occurredAt: 'desc' },
+        take: limitTransactions,
+        select: {
+          id: true, occurredAt: true, amount: true, currency: true,
+          hasOrder: true, hasInvoice: true, hasShipped: true, hasDelivered: true, hasPayment: true,
+          invoiceNumber: true, shipmentNumber: true, trackingNumber: true,
+        },
+      }),
+      prisma.invoice.count({ where: { contractorId: id } }),
+      linkedEs ? prisma.esInvoice.count({ where: { contractorId: linkedEs.id } }) : Promise.resolve(0),
+      prisma.invoice.findFirst({ where: { contractorId: id }, orderBy: { issueDate: 'desc' }, select: { issueDate: true } }),
+      linkedEs ? prisma.esInvoice.findFirst({ where: { contractorId: linkedEs.id }, orderBy: { invoiceDate: 'desc' }, select: { invoiceDate: true } }) : Promise.resolve(null),
+      prisma.transaction.findFirst({ where: { contractorId: id, hasShipped: true }, orderBy: { occurredAt: 'desc' }, select: { occurredAt: true } }),
+      prisma.invoice.aggregate({ where: { contractorId: id, currency: 'PLN' }, _sum: { grossAmount: true } }),
+      prisma.invoice.aggregate({ where: { contractorId: id, currency: 'EUR' }, _sum: { grossAmount: true } }),
+      linkedEs ? prisma.esInvoice.aggregate({ where: { contractorId: linkedEs.id }, _sum: { totalAmount: true } }) : Promise.resolve({ _sum: { totalAmount: null } }),
+    ]);
+
+    // attachments _count -> hasAttachments boolean (lzejsze do zuzycia po stronie UI).
+    const emailsShaped = emails.map(e => ({
+      id: e.id,
+      direction: e.direction,
+      inbox: e.inbox,
+      fromEmail: e.fromEmail,
+      fromName: e.fromName,
+      toEmail: e.toEmail,
+      subject: e.subject,
+      bodyPreview: e.bodyPreview,
+      createdAt: e.createdAt,
+      tags: e.tags,
+      hasAttachments: (e._count && e._count.attachments > 0) || false,
+    }));
+
+    // lineCount celowo null — InvoiceLineItem dochodzi w commicie #5
+    // (Etap 2.2). UI ma stabilny ksztalt od dnia 1.
+    const invoicesPlShaped = invoicesPl.map(i => ({ ...i, lineCount: null }));
+    const invoicesEsShaped = invoicesEs.map(i => ({ ...i, lineCount: null }));
+
+    // lastContactAt — bierzemy najnowszy email niezaleznie od direction.
+    const lastContactAt = emailsShaped.length ? emailsShaped[0].createdAt : null;
+    const lastInvoicePlAt = lastInvoicePl && lastInvoicePl.issueDate;
+    const lastInvoiceEsAt = lastInvoiceEs && lastInvoiceEs.invoiceDate;
+    const lastInvoiceAt = [lastInvoicePlAt, lastInvoiceEsAt]
+      .filter(Boolean)
+      .sort((a, b) => new Date(b) - new Date(a))[0] || null;
+    const lastShipmentAt = lastShipment && lastShipment.occurredAt;
+
+    // Revenue — decimal sumy z Prismy wracaja jako Decimal albo string,
+    // ujednolicamy do stringa zeby JSON nie sknocil precyzji.
+    const toStr = (v) => v == null ? '0' : String(v);
+    const totalRevenuePLN = toStr(revenuePlAgg._sum.grossAmount);
+    const totalRevenueEUR_pl = revenueEurPlAgg._sum.grossAmount;
+    const totalRevenueEUR_es = revenueEsAgg._sum.totalAmount;
+    const eurSum = (Number(totalRevenueEUR_pl || 0) + Number(totalRevenueEUR_es || 0));
+    const totalRevenueEUR = (Math.round(eurSum * 100) / 100).toFixed(2);
+
+    res.json({
+      contractor,
+      linkedEs,
+      invoices: { pl: invoicesPlShaped, es: invoicesEsShaped },
+      emails: emailsShaped,
+      transactions,
+      activity: [], // commit #13: dolaczymy timeline z ActivityEvent
+      stats: {
+        totalRevenuePLN,
+        totalRevenueEUR,
+        invoiceCountPL: invoiceCountPl,
+        invoiceCountES: invoiceCountEs,
+        invoiceCount: invoiceCountPl + invoiceCountEs,
+        emailCount: emailsShaped.length, // wraca tyle ile zwrocilismy (limit), nie globalnie
+        lastContactAt,
+        lastInvoiceAt,
+        lastShipmentAt,
+      },
+    });
+  } catch (e) {
+    console.error('[contractors/:id/360] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/:id/alias', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
