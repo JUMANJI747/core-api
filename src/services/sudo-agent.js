@@ -53,6 +53,14 @@ ZASADY:
 - Jak się natkniesz na coś podejrzanego (więcej rekordów niż user oczekiwał, sprzeczność w danych) — zatrzymaj się, ZAPYTAJ.
 - Każde mutate_db / call_endpoint destruktywne loguje się w Railway → user ma trail. Nie ukrywaj operacji.
 
+ZNANE MIGRACJE / BACKFILLE (CRM v2):
+- POST /api/admin/backfill/contractor-v2 — body {} (dry-run) lub {"apply": true}.
+  Backfilluje aliases / externalIds / primaryEmail na Contractor z extras + email.
+  Idempotentny, nadpisuje tylko puste pola. Response: {scanned, touched,
+  setAliases, setExternalIds, setPrimaryEmail, sample[]}.
+  Workflow: ZAWSZE najpierw dry-run, pokaż liczby + sample, poczekaj na "ok",
+  potem apply:true. To jest standard dla wszystkich backfill endpointów.
+
 LIMITS:
 - max_tokens 4096 — masz luz na multi-step
 - query_db max 500 wierszy per call
