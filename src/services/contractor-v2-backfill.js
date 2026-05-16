@@ -3,12 +3,18 @@
 /**
  * CRM v2 Etap 1 — backfill znormalizowanych pol Contractor z extras + flat fields.
  *
- *   extras.aliases (array of string) -> aliases[]
- *   extras.ifirmaId                 -> externalIds.ifirmaId
- *   extras.gkReceiverId             -> externalIds.gkReceiverId
- *   extras.contasimpleId            -> externalIds.contasimpleId
- *   extras.eContractorId            -> externalIds.eContractorId
- *   email                           -> primaryEmail (lowercase, gdy primaryEmail puste)
+ *   extras.aliases (array of string)     -> aliases[]
+ *   extras.ifirmaId (string identifier)  -> externalIds.ifirmaIdentifier
+ *                                            (UWAGA: w iFirma to NIE numeric ID
+ *                                            tylko string-skrot max 16 chars,
+ *                                            np. "FARMACIA PORTO" — pole API
+ *                                            'IdentyfikatorKontrahenta')
+ *   externalIds.ifirmaId (legacy)        -> externalIds.ifirmaIdentifier
+ *                                            (rename po pierwszym blednym backfillu)
+ *   extras.gkReceiverId                  -> externalIds.gkReceiverId
+ *   extras.contasimpleId                 -> externalIds.contasimpleId
+ *   extras.eContractorId                 -> externalIds.eContractorId
+ *   email                                -> primaryEmail (lowercase, gdy primaryEmail puste)
  *
  * Idempotentne — nadpisuje tylko gdy nowe pole jest puste (zachowuje
  * reczne korekty z NocoDB).
@@ -28,14 +34,41 @@ function pickAliases(extras) {
   return cleaned.length ? cleaned : null;
 }
 
-function pickExternalIds(extras) {
-  if (!extras || typeof extras !== 'object') return null;
-  const out = {};
-  if (extras.ifirmaId != null) out.ifirmaId = extras.ifirmaId;
-  if (extras.gkReceiverId != null) out.gkReceiverId = extras.gkReceiverId;
-  if (extras.contasimpleId != null) out.contasimpleId = extras.contasimpleId;
-  if (extras.eContractorId != null) out.eContractorId = extras.eContractorId;
-  return Object.keys(out).length ? out : null;
+function buildExternalIds(extras, currentExternalIds) {
+  const out = { ...(currentExternalIds || {}) };
+
+  // Rename legacy ifirmaId (z pierwszego blednego backfillu) -> ifirmaIdentifier.
+  // Te wartosci sa stringami (iFirma 'IdentyfikatorKontrahenta'), nie liczbami.
+  if (out.ifirmaId != null && out.ifirmaIdentifier == null) {
+    out.ifirmaIdentifier = out.ifirmaId;
+    delete out.ifirmaId;
+  } else if (out.ifirmaId != null && out.ifirmaIdentifier != null) {
+    // Both ustawione — wybieramy nowszy (ifirmaIdentifier) i wywalamy stary klucz.
+    delete out.ifirmaId;
+  }
+
+  if (extras && typeof extras === 'object') {
+    if (extras.ifirmaId != null && out.ifirmaIdentifier == null) {
+      out.ifirmaIdentifier = extras.ifirmaId;
+    }
+    if (extras.gkReceiverId != null && out.gkReceiverId == null) {
+      out.gkReceiverId = extras.gkReceiverId;
+    }
+    if (extras.contasimpleId != null && out.contasimpleId == null) {
+      out.contasimpleId = extras.contasimpleId;
+    }
+    if (extras.eContractorId != null && out.eContractorId == null) {
+      out.eContractorId = extras.eContractorId;
+    }
+  }
+
+  return out;
+}
+
+function externalIdsChanged(before, after) {
+  const a = JSON.stringify(before || {});
+  const b = JSON.stringify(after || {});
+  return a !== b;
 }
 
 async function runBackfill(prisma, opts = {}) {
@@ -67,9 +100,10 @@ async function runBackfill(prisma, opts = {}) {
     }
 
     const currentExternalIds = (c.externalIds && typeof c.externalIds === 'object') ? c.externalIds : {};
-    if (Object.keys(currentExternalIds).length === 0) {
-      const ids = pickExternalIds(c.extras);
-      if (ids) { data.externalIds = ids; setExternalIds++; }
+    const nextExternalIds = buildExternalIds(c.extras, currentExternalIds);
+    if (externalIdsChanged(currentExternalIds, nextExternalIds)) {
+      data.externalIds = nextExternalIds;
+      setExternalIds++;
     }
 
     if (!c.primaryEmail && c.email) {

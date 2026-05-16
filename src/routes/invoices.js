@@ -509,6 +509,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     let ifirmaResult;
     try {
       const cExtras = contractor.extras || {};
+      const cExternalIds = contractor.externalIds || {};
       const billing = (cExtras.billingAddress && typeof cExtras.billingAddress === 'object') ? cExtras.billingAddress : {};
       ifirmaResult = await createInvoice({
         kontrahent: {
@@ -518,7 +519,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
           city: contractor.city || billing.city || cExtras.city || '',
           postCode: billing.postCode || cExtras.postCode || '',
           country: contractor.country || billing.country || '',
-          ifirmaId: cExtras.ifirmaId || null,
+          ifirmaId: cExternalIds.ifirmaIdentifier || cExtras.ifirmaId || null, // fallback do legacy extras dopoki nie wyczyscimy
         },
         pozycje,
         rodzaj,

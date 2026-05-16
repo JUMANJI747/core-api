@@ -36,7 +36,11 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
     } else if (!dryRun) {
       const rawName = (inv.NazwaKontrahenta || '').replace(/^-+\s*/, '').trim();
       const country = guessCountryFromInv(inv);
-      const ifirmaContractorIdVal = inv.IdentyfikatorKontrahenta || null;
+      // UWAGA: iFirma 'IdentyfikatorKontrahenta' to STRING-skrot (max 16 chars),
+      // NIE numeric ID. Trzymamy go w externalIds.ifirmaIdentifier zeby
+      // nie mylic z numerycznym ID (ktore w iFirma istnieje pod inna nazwa
+      // ale nie zwracaja go w API faktur).
+      const ifirmaIdentifier = inv.IdentyfikatorKontrahenta || null;
       const created = await prisma.contractor.create({
         data: {
           name: rawName,
@@ -45,7 +49,7 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
           country,
           source: 'ifirma',
           tags: ['ifirma-import'],
-          extras: ifirmaContractorIdVal ? { ifirmaId: ifirmaContractorIdVal } : {},
+          externalIds: ifirmaIdentifier ? { ifirmaIdentifier } : {},
         },
       });
       contractorsCreated++;
