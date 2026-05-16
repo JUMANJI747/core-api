@@ -3,10 +3,10 @@
 const http = require('http');
 const router = require('express').Router();
 
-function internalPost(path, apiKey) {
+function internalPost(path, apiKey, bodyObj) {
   return new Promise((resolve, reject) => {
     const port = process.env.PORT || 3000;
-    const body = '{}';
+    const body = JSON.stringify(bodyObj || {});
     const options = {
       hostname: 'localhost',
       port,
@@ -269,6 +269,11 @@ router.post('/confirm-latest', async (req, res) => {
     const now = Date.now();
     const thirtyMin = 30 * 60 * 1000;
 
+    // Optional carrier hint z body (np. "Tak zamów FedEx" → carrier=FedEx).
+    // Backward-compat: stare wywołania bez body dalej działają.
+    const carrierHint = (req.body && (req.body.carrier || req.body.productId)) || null;
+    const chatIdFromBody = req.body && req.body.chatId ? String(req.body.chatId) : null;
+
     // Check AgentContext "ksiegowosc" for invoice preview
     let invoiceTimestamp = null;
     const agentCtx = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc' } });
@@ -290,11 +295,31 @@ router.post('/confirm-latest', async (req, res) => {
       emailTimestamp = draft.createdAt.getTime();
     }
 
-    if (!invoiceTimestamp && !emailTimestamp) {
+    // Check newest GK courier quote < 30 min. Quoty żyją w in-memory
+    // app.locals.quoteStore (zapisywane przez /api/glob/quote). Dla
+    // "Tak zamów FedEx" → potwierdzamy najświeższą wycenę i strzelamy
+    // do /api/glob/order.
+    let quoteTimestamp = null;
+    let newestQuoteId = null;
+    let newestQuoteOffers = null;
+    const quoteStore = req.app.locals.quoteStore || {};
+    for (const k of Object.keys(quoteStore)) {
+      const q = quoteStore[k];
+      if (!q || !q.createdAt) continue;
+      const ts = new Date(q.createdAt).getTime();
+      if (now - ts >= thirtyMin) continue;
+      if (!quoteTimestamp || ts > quoteTimestamp) {
+        quoteTimestamp = ts;
+        newestQuoteId = k;
+        newestQuoteOffers = q.offers || [];
+      }
+    }
+
+    if (!invoiceTimestamp && !emailTimestamp && !quoteTimestamp) {
       const lastAction = agentCtx && agentCtx.data && agentCtx.data.lastAction;
       const why = lastAction === 'confirmed'
         ? 'Ostatnia akcja została już potwierdzona — nie ma świeżego podglądu/draftu do zatwierdzenia.'
-        : 'Brak aktywnego podglądu faktury ani draftu maila do zatwierdzenia.';
+        : 'Brak aktywnego podglądu faktury, draftu maila ani wyceny kuriera do zatwierdzenia.';
       return res.status(400).json({
         ok: false,
         error: 'Nic do potwierdzenia',
@@ -305,14 +330,27 @@ router.post('/confirm-latest', async (req, res) => {
 
     const apiKey = req.headers['x-api-key'] || '';
 
-    // Take the newer of the two
-    if (invoiceTimestamp && (!emailTimestamp || invoiceTimestamp >= emailTimestamp)) {
+    // Pick newest of three (invoice / email / GK quote)
+    const winner = [
+      { kind: 'invoice', ts: invoiceTimestamp },
+      { kind: 'email', ts: emailTimestamp },
+      { kind: 'shipment', ts: quoteTimestamp },
+    ].filter(x => x.ts).sort((a, b) => b.ts - a.ts)[0];
+
+    if (winner.kind === 'invoice') {
       const result = await internalPost('/api/ifirma/invoice-confirm-latest', apiKey);
       return res.json({ ok: true, type: 'invoice', result });
-    } else {
+    }
+    if (winner.kind === 'email') {
       const result = await internalPost('/api/send-email/confirm-latest', apiKey);
       return res.json({ ok: true, type: 'email', result });
     }
+    // shipment: order cheapest (or carrier hint if podany)
+    const orderBody = { quoteId: newestQuoteId };
+    if (carrierHint) orderBody.productId = carrierHint;
+    if (chatIdFromBody) orderBody.chatId = chatIdFromBody;
+    const result = await internalPost('/api/glob/order', apiKey, orderBody);
+    return res.json({ ok: true, type: 'shipment', quoteId: newestQuoteId, carrier: carrierHint || 'cheapest', result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
