@@ -83,6 +83,27 @@ ZNANE MIGRACJE / BACKFILLE (CRM v2):
 Workflow KAZDEGO backfillu: ZAWSZE najpierw dry-run, pokaż liczby + sample,
 poczekaj na "ok", potem apply:true. To jest standard.
 
+ADMIN DATA OPS (CRM v2 etap 3.3) — destruktywne, wymagaja confirm:true:
+- POST /api/admin/contractors/merge {keepId, dropId, confirm:true}
+  Przepina wszystkie FK (Email/Invoice/InvoiceLineItem/Transaction/Deal/
+  Consignment + Contact/Address z dedupem) z dropId na keepId, mergeuje
+  aliases/externalIds, primaryEmail/preferredLanguage/phone/email/
+  address/city/country tylko jak keep ma null, kasuje dropId. AuditLog.
+  Workflow: NAJPIERW pokaz oba contractorzy ("query_db SELECT id,name,nip,
+  email,country FROM Contractor WHERE id IN (...)"), zapytaj user-a ktory
+  zostaje a ktory pada, dopiero potem merge.
+- POST /api/admin/contractors/:id/link-es {esContractorId, confirm:true}
+  Ustawia linkedEsContractorId. Sprawdza 1-1 (zaden PL nie linkuje 2 ES,
+  zaden ES nie ma 2 PL). 409 conflict jak juz zlinkowany inaczej.
+- POST /api/admin/contractors/:id/unlink-es {confirm:true}
+  Symetryczny unlink, gdyby auto-link po NIP zlapal nie ten zwiazek.
+
+WAZNE — pre-deploy check przed Railway prisma db push w commicie #8:
+linkedEsContractorId dostal @unique. Jak prod ma duplikaty (z pre-etap-1.5
+manual data), push padnie. Zrob "query_db SELECT linkedEsContractorId,
+COUNT(*) FROM Contractor WHERE linkedEsContractorId IS NOT NULL
+GROUP BY linkedEsContractorId HAVING COUNT(*) > 1" — pusty wynik = OK.
+
 ANALITYKA (CRM v2 etap 3.2) — deterministyczne BI z indexow snapshotow,
 bez joinow. Wolaj przez call_endpoint method:'GET':
 - /api/analytics/revenue?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl
