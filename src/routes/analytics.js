@@ -279,6 +279,74 @@ function parseGranularity(req) {
   return g;
 }
 
+// GET /api/analytics/private-label-revenue
+//   ?from=&to=&granularity=year|month
+// Przychod per klient private-label (Contractor.tags @> ['private-label']).
+// Liczy z Invoice.grossAmount + EsInvoice.totalAmount — nie z lineItems,
+// bo specjalne typy FV (zaliczkowe/koncowe obca waluta) czesto nie maja
+// zbackfillowanych pozycji, a contractor.grossAmount jest snapshotem
+// zaufanym. PL+ES union.
+router.get('/analytics/private-label-revenue', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const granularity = parseGranularity(req);
+
+    // Po contractor.id GROUP BY — totale per klient w okresie + breakdown
+    // po currency (zwykle EUR, ale moze byc PLN dla krajowych private-label).
+    const pl = await prisma.$queryRaw`
+      SELECT
+        'pl'::text                                                      AS source,
+        c.id                                                            AS "contractorId",
+        c.name                                                          AS contractor_name,
+        c.country                                                       AS contractor_country,
+        c.nip                                                           AS contractor_nip,
+        to_char(date_trunc(${granularity}, i."issueDate"), 'YYYY-MM-DD') AS period,
+        i.currency,
+        SUM(i."grossAmount")::text                                      AS total,
+        COUNT(*)::int                                                   AS invoice_count
+      FROM "Invoice" i
+      JOIN "Contractor" c ON c.id = i."contractorId"
+      WHERE i."issueDate" BETWEEN ${from} AND ${to}
+        AND c.tags @> ARRAY['private-label']
+      GROUP BY 2, 3, 4, 5, 6, 7
+      ORDER BY period DESC, total DESC
+    `;
+
+    // ES — EsContractor nie ma `tags`, wiec idziemy przez linkedEsContractorId
+    // z PL Contractor (jak PL jest private-label i ma linked ES).
+    const es = await prisma.$queryRaw`
+      SELECT
+        'es'::text                                                       AS source,
+        c.id                                                             AS "contractorId",
+        c.name                                                           AS contractor_name,
+        c.country                                                        AS contractor_country,
+        c.nip                                                            AS contractor_nip,
+        to_char(date_trunc(${granularity}, ei."invoiceDate"), 'YYYY-MM-DD') AS period,
+        ei.currency,
+        SUM(ei."totalAmount")::text                                      AS total,
+        COUNT(*)::int                                                    AS invoice_count
+      FROM "EsInvoice" ei
+      JOIN "EsContractor" ec ON ec.id = ei."contractorId"
+      JOIN "Contractor" c ON c."linkedEsContractorId" = ec.id
+      WHERE ei."invoiceDate" BETWEEN ${from} AND ${to}
+        AND c.tags @> ARRAY['private-label']
+      GROUP BY 2, 3, 4, 5, 6, 7
+      ORDER BY period DESC, total DESC
+    `;
+
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      granularity,
+      buckets: serializeForJson([...pl, ...es]),
+    });
+  } catch (e) {
+    console.error('[analytics/private-label-revenue] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/analytics/revenue
 //   ?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl|es
 // Zwraca buckets per (period, currency, source).
