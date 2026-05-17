@@ -302,8 +302,8 @@ router.get('/analytics/revenue', async (req, res) => {
           'pl'::text                                                   AS source,
           to_char(date_trunc(${trunc}, "issueDate"), 'YYYY-MM-DD')      AS period,
           currency,
-          SUM("grossAmount")                                            AS amount,
-          COUNT(*)                                                      AS invoice_count
+          SUM("grossAmount")::text                                      AS amount,
+          COUNT(*)::int                                                 AS invoice_count
         FROM "Invoice"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
@@ -318,8 +318,8 @@ router.get('/analytics/revenue', async (req, res) => {
           'es'::text                                                   AS source,
           to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
           currency,
-          SUM("totalAmount")                                            AS amount,
-          COUNT(*)                                                      AS invoice_count
+          SUM("totalAmount")::text                                      AS amount,
+          COUNT(*)::int                                                 AS invoice_count
         FROM "EsInvoice"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
@@ -371,8 +371,8 @@ router.get('/analytics/top-customers', async (req, res) => {
           MAX("contractorName")            AS contractor_name,
           MAX("contractorCountry")         AS contractor_country,
           currency,
-          SUM("grossAmount")               AS total_revenue,
-          COUNT(*)                         AS invoice_count,
+          SUM("grossAmount")::text         AS total_revenue,
+          COUNT(*)::int                    AS invoice_count,
           MAX("issueDate")                 AS last_invoice_at
         FROM "Invoice"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
@@ -391,8 +391,8 @@ router.get('/analytics/top-customers', async (req, res) => {
           MAX("contractorName")            AS contractor_name,
           MAX("contractorCountry")         AS contractor_country,
           currency,
-          SUM("totalAmount")               AS total_revenue,
-          COUNT(*)                         AS invoice_count,
+          SUM("totalAmount")::text         AS total_revenue,
+          COUNT(*)::int                    AS invoice_count,
           MAX("invoiceDate")               AS last_invoice_at
         FROM "EsInvoice"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
@@ -452,10 +452,10 @@ router.get('/analytics/products-sold', async (req, res) => {
             'pl'::text                                                      AS source,
             to_char(date_trunc(${granularity}, "issueDate"), 'YYYY-MM-DD')  AS period,
             currency,
-            SUM(qty)                                                        AS qty,
-            SUM("totalNetto")                                               AS revenue_netto,
-            SUM("totalGross")                                               AS revenue_gross,
-            COUNT(*)                                                        AS line_count
+            SUM(qty)::text                                                  AS qty,
+            SUM("totalNetto")::text                                         AS revenue_netto,
+            SUM("totalGross")::text                                         AS revenue_gross,
+            COUNT(*)::int                                                   AS line_count
           FROM "InvoiceLineItem"
           WHERE ean = ${ean}
             AND "issueDate" BETWEEN ${from} AND ${to}
@@ -470,10 +470,10 @@ router.get('/analytics/products-sold', async (req, res) => {
             'es'::text                                                      AS source,
             to_char(date_trunc(${granularity}, "invoiceDate"), 'YYYY-MM-DD') AS period,
             currency,
-            SUM(qty)                                                        AS qty,
-            SUM("totalNetto")                                               AS revenue_netto,
-            SUM("totalGross")                                               AS revenue_gross,
-            COUNT(*)                                                        AS line_count
+            SUM(qty)::text                                                  AS qty,
+            SUM("totalNetto")::text                                         AS revenue_netto,
+            SUM("totalGross")::text                                         AS revenue_gross,
+            COUNT(*)::int                                                   AS line_count
           FROM "EsInvoiceLineItem"
           WHERE ean = ${ean}
             AND "invoiceDate" BETWEEN ${from} AND ${to}
@@ -514,10 +514,10 @@ router.get('/analytics/products-sold', async (req, res) => {
           ean,
           MAX(name)          AS name,
           currency,
-          SUM(qty)           AS qty,
-          SUM("totalNetto")  AS revenue_netto,
-          SUM("totalGross")  AS revenue_gross,
-          COUNT(DISTINCT "invoiceId") AS invoice_count
+          SUM(qty)::text     AS qty,
+          SUM("totalNetto")::text  AS revenue_netto,
+          SUM("totalGross")::text  AS revenue_gross,
+          COUNT(DISTINCT "invoiceId")::int AS invoice_count
         FROM "InvoiceLineItem"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
           AND ean IS NOT NULL
@@ -534,10 +534,10 @@ router.get('/analytics/products-sold', async (req, res) => {
           ean,
           MAX(name)          AS name,
           currency,
-          SUM(qty)           AS qty,
-          SUM("totalNetto")  AS revenue_netto,
-          SUM("totalGross")  AS revenue_gross,
-          COUNT(DISTINCT "esInvoiceId") AS invoice_count
+          SUM(qty)::text     AS qty,
+          SUM("totalNetto")::text  AS revenue_netto,
+          SUM("totalGross")::text  AS revenue_gross,
+          COUNT(DISTINCT "esInvoiceId")::int AS invoice_count
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND ean IS NOT NULL
