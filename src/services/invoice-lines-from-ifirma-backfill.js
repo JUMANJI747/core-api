@@ -1,0 +1,297 @@
+'use strict';
+
+/**
+ * CRM v2 — backfill InvoiceLineItem z iFirma fetchInvoiceDetails dla FV
+ * pre-2026 (i 2026 reczne) ktore w bazie maja pusty extras po imporcie
+ * przez ifirma-sync. iFirma /listy-faktur nie zwraca pozycji, ale
+ * /fakturakraj/{id} (oraz wdt/eksport/proforma) zwraca pelne Pozycje[].
+ *
+ * EAN w iFirmie zwykle siedzi w stringu Pozycja.NazwaPelna
+ * ("BELL Surf Stick Blue 6,8g EAN: 5902082556022"). Wyciagamy regexem.
+ *
+ * Matching produktu (kolejnosc):
+ *   1) regex EAN z NazwaPelna -> Product.ean (direct)
+ *   2) fuzzy match po cleanName na Product.name/variant (score >=0.85)
+ *   3) LLM Haiku fallback z top-30 kandydatow po fuzzy preselection
+ *      (Anthropic API, ANTHROPIC_API_KEY required)
+ *
+ * Wynik:
+ *   - tworzy InvoiceLineItem z productId (jak match), ifirmaLineId=Pozycja.Id
+ *   - update Invoice.extras += { pozycjeFromIfirma: [...raw],
+ *     backfilledLinesAt, lineMatchingMethod: per-line stats }
+ *
+ * Idempotent: pomija Invoice z _count.lineItems > 0.
+ * Rate-limited: domyslnie 1500ms sleep miedzy fetchInvoiceDetails.
+ *
+ * Wolane z POST /api/admin/backfill/invoice-lines-from-ifirma.
+ */
+
+const Anthropic = require('@anthropic-ai/sdk');
+const { fetchInvoiceDetails } = require('../ifirma-client');
+
+let anthropic = null;
+function getAnthropic() {
+  if (anthropic) return anthropic;
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return anthropic;
+}
+
+const LLM_MODEL = process.env.IFIRMA_LINES_BACKFILL_MODEL || 'claude-haiku-4-5-20251001';
+
+// Wyciagnij EAN ze stringa NazwaPelna. iFirma najczesciej zapisuje go jako
+// "... EAN: 5902082556022" (z spacjami / dwukropkiem / bez) — tolerancyjny
+// regex.
+function extractEanFromName(name) {
+  if (!name || typeof name !== 'string') return { ean: null, cleanName: name || '' };
+  const m = name.match(/\bEAN[\s:]*?(\d{8,14})\b/i);
+  if (!m) return { ean: null, cleanName: name.trim() };
+  const ean = m[1];
+  const cleanName = name.replace(m[0], '').replace(/\s{2,}/g, ' ').trim();
+  return { ean, cleanName };
+}
+
+// Lokalny fuzzy match — token-based scoring na lowercase name + variant +
+// capacity. Score 0..1. >=0.85 to "dobry" match.
+function scoreNameMatch(needle, candidate) {
+  if (!needle || !candidate) return 0;
+  const n = needle.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  const haystackParts = [candidate.name, candidate.variant, candidate.capacity, candidate.brand].filter(Boolean).join(' ');
+  const h = haystackParts.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  if (n.length === 0 || h.length === 0) return 0;
+  const hSet = new Set(h);
+  let hits = 0;
+  for (const t of n) {
+    if (hSet.has(t)) { hits++; continue; }
+    // partial: jezeli token z needle jest prefixem ktorejs tokenu haystack
+    if ([...hSet].some(x => x.startsWith(t) || t.startsWith(x))) hits += 0.5;
+  }
+  return hits / n.length;
+}
+
+async function llmMatchProduct(cleanName, candidates, ctx) {
+  const client = getAnthropic();
+  if (!client) return { ean: null, method: 'llm-skipped (no key)' };
+  if (!candidates.length) return { ean: null, method: 'llm-skipped (no candidates)' };
+
+  const productList = candidates.map(p => `- EAN ${p.ean} | ${p.name}${p.variant ? ' / ' + p.variant : ''}${p.capacity ? ' / ' + p.capacity : ''}`).join('\n');
+  const prompt = `Pozycja z faktury: "${cleanName}"
+${ctx.qty ? `Ilosc: ${ctx.qty}` : ''}
+${ctx.priceNetto ? `Cena netto: ${ctx.priceNetto} ${ctx.currency || ''}` : ''}
+
+Lista produktow w naszym katalogu (EAN | Nazwa / Wariant / Pojemnosc):
+${productList}
+
+Wybierz EAN ktory najbardziej pasuje do pozycji z faktury. Zwróć TYLKO EAN (sam ciag cyfr) lub "NONE" jak zaden nie pasuje. Bez wyjasnien.`;
+
+  try {
+    const resp = await client.messages.create({
+      model: LLM_MODEL,
+      max_tokens: 32,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    if (/^NONE$/i.test(text)) return { ean: null, method: 'llm-none' };
+    const m = text.match(/(\d{8,14})/);
+    if (!m) return { ean: null, method: `llm-unparseable (${text.slice(0, 50)})` };
+    const ean = m[1];
+    if (!candidates.find(p => p.ean === ean)) return { ean: null, method: `llm-hallucinated (${ean})` };
+    return { ean, method: 'llm' };
+  } catch (e) {
+    console.error('[ifirma-lines] LLM match failed:', e.message);
+    return { ean: null, method: `llm-error (${e.message.slice(0, 50)})` };
+  }
+}
+
+async function resolveProduct(prisma, productCache, cleanName, ean, ctx) {
+  // 1) Direct EAN
+  if (ean) {
+    if (productCache.has(ean)) return { ...productCache.get(ean), method: 'ean-direct' };
+    const p = await prisma.product.findUnique({ where: { ean }, select: { id: true, ean: true, name: true } }).catch(() => null);
+    if (p) {
+      const result = { productId: p.id, ean: p.ean };
+      productCache.set(ean, result);
+      return { ...result, method: 'ean-direct' };
+    }
+    // EAN z FV nie ma w katalogu — nadal zapisujemy bez productId.
+    return { productId: null, ean, method: 'ean-not-in-catalog' };
+  }
+
+  // Brak EAN — szukamy po nazwie.
+  if (!cleanName) return { productId: null, ean: null, method: 'no-name' };
+
+  // 2) Lokalny fuzzy match — load all once (mala tabela <500 produktow).
+  if (!productCache.has('__ALL__')) {
+    const all = await prisma.product.findMany({
+      select: { id: true, ean: true, name: true, variant: true, capacity: true, brand: true },
+      where: { active: true },
+    });
+    productCache.set('__ALL__', all);
+  }
+  const all = productCache.get('__ALL__');
+  const scored = all
+    .map(p => ({ p, score: scoreNameMatch(cleanName, p) }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const top = scored[0];
+  if (top && top.score >= 0.85) {
+    return { productId: top.p.id, ean: top.p.ean, method: `fuzzy-${top.score.toFixed(2)}` };
+  }
+
+  // 3) LLM fallback — top 30 fuzzy candidates.
+  const candidates = scored.slice(0, 30).map(x => x.p);
+  const llm = await llmMatchProduct(cleanName, candidates, ctx);
+  if (llm.ean) {
+    const matched = all.find(p => p.ean === llm.ean);
+    return { productId: matched ? matched.id : null, ean: llm.ean, method: llm.method };
+  }
+  return { productId: null, ean: null, method: llm.method };
+}
+
+async function processInvoice(prisma, inv, productCache, opts) {
+  const { apply, log, verbose } = opts;
+
+  let details;
+  try {
+    details = await fetchInvoiceDetails(inv.ifirmaId, inv.type);
+  } catch (e) {
+    return { id: inv.id, number: inv.number, error: `fetchDetails: ${e.message}` };
+  }
+
+  const pozycje = Array.isArray(details.Pozycje) ? details.Pozycje : [];
+  if (pozycje.length === 0) {
+    return { id: inv.id, number: inv.number, error: 'no Pozycje in iFirma response' };
+  }
+
+  const matches = [];
+  const records = [];
+  for (let i = 0; i < pozycje.length; i++) {
+    const poz = pozycje[i];
+    const { ean: extractedEan, cleanName } = extractEanFromName(poz.NazwaPelna);
+    const ctx = { qty: poz.Ilosc, priceNetto: poz.CenaJednostkowa, currency: inv.currency };
+    const resolved = await resolveProduct(prisma, productCache, cleanName, extractedEan, ctx);
+    matches.push({
+      position: i + 1,
+      name: poz.NazwaPelna,
+      cleanName, extractedEan,
+      matched: { productId: resolved.productId, ean: resolved.ean, method: resolved.method },
+    });
+
+    const qty = Number(poz.Ilosc || 0);
+    const unitNetto = Number(poz.CenaZRabatem || poz.CenaJednostkowa || 0);
+    const vatRateNum = Number(poz.StawkaVat || 0); // 0.23
+    const vatPct = vatRateNum >= 0 && vatRateNum <= 1 ? vatRateNum * 100 : vatRateNum;
+    const totalNetto = Math.round(unitNetto * qty * 100) / 100;
+    const vatAmount = Math.round(totalNetto * (vatPct / 100) * 100) / 100;
+    const totalGross = Math.round((totalNetto + vatAmount) * 100) / 100;
+
+    records.push({
+      invoiceId: inv.id,
+      productId: resolved.productId,
+      ean: resolved.ean,
+      name: cleanName || poz.NazwaPelna,
+      unit: poz.Jednostka || 'szt',
+      qty,
+      unitPriceNetto: unitNetto,
+      vatRate: vatPct === 23 ? '23' : vatPct === 8 ? '8' : vatPct === 5 ? '5' : vatPct === 0 ? '0' : String(vatPct),
+      vatAmount,
+      totalNetto,
+      totalGross,
+      currency: inv.currency || 'PLN',
+      contractorId: inv.contractorId,
+      contractorCountry: inv.contractorCountry,
+      issueDate: inv.issueDate,
+      ifirmaLineId: poz.Id || null,
+      position: i + 1,
+      extras: {
+        source: 'ifirma-details',
+        ifirmaNazwaPelna: poz.NazwaPelna,
+        magazynPozycjaId: poz.MagazynPozycjaId || null,
+        gtu: poz.GTU && poz.GTU !== 'BRAK' ? poz.GTU : null,
+        matchMethod: resolved.method,
+      },
+    });
+  }
+
+  if (apply) {
+    await prisma.invoiceLineItem.createMany({ data: records });
+    // Update Invoice.extras tez — zeby przyszle re-runy (czy 360) widzialy
+    // pozycje od razu bez kolejnego call do iFirmy.
+    const currentExtras = (inv.extras && typeof inv.extras === 'object') ? inv.extras : {};
+    const updExtras = {
+      ...currentExtras,
+      pozycjeFromIfirma: pozycje,
+      backfilledLinesAt: new Date().toISOString(),
+      lineMatchingSummary: matches.map(m => ({ position: m.position, ean: m.matched.ean, method: m.matched.method })),
+    };
+    await prisma.invoice.update({ where: { id: inv.id }, data: { extras: updExtras } });
+  }
+
+  if (verbose) log(`  ${inv.number}: ${records.length} pozycji, methods: ${[...new Set(matches.map(m => m.matched.method))].join(', ')}`);
+  return { id: inv.id, number: inv.number, lineCount: records.length, matches };
+}
+
+async function runBackfill(prisma, opts = {}) {
+  const apply = !!opts.apply;
+  const verbose = !!opts.verbose;
+  const log = typeof opts.log === 'function' ? opts.log : () => {};
+  const limit = Number.isFinite(opts.limit) ? opts.limit : 20;
+  const sleepMs = Number.isFinite(opts.sleepMs) ? opts.sleepMs : 1500;
+
+  log(`backfill invoice-lines-from-ifirma apply=${apply} limit=${limit} sleep=${sleepMs}ms`);
+
+  // Wszystkie FV ktore maja ifirmaId, sa typu fakturowego (nie korekta) i
+  // nie maja jeszcze lineItems. type=null tez bierzemy (czesto staremi).
+  const invoices = await prisma.invoice.findMany({
+    where: {
+      ifirmaId: { not: null },
+      lineItems: { none: {} },
+    },
+    orderBy: { issueDate: 'desc' },
+    take: limit,
+    select: {
+      id: true, number: true, ifirmaId: true, type: true,
+      contractorId: true, contractorCountry: true,
+      currency: true, issueDate: true, extras: true,
+    },
+  });
+
+  log(`found ${invoices.length} candidate invoices (cap limit=${limit})`);
+
+  const productCache = new Map();
+  const results = [];
+  const errors = [];
+  let totalLines = 0;
+  let llmCalls = 0;
+  let directEan = 0;
+  let fuzzyMatched = 0;
+  let unmatched = 0;
+
+  for (let i = 0; i < invoices.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, sleepMs));
+    const inv = invoices[i];
+    log(`[${i + 1}/${invoices.length}] processing ${inv.number} (ifirmaId=${inv.ifirmaId}, type=${inv.type || '?'})`);
+    const r = await processInvoice(prisma, inv, productCache, { apply, log, verbose });
+    if (r.error) errors.push(r);
+    else {
+      results.push(r);
+      totalLines += r.lineCount;
+      for (const m of (r.matches || [])) {
+        if (m.matched.method === 'ean-direct') directEan++;
+        else if (m.matched.method && m.matched.method.startsWith('fuzzy-')) fuzzyMatched++;
+        else if (m.matched.method === 'llm') llmCalls++;
+        if (!m.matched.productId) unmatched++;
+      }
+    }
+  }
+
+  return {
+    apply, processed: invoices.length, errors: errors.length, totalLinesCreated: apply ? totalLines : 0,
+    matchStats: { directEan, fuzzyMatched, llmCalls, unmatched },
+    sample: results.slice(0, 5),
+    errorsSample: errors.slice(0, 5),
+  };
+}
+
+module.exports = { runBackfill, extractEanFromName, scoreNameMatch };

@@ -6,6 +6,7 @@ const { runBackfill: runContractorV2Backfill } = require('../services/contractor
 const { runBackfill: runContractorContactsBackfill } = require('../services/contractor-contacts-backfill');
 const { runBackfill: runInvoiceSnapshotsBackfill } = require('../services/invoice-snapshot-backfill');
 const { runBackfill: runInvoiceLinesBackfill } = require('../services/invoice-lines-backfill');
+const { runBackfill: runInvoiceLinesFromIfirmaBackfill } = require('../services/invoice-lines-from-ifirma-backfill');
 const { runBackfill: runActivityBackfill } = require('../services/activity-backfill');
 const { runPrune: runActivityPrune } = require('../services/activity-prune');
 const https = require('https');
@@ -251,6 +252,43 @@ router.post('/admin/activity/prune', async (req, res) => {
   } catch (e) {
     console.error('[admin/activity/prune] error:', e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Backfill InvoiceLineItem dla FV bez pozycji w bazie (importowanych
+// przez ifirma-sync, ktora /listy-faktur nie zwraca Pozycji). Zaciaga
+// /fakturakraj/{id}, parsuje, matchuje produkty po EAN (z NazwaPelna)
+// -> fuzzy -> LLM Haiku fallback. Rate-limited.
+//
+// Body:
+//   apply (bool, default false)
+//   limit (int, default 20)        — ile FV per run (chunkujemy)
+//   sleepMs (int, default 1500)    — pauza miedzy fetchami (iFirma rate)
+//   verbose (bool, default false)
+//
+// Response: { processed, errors, totalLinesCreated, matchStats:
+//   {directEan, fuzzyMatched, llmCalls, unmatched}, sample, errorsSample }
+//
+// Workflow: najpierw probe na 1 FV przez /admin/ifirma/probe-details,
+// potem ten endpoint z malym limitem (apply:false), zweryfikuj sample +
+// matchStats, potem apply:true z wiekszym limitem.
+router.post('/admin/backfill/invoice-lines-from-ifirma', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const body = req.body || {};
+  const apply = body.apply === true;
+  const verbose = body.verbose === true;
+  const limit = Number.isFinite(body.limit) ? body.limit : 20;
+  const sleepMs = Number.isFinite(body.sleepMs) ? body.sleepMs : 1500;
+  console.log(`[admin/backfill/invoice-lines-from-ifirma] apply=${apply} limit=${limit} sleep=${sleepMs}`);
+  try {
+    const result = await runInvoiceLinesFromIfirmaBackfill(prisma, {
+      apply, verbose, limit, sleepMs,
+      log: (msg) => console.log(`[ifirma-lines-backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/invoice-lines-from-ifirma] error:', e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
