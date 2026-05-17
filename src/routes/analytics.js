@@ -379,7 +379,7 @@ router.get('/analytics/top-customers', async (req, res) => {
           AND "contractorId" IS NOT NULL
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
         GROUP BY "contractorId", currency
-        ORDER BY total_revenue DESC
+        ORDER BY SUM("grossAmount") DESC
         LIMIT ${limit}
       `);
     }
@@ -399,7 +399,7 @@ router.get('/analytics/top-customers', async (req, res) => {
           AND "contractorId" IS NOT NULL
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
         GROUP BY "contractorId", currency
-        ORDER BY total_revenue DESC
+        ORDER BY SUM("totalAmount") DESC
         LIMIT ${limit}
       `);
     }
@@ -523,7 +523,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           AND ean IS NOT NULL
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
         GROUP BY ean, currency
-        ORDER BY qty DESC
+        ORDER BY SUM(qty) DESC
         LIMIT ${limit}
       `);
     }
@@ -543,7 +543,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           AND ean IS NOT NULL
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
         GROUP BY ean, currency
-        ORDER BY qty DESC
+        ORDER BY SUM(qty) DESC
         LIMIT ${limit}
       `);
     }
