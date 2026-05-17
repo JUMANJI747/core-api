@@ -159,7 +159,11 @@ async function processInvoice(prisma, inv, productCache, opts) {
     return { id: inv.id, number: inv.number, error: `fetchDetails: ${e.message}` };
   }
 
-  const pozycje = Array.isArray(details.Pozycje) ? details.Pozycje : [];
+  // Defensive: fetchInvoiceDetails unwrap-uje response, ale jakby ktos
+  // kiedys zmienil unwrap — szukamy tez pod .response.Pozycje.
+  const pozycje = Array.isArray(details.Pozycje) ? details.Pozycje
+    : (details.response && Array.isArray(details.response.Pozycje)) ? details.response.Pozycje
+    : [];
   if (pozycje.length === 0) {
     return { id: inv.id, number: inv.number, error: 'no Pozycje in iFirma response' };
   }

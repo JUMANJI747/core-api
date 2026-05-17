@@ -507,7 +507,12 @@ async function fetchInvoiceDetails(fakturaId, rodzaj) {
   try { data = JSON.parse(bodyStr); }
   catch (e) { throw new Error('iFirma invalid JSON (fetchInvoiceDetails): ' + bodyStr.slice(0, 200)); }
 
-  return (data.response && data.response.Wynik) || data;
+  // iFirma niespojnie owija odpowiedzi: GET /fakturakraj/{id} zwraca
+  // {response: {Pozycje, Kontrahent, ...}}, niektore inne endpointy
+  // {response: {Wynik: {...}}}. Unwrap oba patterny do flat object zeby
+  // caller czytal directly details.Pozycje / details.Kontrahent /
+  // details.PelnyNumer (jpk.js i invoice-backfill.js tez tak oczekiwaly).
+  return (data.response && data.response.Wynik) || (data.response) || data;
 }
 
 // ============ DELETE INVOICE ============
