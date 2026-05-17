@@ -16,7 +16,26 @@ const MODEL =
   process.env.ACCOUNTING_AGENT_MODEL ||
   'claude-sonnet-4-5-20250929';
 
-const SYSTEM_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
+function buildSystemPrompt() {
+  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+}
+
+const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
+
+DZISIEJSZA DATA: {{TODAY}}
+"ten rok" / "tym roku" = rok z DZISIEJSZEJ DATY.
+"ostatnio" = 30 ostatnich dni od DZISIEJSZEJ DATY.
+
+ZASADA #0 — NIGDY NIE LICZ Z GŁOWY, NIGDY NIE ZAGINAJ TOKENÓW:
+Pytania ilosciowe ("ile sticków / ile sprzedalismy / obroty / top klienci")
+→ ZAWSZE wywolaj analytics_products_sold / analytics_revenue /
+analytics_top_customers. To sa pre-agregowane SQL queries, zwracaja
+~1KB.
+NIGDY nie wolaj cs_list_invoices dla pytan ilosciowych — to zwraca pelne
+FV z pozycjami (kilkadziesiat KB per page) i wybucha kontekstem (200k+
+tokens overflow → 400 error → "Bad request" do n8n).
+cs_list_invoices uzywaj TYLKO dla konkretnej FV ("pokaz FV 0057",
+"znajdz fakture dla X") — z explicitnym filtrem number/customerNif/limit.
 Plain text, krótko, kwoty w EUR, ceny netto (Contasimple oczekuje netto).
 Wszystkie produkty 7% IGIC domyślnie.
 
@@ -330,6 +349,45 @@ const tools = [
       },
     },
   },
+  {
+    name: 'analytics_products_sold',
+    description: 'Sprzedaz per produkt w okresie z naszej znormalizowanej bazy (Invoice/EsInvoice lineItems). Bez ean -> top-N. Z ean -> time series. ZAWSZE wywolaj dla pytan "ile sticków / ile sprzedalismy". NIGDY zamiast tego nie wolaj cs_list_invoices bo overflow.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ean: { type: 'string' },
+        from: { type: 'string', description: 'YYYY-MM-DD. Bez = rok temu.' },
+        to: { type: 'string', description: 'YYYY-MM-DD. Bez = dzisiaj.' },
+        country: { type: 'string' }, limit: { type: 'number' },
+        source: { type: 'string', description: 'pl|es lub pomin dla obu' },
+        granularity: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'analytics_revenue',
+    description: 'Obroty per period+currency+source. ZAWSZE dla "ile zarobilismy / obroty".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        country: { type: 'string' }, currency: { type: 'string' },
+        source: { type: 'string' }, granularity: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'analytics_top_customers',
+    description: 'Top N klientow po total_revenue (numerycznie desc). ZAWSZE dla "top klienci / ranking".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        year: { type: 'number' },
+        country: { type: 'string' }, limit: { type: 'number' }, source: { type: 'string' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -351,6 +409,9 @@ const ENDPOINT_MAP = {
   cs_albaran_send_email: ['POST', '/api/contasimple/albaran-send-email'],
   cs_albaran_delete: ['POST', '/api/contasimple/albaran-delete'],
   cs_list_albarans: ['GET', '/api/contasimple/albarans'],
+  analytics_products_sold: ['GET', '/api/analytics/products-sold'],
+  analytics_revenue: ['GET', '/api/analytics/revenue'],
+  analytics_top_customers: ['GET', '/api/analytics/top-customers'],
 };
 
 const executeTool = buildExecuteTool({
@@ -406,7 +467,7 @@ async function processAccountingEsQuery(query, opts = {}) {
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     tools,
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
@@ -433,7 +494,7 @@ async function processAccountingEsQuery(query, opts = {}) {
     response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(),
       tools,
       messages,
     });
