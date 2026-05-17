@@ -53,20 +53,47 @@ function extractEanFromName(name) {
 
 // Lokalny fuzzy match — token-based scoring na lowercase name + variant +
 // capacity. Score 0..1. >=0.85 to "dobry" match.
+//
+// Penalty za nadmiar specyfikacji w candidate:
+//   "Surf Stick Bell" vs candidate {name:'SURF STICK', variant:'Skin',
+//    capacity:'6.8g'} — query nie wspomina koloru ani pojemnosci, wiec
+//    candidate ze specyfikacjami dostaje kare. Bez tego wszystkie
+//    warianty matchuja tak samo dobrze jak generic (variant=null), co
+//    losowo wskazywalo "Skin" zamiast STICK-GENERIC.
+function tokenize(s) {
+  return (s || '').toLowerCase()
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/).filter(Boolean);
+}
+
 function scoreNameMatch(needle, candidate) {
   if (!needle || !candidate) return 0;
-  const n = needle.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
-  const haystackParts = [candidate.name, candidate.variant, candidate.capacity, candidate.brand].filter(Boolean).join(' ');
-  const h = haystackParts.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
-  if (n.length === 0 || h.length === 0) return 0;
-  const hSet = new Set(h);
+  const n = tokenize(needle);
+  const nameTokens = tokenize(candidate.name);
+  const brandTokens = tokenize(candidate.brand);
+  const variantTokens = tokenize(candidate.variant);
+  const capacityTokens = tokenize(candidate.capacity);
+  const all = [...nameTokens, ...brandTokens, ...variantTokens, ...capacityTokens];
+  if (n.length === 0 || all.length === 0) return 0;
+
+  const allSet = new Set(all);
+  const needleSet = new Set(n);
   let hits = 0;
   for (const t of n) {
-    if (hSet.has(t)) { hits++; continue; }
-    // partial: jezeli token z needle jest prefixem ktorejs tokenu haystack
-    if ([...hSet].some(x => x.startsWith(t) || t.startsWith(x))) hits += 0.5;
+    if (allSet.has(t)) { hits++; continue; }
+    if ([...allSet].some(x => x.length >= 3 && (x.startsWith(t) || t.startsWith(x)))) hits += 0.5;
   }
-  return hits / n.length;
+  let score = hits / n.length;
+
+  // Penalty: kazdy token z variant/capacity ktorego NIE ma w query
+  // odejmuje 0.15 (cap 0.6 zeby nie wpasc ponizej 0.4 z dobrego matcha).
+  const extraSpec = [...variantTokens, ...capacityTokens]
+    .filter(t => !needleSet.has(t)).length;
+  const penalty = Math.min(0.6, extraSpec * 0.15);
+  score -= penalty;
+
+  return Math.max(0, Math.min(1, score));
 }
 
 async function llmMatchProduct(cleanName, candidates, ctx) {
@@ -135,16 +162,28 @@ async function resolveProduct(prisma, productCache, cleanName, ean, ctx) {
     .sort((a, b) => b.score - a.score);
 
   const top = scored[0];
-  if (top && top.score >= 0.85) {
+  const second = scored[1];
+  const ambiguous = top && second && (top.score - second.score < 0.1);
+
+  if (top && top.score >= 0.85 && !ambiguous) {
     return { productId: top.p.id, ean: top.p.ean, method: `fuzzy-${top.score.toFixed(2)}` };
   }
 
-  // 3) LLM fallback — top 30 fuzzy candidates.
+  // 3) LLM fallback — gdy:
+  //   - top score < 0.85 (slaby match), albo
+  //   - top score >= 0.85 ALE ambiguous (>1 candidate w pasmie 0.1 od topu)
+  // Top 30 fuzzy candidates do LLM-a (Haiku decyduje).
   const candidates = scored.slice(0, 30).map(x => x.p);
   const llm = await llmMatchProduct(cleanName, candidates, ctx);
   if (llm.ean) {
     const matched = all.find(p => p.ean === llm.ean);
-    return { productId: matched ? matched.id : null, ean: llm.ean, method: llm.method };
+    const method = ambiguous ? `llm-tiebreak (top=${top.score.toFixed(2)},2nd=${second.score.toFixed(2)})` : llm.method;
+    return { productId: matched ? matched.id : null, ean: llm.ean, method };
+  }
+  // LLM nie wybral — jak top jest mocny (>=0.85), bierzemy go mimo
+  // ambiguity (lepiej cokolwiek niz nic).
+  if (top && top.score >= 0.85) {
+    return { productId: top.p.id, ean: top.p.ean, method: `fuzzy-${top.score.toFixed(2)} (llm-skipped: ${llm.method})` };
   }
   return { productId: null, ean: null, method: llm.method };
 }
