@@ -93,19 +93,29 @@ async function runBackfill(prisma, opts = {}) {
       existingContactKeys.add(`phone|${phone}`);
     }
 
-    // 3) billing address z flat fields
-    const hasBilling = c.address || c.city || c.country || c.lat || c.lng;
-    if (hasBilling) {
+    // 3) billing address: preferuj extras.billingAddress (bogatsze — ma
+    //    street/city/postCode), fall back do flat Contractor.* . Tworzymy
+    //    TYLKO gdy street albo city jest niepuste — sam country/lat/lng
+    //    bez ulicy daje pusty rekord ktorego potem nie da sie z niczym
+    //    matchowac.
+    const extrasBilling = (c.extras && typeof c.extras === 'object' && c.extras.billingAddress && typeof c.extras.billingAddress === 'object')
+      ? c.extras.billingAddress : {};
+    const street = extrasBilling.street || c.address || null;
+    const city = extrasBilling.city || c.city || null;
+    const postalCode = extrasBilling.postCode || extrasBilling.postalCode || null;
+    // ISO-2 z flat (jak '/^[A-Z]{2}$/') wygrywa; w przeciwnym razie z billing
+    // (czesto "Polska" / "Hiszpania" — display value).
+    const flatCountry = c.country || null;
+    const country = (flatCountry && /^[A-Z]{2}$/.test(flatCountry)) ? flatCountry : (extrasBilling.country || flatCountry);
+    if (street || city) {
       const addr = {
         contractorId: c.id, type: 'billing', isPrimary: true,
-        street: c.address || null,
-        city: c.city || null,
-        country: c.country || null,
+        street, city, postalCode, country,
         lat: c.lat || null,
         lng: c.lng || null,
         geocodedAt: c.geocodedAt || null,
         geocodingStatus: c.geocodingStatus || null,
-        source: 'backfill',
+        source: extrasBilling.source || 'backfill',
       };
       const key = normAddressKey(addr);
       if (!existingAddressKeys.has(key)) {
