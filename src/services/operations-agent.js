@@ -6,7 +6,23 @@ const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime'
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.OPERATIONS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
-const SYSTEM_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, krótko.
+function buildSystemPrompt() {
+  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+}
+
+const BASE_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, krótko.
+
+DZISIEJSZA DATA: {{TODAY}}
+"ten rok" / "tym roku" / "this year" = rok z DZISIEJSZEJ DATY.
+"ostatnio" bez konkretu = 30 ostatnich dni od DZISIEJSZEJ DATY.
+"w zeszłym tygodniu" = 7-14 dni wstecz.
+NIGDY nie używaj innego roku niż wynika z DZISIEJSZEJ DATY chyba ze user EXPLICITE poda inny.
+
+ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
+Pytania "ile sprzedaliśmy / ile obroty / top klienci / ile sztuk" → ZAWSZE
+wywolaj analytics_* tool. NIGDY nie podawaj liczb bez wczesniejszego call.
+NIGDY nie zgaduj ani nie ekstrapoluj. Jak tool wraca pusto → mowisz "brak
+danych w bazie", nie wymyslasz. Liczby pokazujesz DOSLOWNIE z response.
 
 ZADANIA:
 - Łączenie / rozdzielanie transakcji (gdy auto-matcher nie skleił mail+FV+paczka+płatność)
@@ -108,6 +124,47 @@ const tools = [
       },
     },
   },
+  {
+    name: 'analytics_products_sold',
+    description: 'Sprzedaz per produkt w okresie. Bez ean -> top-N EANow w okresie (sortowane po qty desc). Z ean -> time series tego konkretnego produktu. ZAWSZE wywolaj dla pytan "ile sztuk", "ile sprzedalismy", "top produkty". Domyslnie limit 50, cap 500. Currency split PL/ES osobno.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ean: { type: 'string', description: 'Konkretny EAN — wtedy time series po granularity. Bez = top N.' },
+        from: { type: 'string', description: 'YYYY-MM-DD. Default: rok temu od dzisiejszej daty.' },
+        to: { type: 'string', description: 'YYYY-MM-DD. Default: dzisiejsza data.' },
+        country: { type: 'string', description: 'ISO-2 filter np. PL, DE, ES' },
+        limit: { type: 'number' },
+        source: { type: 'string', description: '"pl" lub "es" lub pomin dla obu' },
+        granularity: { type: 'string', description: 'day|week|month|quarter|year (tylko z ean)' },
+      },
+    },
+  },
+  {
+    name: 'analytics_revenue',
+    description: 'Obroty per okres (group by period+currency+source). Currency wraca jako string, suma jako Decimal-text. ZAWSZE dla pytan "ile zarobilismy", "obroty", "przychod".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        country: { type: 'string' }, currency: { type: 'string' },
+        source: { type: 'string' },
+        granularity: { type: 'string', description: 'day|week|month|quarter|year' },
+      },
+    },
+  },
+  {
+    name: 'analytics_top_customers',
+    description: 'Top N klientow po total_revenue (sortowanie desc po faktycznej liczbie, nie tekstowo). ZAWSZE dla pytan "top klienci", "kto najwiecej kupil", "ranking".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        year: { type: 'number', description: 'Zamiast from/to — od 1 stycznia do 31 grudnia roku.' },
+        country: { type: 'string' }, limit: { type: 'number' }, source: { type: 'string' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -116,6 +173,9 @@ const ENDPOINT_MAP = {
   split_transaction: ['POST', '/api/transactions/:id/split'],
   add_manual_entry: ['POST', '/api/transactions/manual'],
   bootstrap_transactions: ['POST', '/api/transactions/bootstrap'],
+  analytics_products_sold: ['GET', '/api/analytics/products-sold'],
+  analytics_revenue: ['GET', '/api/analytics/revenue'],
+  analytics_top_customers: ['GET', '/api/analytics/top-customers'],
 };
 
 const executeTool = buildExecuteTool({
@@ -131,7 +191,7 @@ async function processOperationsQuery(query, ctx = {}) {
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     tools,
     messages,
   });
@@ -153,7 +213,7 @@ async function processOperationsQuery(query, ctx = {}) {
     response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(),
       tools,
       messages,
     });

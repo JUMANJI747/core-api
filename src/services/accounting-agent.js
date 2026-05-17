@@ -6,7 +6,23 @@ const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime'
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
-const SYSTEM_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ SurfStickBell. Plain text, krótko, ceny brutto.
+function buildSystemPrompt() {
+  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+}
+
+const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ SurfStickBell. Plain text, krótko, ceny brutto.
+
+DZISIEJSZA DATA: {{TODAY}}
+"ten rok" / "tym roku" = rok z DZISIEJSZEJ DATY (NIE 2025, NIE 2024 — sprawdz date!).
+"ostatnio" bez konkretu = 30 ostatnich dni od DZISIEJSZEJ DATY.
+
+ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
+Pytania ilosciowe ("ile sprzedalismy / ile sticków / obroty / top klienci")
+→ ZAWSZE wywolaj analytics_products_sold / analytics_revenue /
+analytics_top_customers. NIGDY nie zgaduj liczb. NIGDY nie wymyslaj
+komunikatu "brak nazw w metadanych" — jak tool wraca pusto, mowisz
+"brak danych w bazie dla podanego okresu", nie konfabulujesz.
+Pokazuj liczby DOSLOWNIE z response.
 
 PRODUKTY — MAPOWANIE NAZW NA EAN/NAME:
 - "stick generic" / "stick" / "X sticków" (BEZ koloru, BEZ "mix") → name="stick generic"
@@ -215,6 +231,46 @@ const tools = [
     description: 'Pobierz kontekst poprzedniej operacji księgowej (lastAction, lastInvoiceId, lastContractorId itp.). Wywołaj gdy dostajesz krótkie polecenie bez konkretu (tak/ok/wyślij/potwierdź) — żeby wiedzieć do czego się odnosi. Wraca {lastAction, savedAt, ...szczegóły}.',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'analytics_products_sold',
+    description: 'Sprzedaz per produkt w okresie. Bez ean -> top-N EANow w okresie (sort po qty desc). Z ean -> time series. ZAWSZE wywolaj dla pytan "ile sztuk", "ile sprzedalismy X", "top produkty". Currency split PL/ES osobno.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ean: { type: 'string' },
+        from: { type: 'string', description: 'YYYY-MM-DD. Bez = rok temu.' },
+        to: { type: 'string', description: 'YYYY-MM-DD. Bez = dzisiaj.' },
+        country: { type: 'string' }, limit: { type: 'number' },
+        source: { type: 'string', description: 'pl|es lub pomin dla obu' },
+        granularity: { type: 'string', description: 'day|week|month|quarter|year (tylko z ean)' },
+      },
+    },
+  },
+  {
+    name: 'analytics_revenue',
+    description: 'Obroty per okres+currency+source. ZAWSZE dla "ile zarobilismy / obroty / przychod".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        country: { type: 'string' }, currency: { type: 'string' },
+        source: { type: 'string' },
+        granularity: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'analytics_top_customers',
+    description: 'Top N klientow po total_revenue (sortowanie numeryczne desc). ZAWSZE dla "top klienci / ranking / kto najwiecej".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' }, to: { type: 'string' },
+        year: { type: 'number' },
+        country: { type: 'string' }, limit: { type: 'number' }, source: { type: 'string' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -229,6 +285,9 @@ const ENDPOINT_MAP = {
   open_consignment: ['POST', '/api/consignments/open'],
   send_invoice_pdf_telegram: ['POST', '/api/ifirma/resend-pdf-telegram'],
   get_context: ['GET', '/api/agent-context/ksiegowosc'],
+  analytics_products_sold: ['GET', '/api/analytics/products-sold'],
+  analytics_revenue: ['GET', '/api/analytics/revenue'],
+  analytics_top_customers: ['GET', '/api/analytics/top-customers'],
 };
 
 const executeTool = buildExecuteTool({
@@ -273,7 +332,7 @@ async function processAccountingQuery(query, ctx = {}) {
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     tools,
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
@@ -300,7 +359,7 @@ async function processAccountingQuery(query, ctx = {}) {
     response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(),
       tools,
       messages,
     });
