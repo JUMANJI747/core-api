@@ -112,6 +112,13 @@ function serializeForJson(obj) {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj === 'bigint') return Number(obj);
   if (obj instanceof Date) return obj.toISOString();
+  // Prisma.Decimal (decimal.js instance) — wykryj po metodach. JSON.stringify
+  // wypluwa surowy {s,e,d} ktory dla BI jest bezuzyteczny — wymuszamy
+  // string z pelna precyzja.
+  if (typeof obj === 'object' && obj.constructor && obj.constructor.name === 'Decimal'
+      && typeof obj.toFixed === 'function') {
+    return obj.toString();
+  }
   if (Array.isArray(obj)) return obj.map(serializeForJson);
   if (typeof obj === 'object') {
     const out = {};
@@ -301,7 +308,7 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "issueDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
-        GROUP BY period, currency
+        GROUP BY 2, 3
         ORDER BY period, currency
       `);
     }
@@ -317,7 +324,7 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
-        GROUP BY period, currency
+        GROUP BY 2, 3
         ORDER BY period, currency
       `);
     }
@@ -453,7 +460,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           WHERE ean = ${ean}
             AND "issueDate" BETWEEN ${from} AND ${to}
             AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-          GROUP BY period, currency
+          GROUP BY 2, 3
           ORDER BY period, currency
         `);
       }
@@ -471,7 +478,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           WHERE ean = ${ean}
             AND "invoiceDate" BETWEEN ${from} AND ${to}
             AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-          GROUP BY period, currency
+          GROUP BY 2, 3
           ORDER BY period, currency
         `);
       }

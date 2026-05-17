@@ -27,6 +27,8 @@ function tagOrNull(prefix, value) {
   return `${prefix}:${String(value).toLowerCase()}`;
 }
 
+const { buildSearchText } = require('./activity-log');
+
 async function runBackfill(prisma, opts = {}) {
   const apply = !!opts.apply;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
@@ -46,7 +48,9 @@ async function runBackfill(prisma, opts = {}) {
   const batch = [];
 
   function push(rec) {
-    batch.push({ ...rec, source: 'backfill', tags: rec.tags || [], payload: rec.payload || {} });
+    const payload = rec.payload || {};
+    const searchText = buildSearchText(rec.summary, payload);
+    batch.push({ ...rec, source: 'backfill', tags: rec.tags || [], payload, searchText });
   }
   async function flush() {
     if (!apply || batch.length === 0) return;
