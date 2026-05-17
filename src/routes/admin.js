@@ -7,6 +7,7 @@ const { runBackfill: runContractorContactsBackfill } = require('../services/cont
 const { runBackfill: runInvoiceSnapshotsBackfill } = require('../services/invoice-snapshot-backfill');
 const { runBackfill: runInvoiceLinesBackfill } = require('../services/invoice-lines-backfill');
 const { runBackfill: runInvoiceLinesFromIfirmaBackfill } = require('../services/invoice-lines-from-ifirma-backfill');
+const { runBackfill: runEsInvoicesBackfill } = require('../services/es-invoices-backfill');
 const { runBackfill: runActivityBackfill } = require('../services/activity-backfill');
 const { runPrune: runActivityPrune } = require('../services/activity-prune');
 const https = require('https');
@@ -288,6 +289,33 @@ router.post('/admin/backfill/invoice-lines-from-ifirma', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[admin/backfill/invoice-lines-from-ifirma] error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Backfill — pelen sync FV z Contasimple do EsInvoice + EsInvoiceLineItem
+// + EsContractor (wtorne). Iteruje po kwartalach (default: od env
+// CONTASIMPLE_BACKFILL_START_YEAR, dziedziczone obecny rok). Idempotent
+// po contasimpleId.
+//
+// Body:
+//   apply (bool, default false)
+//   periods (string[]?, np. ['2026-1T','2026-2T']) — gdy pominete, default
+//     wg env start year do biezacego.
+router.post('/admin/backfill/es-invoices-from-contasimple', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const body = req.body || {};
+  const apply = body.apply === true;
+  const periods = Array.isArray(body.periods) ? body.periods : null;
+  console.log(`[admin/backfill/es-invoices-from-contasimple] apply=${apply} periods=${periods ? periods.join(',') : 'default'}`);
+  try {
+    const result = await runEsInvoicesBackfill(prisma, {
+      apply, periods,
+      log: (msg) => console.log(`[es-invoices-backfill] ${msg}`),
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[admin/backfill/es-invoices-from-contasimple] error:', e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
