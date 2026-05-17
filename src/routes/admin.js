@@ -254,6 +254,23 @@ router.post('/admin/activity/prune', async (req, res) => {
   }
 });
 
+// Diagnostic — wywoluje iFirma fetchInvoiceDetails(fakturaId, rodzaj) i
+// zwraca raw response. Sluzy do sprawdzenia ksztaltu Pozycje[] przed
+// napisaniem backfillu ktory zaciagnie pozycje historycznych FV (te z
+// pustym extras po imporcie przez ifirma-sync).
+router.post('/admin/ifirma/probe-details', async (req, res) => {
+  const { fakturaId, rodzaj } = req.body || {};
+  if (!fakturaId) return res.status(400).json({ error: 'fakturaId required' });
+  try {
+    const { fetchInvoiceDetails } = require('../ifirma-client');
+    const details = await fetchInvoiceDetails(fakturaId, rodzaj || 'prz_faktura_kraj');
+    res.json({ ok: true, fakturaId, rodzaj, details });
+  } catch (e) {
+    console.error('[admin/ifirma/probe-details] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ CRM v2 etap 3.3 — admin manual data ops ============
 
 // POST /api/admin/contractors/merge
