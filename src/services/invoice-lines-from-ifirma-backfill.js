@@ -101,7 +101,12 @@ async function llmMatchProduct(cleanName, candidates, ctx) {
   if (!client) return { ean: null, method: 'llm-skipped (no key)' };
   if (!candidates.length) return { ean: null, method: 'llm-skipped (no candidates)' };
 
-  const productList = candidates.map(p => `- EAN ${p.ean} | ${p.name}${p.variant ? ' / ' + p.variant : ''}${p.capacity ? ' / ' + p.capacity : ''}`).join('\n');
+  const productList = candidates.map(p => {
+    const isGeneric = !p.variant && /generic/i.test(p.ean || '');
+    const tag = isGeneric ? ' [GENERIC - bez koloru/wariantu]' : '';
+    return `- EAN ${p.ean} | ${p.name}${p.variant ? ' / ' + p.variant : ''}${p.capacity ? ' / ' + p.capacity : ''}${tag}`;
+  }).join('\n');
+
   const prompt = `Pozycja z faktury: "${cleanName}"
 ${ctx.qty ? `Ilosc: ${ctx.qty}` : ''}
 ${ctx.priceNetto ? `Cena netto: ${ctx.priceNetto} ${ctx.currency || ''}` : ''}
@@ -109,7 +114,13 @@ ${ctx.priceNetto ? `Cena netto: ${ctx.priceNetto} ${ctx.currency || ''}` : ''}
 Lista produktow w naszym katalogu (EAN | Nazwa / Wariant / Pojemnosc):
 ${productList}
 
-Wybierz EAN ktory najbardziej pasuje do pozycji z faktury. Zwróć TYLKO EAN (sam ciag cyfr) lub "NONE" jak zaden nie pasuje. Bez wyjasnien.`;
+ZASADY:
+1. Jezeli pozycja NIE wymienia konkretnego koloru (Blue/Pink/Mint/Purple/White/Skin/Black/Brown) ani wariantu — wybierz produkt [GENERIC] (variant=null, czesto z EAN-em jak STICK-GENERIC, MASCARA-GENERIC).
+2. Jezeli pozycja wymienia konkretny kolor/wariant — wybierz produkt z dokladnie tym wariantem.
+3. Jezeli pozycja to "Box" / "Ekspozytor" / "30szt" — wybierz produkt typu BOX-* (boxowy).
+4. Jezeli zadne nie pasuje — zwróć "NONE".
+
+Zwróć TYLKO sam EAN (np. "5902082556022" albo "STICK-GENERIC") lub "NONE". Bez wyjasnien, bez prefixu "EAN:".`;
 
   try {
     const resp = await client.messages.create({
@@ -117,13 +128,19 @@ Wybierz EAN ktory najbardziej pasuje do pozycji z faktury. Zwróć TYLKO EAN (sa
       max_tokens: 32,
       messages: [{ role: 'user', content: prompt }],
     });
-    const text = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    const raw = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    // Trim non-EAN trash (spacje, kropki, EAN: prefix) ale zachowaj cyfry+litery+myslnik.
+    const text = raw.replace(/^[^A-Za-z0-9-]+|[^A-Za-z0-9-]+$/g, '').replace(/^EAN[:\s]*/i, '');
     if (/^NONE$/i.test(text)) return { ean: null, method: 'llm-none' };
-    const m = text.match(/(\d{8,14})/);
-    if (!m) return { ean: null, method: `llm-unparseable (${text.slice(0, 50)})` };
-    const ean = m[1];
-    if (!candidates.find(p => p.ean === ean)) return { ean: null, method: `llm-hallucinated (${ean})` };
-    return { ean, method: 'llm' };
+    // Exact match do candidates (LLM moze zwrocic literowy EAN typu
+    // STICK-GENERIC, BOX-STICK-30 — nie tylko cyfry).
+    const exact = candidates.find(p => p.ean === text);
+    if (exact) return { ean: exact.ean, method: 'llm' };
+    // Fallback: ktorykolwiek EAN z listy candidates wystepuje w surowym
+    // text (LLM dopisal "EAN STICK-GENERIC" zamiast samego "STICK-GENERIC").
+    const containsMatch = candidates.find(p => p.ean && raw.includes(p.ean));
+    if (containsMatch) return { ean: containsMatch.ean, method: 'llm' };
+    return { ean: null, method: `llm-unparseable (${raw.slice(0, 80)})` };
   } catch (e) {
     console.error('[ifirma-lines] LLM match failed:', e.message);
     return { ean: null, method: `llm-error (${e.message.slice(0, 50)})` };
