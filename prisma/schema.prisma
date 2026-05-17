@@ -33,7 +33,7 @@ model Contractor {
   primaryEmail         String? // wskaźnik "główny" — redundant z ContractorContact ale wygodny w listach
   externalIds          Json     @default("{}") // { ifirmaId, gkReceiverId, contasimpleId, ... }
   aliases              String[] @default([]) // alternatywne nazwy + potoczne ("ACME", "Janusz", "ten od Krakowa")
-  linkedEsContractorId String?  @unique // cross-ref PL ↔ ES (Canarias) 1:1. Rename do linkedCnContractorId w commicie #17
+  linkedEsContractorId String? // cross-ref PL ↔ ES (Canarias) 1:1 enforced app-side (helpers.tryAutoLinkEs + /admin/contractors/:id/link-es). @unique zdjete bo prisma db push wymaga --accept-data-loss nawet bez duplikatow — flagi w start scriptcie nie chcemy. Rename do linkedCnContractorId w commicie #17.
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -49,6 +49,7 @@ model Contractor {
   @@index([country])
   @@index([tags])
   @@index([primaryEmail])
+  @@index([linkedEsContractorId])
 }
 
 // CRM v2 Etap 1.2 — multi-email/phone/whatsapp na kontrahencie.
