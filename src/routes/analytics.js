@@ -578,19 +578,20 @@ router.get('/analytics/products-sold', async (req, res) => {
     if (wantPl) {
       queries.push(prisma.$queryRaw`
         SELECT
-          'pl'::text         AS source,
-          ean,
-          MAX(name)          AS name,
+          'pl'::text                              AS source,
+          COALESCE(ean, lower(name))              AS ean,
+          MAX(name)                               AS name,
           currency,
-          SUM(qty)::text     AS qty,
-          SUM("totalNetto")::text  AS revenue_netto,
-          SUM("totalGross")::text  AS revenue_gross,
-          COUNT(DISTINCT "invoiceId")::int AS invoice_count
+          SUM(qty)::text                          AS qty,
+          SUM("totalNetto")::text                 AS revenue_netto,
+          SUM("totalGross")::text                 AS revenue_gross,
+          COUNT(DISTINCT "invoiceId")::int        AS invoice_count,
+          (ean IS NULL)                           AS no_ean
         FROM "InvoiceLineItem"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
-          AND ean IS NOT NULL
+          AND (ean IS NOT NULL OR name IS NOT NULL)
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-        GROUP BY ean, currency
+        GROUP BY COALESCE(ean, lower(name)), currency
         ORDER BY SUM(qty) DESC
         LIMIT ${limit}
       `);
@@ -598,19 +599,20 @@ router.get('/analytics/products-sold', async (req, res) => {
     if (wantEs) {
       queries.push(prisma.$queryRaw`
         SELECT
-          'es'::text         AS source,
-          ean,
-          MAX(name)          AS name,
+          'es'::text                              AS source,
+          COALESCE(ean, lower(name))              AS ean,
+          MAX(name)                               AS name,
           currency,
-          SUM(qty)::text     AS qty,
-          SUM("totalNetto")::text  AS revenue_netto,
-          SUM("totalGross")::text  AS revenue_gross,
-          COUNT(DISTINCT "esInvoiceId")::int AS invoice_count
+          SUM(qty)::text                          AS qty,
+          SUM("totalNetto")::text                 AS revenue_netto,
+          SUM("totalGross")::text                 AS revenue_gross,
+          COUNT(DISTINCT "esInvoiceId")::int      AS invoice_count,
+          (ean IS NULL)                           AS no_ean
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
-          AND ean IS NOT NULL
+          AND (ean IS NOT NULL OR name IS NOT NULL)
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-        GROUP BY ean, currency
+        GROUP BY COALESCE(ean, lower(name)), currency
         ORDER BY SUM(qty) DESC
         LIMIT ${limit}
       `);
