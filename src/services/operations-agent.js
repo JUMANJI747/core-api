@@ -16,6 +16,16 @@ function buildSystemPrompt() {
     .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
+function buildTools() {
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  return JSON.parse(
+    JSON.stringify(tools)
+      .replace(/\{\{TODAY\}\}/g, today)
+      .replace(/\{\{YEAR\}\}/g, year)
+  );
+}
+
 const BASE_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, krótko.
 
 ╔════════════════════════════════════════╗
@@ -203,7 +213,7 @@ async function processOperationsQuery(query, ctx = {}) {
     model: MODEL,
     max_tokens: 2048,
     system: buildSystemPrompt(),
-    tools,
+    tools: buildTools(),
     messages,
   });
 
@@ -225,7 +235,7 @@ async function processOperationsQuery(query, ctx = {}) {
       model: MODEL,
       max_tokens: 2048,
       system: buildSystemPrompt(),
-      tools,
+      tools: buildTools(),
       messages,
     });
   }

@@ -16,6 +16,16 @@ function buildSystemPrompt() {
     .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
+function buildTools() {
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  return JSON.parse(
+    JSON.stringify(tools)
+      .replace(/\{\{TODAY\}\}/g, today)
+      .replace(/\{\{YEAR\}\}/g, year)
+  );
+}
+
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ SurfStickBell. Plain text, krótko, ceny brutto.
 
 ╔════════════════════════════════════════╗
@@ -30,8 +40,15 @@ ZASADA #-1 — INTERPRETACJA "TEN ROK":
 ZAWSZE {{YEAR}}. Nie {{LAST_YEAR}}, nie 2024. Sprawdz date kazdorazowo.
 Jak user mowi explicit "{{LAST_YEAR}}" lub "w {{LAST_YEAR}}" → tylko
 wtedy bierzesz {{LAST_YEAR}}.
-Dla analytics queries: bez explicit roku/daty → from={{YEAR}}-01-01,
-to={{TODAY}}. NIGDY samodzielnie nie wybieraj roku innego niz {{YEAR}}.
+
+PRZYKLAD wywolania dla "ile sticków w tym roku":
+  analytics_products_sold({
+    from: "{{YEAR}}-01-01",
+    to: "{{TODAY}}"
+  })
+
+NIGDY nie wolaj BEZ from/to — endpoint defaultem da 365 dni wstecz
+(czyli od {{LAST_YEAR}}, zly zakres). Zawsze podawaj from + to explicit.
 
 ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
 Pytania ilosciowe ("ile sprzedalismy / ile sticków / obroty / top klienci")
@@ -356,7 +373,7 @@ async function processAccountingQuery(query, ctx = {}) {
     model: MODEL,
     max_tokens: 2048,
     system: buildSystemPrompt(),
-    tools,
+    tools: buildTools(),
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
   });
@@ -383,7 +400,7 @@ async function processAccountingQuery(query, ctx = {}) {
       model: MODEL,
       max_tokens: 2048,
       system: buildSystemPrompt(),
-      tools,
+      tools: buildTools(),
       messages,
     });
   }

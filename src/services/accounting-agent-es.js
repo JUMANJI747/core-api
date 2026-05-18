@@ -26,6 +26,18 @@ function buildSystemPrompt() {
     .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
+function buildTools() {
+  // Tools template — {{YEAR}}/{{TODAY}} podstawiane runtime tak samo jak
+  // w prompcie. Anthropic SDK serializuje description jako-jest.
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  return JSON.parse(
+    JSON.stringify(tools)
+      .replace(/\{\{TODAY\}\}/g, today)
+      .replace(/\{\{YEAR\}\}/g, year)
+  );
+}
+
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
 
 ╔════════════════════════════════════════╗
@@ -38,7 +50,16 @@ const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hisz
 ZASADA #-1 — INTERPRETACJA "TEN ROK":
 "ten rok" / "tym roku" / "w tym roku" → ZAWSZE {{YEAR}}.
 "zeszly rok" / "rok temu" → {{LAST_YEAR}}.
-Bez explicit roku, dla analytics: from={{YEAR}}-01-01, to={{TODAY}}.
+
+PRZYKLAD wywolania dla "ile sticków w tym roku":
+  analytics_products_sold({
+    from: "{{YEAR}}-01-01",
+    to: "{{TODAY}}",
+    source: "es"
+  })
+
+NIGDY nie wolaj BEZ from/to (endpoint defaultem da 365 dni wstecz, czyli
+od {{LAST_YEAR}}-XX-XX, wybiera zly rok).
 NIGDY tylko jeden kwartal jak user pyta "tym roku" — caly rok do dzis.
 Dla cs_list_invoices (specyficzna FV) — TYLKO jeden period naraz, NIGDY
 loop po wszystkich kwartalach (token overflow).
@@ -368,15 +389,15 @@ const tools = [
   },
   {
     name: 'analytics_products_sold',
-    description: 'Sprzedaz per produkt w okresie z naszej znormalizowanej bazy (Invoice/EsInvoice lineItems). Bez ean -> top-N. Z ean -> time series. ZAWSZE wywolaj dla pytan "ile sticków / ile sprzedalismy". NIGDY zamiast tego nie wolaj cs_list_invoices bo overflow.',
+    description: 'Sprzedaz per produkt w okresie z naszej znormalizowanej bazy (Invoice/EsInvoice lineItems). Bez ean -> top-N. Z ean -> time series. ZAWSZE wywolaj dla pytan "ile sticków / ile sprzedalismy". NIGDY zamiast tego nie wolaj cs_list_invoices bo overflow. WAZNE: ZAWSZE podawaj from + to explicit z biezacym rokiem; bez parametrow endpoint domyslnie bierze 365 dni wstecz, co dla pytania "ten rok" daje zly zakres.',
     input_schema: {
       type: 'object',
       properties: {
         ean: { type: 'string' },
-        from: { type: 'string', description: 'YYYY-MM-DD. Bez = rok temu.' },
-        to: { type: 'string', description: 'YYYY-MM-DD. Bez = dzisiaj.' },
+        from: { type: 'string', description: 'YYYY-MM-DD WYMAGANE dla pytan ilosciowych. Dla "tym roku" → {{YEAR}}-01-01.' },
+        to: { type: 'string', description: 'YYYY-MM-DD. Dla "tym roku" / "do dzis" → {{TODAY}}.' },
         country: { type: 'string' }, limit: { type: 'number' },
-        source: { type: 'string', description: 'pl|es lub pomin dla obu' },
+        source: { type: 'string', description: 'pl|es lub pomin dla obu. Dla Kanary pytan → es.' },
         granularity: { type: 'string' },
       },
     },
@@ -485,7 +506,7 @@ async function processAccountingEsQuery(query, opts = {}) {
     model: MODEL,
     max_tokens: 2048,
     system: buildSystemPrompt(),
-    tools,
+    tools: buildTools(),
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
   });
@@ -512,7 +533,7 @@ async function processAccountingEsQuery(query, opts = {}) {
       model: MODEL,
       max_tokens: 2048,
       system: buildSystemPrompt(),
-      tools,
+      tools: buildTools(),
       messages,
     });
   }
