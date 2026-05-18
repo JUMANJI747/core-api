@@ -1527,14 +1527,45 @@ router.post('/glob/order', async (req, res) => {
         const reqChatId = req.body && req.body.chatId;
         setImmediate(async () => {
           try {
-            // Wait for the carrier to assign a real tracking number — GK260...
-            // is their internal id, not something DPD/DHL portals recognise.
-            // DPD/UPS/DHL czesto mielo 2-3 min zanim API GK ma numer kuriera.
-            // Predykcyjnie odpalamy z env (default 18 prob x 15s = 4.5 min)
-            // zeby zlapac wiekszosc przypadkow bez koniecznosci recznej
-            // interwencji usera "wyslij tracking".
+            // 1) Najpierw probujemy wyciagnac tracking number z PDF
+            //    listu przewozowego (zazwyczaj jest tam od razu po order
+            //    — DPD/DHL/FedEx wszyscy umieszczaja w labelu). Zajmuje 1-2s,
+            //    duzo szybciej niz getOrderTracking polling ktory potrafi
+            //    mielic 2-3 min zanim GK API ma numer.
             let trackingNumber = result.trackingNumber || result.tracking || null;
             const orderNumberForTracking = result.number || result.orderNumber;
+            if (!trackingNumber && orderHash) {
+              try {
+                await new Promise(r => setTimeout(r, 2000));
+                const labelResp = await getOrderLabels(orderHash, 'A4');
+                if (labelResp && labelResp.body && labelResp.body.length > 100) {
+                  const { PDFParse } = require('pdf-parse');
+                  const parser = new PDFParse({ data: labelResp.body });
+                  const parsed = await parser.getText();
+                  const labelText = (parsed.text || '').replace(/\s+/g, ' ');
+                  // Tracking numbers per carrier: DPD/InPost 14 cyfr,
+                  // DHL 10-12 cyfr lub JJD prefix, UPS 1Z+9 znakow, FedEx
+                  // 12-15 cyfr, GLS 11-14 cyfr. Bierzemy najdluzszy
+                  // sensowny ciag cyfr ktory nie jest GK260... (nasz
+                  // wewnetrzny numer) ani PLN/EUR/data.
+                  const candidates = labelText.match(/\b(?!GK\d+|26\d{6,8}\b)([A-Z0-9]{10,30})\b/g) || [];
+                  const tracking = candidates
+                    .filter(c => !/^GK/.test(c))
+                    .filter(c => !/^(26|25|24|23|22|21|20)\d{6,8}$/.test(c)) // exclude daty
+                    .filter(c => /\d/.test(c)) // ma cyfre
+                    .sort((a, b) => b.length - a.length)[0];
+                  if (tracking) {
+                    trackingNumber = tracking;
+                    console.log(`[glob/order] tracking wyciagniety z PDF labels: ${trackingNumber}`);
+                  }
+                }
+              } catch (e) {
+                console.log('[glob/order] PDF tracking extract failed (fallback do GK polling):', e.message);
+              }
+            }
+
+            // 2) Fallback — getOrderTracking polling jak PDF nic nie dal.
+            //    DPD/UPS/DHL czesto mielo 2-3 min zanim API GK ma numer kuriera.
             const pollAttempts = parseInt(process.env.TRACKING_DRAFT_POLL_ATTEMPTS || '18', 10);
             const pollIntervalMs = parseInt(process.env.TRACKING_DRAFT_POLL_INTERVAL_MS || '15000', 10);
             if (!trackingNumber && orderNumberForTracking) {
