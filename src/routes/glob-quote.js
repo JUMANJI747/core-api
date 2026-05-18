@@ -1571,6 +1571,31 @@ router.post('/glob/order', async (req, res) => {
               console.log(`[glob/order] tracking-draft skipped — ${v.reason}`);
               return;
             }
+
+            // Race-condition guard: jak user juz manualnie wystrzelil
+            // send_tracking_to_customer w trakcie naszego polling (typowo
+            // <5min od ordera), nie tworzymy konkurencyjnego draftu.
+            // Szukamy Email z tymsam trackingNumber w extras w ostatnich
+            // 30min (DRAFT albo OUTBOUND obojetnie).
+            try {
+              const alreadyHandled = await prisma.email.findFirst({
+                where: {
+                  createdAt: { gte: new Date(Date.now() - 30 * 60 * 1000) },
+                  OR: [
+                    { extras: { path: ['trackingNumber'], equals: trackingNumber } },
+                    { bodyFull: { contains: trackingNumber } },
+                  ],
+                },
+                select: { id: true, direction: true },
+              });
+              if (alreadyHandled) {
+                console.log(`[glob/order] tracking-draft skipped — already handled (email ${alreadyHandled.id} direction=${alreadyHandled.direction})`);
+                return;
+              }
+            } catch (e) {
+              console.error('[glob/order] tracking-draft dedup check failed (proceeding):', e.message);
+            }
+
             const trackingUrl = buildTrackingUrl(carrierName, trackingNumber, resolvedCountry);
             const { subject, text } = compose({ country: resolvedCountry, trackingNumber, carrier: carrierName, trackingUrl });
 
