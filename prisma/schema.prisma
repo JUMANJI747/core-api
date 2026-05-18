@@ -379,11 +379,13 @@ model Config {
 model Memory {
   id        String   @id @default(uuid())
   chatId    String?
+  scope     String?  @default("pl") // 'pl' | 'kanary' — separuje boty na jednej bazie. Domyslnie pl bo historycznie pierwszy bot.
   role      String // user | assistant
   content   String
   createdAt DateTime @default(now())
 
   @@index([chatId, createdAt])
+  @@index([chatId, scope, createdAt])
   @@index([createdAt])
 }
 

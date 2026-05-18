@@ -56,11 +56,16 @@ router.put('/config/:key', async (req, res) => {
 
 router.get('/memory', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { limit, chatId } = req.query;
+  const { limit, chatId, scope } = req.query;
   if (!chatId) return res.json([]);
   const take = Math.min(parseInt(limit) || 20, 100);
+  const where = { chatId };
+  // scope rozdzelinia PL/Kanary boty ktore na Telegram maja ten sam
+  // chat.id (= user.id w privacie). Bez scope -> backward compat (zwraca
+  // wszystko po chatId, tak jak wczesniej). Z scope -> tylko swojego bota.
+  if (scope) where.scope = scope;
   const messages = await prisma.memory.findMany({
-    where: { chatId },
+    where,
     take,
     orderBy: { createdAt: 'desc' },
   });
@@ -69,17 +74,21 @@ router.get('/memory', async (req, res) => {
 
 router.post('/memory', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { role, content, chatId } = req.body;
+  const { role, content, chatId, scope } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
-  const msg = await prisma.memory.create({ data: { chatId, role, content } });
+  const msg = await prisma.memory.create({
+    data: { chatId, role, content, scope: scope || 'pl' },
+  });
   res.json(msg);
 });
 
 router.delete('/memory/clear', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { chatId } = req.query;
+  const { chatId, scope } = req.query;
   if (!chatId) return res.status(400).json({ error: 'chatId required (use /memory/cleanup to purge orphans)' });
-  const result = await prisma.memory.deleteMany({ where: { chatId } });
+  const where = { chatId };
+  if (scope) where.scope = scope;
+  const result = await prisma.memory.deleteMany({ where });
   res.json({ ok: true, deleted: result.count });
 });
 
