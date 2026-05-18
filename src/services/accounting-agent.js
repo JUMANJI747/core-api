@@ -79,6 +79,26 @@ CENY:
 - User podaje cenę per pozycja → priceNetto/priceBrutto w items
 - "cena dystrybutorska" / "standardowa" → NIE podawaj — system znajdzie wyjątek
 
+⚠ NETTO vs BRUTTO — USER EXPLICIT ZAWSZE WYGRYWA:
+Gdy user pisze "po X brutto" / "X brutto" / "X gross" / "X z VAT" →
+ZAWSZE globalPriceBrutto:X (NIE priceNetto, NIE globalPriceNetto).
+Gdy user pisze "po X netto" / "X netto" / "X net" / "bez VAT" →
+ZAWSZE globalPriceNetto:X.
+Bez slowa brutto/netto → default per typ FV (krajowa=brutto, WDT=netto).
+
+PRZYKLADY (kopiuj wzor):
+  "wystaw FV sunlovers 400 sticków po 15,30 brutto" →
+    {contractorSearch:"sunlovers", items:[{name:"stick generic", qty:400}],
+     globalPriceBrutto:15.30}
+  "FV easy surf 25 sticków po 12 netto" →
+    {contractorSearch:"easy surf", items:[{name:"stick generic", qty:25}],
+     globalPriceNetto:12}
+  "FV po 18zł" (krajowa PL) → globalPriceBrutto:18 (bo krajowa default brutto)
+  "FV po 4 EUR" (WDT) → globalPriceNetto:4 (bo WDT default netto)
+
+NIGDY nie konwertuj brutto→netto sam — backend to robi z VAT. Tylko
+przekazujesz cene, KTORA podal user, w polu KTORE pasuje do brutto/netto.
+
 WDT vs KRAJOWA:
 - Krajowa (PL kontrahent) — domyślnie BRUTTO w PLN, VAT 23%
 - WDT (UE) — domyślnie NETTO w EUR, VAT 0%
