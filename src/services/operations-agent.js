@@ -208,7 +208,10 @@ async function processOperationsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   if (!query || typeof query !== 'string') return { text: 'Brak query.', error: 'no_query' };
 
-  const messages = [{ role: 'user', content: query }];
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const yearStr = todayStr.slice(0, 4);
+  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" = ${yearStr}.]\n\n`;
+  const messages = [{ role: 'user', content: dateContextPrefix + query }];
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,

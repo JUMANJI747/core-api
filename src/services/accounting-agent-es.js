@@ -482,7 +482,13 @@ async function processAccountingEsQuery(query, opts = {}) {
   }
 
   const ctx = { chatId: opts.chatId || null };
-  const messages = [{ role: 'user', content: query }];
+  // Wstrzyk daty do user content — LLM ignoruje system prompt date,
+  // wiec wstawiamy do messages bezposrednio. Trudniej zignorowac niz
+  // system prompt fragment.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const yearStr = todayStr.slice(0, 4);
+  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
+  const messages = [{ role: 'user', content: dateContextPrefix + query }];
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) && !ALBARAN_PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query) && !ALBARAN_DELETE_INTENT.test(query)) {
     forcedTool = 'cs_get_context';

@@ -358,7 +358,10 @@ async function processAccountingQuery(query, ctx = {}) {
     return { text: 'Brak query.', error: 'no_query' };
   }
 
-  const messages = [{ role: 'user', content: query }];
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const yearStr = todayStr.slice(0, 4);
+  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
+  const messages = [{ role: 'user', content: dateContextPrefix + query }];
   let forcedTool = null;
   // Order matters: confirm beats preview when both could match (e.g. "tak wystaw fakturę"
   // is rare; but typical "tak" alone is confirm).
