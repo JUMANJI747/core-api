@@ -585,8 +585,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           SUM(qty)::text                          AS qty,
           SUM("totalNetto")::text                 AS revenue_netto,
           SUM("totalGross")::text                 AS revenue_gross,
-          COUNT(DISTINCT "invoiceId")::int        AS invoice_count,
-          (ean IS NULL)                           AS no_ean
+          COUNT(DISTINCT "invoiceId")::int        AS invoice_count
         FROM "InvoiceLineItem"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
           AND (ean IS NOT NULL OR name IS NOT NULL)
@@ -606,8 +605,7 @@ router.get('/analytics/products-sold', async (req, res) => {
           SUM(qty)::text                          AS qty,
           SUM("totalNetto")::text                 AS revenue_netto,
           SUM("totalGross")::text                 AS revenue_gross,
-          COUNT(DISTINCT "esInvoiceId")::int      AS invoice_count,
-          (ean IS NULL)                           AS no_ean
+          COUNT(DISTINCT "esInvoiceId")::int      AS invoice_count
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (ean IS NOT NULL OR name IS NOT NULL)
