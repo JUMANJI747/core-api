@@ -91,10 +91,22 @@ Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastIn
 - brak kontekstu → zapytaj usera co konkretnie chce
 
 FLOW WYSTAWIENIA FV:
+0. NAJPIERW find_contractor z dokładnym fragmentem nazwy ktorą user podał ("easy
+   surf michał lussa" → search="easy surf"; "Awa Surf" → search="awa surf").
+   Jak wynik EMPTY → NIE halucynuj danych. Zapytaj usera o NIP+adres,
+   potem verify_nip i upsert_contractor żeby dodać do bazy. DOPIERO POTEM
+   invoice_preview z contractorSearch=<dokladna nazwa z find_contractor.name>.
+   Jak wynik 2+ → POKAŻ liste user-owi i zapytaj "Ktorego masz na mysli?".
 1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma
 2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
+
+ZASADA — NIGDY NIE HALUCYNUJ KONTRAHENTA:
+Gdy user pisze "wystaw FV na <X>" a Ty nie wiesz kto to "X" → ZAWSZE
+find_contractor. NIGDY nie wybieraj losowo "AWA SURF" jak user pisze "Easy
+Surf" — to dwie rozne firmy. Jak find_contractor zwroci 0 → NIE wystawiaj,
+zapytaj o NIP.
 
 DOSTAWA / DELIVERY JAKO POZYCJA:
 Gdy user mówi "dodaj delivery za 18 EUR" / "doliczy dostawę 25 PLN" / "wysyłka 30 zł":
@@ -144,8 +156,46 @@ ZASADY:
 
 const tools = [
   {
+    name: 'find_contractor',
+    description: 'Wyszukaj kontrahenta w lokalnej bazie po nazwie / fragmencie / NIP. Fuzzy match. ZAWSZE wywołuj PRZED invoice_preview gdy user podaje kontrahenta po nazwie — żeby NIE halucynować danych. Zwraca tablice ContractorList (max 10) — agent wybiera prawdziwy match.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        search: { type: 'string', description: 'Nazwa, fragment, NIP albo combo. Min 2 znaki.' },
+        limit: { type: 'number', description: 'Max wynikow (default 10)' },
+      },
+      required: ['search'],
+    },
+  },
+  {
+    name: 'verify_nip',
+    description: 'Sprawdz NIP w GUS/VIES (zwraca status czynny + nazwa firmy + adres). Uzyj przed upsert_contractor gdy user podal NIP nowego klienta.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        nip: { type: 'string' },
+        country: { type: 'string', description: 'ISO-2, opcjonalne. Bez = PL.' },
+      },
+      required: ['nip'],
+    },
+  },
+  {
+    name: 'upsert_contractor',
+    description: 'Dodaj nowego kontrahenta do bazy (lub zaktualizuj jak NIP juz istnieje). Wywoluj PO verify_nip albo jak user podaje pelne dane (nazwa+NIP+adres). Zwraca contractor.id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' }, nip: { type: 'string' },
+        type: { type: 'string', description: 'BUSINESS lub PERSON. Default BUSINESS.' },
+        country: { type: 'string' }, city: { type: 'string' }, address: { type: 'string' },
+        email: { type: 'string' }, phone: { type: 'string' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'invoice_preview',
-    description: 'Podgląd faktury przed wystawieniem. Szuka kontrahenta po nazwie (fuzzy), rozwija boxy MIX, sprawdza ceny z cennika. ZAWSZE użyj gdy user prosi o wystawienie faktury — pokaż preview, czekaj na "tak".',
+    description: 'Podgląd faktury przed wystawieniem. Szuka kontrahenta po nazwie (fuzzy), rozwija boxy MIX, sprawdza ceny z cennika. ZAWSZE użyj gdy user prosi o wystawienie faktury — pokaż preview, czekaj na "tak". UWAGA: PRZED invoice_preview użyj find_contractor żeby zweryfikować że to wlasciwy kontrahent — fuzzy match w invoice_preview moze trafic w nie tego co user mial na mysli.',
     input_schema: {
       type: 'object',
       properties: {
@@ -325,6 +375,9 @@ const ENDPOINT_MAP = {
   open_consignment: ['POST', '/api/consignments/open'],
   send_invoice_pdf_telegram: ['POST', '/api/ifirma/resend-pdf-telegram'],
   get_context: ['GET', '/api/agent-context/ksiegowosc'],
+  find_contractor: ['GET', '/api/contractors'],
+  verify_nip: ['POST', '/api/contractors/verify-nip'],
+  upsert_contractor: ['POST', '/api/contractors/upsert'],
   analytics_products_sold: ['GET', '/api/analytics/products-sold'],
   analytics_revenue: ['GET', '/api/analytics/revenue'],
   analytics_top_customers: ['GET', '/api/analytics/top-customers'],
