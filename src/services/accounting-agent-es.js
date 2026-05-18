@@ -17,14 +17,31 @@ const MODEL =
   'claude-sonnet-4-5-20250929';
 
 function buildSystemPrompt() {
-  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  const lastYear = String(parseInt(year, 10) - 1);
+  return BASE_PROMPT
+    .replace(/\{\{TODAY\}\}/g, today)
+    .replace(/\{\{YEAR\}\}/g, year)
+    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
 
-DZISIEJSZA DATA: {{TODAY}}
-"ten rok" / "tym roku" = rok z DZISIEJSZEJ DATY.
-"ostatnio" = 30 ostatnich dni od DZISIEJSZEJ DATY.
+╔════════════════════════════════════════╗
+║ AKTUALNA DATA (HARD-CODED PER REQUEST) ║
+║ DZIS:        {{TODAY}}                 ║
+║ BIEŻĄCY ROK: {{YEAR}}                  ║
+║ ZESZŁY ROK:  {{LAST_YEAR}}             ║
+╚════════════════════════════════════════╝
+
+ZASADA #-1 — INTERPRETACJA "TEN ROK":
+"ten rok" / "tym roku" / "w tym roku" → ZAWSZE {{YEAR}}.
+"zeszly rok" / "rok temu" → {{LAST_YEAR}}.
+Bez explicit roku, dla analytics: from={{YEAR}}-01-01, to={{TODAY}}.
+NIGDY tylko jeden kwartal jak user pyta "tym roku" — caly rok do dzis.
+Dla cs_list_invoices (specyficzna FV) — TYLKO jeden period naraz, NIGDY
+loop po wszystkich kwartalach (token overflow).
 
 ZASADA #0 — NIGDY NIE LICZ Z GŁOWY, NIGDY NIE ZAGINAJ TOKENÓW:
 Pytania ilosciowe ("ile sticków / ile sprzedalismy / obroty / top klienci")

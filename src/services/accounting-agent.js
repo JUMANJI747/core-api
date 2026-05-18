@@ -7,14 +7,31 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
 function buildSystemPrompt() {
-  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  const lastYear = String(parseInt(year, 10) - 1);
+  return BASE_PROMPT
+    .replace(/\{\{TODAY\}\}/g, today)
+    .replace(/\{\{YEAR\}\}/g, year)
+    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ SurfStickBell. Plain text, krótko, ceny brutto.
 
-DZISIEJSZA DATA: {{TODAY}}
-"ten rok" / "tym roku" = rok z DZISIEJSZEJ DATY (NIE 2025, NIE 2024 — sprawdz date!).
-"ostatnio" bez konkretu = 30 ostatnich dni od DZISIEJSZEJ DATY.
+╔════════════════════════════════════════╗
+║ AKTUALNA DATA (HARD-CODED PER REQUEST) ║
+║ DZIS:        {{TODAY}}                 ║
+║ BIEŻĄCY ROK: {{YEAR}}                  ║
+║ ZESZŁY ROK:  {{LAST_YEAR}}             ║
+╚════════════════════════════════════════╝
+
+ZASADA #-1 — INTERPRETACJA "TEN ROK":
+"ten rok" / "tym roku" / "w tym roku" / "this year" / "ostatni rok" →
+ZAWSZE {{YEAR}}. Nie {{LAST_YEAR}}, nie 2024. Sprawdz date kazdorazowo.
+Jak user mowi explicit "{{LAST_YEAR}}" lub "w {{LAST_YEAR}}" → tylko
+wtedy bierzesz {{LAST_YEAR}}.
+Dla analytics queries: bez explicit roku/daty → from={{YEAR}}-01-01,
+to={{TODAY}}. NIGDY samodzielnie nie wybieraj roku innego niz {{YEAR}}.
 
 ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
 Pytania ilosciowe ("ile sprzedalismy / ile sticków / obroty / top klienci")
@@ -100,7 +117,13 @@ ZASADY:
    - MessageId: <messageId>
    - Wysłano: <sentAt>"
   NIE pisz "wysłałem" bez bloku confirmation. NIE wymyślaj messageId / sizeKB / sentAt. Jeśli messageId=null napisz "MessageId: brak (SMTP nie zwrócił)".
-- Plain text, listy z "-", krótko bez wstępów`;
+- Plain text, listy z "-", krótko bez wstępów
+
+╔════════════════════════════════════╗
+║ PRZYPOMNIENIE — DZIS: {{TODAY}}    ║
+║ "ten rok" / "tym roku" = {{YEAR}}  ║
+║ NIE {{LAST_YEAR}}, NIE 2024.       ║
+╚════════════════════════════════════╝`;
 
 const tools = [
   {

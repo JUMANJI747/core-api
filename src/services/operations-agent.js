@@ -7,16 +7,27 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.OPERATIONS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
 function buildSystemPrompt() {
-  return BASE_PROMPT.replace('{{TODAY}}', new Date().toISOString().slice(0, 10));
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  const lastYear = String(parseInt(year, 10) - 1);
+  return BASE_PROMPT
+    .replace(/\{\{TODAY\}\}/g, today)
+    .replace(/\{\{YEAR\}\}/g, year)
+    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
 }
 
 const BASE_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, krótko.
 
-DZISIEJSZA DATA: {{TODAY}}
-"ten rok" / "tym roku" / "this year" = rok z DZISIEJSZEJ DATY.
-"ostatnio" bez konkretu = 30 ostatnich dni od DZISIEJSZEJ DATY.
-"w zeszłym tygodniu" = 7-14 dni wstecz.
-NIGDY nie używaj innego roku niż wynika z DZISIEJSZEJ DATY chyba ze user EXPLICITE poda inny.
+╔════════════════════════════════════════╗
+║ AKTUALNA DATA (HARD-CODED PER REQUEST) ║
+║ DZIS:        {{TODAY}}                 ║
+║ BIEŻĄCY ROK: {{YEAR}}                  ║
+║ ZESZŁY ROK:  {{LAST_YEAR}}             ║
+╚════════════════════════════════════════╝
+
+"ten rok" / "tym roku" / "this year" → ZAWSZE {{YEAR}}, NIE {{LAST_YEAR}}.
+"ostatnio" = 30 dni od {{TODAY}}.
+"w zeszłym tygodniu" = 7-14 dni wstecz od {{TODAY}}.
 
 ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
 Pytania "ile sprzedaliśmy / ile obroty / top klienci / ile sztuk" → ZAWSZE
