@@ -264,7 +264,12 @@ function parseRange(req) {
     from = new Date(Date.UTC(year, 0, 1));
     to = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
   }
-  if (!from) from = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  // Defaultem traktujemy "od poczatku biezacego roku do dzis" — agent
+  // czesto ma zlozone instrukcje co do dat, ale jak puscil GET bez
+  // from/to to zazwyczaj pyta o "ten rok" (sensowny default biznesowy).
+  // Wczesniej bralismy 365 dni wstecz, co dla "ile w tym roku" w styczniu
+  // dawalo poprzedni rok — niedeterministyczne.
+  if (!from) from = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
   if (!to) to = now;
   // 'to' inclusive — przesun na koniec dnia jak user podal sama date.
   if (req.query.to && req.query.to.length === 10) {
