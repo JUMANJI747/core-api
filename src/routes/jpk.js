@@ -332,8 +332,9 @@ async function performWdtMatching(prisma, y, m) {
     });
   }
 
-  // 2. FETCH GLOBKURIER ORDERS
-  const ordersData = await globGetOrders({ limit: 100 });
+  // 2. FETCH GLOBKURIER ORDERS — wiekszy limit zeby zlapac wszystkie
+  // paczki z miesiaca (wczesniej 100 czasem za malo gdy duzo wysylek).
+  const ordersData = await globGetOrders({ limit: 500 });
   const allOrders = (ordersData && ordersData.results) ? ordersData.results
     : (ordersData && ordersData.items) ? ordersData.items
     : (ordersData && ordersData.data) ? ordersData.data

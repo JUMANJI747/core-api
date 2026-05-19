@@ -493,4 +493,68 @@ router.post('/send-package', async (req, res) => {
   }
 });
 
+// One-shot: build + (jak gotowe) send. Skrot dla user-a "zrob paczke WDT"
+// — bez pytania kogokolwiek o nic. Email z env DEFAULT_ACCOUNTANT_EMAIL,
+// year/month default = poprzedni miesiac. Idempotent: jak paczka juz
+// ready dla period, pomija build i wysyla.
+//
+// Body (wszystko opcjonalne):
+//   year (number) — default: rok poprzedniego miesiaca
+//   month (number) — default: poprzedni miesiac
+//   to (string) — default: env DEFAULT_ACCOUNTANT_EMAIL
+router.post('/build-and-send', async (req, res) => {
+  try {
+    const accountantEmail = (req.body && req.body.to) || process.env.DEFAULT_ACCOUNTANT_EMAIL || '';
+    if (!accountantEmail) {
+      return res.status(400).json({ ok: false, error: 'Email ksiegowej nie podany i DEFAULT_ACCOUNTANT_EMAIL nie ustawione w env' });
+    }
+    const apiKey = (req.headers['x-api-key'] || process.env.API_KEY || '').trim();
+    const http = require('http');
+    const port = process.env.PORT || 3000;
+
+    function selfPost(path, body) {
+      return new Promise((resolve, reject) => {
+        const data = JSON.stringify(body || {});
+        const reqInner = http.request({
+          hostname: '127.0.0.1', port, path, method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), 'x-api-key': apiKey },
+        }, (r) => {
+          const chunks = [];
+          r.on('data', c => chunks.push(c));
+          r.on('end', () => {
+            const text = Buffer.concat(chunks).toString();
+            try { resolve({ status: r.statusCode, body: JSON.parse(text) }); }
+            catch (_) { resolve({ status: r.statusCode, body: text }); }
+          });
+        });
+        reqInner.on('error', reject);
+        reqInner.write(data);
+        reqInner.end();
+      });
+    }
+
+    const buildBody = {};
+    if (req.body && req.body.year) buildBody.year = req.body.year;
+    if (req.body && req.body.month) buildBody.month = req.body.month;
+
+    const build = await selfPost('/api/jpk/build-package', buildBody);
+    if (build.status >= 400) {
+      return res.status(build.status).json({ ok: false, stage: 'build', error: build.body });
+    }
+
+    const sendBody = { to: accountantEmail };
+    if (buildBody.year) sendBody.year = buildBody.year;
+    if (buildBody.month) sendBody.month = buildBody.month;
+    const send = await selfPost('/api/jpk/send-package', sendBody);
+    if (send.status >= 400) {
+      return res.status(send.status).json({ ok: false, stage: 'send', build: build.body, error: send.body });
+    }
+
+    res.json({ ok: true, build: build.body, send: send.body, to: accountantEmail });
+  } catch (e) {
+    console.error('[package] build-and-send error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

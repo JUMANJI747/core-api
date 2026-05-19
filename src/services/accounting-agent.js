@@ -111,16 +111,18 @@ Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastIn
 - brak kontekstu → zapytaj usera co konkretnie chce
 
 FLOW PACZKI WDT DLA KSIEGOWEJ (matched CMR + FV):
-User: "zbuduj paczke ksiegowej za maj" / "wyslij paczke wdt ksiegowej" /
-"matchuj listy z fakturami za miesiac" →
-  1. jpk_build_package({year:2026, month:5}) — dopasowuje FV WDT z listami
-     GK z tego samego miesiaca, kazdy CMR nazywany numerem FV. Zwraca
-     status (building→ready) + counts.
-  2. Pokaz user-owi: "Paczka 2026-05 gotowa: X FV, Y CMR dopasowanych,
-     Z bez dopasowania. Adresat? (email ksiegowej)"
-  3. User podaje email → jpk_send_package({to:'ksiegowa@...', year, month}).
-  4. Po wyslaniu pokaz confirmation (messageId).
-Bez year/month default = miesiac poprzedni.
+
+SKROT "zrob paczke wdt" / "zrob paczke ksiegowej" / "wyslij paczke wdt"
+BEZ podanego emaila → jpk_build_and_send (jeden call: build + send do
+DEFAULT_ACCOUNTANT_EMAIL z env). Pokaz user-owi summary z response.
+Bez year/month = poprzedni miesiac. NIE pytaj o email, NIE pytaj
+o potwierdzenie — to wlasnie ten skrot.
+
+Gdy user PODAJE email explicit ("zbuduj paczke za maj i wyslij na X"):
+  1. jpk_build_package({year, month}) → ready z counts.
+  2. Pokaz user-owi: "Paczka 2026-05 gotowa: X FV, Y CMR".
+  3. jpk_send_package({to:X, year, month}).
+  4. Confirmation z messageId.
 
 ⚠ CONTINUATION PO BUDOWIE PACZKI:
 Po jpk_build_package backend zapisuje do AgentContext lastAction=
@@ -442,6 +444,18 @@ const tools = [
       required: ['to'],
     },
   },
+  {
+    name: 'jpk_build_and_send',
+    description: 'SKRÓT: buduje paczke WDT za miesiac + wysyla od razu do domyslnej ksiegowej (env DEFAULT_ACCOUNTANT_EMAIL). Uzyj GDY user mowi "zrob paczke wdt" / "zrob paczke ksiegowej" / "wyslij paczke za miesiac" BEZ podanego emaila. Bez year/month = poprzedni miesiac. JEDEN call zamiast build + dopytanie o email + send.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        year: { type: 'number', description: 'Default: rok poprzedniego miesiaca.' },
+        month: { type: 'number', description: 'Default: poprzedni miesiac (1-12).' },
+        to: { type: 'string', description: 'Override domyslnej ksiegowej (rzadko).' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -466,6 +480,7 @@ const ENDPOINT_MAP = {
   jpk_list_packages: ['GET', '/api/jpk/packages'],
   jpk_package_details: ['GET', '/api/jpk/package/:period'],
   jpk_send_package: ['POST', '/api/jpk/send-package'],
+  jpk_build_and_send: ['POST', '/api/jpk/build-and-send'],
 };
 
 const executeTool = buildExecuteTool({
