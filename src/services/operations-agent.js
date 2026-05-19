@@ -53,6 +53,46 @@ mial wczesniej FV — to definicja sample u nas). NIGDY nie skanuj maili
 list i nie zgaduj komu wyslano sample na podstawie tresci. Mail moze
 mowic o czymkolwiek — tylko brak wczesniejszej FV daje pewnosc.
 
+═══ ROZKŁADANIE ZŁOŻONYCH POLECEŃ NA KROKI ═══
+
+Jak dostaniesz zlozone polecenie (kilka cele, "i ... i ...", wymaga
+porownania danych z roznych zrodel) — NIE probuj zgadywac odpowiedzi
+od razu. Rozloz na KROKI w glowie:
+
+  Plan:
+  1. <co zrobic najpierw — jaki tool, jakie dane>
+  2. <potem — co laczyc, co filtrowac>
+  3. <agregacja / odpowiedz>
+
+Wykonuj KROK PO KROKU przez tool calls. Po kazdym zbierasz dane do
+kontekstu. Jak step zwroci pustke / nie to czego oczekiwales →
+zatrzymaj sie, powiedz user-owi co znalazles i dopytaj, NIE konfabuluj
+brakujace.
+
+PRZYKLAD: "Sprawdz ktore sample wyslane przed 7 dniami sa juz dostarczone
+ale klient nie odpisal na nasz maili tracking":
+  1. sample_followups({minDaysSinceDelivery: 7, windowDays: 30}) → lista
+     sample-ow z trackingiem
+  2. query_db SELECT id, "contractorId", subject, "createdAt" FROM "Email"
+     WHERE direction='INBOUND' AND "createdAt" > <data wysylki>
+     AND "contractorId" IN (<lista z #1>) → kto odpisal
+  3. Per sample z #1: jak BRAK matchujacego email z #2 → kandydat do
+     follow-upu. Pokaz user-owi.
+
+DOSTĘPNE narzędzia do "thinking":
+  - query_db: read-only SELECT na bazie. Modele dostepne: Email,
+    Contractor, Invoice, EsInvoice, Transaction, Consignment, Deal,
+    ActivityEvent, Memory, EsContractor.
+  - call_endpoint: dowolny /api/* endpoint (sample_followups,
+    analytics_*, /api/transactions, /api/contractors, etc).
+  - gk_raw: bezposrednio GlobKurier API (gdy potrzebujesz danych
+    spoza naszej bazy).
+  - search_activity: timeline z ActivityEvent (mail/invoice/shipment/
+    tracking) z filtrami.
+
+Tych 4 narzedzi WYSTARCZA na 90% zlozonych pytan — laczysz wyniki w
+kontekscie, nie wymagasz nowych endpointow.
+
 ZADANIA:
 - Łączenie / rozdzielanie transakcji (gdy auto-matcher nie skleił mail+FV+paczka+płatność)
 - Pokazywanie listy transakcji (otwarte / zamknięte / orphany)
@@ -195,6 +235,63 @@ const tools = [
     },
   },
   {
+    name: 'query_db',
+    description: 'Read-only SELECT na PostgreSQL przez Prisma raw. Tylko SELECT/WITH. Max 500 wierszy. Modele: Email, Contractor, ContractorContact, ContractorAddress, Invoice, EsInvoice, EsContractor, Transaction, Consignment, Deal, Activity, ActivityEvent, Memory, Product, EsProduct, AuditLog. Cudzyslowy dla nazw modeli/kolumn (camelCase quoted). Uzywaj do KAZDEGO custom pytania ktore wymaga laczenia danych roznych modeli — rozlozeniu polecenia user-a na kroki SQL.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sql: { type: 'string', description: 'SELECT statement, np. SELECT id, name FROM "Contractor" WHERE country=$1' },
+        params: { type: 'array', description: 'Parametry $1,$2,... (zapobiega SQL injection)', items: {} },
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'call_endpoint',
+    description: 'Wywolaj dowolny /api/* endpoint backendu. Dla danych, ktore juz mamy pre-agregowane (analytics, sample_followups, transactions, contractors) — szybciej niz query_db.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+        path: { type: 'string', description: 'Pelna sciezka od /api/' },
+        body: { type: 'object', description: 'Body request albo query params dla GET' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'gk_raw',
+    description: 'Bezposrednie wywolanie GlobKurier API (api.globkurier.pl/v1/*). Token automatycznie. Uzyj gdy potrzebujesz danych ktorych nie mamy w naszej bazie (live status paczki, lista zamowien GK, etc).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'] },
+        path: { type: 'string', description: 'np. /v1/order/tracking?orderNumber=GK260...' },
+        body: { type: 'object' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'search_activity',
+    description: 'Timeline ActivityEvent z filtrami: contractorId, type ("mail.*" wildcard), tags ("country:de,carrier:dpd"), q (ILIKE na searchText), since/until.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorId: { type: 'string' },
+        type: { type: 'string' },
+        types: { type: 'string' },
+        tags: { type: 'string' },
+        tagsAny: { type: 'string' },
+        source: { type: 'string' },
+        q: { type: 'string' },
+        since: { type: 'string' },
+        until: { type: 'string' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  {
     name: 'sample_followups',
     description: 'Deterministyczna lista sample-recipientow do follow-upu. DEFINICJA SAMPLE: kontrahent NIE mial wczesniej zadnej FV w bazie (PL ani ES) — sprawdzane bezposrednio w SQL, NIE zgadujemy ze rozmowy. Bierze pod uwage paczki wyslane w ostatnich {windowDays} dni, ktore SA delivered >{minDaysSinceDelivery} dni temu (default 3) ALBO wyslane >{undeliveredAfterDays} dni temu (default 4) bez statusu (GK czesto pomija update). Zwraca: contractorName, email, preferredLanguage, shipmentNumber, trackingNumber, daysSinceDelivery. ZAWSZE wywoluj dla pytan "do kogo wyslalismy sample / komu trzeba napisac follow-up / ktore sample doszly".',
     input_schema: {
@@ -219,6 +316,10 @@ const ENDPOINT_MAP = {
   analytics_revenue: ['GET', '/api/analytics/revenue'],
   analytics_top_customers: ['GET', '/api/analytics/top-customers'],
   sample_followups: ['GET', '/api/operations/sample-followups'],
+  query_db: ['POST', '/api/admin/query'],
+  call_endpoint: ['POST', '/api/admin/call-endpoint'],
+  gk_raw: ['POST', '/api/admin/gk-raw'],
+  search_activity: ['GET', '/api/activity'],
 };
 
 const executeTool = buildExecuteTool({
