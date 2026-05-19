@@ -119,57 +119,11 @@ router.post('/build-package', async (req, res) => {
       }
     }
 
-    // c) Download invoice PDFs from iFirma
-    const startOfMonth = new Date(y, m - 1, 1);
-    const lastDay = new Date(y, m, 0).getDate();
-    const endOfMonth = new Date(y, m - 1, lastDay, 23, 59, 59, 999);
-
-    const allInvoices = await prisma.invoice.findMany({
-      where: { issueDate: { gte: startOfMonth, lte: endOfMonth } },
-      include: { contractor: true },
-    });
-
-    let invoiceDownloaded = 0;
-    for (const inv of allInvoices) {
-      if (!inv.ifirmaId) continue;
-
-      // Check if already exists
-      const existing = await prisma.document.findFirst({
-        where: { packageId: pkg.id, type: 'invoice', invoiceNumber: inv.number },
-      });
-      if (existing) {
-        console.log('[package] Invoice already exists:', inv.number);
-        continue;
-      }
-
-      try {
-        const rodzaj = inv.ifirmaType || inv.type || 'krajowa';
-        const pdfBuffer = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
-
-        if (!pdfBuffer || pdfBuffer.length < 100) {
-          console.error(`[package] Invoice PDF too small for ${inv.number}: ${pdfBuffer ? pdfBuffer.length : 0} bytes`);
-          continue;
-        }
-
-        const contractorName = (inv.contractor && inv.contractor.name) || '';
-        await prisma.document.create({
-          data: {
-            packageId: pkg.id,
-            type: 'invoice',
-            name: `FV ${inv.number} — ${contractorName}`,
-            filename: `FV_${inv.number.replace(/\//g, '_')}.pdf`,
-            invoiceNumber: inv.number,
-            mimeType: 'application/pdf',
-            data: pdfBuffer,
-            size: pdfBuffer.length,
-          },
-        });
-        invoiceDownloaded++;
-        console.log('[package] Invoice PDF:', inv.number);
-      } catch (e) {
-        console.error(`[package] Invoice PDF error for ${inv.number}:`, e.message);
-      }
-    }
+    // c) Faktury PDF z iFirma POMINIETE — od czasu wprowadzenia KSeF
+    // ksiegowa pobiera FV bezposrednio z KSeF, my wysylamy tylko same
+    // listy przewozowe (CMR). Kod fetchInvoicePdf zostawiamy jakby kiedys
+    // wrocila potrzeba — ale paczka teraz = same CMR.
+    const invoiceDownloaded = 0;
 
     // d) Update package
     const docs = await prisma.document.findMany({
@@ -224,7 +178,7 @@ router.post('/build-package', async (req, res) => {
     const tgToken = __tg.token;
     const tgChat = __tg.chatId;
     await sendTelegram(tgToken, tgChat,
-      `📦 Pakiet za ${period}:\n• ${invoiceCount} faktur PDF\n• ${cmrCount} listów CMR\nStatus: gotowy`
+      `📦 Listy CMR za ${period}:\n• ${cmrCount} listów przewozowych\nStatus: gotowy`
     ).catch(e => console.error('[package] TG error:', e.message));
 
     res.json({
@@ -450,40 +404,34 @@ router.post('/send-package', async (req, res) => {
     const pkg = await prisma.monthlyPackage.findUnique({ where: { period } });
     if (!pkg) return res.json({ ok: false, error: 'Pakiet nie istnieje' });
 
-    const merged = await prisma.document.findFirst({ where: { packageId: pkg.id, type: 'merged_invoices' } });
-    if (!merged) return res.json({ ok: false, error: 'Brak merged PDF. Uruchom build-merged-pdf.' });
-
+    // Od KSeF — wysylamy SAME listy przewozowe (CMR). Faktury ksiegowa
+    // pobiera z KSeF, my dorzucamy CMR-y nazwane numerami FV zeby
+    // mogla je dopasowac do wlasciwej faktury.
     const cmrs = await prisma.document.findMany({
       where: { packageId: pkg.id, type: 'cmr' },
       orderBy: { invoiceNumber: 'asc' },
     });
+    if (!cmrs.length) return res.json({ ok: false, error: 'Brak CMR w paczce — najpierw build-package' });
 
     const invoiceCount = (pkg.metadata && pkg.metadata.totalInvoices) || '?';
     const cmrCount = cmrs.length;
 
-    const attachments = [
-      { filename: merged.filename, content: Buffer.from(merged.data), contentType: 'application/pdf' },
-      ...cmrs.map(cmr => ({
-        filename: cmr.filename,
-        content: Buffer.from(cmr.data),
-        contentType: 'application/pdf',
-      })),
-    ];
+    const attachments = cmrs.map(cmr => ({
+      filename: cmr.filename,
+      content: Buffer.from(cmr.data),
+      contentType: 'application/pdf',
+    }));
 
     const totalSize = attachments.reduce((s, a) => s + a.content.length, 0);
 
-    const htmlBody = `<h3>Dokumenty za ${period}</h3>
-<p>W załączeniu:</p>
-<ul>
-<li>📄 Zbiorczy PDF faktur (${invoiceCount} faktur)</li>
-<li>📦 ${cmrCount} listów przewozowych CMR</li>
-</ul>
+    const htmlBody = `<h3>Listy przewozowe za ${period}</h3>
+<p>W załączeniu ${cmrCount} listów przewozowych CMR (faktury w KSeF).</p>
 <p>Wygenerowano automatycznie przez system SurfStickBell.</p>`;
 
     await sendMail({
       from: 'info@surfstickbell.com',
       to,
-      subject: `Dokumenty za ${period} — SurfStickBell`,
+      subject: `Listy przewozowe za ${period} — SurfStickBell`,
       html: htmlBody,
       attachments,
     });
@@ -498,7 +446,7 @@ router.post('/send-package', async (req, res) => {
     const tgToken = __tg2.token;
     const tgChat = __tg2.chatId;
     await sendTelegram(tgToken, tgChat,
-      `📧 Pakiet za ${period} wysłany na ${to} — ${invoiceCount} faktur + ${cmrCount} CMR`
+      `📧 Listy CMR za ${period} wysłane na ${to} — ${cmrCount} dokumentów`
     ).catch(e => console.error('[package] TG error:', e.message));
 
     console.log(`[package] Sent package ${period} to ${to} — ${attachments.length} attachments, ${Math.round(totalSize / 1024)} KB`);
