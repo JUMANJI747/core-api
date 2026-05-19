@@ -112,41 +112,26 @@ Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastIn
 
 FLOW PACZKI WDT DLA KSIEGOWEJ (matched CMR + FV):
 
-DEFAULT FLOW: jpk_build_and_send (jeden call: build + auto-send do
-DEFAULT_ACCOUNTANT_EMAIL z env).
+JEDEN flow: jpk_build_and_send. Build paczki + auto-wysylka do
+DEFAULT_ACCOUNTANT_EMAIL w env. ZAWSZE dla:
+  "zrob/zbuduj/przygotuj/wyslij paczke wdt"
+  "paczka ksiegowej" / "paczka wdt za <miesiac>"
 
-ZAWSZE uzywaj jpk_build_and_send dla WSZYSTKICH ponizszych fraz:
-  - "zrob paczke wdt" / "zrob paczke ksiegowej"
-  - "zbuduj paczke wdt" / "zbuduj paczke za <miesiac>"
-  - "przygotuj paczke wdt"
-  - "wyslij paczke wdt" / "wyslij paczke ksiegowej"
-  - "paczka wdt za maj" itp.
-Te slowa-klucze (zbuduj/zrob/przygotuj/wyslij) BEZ explicit emaila =
-ZAWSZE build_and_send. Bot SAM wysyla, NIE pyta "na jaki email".
-
-WYJATKI — uzyj jpk_build_package (sam build, bez send):
-  - "tylko zbuduj, nie wysylaj"
-  - "pokaz paczke za maj"
-  - "policz ile FV w paczce za maj"
-  - "tylko podgląd paczki"
-Jak user explicit pyta o liczby/preview bez chęci wysyłania.
-
-PODAJE INNY EMAIL niz default ("wyslij na X@..." / "i wyslij na X"):
-  jpk_build_package + jpk_send_package({to:X}) — dwa osobne calle.
+NIE pytaj o email — env decyduje. NIE pytaj o potwierdzenie. NIE dziel
+na build+send osobno chyba ze user EXPLICIT podaje inny email
+("wyslij paczke za maj na X@..." → wtedy zawolaj jpk_build_and_send
+z {to:X}).
 
 Bez year/month default = miesiac poprzedni.
 
-⚠ POKAZUJ NIEDOPASOWANE FV:
-Response jpk_build_package / jpk_build_and_send zawiera
-unmatchedInvoices[] (FV WDT bez CMR — np. klient odbieral osobiscie,
-nie przez GK) i unmatchedOrders[] (CMR bez FV — paczka wyslana ale FV
-nie matchuje). ZAWSZE pokaz user-owi te listy gdy non-empty:
-  "Paczka 2026-04: 20 FV / 6 CMR / 14 bez dopasowania:
+POKAZUJ NIEDOPASOWANE FV:
+Response zawiera unmatchedInvoices[] (FV WDT bez CMR — klient odbieral
+osobiscie / inny kurier) i unmatchedOrders[] (CMR bez FV). ZAWSZE pokaz
+liste user-owi gdy non-empty:
+  "Paczka 2026-04 wyslana: 20 FV / 6 CMR / 14 bez listu:
    - 65/2026 Nuno Viegas Costa
    - 64/2026 HOLA OLA
    ..."
-Plus krotki komentarz dlaczego mogli zostac (zbiorcze, osobisty odbior).
-User wie wtedy gdzie szukac jak chce dorobic manual match.
 
 ⚠ CONTINUATION PO BUDOWIE PACZKI:
 Po jpk_build_package backend zapisuje do AgentContext lastAction=
@@ -429,55 +414,31 @@ const tools = [
     },
   },
   {
-    name: 'jpk_build_package',
-    description: 'Buduje miesieczna paczke WDT dla ksiegowej: dopasowuje FV WDT z danego miesiaca z listami przewozowymi GK z tego samego miesiaca, kazdy CMR nazywany numerem faktury. PRE-STEP do jpk_send_package. ZAWSZE wywoluj GDY user mowi "zrob paczke do ksiegowej", "buduj paczke wdt za maj/kwiecien", "lista wdt za miesiac". Bez argumentow = poprzedni miesiac.',
+    name: 'jpk_build_and_send',
+    description: 'Paczka WDT za miesiac: matchuje FV WDT z listami GK (CMR), nazwany numerami FV, zbiorczy PDF, wysyla mailem do ksiegowej (DEFAULT_ACCOUNTANT_EMAIL z env). JEDEN call. ZAWSZE uzywaj dla: "zrob/zbuduj/przygotuj/wyslij paczke wdt", "paczka ksiegowej", "paczka wdt za maj/kwiecien". Bez year/month = poprzedni miesiac. BEZ pytania user-a o email — env decyduje.',
     input_schema: {
       type: 'object',
       properties: {
-        year: { type: 'number', description: 'np. 2026' },
-        month: { type: 'number', description: '1-12. Default: miesiac POPRZEDNI od dzisiejszej daty.' },
+        year: { type: 'number', description: 'Default: rok poprzedniego miesiaca.' },
+        month: { type: 'number', description: 'Default: poprzedni miesiac (1-12).' },
+        to: { type: 'string', description: 'Override domyslnej ksiegowej (rzadko — user explicit "wyslij na X").' },
       },
     },
   },
   {
     name: 'jpk_list_packages',
-    description: 'Lista wszystkich miesiecznych paczek WDT (status: building/ready/sent) — dla "pokaz paczki ksiegowej", "jakie sa paczki".',
+    description: 'Lista wszystkich miesiecznych paczek WDT (status: building/ready/sent). Dla "pokaz paczki ksiegowej", "jakie sa paczki".',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'jpk_package_details',
-    description: 'Szczegoly konkretnej paczki za miesiac (lista FV, lista CMR, dopasowania). period format YYYY-MM np. "2026-04".',
+    description: 'Szczegoly konkretnej paczki za miesiac (lista FV, lista CMR, dopasowania, unmatched). period format YYYY-MM np. "2026-04".',
     input_schema: {
       type: 'object',
       properties: {
         period: { type: 'string', description: 'YYYY-MM format' },
       },
       required: ['period'],
-    },
-  },
-  {
-    name: 'jpk_send_package',
-    description: 'Wysyla zbudowana paczke WDT (FV + listy GK jako merged PDF) mailem do ksiegowej. ZAWSZE wymaga to (email). Wywoluj PO jpk_build_package + zapytaj user-a o potwierdzenie. Bez year/month = poprzedni miesiac (default backendu).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: 'Email ksiegowej' },
-        year: { type: 'number' },
-        month: { type: 'number' },
-      },
-      required: ['to'],
-    },
-  },
-  {
-    name: 'jpk_build_and_send',
-    description: 'SKRÓT: buduje paczke WDT za miesiac + wysyla od razu do domyslnej ksiegowej (env DEFAULT_ACCOUNTANT_EMAIL). Uzyj GDY user mowi "zrob paczke wdt" / "zrob paczke ksiegowej" / "wyslij paczke za miesiac" BEZ podanego emaila. Bez year/month = poprzedni miesiac. JEDEN call zamiast build + dopytanie o email + send.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        year: { type: 'number', description: 'Default: rok poprzedniego miesiaca.' },
-        month: { type: 'number', description: 'Default: poprzedni miesiac (1-12).' },
-        to: { type: 'string', description: 'Override domyslnej ksiegowej (rzadko).' },
-      },
     },
   },
 ];
@@ -500,11 +461,9 @@ const ENDPOINT_MAP = {
   analytics_products_sold: ['GET', '/api/analytics/products-sold'],
   analytics_revenue: ['GET', '/api/analytics/revenue'],
   analytics_top_customers: ['GET', '/api/analytics/top-customers'],
-  jpk_build_package: ['POST', '/api/jpk/build-package'],
+  jpk_build_and_send: ['POST', '/api/jpk/build-and-send'],
   jpk_list_packages: ['GET', '/api/jpk/packages'],
   jpk_package_details: ['GET', '/api/jpk/package/:period'],
-  jpk_send_package: ['POST', '/api/jpk/send-package'],
-  jpk_build_and_send: ['POST', '/api/jpk/build-and-send'],
 };
 
 const executeTool = buildExecuteTool({
