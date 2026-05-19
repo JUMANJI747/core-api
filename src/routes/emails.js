@@ -418,11 +418,45 @@ router.post('/send-email', async (req, res) => {
         },
       });
 
+      // Preview tlumaczenie PL — gdy draft jest w obcym jezyku, dorzucamy
+      // tlumaczenie zeby user mogl zweryfikowac co bot napisal PRZED
+      // wyslaniem. Tlumaczenie nie idzie do klienta — tylko do podgladu.
+      // Haiku (najtanszy) za $0.001/draft.
+      let previewTranslationPl = null;
+      let previewSourceLang = null;
+      try {
+        const Anthropic = require('@anthropic-ai/sdk');
+        if (process.env.ANTHROPIC_API_KEY && body && body.length > 20) {
+          const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+          const r = await anthropic.messages.create({
+            model: process.env.DRAFT_TRANSLATE_MODEL || 'claude-haiku-4-5-20251001',
+            max_tokens: 600,
+            messages: [{
+              role: 'user',
+              content: `Wykryj jezyk ponizszej tresci i przetlumacz na polski. Zachowaj formatowanie (linki, listy, lamania linii). Plain text bez markdown. Zwroc DOKLADNIE w formacie:\n\nLANG: <kod_iso2_jezyka_originalu>\n---\n<tlumaczenie_pl>\n\nJezeli oryginal JEST po polsku, zwroc:\nLANG: pl\n---\n(pomijam tlumaczenie)\n\nTRESC:\n${body}`,
+            }],
+          });
+          const text = (r.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+          const m = text.match(/^LANG:\s*([a-z]{2})\s*\n---\s*\n([\s\S]+)$/i);
+          if (m) {
+            previewSourceLang = m[1].toLowerCase();
+            const translation = m[2].trim();
+            if (previewSourceLang !== 'pl' && !/^\(pomijam/i.test(translation)) {
+              previewTranslationPl = translation;
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[send-email draft] translation preview failed:', e.message);
+      }
+
       return res.json({
         ok: true,
         draft: true,
         emailId: saved.id,
         preview: { from, to, subject, body, replyToThread: !!inReplyTo },
+        previewSourceLang,
+        previewTranslationPl, // pokazujesz user-owi POD oryginalem; NIE wysyla sie
       });
     }
 
