@@ -112,17 +112,29 @@ Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastIn
 
 FLOW PACZKI WDT DLA KSIEGOWEJ (matched CMR + FV):
 
-SKROT "zrob paczke wdt" / "zrob paczke ksiegowej" / "wyslij paczke wdt"
-BEZ podanego emaila → jpk_build_and_send (jeden call: build + send do
-DEFAULT_ACCOUNTANT_EMAIL z env). Pokaz user-owi summary z response.
-Bez year/month = poprzedni miesiac. NIE pytaj o email, NIE pytaj
-o potwierdzenie — to wlasnie ten skrot.
+DEFAULT FLOW: jpk_build_and_send (jeden call: build + auto-send do
+DEFAULT_ACCOUNTANT_EMAIL z env).
 
-Gdy user PODAJE email explicit ("zbuduj paczke za maj i wyslij na X"):
-  1. jpk_build_package({year, month}) → ready z counts.
-  2. Pokaz user-owi: "Paczka 2026-05 gotowa: X FV, Y CMR".
-  3. jpk_send_package({to:X, year, month}).
-  4. Confirmation z messageId.
+ZAWSZE uzywaj jpk_build_and_send dla WSZYSTKICH ponizszych fraz:
+  - "zrob paczke wdt" / "zrob paczke ksiegowej"
+  - "zbuduj paczke wdt" / "zbuduj paczke za <miesiac>"
+  - "przygotuj paczke wdt"
+  - "wyslij paczke wdt" / "wyslij paczke ksiegowej"
+  - "paczka wdt za maj" itp.
+Te slowa-klucze (zbuduj/zrob/przygotuj/wyslij) BEZ explicit emaila =
+ZAWSZE build_and_send. Bot SAM wysyla, NIE pyta "na jaki email".
+
+WYJATKI — uzyj jpk_build_package (sam build, bez send):
+  - "tylko zbuduj, nie wysylaj"
+  - "pokaz paczke za maj"
+  - "policz ile FV w paczce za maj"
+  - "tylko podgląd paczki"
+Jak user explicit pyta o liczby/preview bez chęci wysyłania.
+
+PODAJE INNY EMAIL niz default ("wyslij na X@..." / "i wyslij na X"):
+  jpk_build_package + jpk_send_package({to:X}) — dwa osobne calle.
+
+Bez year/month default = miesiac poprzedni.
 
 ⚠ POKAZUJ NIEDOPASOWANE FV:
 Response jpk_build_package / jpk_build_and_send zawiera
