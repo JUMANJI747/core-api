@@ -227,7 +227,24 @@ router.post('/build-package', async (req, res) => {
       `📦 Pakiet za ${period}:\n• ${invoiceCount} faktur PDF\n• ${cmrCount} listów CMR\nStatus: gotowy`
     ).catch(e => console.error('[package] TG error:', e.message));
 
-    res.json({ ok: true, period, status: 'ready', invoices: invoiceCount, cmrs: cmrCount });
+    res.json({
+      ok: true,
+      period,
+      status: 'ready',
+      invoices: invoiceCount,
+      cmrs: cmrCount,
+      unmatchedInvoices: (matchResult.unmatchedInvoices || []).map(u => ({
+        number: u.number,
+        contractor: u.contractor,
+        grossAmount: u.grossAmount,
+        currency: u.currency,
+      })),
+      unmatchedOrders: (matchResult.unmatchedOrders || []).map(o => ({
+        number: o.number,
+        receiverName: o.receiverName,
+        creationDate: o.creationDate,
+      })),
+    });
   } catch (e) {
     console.error('[package] build error:', e.message);
     res.status(500).json({ error: e.message });

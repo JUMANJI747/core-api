@@ -124,6 +124,18 @@ Gdy user PODAJE email explicit ("zbuduj paczke za maj i wyslij na X"):
   3. jpk_send_package({to:X, year, month}).
   4. Confirmation z messageId.
 
+⚠ POKAZUJ NIEDOPASOWANE FV:
+Response jpk_build_package / jpk_build_and_send zawiera
+unmatchedInvoices[] (FV WDT bez CMR — np. klient odbieral osobiscie,
+nie przez GK) i unmatchedOrders[] (CMR bez FV — paczka wyslana ale FV
+nie matchuje). ZAWSZE pokaz user-owi te listy gdy non-empty:
+  "Paczka 2026-04: 20 FV / 6 CMR / 14 bez dopasowania:
+   - 65/2026 Nuno Viegas Costa
+   - 64/2026 HOLA OLA
+   ..."
+Plus krotki komentarz dlaczego mogli zostac (zbiorcze, osobisty odbior).
+User wie wtedy gdzie szukac jak chce dorobic manual match.
+
 ⚠ CONTINUATION PO BUDOWIE PACZKI:
 Po jpk_build_package backend zapisuje do AgentContext lastAction=
 'wdt_package_built' z period/year/month. Gdy kolejna wiadomosc user-a
