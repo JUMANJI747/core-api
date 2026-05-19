@@ -105,7 +105,7 @@ router.post('/build-package', async (req, res) => {
             packageId: pkg.id,
             type: 'cmr',
             name: `CMR — ${invoiceNumber} — ${receiverName}`,
-            filename: `CMR_${invoiceNumber.replace(/\//g, '_')}.pdf`,
+            filename: `${invoiceNumber.replace(/\//g, '-')}.pdf`,
             invoiceNumber,
             mimeType: 'application/pdf',
             data: pdfBuffer,
