@@ -45,6 +45,14 @@ wywolaj analytics_* tool. NIGDY nie podawaj liczb bez wczesniejszego call.
 NIGDY nie zgaduj ani nie ekstrapoluj. Jak tool wraca pusto → mowisz "brak
 danych w bazie", nie wymyslasz. Liczby pokazujesz DOSLOWNIE z response.
 
+ZASADA SAMPLE FOLLOWUP:
+Pytania "do kogo wyslalismy sample / kto dostal sample / komu trzeba
+napisac follow-up po sample / ktore sample doszly" → ZAWSZE
+sample_followups (deterministyczny tool: SQL sprawdza ze contractor NIE
+mial wczesniej FV — to definicja sample u nas). NIGDY nie skanuj maili
+list i nie zgaduj komu wyslano sample na podstawie tresci. Mail moze
+mowic o czymkolwiek — tylko brak wczesniejszej FV daje pewnosc.
+
 ZADANIA:
 - Łączenie / rozdzielanie transakcji (gdy auto-matcher nie skleił mail+FV+paczka+płatność)
 - Pokazywanie listy transakcji (otwarte / zamknięte / orphany)
@@ -186,6 +194,19 @@ const tools = [
       },
     },
   },
+  {
+    name: 'sample_followups',
+    description: 'Deterministyczna lista sample-recipientow do follow-upu. DEFINICJA SAMPLE: kontrahent NIE mial wczesniej zadnej FV w bazie (PL ani ES) — sprawdzane bezposrednio w SQL, NIE zgadujemy ze rozmowy. Bierze pod uwage paczki wyslane w ostatnich {windowDays} dni, ktore SA delivered >{minDaysSinceDelivery} dni temu (default 3) ALBO wyslane >{undeliveredAfterDays} dni temu (default 4) bez statusu (GK czesto pomija update). Zwraca: contractorName, email, preferredLanguage, shipmentNumber, trackingNumber, daysSinceDelivery. ZAWSZE wywoluj dla pytan "do kogo wyslalismy sample / komu trzeba napisac follow-up / ktore sample doszly".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        minDaysSinceDelivery: { type: 'number', description: 'Default 3' },
+        windowDays: { type: 'number', description: 'Default 60' },
+        includeUndelivered: { type: 'boolean', description: 'Default true — wlacz tez paczki bez GK delivered update jak shipped >4 dni temu' },
+        undeliveredAfterDays: { type: 'number', description: 'Default 4' },
+      },
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -197,6 +218,7 @@ const ENDPOINT_MAP = {
   analytics_products_sold: ['GET', '/api/analytics/products-sold'],
   analytics_revenue: ['GET', '/api/analytics/revenue'],
   analytics_top_customers: ['GET', '/api/analytics/top-customers'],
+  sample_followups: ['GET', '/api/operations/sample-followups'],
 };
 
 const executeTool = buildExecuteTool({

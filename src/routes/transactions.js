@@ -457,4 +457,133 @@ router.post('/transactions/rematch', async (req, res) => {
   }
 });
 
+// Sample-followups — deterministyczny raport "ktorym sample-klientom
+// trzeba napisac follow-up bo paczka dotarla >N dni temu". Sample
+// definiujemy biznesowo: kontrahent NIE mial wczesniej FV od nas.
+// (User: "sample jak sa wysylane to dany kontrahent na pewno nie mial
+// faktury wczesniej").
+//
+// Query params:
+//   minDaysSinceDelivery (int, default 3)  — od kiedy follow-up due
+//   windowDays (int, default 60)            — jak daleko wstecz szukamy
+//   includeUndelivered (bool, default true) — wlaczy tez paczki bez
+//      hasDelivered=true ale wyslane >X dni temu (GK czesto pomija
+//      update statusu — DPD/DHL doszly, GK nie zaktualizowal)
+//   undeliveredAfterDays (int, default 4)   — po ilu dniach od wyslania
+//      traktujemy "shipped ale GK nie wie" jako "pewnie doszlo"
+router.get('/operations/sample-followups', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const minDaysSinceDelivery = parseInt(req.query.minDaysSinceDelivery, 10) || 3;
+  const windowDays = parseInt(req.query.windowDays, 10) || 60;
+  const includeUndelivered = req.query.includeUndelivered !== 'false';
+  const undeliveredAfterDays = parseInt(req.query.undeliveredAfterDays, 10) || 4;
+  const now = Date.now();
+  const windowStart = new Date(now - windowDays * 24 * 60 * 60 * 1000);
+  const deliveredThreshold = new Date(now - minDaysSinceDelivery * 24 * 60 * 60 * 1000);
+  const shippedThreshold = new Date(now - undeliveredAfterDays * 24 * 60 * 60 * 1000);
+
+  try {
+    // Bierz wszystkie shipped transactions w oknie z contractorId.
+    const shipments = await prisma.transaction.findMany({
+      where: {
+        hasShipped: true,
+        contractorId: { not: null },
+        occurredAt: { gte: windowStart },
+        OR: [
+          { hasDelivered: true, deliveredAt: { lte: deliveredThreshold } },
+          ...(includeUndelivered ? [{ hasDelivered: false, occurredAt: { lte: shippedThreshold } }] : []),
+        ],
+      },
+      select: {
+        id: true, contractorId: true, contractorName: true,
+        occurredAt: true, deliveredAt: true, hasDelivered: true,
+        shipmentNumber: true, trackingNumber: true, amount: true, currency: true,
+        extras: true,
+        contractor: { select: { name: true, email: true, primaryEmail: true, country: true, preferredLanguage: true } },
+      },
+      orderBy: { deliveredAt: 'desc' },
+    });
+
+    if (!shipments.length) return res.json({ ok: true, count: 0, followups: [] });
+
+    // Per shipment sprawdz czy contractor mial wczesniejsza FV.
+    const contractorIds = [...new Set(shipments.map(s => s.contractorId))];
+    const earliestInvoiceByContractor = new Map();
+    const invs = await prisma.invoice.findMany({
+      where: { contractorId: { in: contractorIds } },
+      select: { contractorId: true, issueDate: true, number: true },
+      orderBy: { issueDate: 'asc' },
+    });
+    for (const inv of invs) {
+      if (!earliestInvoiceByContractor.has(inv.contractorId)) {
+        earliestInvoiceByContractor.set(inv.contractorId, inv);
+      }
+    }
+    // To samo dla EsInvoice — przez linkedEsContractorId.
+    const plToEsLink = new Map();
+    const linked = await prisma.contractor.findMany({
+      where: { id: { in: contractorIds }, linkedEsContractorId: { not: null } },
+      select: { id: true, linkedEsContractorId: true },
+    });
+    for (const l of linked) plToEsLink.set(l.id, l.linkedEsContractorId);
+    if (plToEsLink.size) {
+      const esInvs = await prisma.esInvoice.findMany({
+        where: { contractorId: { in: [...plToEsLink.values()] } },
+        select: { contractorId: true, invoiceDate: true, number: true },
+        orderBy: { invoiceDate: 'asc' },
+      });
+      for (const inv of esInvs) {
+        // znajdz PL contractor po linked ES
+        for (const [plId, esId] of plToEsLink) {
+          if (esId === inv.contractorId) {
+            const existing = earliestInvoiceByContractor.get(plId);
+            if (!existing || new Date(inv.invoiceDate) < new Date(existing.issueDate || existing.invoiceDate)) {
+              earliestInvoiceByContractor.set(plId, { contractorId: plId, issueDate: inv.invoiceDate, number: inv.number });
+            }
+          }
+        }
+      }
+    }
+
+    // Filter — sample = brak FV PRZED wysylka.
+    const followups = [];
+    for (const s of shipments) {
+      const firstInv = earliestInvoiceByContractor.get(s.contractorId);
+      if (firstInv && new Date(firstInv.issueDate || firstInv.invoiceDate) < new Date(s.occurredAt)) {
+        // Mial FV przed wysylka — to nie sample, klient z historia. Skip.
+        continue;
+      }
+      const daysSinceDelivery = s.hasDelivered && s.deliveredAt
+        ? Math.floor((now - new Date(s.deliveredAt).getTime()) / (24 * 60 * 60 * 1000))
+        : Math.floor((now - new Date(s.occurredAt).getTime()) / (24 * 60 * 60 * 1000));
+      followups.push({
+        transactionId: s.id,
+        contractorId: s.contractorId,
+        contractorName: s.contractorName || (s.contractor && s.contractor.name),
+        contractorEmail: (s.contractor && (s.contractor.primaryEmail || s.contractor.email)) || null,
+        contractorCountry: s.contractor && s.contractor.country,
+        preferredLanguage: s.contractor && s.contractor.preferredLanguage,
+        shipmentNumber: s.shipmentNumber,
+        trackingNumber: s.trackingNumber,
+        shippedAt: s.occurredAt,
+        deliveredAt: s.deliveredAt,
+        hasDeliveredConfirmed: s.hasDelivered,
+        daysSinceDelivery,
+        sampleConfirmed: !firstInv, // 100% pewne — zero FV w bazie
+        followupUrgent: daysSinceDelivery >= minDaysSinceDelivery,
+      });
+    }
+
+    res.json({
+      ok: true,
+      params: { minDaysSinceDelivery, windowDays, includeUndelivered, undeliveredAfterDays },
+      count: followups.length,
+      followups,
+    });
+  } catch (e) {
+    console.error('[operations/sample-followups] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
