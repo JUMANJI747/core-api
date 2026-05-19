@@ -110,6 +110,18 @@ Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastIn
 - lastAction="confirmed" + user "wyślij" → invoice_send_email z lastInvoiceId
 - brak kontekstu → zapytaj usera co konkretnie chce
 
+FLOW PACZKI WDT DLA KSIEGOWEJ (matched CMR + FV):
+User: "zbuduj paczke ksiegowej za maj" / "wyslij paczke wdt ksiegowej" /
+"matchuj listy z fakturami za miesiac" →
+  1. jpk_build_package({year:2026, month:5}) — dopasowuje FV WDT z listami
+     GK z tego samego miesiaca, kazdy CMR nazywany numerem FV. Zwraca
+     status (building→ready) + counts.
+  2. Pokaz user-owi: "Paczka 2026-05 gotowa: X FV, Y CMR dopasowanych,
+     Z bez dopasowania. Adresat? (email ksiegowej)"
+  3. User podaje email → jpk_send_package({to:'ksiegowa@...', year, month}).
+  4. Po wyslaniu pokaz confirmation (messageId).
+Bez year/month default = miesiac poprzedni.
+
 FLOW WYSTAWIENIA FV:
 0. NAJPIERW find_contractor z dokładnym fragmentem nazwy ktorą user podał ("easy
    surf michał lussa" → search="easy surf"; "Awa Surf" → search="awa surf").
@@ -381,6 +393,46 @@ const tools = [
       },
     },
   },
+  {
+    name: 'jpk_build_package',
+    description: 'Buduje miesieczna paczke WDT dla ksiegowej: dopasowuje FV WDT z danego miesiaca z listami przewozowymi GK z tego samego miesiaca, kazdy CMR nazywany numerem faktury. PRE-STEP do jpk_send_package. ZAWSZE wywoluj GDY user mowi "zrob paczke do ksiegowej", "buduj paczke wdt za maj/kwiecien", "lista wdt za miesiac". Bez argumentow = poprzedni miesiac.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        year: { type: 'number', description: 'np. 2026' },
+        month: { type: 'number', description: '1-12. Default: miesiac POPRZEDNI od dzisiejszej daty.' },
+      },
+    },
+  },
+  {
+    name: 'jpk_list_packages',
+    description: 'Lista wszystkich miesiecznych paczek WDT (status: building/ready/sent) — dla "pokaz paczki ksiegowej", "jakie sa paczki".',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'jpk_package_details',
+    description: 'Szczegoly konkretnej paczki za miesiac (lista FV, lista CMR, dopasowania). period format YYYY-MM np. "2026-04".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'YYYY-MM format' },
+      },
+      required: ['period'],
+    },
+  },
+  {
+    name: 'jpk_send_package',
+    description: 'Wysyla zbudowana paczke WDT (FV + listy GK jako merged PDF) mailem do ksiegowej. ZAWSZE wymaga to (email). Wywoluj PO jpk_build_package + zapytaj user-a o potwierdzenie. Bez year/month = poprzedni miesiac (default backendu).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Email ksiegowej' },
+        year: { type: 'number' },
+        month: { type: 'number' },
+      },
+      required: ['to'],
+    },
+  },
 ];
 
 const ENDPOINT_MAP = {
@@ -401,6 +453,10 @@ const ENDPOINT_MAP = {
   analytics_products_sold: ['GET', '/api/analytics/products-sold'],
   analytics_revenue: ['GET', '/api/analytics/revenue'],
   analytics_top_customers: ['GET', '/api/analytics/top-customers'],
+  jpk_build_package: ['POST', '/api/jpk/build-package'],
+  jpk_list_packages: ['GET', '/api/jpk/packages'],
+  jpk_package_details: ['GET', '/api/jpk/package/:period'],
+  jpk_send_package: ['POST', '/api/jpk/send-package'],
 };
 
 const executeTool = buildExecuteTool({
