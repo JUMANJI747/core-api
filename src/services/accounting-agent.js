@@ -122,6 +122,15 @@ User: "zbuduj paczke ksiegowej za maj" / "wyslij paczke wdt ksiegowej" /
   4. Po wyslaniu pokaz confirmation (messageId).
 Bez year/month default = miesiac poprzedni.
 
+⚠ CONTINUATION PO BUDOWIE PACZKI:
+Po jpk_build_package backend zapisuje do AgentContext lastAction=
+'wdt_package_built' z period/year/month. Gdy kolejna wiadomosc user-a
+to "wyslij na <email>" / "na <email>" / "wyslij ksiegowej <email>" BEZ
+explicit period — NAJPIERW get_context, sprawdz czy lastAction=
+'wdt_package_built' i timestamp <60min. Jak tak → jpk_send_package z
+year+month z kontekstu + email z wiadomosci. NIE pytaj usera o jaki
+miesiac chodzi, NIE deleguj do innego sub-agenta.
+
 FLOW WYSTAWIENIA FV:
 0. NAJPIERW find_contractor z dokładnym fragmentem nazwy ktorą user podał ("easy
    surf michał lussa" → search="easy surf"; "Awa Surf" → search="awa surf").

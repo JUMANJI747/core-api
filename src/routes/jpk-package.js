@@ -187,6 +187,37 @@ router.post('/build-package', async (req, res) => {
       },
     });
 
+    // Zapisz do AgentContext zeby kolejna wiadomosc "wyslij na X" wiedziala
+    // ze chodzi o ta paczke (bez explicit period/month). Accounting-agent
+    // get_context to odczyta.
+    try {
+      await prisma.agentContext.upsert({
+        where: { id: 'ksiegowosc' },
+        update: {
+          data: {
+            lastAction: 'wdt_package_built',
+            timestamp: Date.now(),
+            period,
+            year: parseInt(period.split('-')[0], 10),
+            month: parseInt(period.split('-')[1], 10),
+            invoiceCount,
+            cmrCount,
+          },
+        },
+        create: {
+          id: 'ksiegowosc',
+          data: {
+            lastAction: 'wdt_package_built',
+            timestamp: Date.now(),
+            period, year: parseInt(period.split('-')[0], 10), month: parseInt(period.split('-')[1], 10),
+            invoiceCount, cmrCount,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('[package] agentContext save failed:', e.message);
+    }
+
     // e) Telegram (admin notification)
     const { resolveTelegram } = require('../services/telegram-helper');
     const __tg = await resolveTelegram(prisma, { scope: 'pl' });
