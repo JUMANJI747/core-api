@@ -18,6 +18,7 @@
  */
 
 const cs = require('../contasimple-client');
+const { resolveOwnerFromAddress } = require('./owner-derive');
 const {
   buildEsLinesFromPreview,
   buildEsLinesFromContasimple,
@@ -54,6 +55,41 @@ async function listAllForPeriod(period, log) {
   return all;
 }
 
+// Contasimple zwraca w bodyiu faktury 'targetEntityId' (numeric FK do
+// /entities/customers), a nie zagniezdzonego customer-a. Stara wersja
+// upsertEsContractor patrzyla wylacznie na full.customer co skutkowalo
+// pustym contractorId/Name/Nip na wszystkich faktorach importowanych ze
+// starsza wersja kodu. Ten helper rozwiazuje obie formy: nested customer
+// jak jest, fallback do targetEntityId (lokalna baza lub GET /entities).
+async function resolveCustomerRef(prisma, full, csInvoice, log) {
+  let customer = full.customer || csInvoice.customer || null;
+  if (customer && customer.id) return customer;
+
+  const targetEntityId = full.targetEntityId || csInvoice.targetEntityId || (customer && customer.id) || null;
+  if (!targetEntityId) return customer;
+
+  const local = await prisma.esContractor.findUnique({
+    where: { contasimpleId: targetEntityId },
+    select: {
+      contasimpleId: true, organization: true, firstname: true, lastname: true,
+      nif: true, country: true, city: true, province: true, postalCode: true,
+      email: true, phone: true, mobile: true, address: true, type: true,
+      countryId: true, documentCulture: true, notes: true,
+    },
+  });
+  if (local) {
+    return { id: local.contasimpleId, ...local };
+  }
+
+  try {
+    const r = await cs.getCustomer(targetEntityId);
+    return (r && r.data) || r || null;
+  } catch (e) {
+    log(`  ! resolveCustomerRef(${targetEntityId}): ${e.message}`);
+    return null;
+  }
+}
+
 async function upsertEsContractor(prisma, customerRef, log) {
   // customerRef z listInvoices wraca jako embedded {id, organization, nif,
   // ...} albo czasem tylko {id}. getInvoice tez ma customer. Najpierw
@@ -71,6 +107,8 @@ async function upsertEsContractor(prisma, customerRef, log) {
     const c = (full && full.data) || full;
     if (!c) return null;
     const name = c.organization || [c.firstname, c.lastname].filter(Boolean).join(' ').trim() || 'Unknown';
+    // Auto-przypisanie owner przy CREATE — Fuerte ZIP/miasto -> rogacz, reszta -> nikodem.
+    const ownerAuto = resolveOwnerFromAddress({ postalCode: c.postalCode, city: c.city, province: c.province });
     const created = await prisma.esContractor.create({
       data: {
         contasimpleId: c.id,
@@ -91,6 +129,7 @@ async function upsertEsContractor(prisma, customerRef, log) {
         postalCode: c.postalCode || null,
         documentCulture: c.documentCulture || null,
         notes: c.notes || null,
+        owner: ownerAuto,
         extras: {
           customField1: c.customField1 || null,
           customField2: c.customField2 || null,
@@ -98,7 +137,7 @@ async function upsertEsContractor(prisma, customerRef, log) {
         },
       },
     });
-    log(`  + EsContractor ${created.id} (${name}, NIF=${c.nif || '-'})`);
+    log(`  + EsContractor ${created.id} (${name}, NIF=${c.nif || '-'}, owner=${ownerAuto})`);
     return created.id;
   } catch (e) {
     log(`  ! upsertEsContractor(${customerRef.id}) failed: ${e.message}`);
@@ -138,7 +177,7 @@ async function persistInvoice(prisma, period, csInvoice, opts) {
     return { id: null, action: 'error', error: e.message };
   }
 
-  const customer = full.customer || csInvoice.customer || null;
+  const customer = await resolveCustomerRef(prisma, full, csInvoice, log);
   const contractorId = await upsertEsContractor(prisma, customer, log);
 
   // Snapshot kontrahenta na FV (Etap 2.1) — z customer payload.
@@ -176,6 +215,7 @@ async function persistInvoice(prisma, period, csInvoice, opts) {
       extras: {
         lines: full.lines || [],
         payments: full.payments || [],
+        targetEntityId: full.targetEntityId || null,
         backfilledAt: new Date().toISOString(),
       },
     },
