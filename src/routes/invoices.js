@@ -1,7 +1,7 @@
 'use strict';
 
 const router = require('express').Router();
-const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment, searchContractor } = require('../ifirma-client');
+const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetchInvoiceDetails, registerPayment, searchContractor, upsertContractor } = require('../ifirma-client');
 const { backfillInvoiceItems } = require('../services/invoice-backfill');
 const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
@@ -565,16 +565,32 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       const cExtras = contractor.extras || {};
       const cExternalIds = contractor.externalIds || {};
       const billing = (cExtras.billingAddress && typeof cExtras.billingAddress === 'object') ? cExtras.billingAddress : {};
+      const kontrahentPayload = {
+        name: contractor.name,
+        nip: contractor.nip,
+        address: contractor.address || billing.street || cExtras.street || '',
+        city: contractor.city || billing.city || cExtras.city || '',
+        postCode: billing.postCode || cExtras.postCode || cExtras.zipCode || cExtras.postalCode || '',
+        country: contractor.country || billing.country || '',
+        email: contractor.primaryEmail || contractor.email || '',
+        phone: contractor.phone || '',
+        ifirmaId: cExternalIds.ifirmaIdentifier || cExtras.ifirmaId || null,
+      };
+      // Push aktualnych danych do iFirmy ZANIM wystawimy FV — bez tego iFirma
+      // siga do swojej (potencjalnie stale) kopii rekordu i ignoruje inline
+      // Kontrahent (skutek: korekta np. kodu pocztowego u nas nigdy nie dociera
+      // do faktur). Non-fatal — jak push padnie i tak probujemy wystawic, iFirma
+      // moze wtedy uzyc swojej kopii.
+      if (kontrahentPayload.nip && rodzaj !== 'wdt') {
+        try {
+          const upRes = await upsertContractor(kontrahentPayload);
+          console.log(`[invoice-confirm] iFirma kontrahent ${upRes.action} id=${upRes.identifier}`);
+        } catch (e) {
+          console.warn('[invoice-confirm] upsertContractor failed (non-fatal):', e.message);
+        }
+      }
       ifirmaResult = await createInvoice({
-        kontrahent: {
-          name: contractor.name,
-          nip: contractor.nip,
-          address: contractor.address || billing.street || cExtras.street || '',
-          city: contractor.city || billing.city || cExtras.city || '',
-          postCode: billing.postCode || cExtras.postCode || '',
-          country: contractor.country || billing.country || '',
-          ifirmaId: cExternalIds.ifirmaIdentifier || cExtras.ifirmaId || null, // fallback do legacy extras dopoki nie wyczyscimy
-        },
+        kontrahent: kontrahentPayload,
         pozycje,
         rodzaj,
         priceMode,
@@ -767,15 +783,27 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     const cExtras2 = contractor.extras || {};
     const billing2 = (cExtras2.billingAddress && typeof cExtras2.billingAddress === 'object') ? cExtras2.billingAddress : {};
+    const kontrahentPayload2 = {
+      name: contractor.name,
+      nip: contractor.nip,
+      address: contractor.address || billing2.street || cExtras2.street || '',
+      city: contractor.city || billing2.city || cExtras2.city || '',
+      postCode: billing2.postCode || cExtras2.postCode || cExtras2.zipCode || cExtras2.postalCode || '',
+      country: contractor.country || billing2.country || '',
+      email: contractor.primaryEmail || contractor.email || '',
+      phone: contractor.phone || '',
+    };
+    // Push aktualnych danych do iFirmy zanim wystawimy FV (patrz invoice-confirm-latest powyzej).
+    if (kontrahentPayload2.nip && rodzaj !== 'wdt') {
+      try {
+        const upRes = await upsertContractor(kontrahentPayload2);
+        console.log(`[invoice-confirm/${previewId}] iFirma kontrahent ${upRes.action} id=${upRes.identifier}`);
+      } catch (e) {
+        console.warn(`[invoice-confirm/${previewId}] upsertContractor failed (non-fatal):`, e.message);
+      }
+    }
     const ifirmaResp = await createInvoice({
-      kontrahent: {
-        name: contractor.name,
-        nip: contractor.nip,
-        address: contractor.address || billing2.street || cExtras2.street || '',
-        city: contractor.city || billing2.city || cExtras2.city || '',
-        postCode: billing2.postCode || cExtras2.postCode || '',
-        country: contractor.country || billing2.country || '',
-      },
+      kontrahent: kontrahentPayload2,
       pozycje,
       waluta,
       rodzaj,
@@ -1824,3 +1852,4 @@ router.get('/invoices', async (req, res) => {
 });
 
 module.exports = router;
+
