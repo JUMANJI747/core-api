@@ -178,7 +178,7 @@ function findProductFuzzy(catalog, query) {
   if (!query) return null;
 
   const normalize = s => (s || '').toString().toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
   const q = normalize(query);
@@ -1774,6 +1774,52 @@ router.post('/ifirma/_diag-month', async (req, res) => {
     res.status(400).json({ error: "test must be 'get', 'step' (NAST/POPRZ once), or 'set' (iterate to target)" });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ============ LIST LOCAL INVOICES (Invoice table) ============
+// GET /api/invoices?search=&country=&status=&fromDate=&toDate=&limit=&ifirmaOnly=1
+// Returns local Invoice rows ordered by issueDate desc. Used by CRM frontend.
+router.get('/invoices', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { search, country, status, fromDate, toDate, limit, ifirmaOnly } = req.query;
+    const where = {};
+    if (search) {
+      where.OR = [
+        { number: { contains: search, mode: 'insensitive' } },
+        { contractorName: { contains: search, mode: 'insensitive' } },
+        { contractorNip: { contains: search } },
+      ];
+    }
+    if (country) where.contractorCountry = { equals: country, mode: 'insensitive' };
+    if (status) where.status = status;
+    if (fromDate || toDate) {
+      where.issueDate = {};
+      if (fromDate) where.issueDate.gte = new Date(fromDate);
+      if (toDate) where.issueDate.lte = new Date(toDate);
+    }
+    if (ifirmaOnly === '1' || ifirmaOnly === 'true') {
+      where.ifirmaId = { not: null };
+    }
+    const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
+    const list = await prisma.invoice.findMany({
+      where,
+      orderBy: { issueDate: 'desc' },
+      take,
+      select: {
+        id: true, number: true, ifirmaId: true,
+        contractorId: true, contractorName: true, contractorNip: true, contractorCountry: true,
+        issueDate: true, dueDate: true,
+        grossAmount: true, currency: true, paidAmount: true,
+        status: true, type: true, ifirmaType: true, source: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+    res.json(list);
+  } catch (e) {
+    console.error('[GET /invoices] error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
