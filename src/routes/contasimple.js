@@ -273,7 +273,7 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
 }));
 
 router.get('/contractors', asyncHandler(async (req, res) => {
-  const { search } = req.query;
+  const { search, limit } = req.query;
   const where = search
     ? {
         OR: [
@@ -284,10 +284,11 @@ router.get('/contractors', asyncHandler(async (req, res) => {
         ],
       }
     : {};
+  const take = limit ? Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000)) : undefined;
   const list = await prisma.esContractor.findMany({
     where,
     orderBy: { updatedAt: 'desc' },
-    take: 200,
+    ...(take ? { take } : {}),
   });
   res.json({ count: list.length, data: list });
 }));
