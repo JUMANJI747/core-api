@@ -2769,8 +2769,19 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     const snapshotCountry = contractor.country || null;
     const snapshotCity = contractor.city || null;
 
-    if (sample.length < 10) {
-      sample.push({ number: inv.number, contractorName: snapshotName, contractorNip: snapshotNip });
+    if (sample.length < 5) {
+      sample.push({
+        number: inv.number,
+        contractorName: snapshotName,
+        contractorNip: snapshotNip,
+        debug: {
+          fullKeys: Object.keys(full || {}).slice(0, 60),
+          targetEntityId: full && full.targetEntityId,
+          customerKeys: full && full.customer ? Object.keys(full.customer) : null,
+          customerId: full && full.customer && full.customer.id,
+          rawHead: JSON.stringify(full || {}).slice(0, 1200),
+        },
+      });
     }
 
     if (!dryRun) {
