@@ -273,17 +273,38 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
 }));
 
 router.get('/contractors', asyncHandler(async (req, res) => {
-  const { search, limit } = req.query;
-  const where = search
-    ? {
-        OR: [
+  const { search, limit, owner } = req.query;
+  const where = {};
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: 'insensitive' } },
+      { organization: { contains: search, mode: 'insensitive' } },
+      { nif: { contains: search, mode: 'insensitive' } },
+      { email: { contains: search, mode: 'insensitive' } },
+    ];
+  }
+  // owner=rogacz -> tylko Rogacz; owner=nikodem -> wszyscy poza Rogacz (null lub != rogacz);
+  // brak parametru -> wszyscy.
+  if (owner === 'rogacz') {
+    where.owner = 'rogacz';
+  } else if (owner === 'nikodem') {
+    where.OR = [...(where.OR || []), { owner: null }, { owner: { not: 'rogacz' } }];
+    // simpler: NOT { owner: 'rogacz' }
+    delete where.OR;
+    where.NOT = { owner: 'rogacz' };
+    if (search) {
+      where.AND = [
+        { NOT: { owner: 'rogacz' } },
+        { OR: [
           { name: { contains: search, mode: 'insensitive' } },
           { organization: { contains: search, mode: 'insensitive' } },
           { nif: { contains: search, mode: 'insensitive' } },
           { email: { contains: search, mode: 'insensitive' } },
-        ],
-      }
-    : {};
+        ] },
+      ];
+      delete where.NOT;
+    }
+  }
   const take = limit ? Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000)) : undefined;
   const list = await prisma.esContractor.findMany({
     where,
@@ -2511,7 +2532,7 @@ router.get('/_period', asyncHandler(async (req, res) => {
 // GET /api/contasimple/local-invoices?search=&status=&fromDate=&toDate=&limit=&contasimpleOnly=1
 // Returns local EsInvoice rows ordered by invoiceDate desc. Used by CRM frontend.
 router.get('/local-invoices', asyncHandler(async (req, res) => {
-  const { search, status, fromDate, toDate, limit, contasimpleOnly } = req.query;
+  const { search, status, fromDate, toDate, limit, contasimpleOnly, owner } = req.query;
   const where = {};
   if (search) {
     where.OR = [
@@ -2529,6 +2550,19 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
   if (contasimpleOnly === '1' || contasimpleOnly === 'true') {
     where.contasimpleId = { not: null };
   }
+  // Filtr po wlascicielu (Rogacz/Nikodem) idzie po EsContractor relacji.
+  // Trzymamy se to bo invoice.contractorId moze byc null (FV bez przypisanego
+  // kontrahenta) — wtedy traktujemy jak Nikodem (default).
+  if (owner === 'rogacz') {
+    where.contractor = { owner: 'rogacz' };
+  } else if (owner === 'nikodem') {
+    where.OR = [
+      ...(where.OR || []),
+      { contractor: null },
+      { contractor: { owner: null } },
+      { contractor: { owner: { not: 'rogacz' } } },
+    ];
+  }
   const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
   const list = await prisma.esInvoice.findMany({
     where,
@@ -2541,9 +2575,47 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
       totalAmount: true, totalTaxableAmount: true, totalVatAmount: true, totalPayedAmount: true,
       currency: true, status: true, period: true,
       createdAt: true, updatedAt: true,
+      contractor: { select: { owner: true } },
     },
   });
   res.json({ count: list.length, data: list });
+}));
+
+// ============ SET OWNER (Rogacz/Nikodem assignment) ============
+// PUT /api/contasimple/contractors/:id/owner
+// Body: { owner: 'rogacz' | 'nikodem' | null }
+router.put('/contractors/:id/owner', asyncHandler(async (req, res) => {
+  const { owner } = req.body || {};
+  if (owner != null && owner !== 'rogacz' && owner !== 'nikodem') {
+    return res.status(400).json({ error: "owner must be 'rogacz', 'nikodem', or null" });
+  }
+  const updated = await prisma.esContractor.update({
+    where: { id: req.params.id },
+    data: { owner: owner || null },
+  });
+  res.json({ ok: true, contractor: updated });
+}));
+
+// POST /api/contasimple/contractors/set-owner-batch
+// Body: { owner: 'rogacz'|'nikodem'|null, ids?: string[], nifs?: string[] }
+// Idempotent — ustawia wlasciciela dla wszystkich pasujacych. Uzywane do
+// bulk paste (wklej liste NIF-ow albo ID-ow i jedna kwerenda przelacza).
+router.post('/contractors/set-owner-batch', asyncHandler(async (req, res) => {
+  const { owner, ids, nifs } = req.body || {};
+  if (owner != null && owner !== 'rogacz' && owner !== 'nikodem') {
+    return res.status(400).json({ error: "owner must be 'rogacz', 'nikodem', or null" });
+  }
+  const orClauses = [];
+  if (Array.isArray(ids) && ids.length) orClauses.push({ id: { in: ids } });
+  if (Array.isArray(nifs) && nifs.length) orClauses.push({ nif: { in: nifs } });
+  if (!orClauses.length) {
+    return res.status(400).json({ error: 'ids or nifs required' });
+  }
+  const result = await prisma.esContractor.updateMany({
+    where: { OR: orClauses },
+    data: { owner: owner || null },
+  });
+  res.json({ ok: true, updated: result.count, owner: owner || null });
 }));
 
 module.exports = router;
