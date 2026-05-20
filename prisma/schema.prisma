@@ -578,6 +578,7 @@ model EsContractor {
   postalCode      String?
   documentCulture String? // es-ES | en-US | ca-ES — language for invoices to this customer
   notes           String?
+  owner           String? // 'rogacz' | 'nikodem' — biznes wlasciciel kontrahenta; null = traktowany jak Nikodem (default)
   lat             Float?
   lng             Float?
   geocodedAt      DateTime?
@@ -591,6 +592,7 @@ model EsContractor {
 
   @@index([nif])
   @@index([postalCode])
+  @@index([owner])
 }
 
 model EsInvoice {
