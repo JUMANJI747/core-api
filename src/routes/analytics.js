@@ -94,11 +94,11 @@ Table: Memory
 - id (UUID), chatId (String), role (String: "user"/"assistant"), content (Text), createdAt
 
 RELACJE:
-- Invoice.contractorId → Contractor.id
-- Document.packageId → MonthlyPackage.id
-- Email.contractorId → Contractor.id (nullable)
+- Invoice.contractorId -> Contractor.id
+- Document.packageId -> MonthlyPackage.id
+- Email.contractorId -> Contractor.id (nullable)
 
-WAŻNE:
+WAZNE:
 - WDT (eksport UE): type zawiera "dostawa_ue" lub ifirmaType zawiera "wdt"
 - Faktury krajowe: type zawiera "krajow"
 - Obroty = suma grossAmount
@@ -112,9 +112,6 @@ function serializeForJson(obj) {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj === 'bigint') return Number(obj);
   if (obj instanceof Date) return obj.toISOString();
-  // Prisma.Decimal (decimal.js instance) — wykryj po metodach. JSON.stringify
-  // wypluwa surowy {s,e,d} ktory dla BI jest bezuzyteczny — wymuszamy
-  // string z pelna precyzja.
   if (typeof obj === 'object' && obj.constructor && obj.constructor.name === 'Decimal'
       && typeof obj.toFixed === 'function') {
     return obj.toString();
@@ -139,7 +136,6 @@ router.post('/analytics', async (req, res) => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
-    // 1. Generate SQL with Claude
     const sqlPrompt = `${SCHEMA_DESCRIPTION}
 
 Pytanie użytkownika: ${question}
@@ -167,7 +163,6 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
 
     const sql = (sqlResp.body.content[0].text || '').replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
 
-    // 2. Validate — only SELECT allowed (regex blacklist; DB-level READ ONLY below catches the rest)
     const forbidden = /\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|EXEC|VACUUM|ANALYZE|COPY|LOAD|LISTEN|NOTIFY|LOCK|RESET|CALL|DO|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|pg_terminate_backend|pg_sleep|pg_read_file|pg_ls_dir|pg_advisory_lock)\b/i;
     if (forbidden.test(sql)) {
       return res.status(400).json({ ok: false, error: 'Only SELECT queries allowed', sql });
@@ -176,9 +171,6 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
       return res.status(400).json({ ok: false, error: 'Query must start with SELECT or WITH', sql });
     }
 
-    // 3. Execute inside a READ ONLY transaction with statement timeout.
-    // Defense in depth: if the regex above misses something destructive,
-    // Postgres rejects writes at the DB layer ("cannot execute X in a read-only transaction").
     let results;
     try {
       results = await prisma.$transaction(async (tx) => {
@@ -193,7 +185,6 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
     const safeResults = serializeForJson(results);
     console.log(`[analytics] Question: ${question} | SQL: ${sql.replace(/\s+/g, ' ').slice(0, 200)} | Rows: ${safeResults.length}`);
 
-    // 4. Summarize results with Claude
     let summary = null;
     if (safeResults.length > 0) {
       try {
@@ -215,7 +206,6 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
       summary = 'Brak wyników dla tego pytania.';
     }
 
-    // Check last iFirma sync
     const lastSyncedInvoice = await prisma.invoice.findFirst({
       where: { source: 'ifirma_sync' },
       orderBy: { updatedAt: 'desc' },
@@ -244,16 +234,7 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
   }
 });
 
-// ============ CRM v2 BI ENDPOINTS (etap 3.2) ============
-//
-// Wszystkie ponizsze leca po denormalizowanych snapshotach na Invoice /
-// EsInvoice / InvoiceLineItem / EsInvoiceLineItem (Etap 2.1 + 2.2). Bez
-// joinow do Contractor — indexy ([contractorCountry, issueDate],
-// [currency, issueDate], [ean, issueDate]) zalatwiaja prace, raw SQL
-// $queryRaw kontroluje GROUP BY + date_trunc po stronie Postgresa.
-//
-// Wszystkie zapytania parametryzowane Prisma tagged-template ($queryRaw)
-// — SQL injection-safe (placeholderowane $1, $2... w drivierze pg).
+// ============ CRM v2 BI ENDPOINTS ============
 
 function parseRange(req) {
   const now = new Date();
@@ -264,14 +245,8 @@ function parseRange(req) {
     from = new Date(Date.UTC(year, 0, 1));
     to = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
   }
-  // Defaultem traktujemy "od poczatku biezacego roku do dzis" — agent
-  // czesto ma zlozone instrukcje co do dat, ale jak puscil GET bez
-  // from/to to zazwyczaj pyta o "ten rok" (sensowny default biznesowy).
-  // Wczesniej bralismy 365 dni wstecz, co dla "ile w tym roku" w styczniu
-  // dawalo poprzedni rok — niedeterministyczne.
   if (!from) from = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
   if (!to) to = now;
-  // 'to' inclusive — przesun na koniec dnia jak user podal sama date.
   if (req.query.to && req.query.to.length === 10) {
     to.setUTCHours(23, 59, 59, 999);
   }
@@ -284,21 +259,17 @@ function parseGranularity(req) {
   return g;
 }
 
-// GET /api/analytics/private-label-revenue
-//   ?from=&to=&granularity=year|month
-// Przychod per klient private-label (Contractor.tags @> ['private-label']).
-// Liczy z Invoice.grossAmount + EsInvoice.totalAmount — nie z lineItems,
-// bo specjalne typy FV (zaliczkowe/koncowe obca waluta) czesto nie maja
-// zbackfillowanych pozycji, a contractor.grossAmount jest snapshotem
-// zaufanym. PL+ES union.
+function parseIfirmaOnly(req) {
+  const v = req.query.plIfirmaOnly;
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
 router.get('/analytics/private-label-revenue', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { from, to } = parseRange(req);
     const granularity = parseGranularity(req);
 
-    // Po contractor.id GROUP BY — totale per klient w okresie + breakdown
-    // po currency (zwykle EUR, ale moze byc PLN dla krajowych private-label).
     const pl = await prisma.$queryRaw`
       SELECT
         'pl'::text                                                      AS source,
@@ -318,8 +289,6 @@ router.get('/analytics/private-label-revenue', async (req, res) => {
       ORDER BY period DESC, total DESC
     `;
 
-    // ES — EsContractor nie ma `tags`, wiec idziemy przez linkedEsContractorId
-    // z PL Contractor (jak PL jest private-label i ma linked ES).
     const es = await prisma.$queryRaw`
       SELECT
         'es'::text                                                       AS source,
@@ -354,7 +323,7 @@ router.get('/analytics/private-label-revenue', async (req, res) => {
 
 // GET /api/analytics/revenue
 //   ?country=DE&from=2026-01-01&to=2026-12-31&granularity=month&currency=EUR&source=pl|es
-// Zwraca buckets per (period, currency, source).
+//   &plIfirmaOnly=1  -> filter PL by ifirmaId IS NOT NULL (only iFirma-synced/pushed)
 router.get('/analytics/revenue', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -362,7 +331,8 @@ router.get('/analytics/revenue', async (req, res) => {
     const granularity = parseGranularity(req);
     const country = req.query.country ? String(req.query.country).toUpperCase() : null;
     const currency = req.query.currency ? String(req.query.currency).toUpperCase() : null;
-    const source = req.query.source ? String(req.query.source).toLowerCase() : null; // 'pl' | 'es' | null
+    const source = req.query.source ? String(req.query.source).toLowerCase() : null;
+    const plIfirmaOnly = parseIfirmaOnly(req);
 
     const wantPl = !source || source === 'pl';
     const wantEs = !source || source === 'es';
@@ -381,6 +351,7 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "issueDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+          AND (${plIfirmaOnly}::boolean = false OR "ifirmaId" IS NOT NULL)
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
@@ -412,6 +383,7 @@ router.get('/analytics/revenue', async (req, res) => {
       country,
       currency,
       source,
+      plIfirmaOnly,
       buckets,
     });
   } catch (e) {
@@ -420,11 +392,72 @@ router.get('/analytics/revenue', async (req, res) => {
   }
 });
 
-// GET /api/analytics/top-customers
-//   ?year=2026&country=DE&from=...&to=...&limit=20&source=pl|es
-// Zwraca top kontrahentow per (contractorId, currency). PL+ES osobno bo
-// rozne tabele kontrahentow (Contractor vs EsContractor) i sortowanie
-// miedzywalutowe wymagaloby FX rates — out of scope dla v2.
+// GET /api/analytics/qty-sold
+//   ?from=&to=&granularity=month&country=&source=pl|es&plIfirmaOnly=1
+// Zwraca ilosc sztuk sprzedanych (SUM lineItem.qty) per (period, source).
+// PL leci z InvoiceLineItem, ES z EsInvoiceLineItem. Z plIfirmaOnly=1
+// dla PL filtrujemy po Invoice.ifirmaId IS NOT NULL (zeby zgadzalo sie
+// z iFirma).
+router.get('/analytics/qty-sold', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const granularity = parseGranularity(req);
+    const country = req.query.country ? String(req.query.country).toUpperCase() : null;
+    const source = req.query.source ? String(req.query.source).toLowerCase() : null;
+    const plIfirmaOnly = parseIfirmaOnly(req);
+
+    const wantPl = !source || source === 'pl';
+    const wantEs = !source || source === 'es';
+
+    const queries = [];
+    if (wantPl) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'pl'::text                                                          AS source,
+          to_char(date_trunc(${granularity}, li."issueDate"), 'YYYY-MM-DD')   AS period,
+          SUM(li.qty)::text                                                   AS qty,
+          COUNT(DISTINCT li."invoiceId")::int                                 AS invoice_count
+        FROM "InvoiceLineItem" li
+        JOIN "Invoice" i ON i.id = li."invoiceId"
+        WHERE li."issueDate" BETWEEN ${from} AND ${to}
+          AND (${country}::text IS NULL OR UPPER(li."contractorCountry") = ${country})
+          AND (${plIfirmaOnly}::boolean = false OR i."ifirmaId" IS NOT NULL)
+        GROUP BY 2
+        ORDER BY period
+      `);
+    }
+    if (wantEs) {
+      queries.push(prisma.$queryRaw`
+        SELECT
+          'es'::text                                                          AS source,
+          to_char(date_trunc(${granularity}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
+          SUM(qty)::text                                                      AS qty,
+          COUNT(DISTINCT "esInvoiceId")::int                                  AS invoice_count
+        FROM "EsInvoiceLineItem"
+        WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+        GROUP BY 2
+        ORDER BY period
+      `);
+    }
+
+    const results = await Promise.all(queries);
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      granularity,
+      country,
+      source,
+      plIfirmaOnly,
+      buckets: serializeForJson(results.flat()),
+    });
+  } catch (e) {
+    console.error('[analytics/qty-sold] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/analytics/top-customers', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -494,16 +527,6 @@ router.get('/analytics/top-customers', async (req, res) => {
   }
 });
 
-// GET /api/analytics/products-sold
-// Tryby:
-//   - ?ean=5901234567890&from=...&to=...&granularity=month
-//     → time series sprzedazy konkretnego EAN-u (PL + ES jednoczesnie).
-//   - ?from=...&to=...&country=DE&limit=50
-//     → top-N EANy w okresie (sortowanie po qty).
-//
-// Bazujemy na InvoiceLineItem + EsInvoiceLineItem (Etap 2.2). FV bez
-// backfilled lineItems nie wpadaja — UI powinien wyswietlic ostrzezenie
-// "Niekompletne dane: X% FV w okresie bez pozycji" jak to zauwazymy.
 router.get('/analytics/products-sold', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -516,7 +539,6 @@ router.get('/analytics/products-sold', async (req, res) => {
     const wantEs = !source || source === 'es';
 
     if (ean) {
-      // Time series per (period, currency, source) dla jednego EAN-u.
       const granularity = parseGranularity(req);
       const queries = [];
       if (wantPl) {
@@ -556,7 +578,6 @@ router.get('/analytics/products-sold', async (req, res) => {
         `);
       }
       const results = await Promise.all(queries);
-      // Lookup nazwy produktu (best effort z lokalnego katalogu).
       let productName = null;
       const prod = await prisma.product.findUnique({ where: { ean }, select: { name: true } }).catch(() => null);
       if (prod) productName = prod.name;
@@ -577,8 +598,6 @@ router.get('/analytics/products-sold', async (req, res) => {
       });
     }
 
-    // Top-N po qty (sortowane desc) per source. Currency idzie w wynikach
-    // zeby BI wiedzial walute revenue.
     const queries = [];
     if (wantPl) {
       queries.push(prisma.$queryRaw`
