@@ -2673,4 +2673,131 @@ router.post('/contractors/backfill-owners', asyncHandler(async (req, res) => {
   });
 }));
 
+// POST /api/contasimple/invoices/backfill-contractor-mapping
+// Body: { dryRun?: boolean, limit?: number }
+//
+// Importowane przez es-invoices-backfill faktury maja pusty contractorId
+// + snapshot fields (contractorName/Nip/Country/City) bo stara wersja
+// persistInvoice() szukala full.customer ktorego Contasimple nie zwraca
+// (zwraca targetEntityId numeric). Ten endpoint robi retro-fix: refetch
+// invoice z Contasimple, wyciaga targetEntityId, lookup/create EsContractor
+// i wypelnia snapshot na EsInvoice.
+//
+// Cost: 1 cs.getInvoice per FV + 1 cs.getCustomer per nowo-zakladanego
+// kontrahenta. Dla ~60 brakujacych FV powinno trwac ~30s.
+router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, res) => {
+  if (!cs.isConfigured()) {
+    return res.status(503).json({ ok: false, error: 'CONTASIMPLE_API_KEY not configured' });
+  }
+  const { dryRun = false, limit = 1000 } = req.body || {};
+
+  const candidates = await prisma.esInvoice.findMany({
+    where: { contractorId: null },
+    select: { id: true, contasimpleId: true, period: true, number: true },
+    take: Math.min(Number(limit) || 1000, 5000),
+    orderBy: { invoiceDate: 'desc' },
+  });
+
+  let fixed = 0, skipped = 0, errors = 0;
+  const errorList = [];
+  const sample = [];
+
+  for (const inv of candidates) {
+    if (!inv.contasimpleId || !inv.period) { skipped++; continue; }
+    let full;
+    try {
+      const r = await cs.getInvoice(inv.period, inv.contasimpleId);
+      full = (r && r.data) || r;
+    } catch (e) {
+      errors++;
+      errorList.push({ invoice: inv.number, err: 'getInvoice: ' + e.message });
+      continue;
+    }
+    const targetEntityId = (full && full.targetEntityId) || (full && full.customer && full.customer.id) || null;
+    if (!targetEntityId) { skipped++; continue; }
+
+    let contractor = await prisma.esContractor.findUnique({
+      where: { contasimpleId: targetEntityId },
+      select: { id: true, organization: true, firstname: true, lastname: true, nif: true, country: true, city: true },
+    });
+
+    if (!contractor) {
+      try {
+        const csCustomer = await cs.getCustomer(targetEntityId);
+        const c = (csCustomer && csCustomer.data) || csCustomer;
+        if (!c) { skipped++; continue; }
+        const name = c.organization || [c.firstname, c.lastname].filter(Boolean).join(' ').trim() || 'Unknown';
+        const ownerAuto = resolveOwnerFromAddress({ postalCode: c.postalCode, city: c.city, province: c.province });
+        contractor = await prisma.esContractor.create({
+          data: {
+            contasimpleId: c.id,
+            type: c.type || 'Issuer',
+            organization: c.organization || null,
+            firstname: c.firstname || null,
+            lastname: c.lastname || null,
+            name,
+            nif: c.nif || null,
+            email: c.email || null,
+            phone: c.phone || null,
+            mobile: c.mobile || null,
+            address: c.address || null,
+            city: c.city || null,
+            province: c.province || null,
+            country: c.country || null,
+            countryId: c.countryId || null,
+            postalCode: c.postalCode || null,
+            documentCulture: c.documentCulture || null,
+            notes: c.notes || null,
+            owner: ownerAuto,
+            extras: {
+              customField1: c.customField1 || null,
+              customField2: c.customField2 || null,
+              discountPercentage: c.discountPercentage || 0,
+            },
+          },
+          select: { id: true, organization: true, firstname: true, lastname: true, nif: true, country: true, city: true },
+        });
+      } catch (e) {
+        errors++;
+        errorList.push({ invoice: inv.number, err: 'getCustomer/create: ' + e.message });
+        continue;
+      }
+    }
+
+    const snapshotName = contractor.organization || [contractor.firstname, contractor.lastname].filter(Boolean).join(' ').trim() || null;
+    const snapshotNip = contractor.nif || null;
+    const snapshotCountry = contractor.country || null;
+    const snapshotCity = contractor.city || null;
+
+    if (sample.length < 10) {
+      sample.push({ number: inv.number, contractorName: snapshotName, contractorNip: snapshotNip });
+    }
+
+    if (!dryRun) {
+      await prisma.esInvoice.update({
+        where: { id: inv.id },
+        data: {
+          contractorId: contractor.id,
+          contractorName: snapshotName,
+          contractorNip: snapshotNip,
+          contractorCountry: snapshotCountry,
+          contractorCity: snapshotCity,
+        },
+      });
+    }
+    fixed++;
+  }
+
+  res.json({
+    ok: true,
+    dryRun,
+    scanned: candidates.length,
+    fixed,
+    skipped,
+    errors,
+    errorList: errorList.slice(0, 20),
+    sample,
+  });
+}));
+
 module.exports = router;
