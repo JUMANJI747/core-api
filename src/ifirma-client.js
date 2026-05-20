@@ -221,6 +221,79 @@ async function searchContractor(nip) {
   return data.response && data.response.Wynik && data.response.Wynik[0] || null;
 }
 
+// ============ UPSERT CONTRACTOR ============
+//
+// Push aktualnych danych kontrahenta z naszej bazy do iFirmy PRZED wystawieniem
+// FV. iFirma trzyma wlasna kopie rekordu kontrahenta. Gdy w bodyiu FV
+// przekazemy IdentyfikatorKontrahenta — iFirma uzywa swojej kopii i ignoruje
+// inline Kontrahent. Bez tego korekta np. kodu pocztowego w naszej bazie nigdy
+// nie dociera do faktur.
+//
+// API iFirma (https://api.ifirma.pl/edycja-danych-kontrahenta/):
+//   POST /iapi/kontrahenci.json — utworzenie nowego (auth: faktura)
+//   PUT  /iapi/kontrahenci/{IDENTYFIKATOR}.json — pelna aktualizacja
+//        (kazde pole nieprzeslane = wyzerowane po stronie iFirmy)
+// Dlatego mergujemy: nasze dane (priorytet) + istniejace pola z iFirmy
+// (telefon/email/PrefiksUE jakie u nich byly).
+
+async function upsertContractor({ name, nip, address, postCode, city, country, email, phone, osobaFizyczna } = {}) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+  if (!nip) throw new Error('upsertContractor: NIP required');
+
+  let existing = null;
+  try {
+    existing = await searchContractor(nip);
+  } catch (e) {
+    console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
+  }
+
+  const body = {
+    Nazwa: (name || (existing && existing.Nazwa) || '').slice(0, 100),
+    Identyfikator: null,
+    PrefiksUE: (existing && existing.PrefiksUE) || null,
+    NIP: String(nip),
+    Ulica: address || (existing && existing.Ulica) || '',
+    KodPocztowy: postCode || (existing && existing.KodPocztowy) || '',
+    Kraj: country || (existing && existing.Kraj) || 'Polska',
+    Miejscowosc: city || (existing && existing.Miejscowosc) || '',
+    Email: email || (existing && existing.Email) || '',
+    Telefon: phone || (existing && existing.Telefon) || '',
+    OsobaFizyczna: typeof osobaFizyczna === 'boolean' ? osobaFizyczna : !!(existing && existing.OsobaFizyczna),
+  };
+
+  if (existing && existing.Identyfikator) {
+    const id = String(existing.Identyfikator);
+    const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(id)}.json`;
+    const bodyStr = JSON.stringify(body);
+    const auth = generateAuth(url, bodyStr, login, keyHex);
+    console.log(`[ifirma] upsertContractor PUT update ${id} nip=${nip} kod=${body.KodPocztowy} miasto=${body.Miejscowosc}`);
+    const { status, body: resp } = await httpsPutJson(url, { Authentication: auth }, body);
+    const kod = resp && resp.response && resp.response.Kod;
+    const info = resp && resp.response && resp.response.Informacja;
+    console.log(`[ifirma] upsertContractor PUT status=${status} kod=${kod} info="${info}"`);
+    if (status !== 200 || (kod != null && kod !== 0)) {
+      throw Object.assign(new Error(`iFirma upsertContractor PUT: ${info || JSON.stringify(resp)}`), { ifirmaRaw: resp });
+    }
+    return { ok: true, action: 'updated', identifier: id };
+  }
+
+  const url = 'https://www.ifirma.pl/iapi/kontrahenci.json';
+  const bodyStr = JSON.stringify(body);
+  const auth = generateAuth(url, bodyStr, login, keyHex);
+  console.log(`[ifirma] upsertContractor POST create nip=${nip} kod=${body.KodPocztowy} miasto=${body.Miejscowosc}`);
+  const { status, body: resp } = await httpsPostJson(url, { Authentication: auth }, body);
+  const kod = resp && resp.response && resp.response.Kod;
+  const info = resp && resp.response && resp.response.Informacja;
+  console.log(`[ifirma] upsertContractor POST status=${status} kod=${kod} info="${info}"`);
+  if (status !== 200 || (kod != null && kod !== 0)) {
+    throw Object.assign(new Error(`iFirma upsertContractor POST: ${info || JSON.stringify(resp)}`), { ifirmaRaw: resp });
+  }
+  // iFirma POST zwraca albo response.Identyfikator albo response.Wynik (czasem string).
+  const r1 = (resp && resp.response) || {};
+  const identifier = r1.Identyfikator || (r1.Wynik && (r1.Wynik.Identyfikator || r1.Wynik)) || null;
+  return { ok: true, action: 'created', identifier };
+}
+
 // ============ FETCH INVOICES ============
 
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
@@ -606,10 +679,9 @@ async function trySetAccountingMonth(direction, crossYear, keyOverride) {
 }
 
 module.exports = {
-  generateAuth, fetchInvoices, fetchNbpRate, searchContractor,
+  generateAuth, fetchInvoices, fetchNbpRate, searchContractor, upsertContractor,
   createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
   registerPayment, setAccountingMonth,
   getAccountingMonth, trySetAccountingMonth,
 };
-
 
