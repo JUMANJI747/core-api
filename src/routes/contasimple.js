@@ -2507,4 +2507,43 @@ router.get('/_period', asyncHandler(async (req, res) => {
   res.json({ date: date.toISOString(), period: cs.dateToPeriod(date) });
 }));
 
+// ============ LIST LOCAL ES INVOICES (EsInvoice table) ============
+// GET /api/contasimple/local-invoices?search=&status=&fromDate=&toDate=&limit=&contasimpleOnly=1
+// Returns local EsInvoice rows ordered by invoiceDate desc. Used by CRM frontend.
+router.get('/local-invoices', asyncHandler(async (req, res) => {
+  const { search, status, fromDate, toDate, limit, contasimpleOnly } = req.query;
+  const where = {};
+  if (search) {
+    where.OR = [
+      { number: { contains: search, mode: 'insensitive' } },
+      { contractorName: { contains: search, mode: 'insensitive' } },
+      { contractorNip: { contains: search } },
+    ];
+  }
+  if (status) where.status = status;
+  if (fromDate || toDate) {
+    where.invoiceDate = {};
+    if (fromDate) where.invoiceDate.gte = new Date(fromDate);
+    if (toDate) where.invoiceDate.lte = new Date(toDate);
+  }
+  if (contasimpleOnly === '1' || contasimpleOnly === 'true') {
+    where.contasimpleId = { not: null };
+  }
+  const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
+  const list = await prisma.esInvoice.findMany({
+    where,
+    orderBy: { invoiceDate: 'desc' },
+    take,
+    select: {
+      id: true, number: true, contasimpleId: true,
+      contractorId: true, contractorName: true, contractorNip: true, contractorCountry: true,
+      invoiceDate: true, expirationDate: true,
+      totalAmount: true, totalTaxableAmount: true, totalVatAmount: true, totalPayedAmount: true,
+      currency: true, status: true, period: true,
+      createdAt: true, updatedAt: true,
+    },
+  });
+  res.json({ count: list.length, data: list });
+}));
+
 module.exports = router;
