@@ -194,6 +194,67 @@ async function searchContractor(nip) {
   return data.response && data.response.Wynik && data.response.Wynik[0] || null;
 }
 
+// Lista wszystkich kontrahentow z paginacja. Fallback gdy searchContractor
+// (GET /iapi/kontrahenci/{nip}.json) zwraca empty dla danego NIP, mimo ze
+// kontrahent obviously istnieje (iFirma quirk dla niektorych rekordow).
+// Probujemy 3 warianty URL bo iFirma docs sa niespojne i format zmienia
+// sie miedzy podsystemami:
+//   1. /iapi/kontrahenci.json?strona=1
+//   2. /iapi/kontrahenci/lista/1/100.json (path-style pagination)
+//   3. /iapi/kontrahenci.json (bez params, hope for default list)
+async function listContractors() {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+
+  const candidates = [
+    'https://www.ifirma.pl/iapi/kontrahenci.json?strona=1&iloscNaStronie=200',
+    'https://www.ifirma.pl/iapi/kontrahenci/lista/1/200.json',
+    'https://www.ifirma.pl/iapi/kontrahenci.json',
+  ];
+
+  for (const fullUrl of candidates) {
+    try {
+      // HMAC sig bierze tylko path+query bez fragmentow query w niektorych
+      // wzorcach iFirma — probujemy z URL "as-is" najpierw.
+      const auth = generateAuth(fullUrl, '', login, keyHex);
+      console.log('[ifirma] listContractors trying:', fullUrl);
+      const { status, body } = await httpsGetRaw(fullUrl, {
+        Authentication: auth,
+        Accept: 'application/json',
+      });
+      const bodyStr = body.toString();
+      console.log('[ifirma] listContractors status:', status, bodyStr.slice(0, 200));
+      if (status !== 200) continue;
+      let data;
+      try { data = JSON.parse(bodyStr); } catch (_) { continue; }
+      const arr = (data && data.response && data.response.Wynik) || (data && data.response && Array.isArray(data.response) ? data.response : null);
+      if (Array.isArray(arr) && arr.length) {
+        console.log(`[ifirma] listContractors got ${arr.length} contractors via ${fullUrl}`);
+        return arr;
+      }
+    } catch (e) {
+      console.log('[ifirma] listContractors URL failed:', fullUrl, '-', e.message);
+    }
+  }
+  return [];
+}
+
+// Wyszukaj kontrahenta po NIP przelistujac liste (fallback gdy search-by-NIP
+// fails). Normalizujemy NIP (digits-only) po obu stronach do porownania.
+async function findContractorInList(nip) {
+  const list = await listContractors();
+  if (!list.length) return null;
+  const target = String(nip).replace(/\D/g, '');
+  if (!target) return null;
+  const match = list.find(c => {
+    const cNip = String(c.NIP || c.Nip || c.nip || '').replace(/\D/g, '');
+    return cNip === target;
+  });
+  if (match) {
+    console.log(`[ifirma] findContractorInList: found NIP ${nip} → Identyfikator ${match.Identyfikator}`);
+  }
+  return match || null;
+}
+
 // ============ UPSERT CONTRACTOR ============
 
 async function upsertContractor({ name, nip, address, postCode, city, country, email, phone, osobaFizyczna, identifier } = {}) {
@@ -216,7 +277,7 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
     } catch (e) {
       console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
     }
-    // Fallback: jak search po raw NIP zwraca empty, sprobuj wariantow formatu
+    // Fallback 1: jak search po raw NIP zwraca empty, sprobuj wariantow formatu
     // (PL prefix, dashes). iFirma czasem trzyma NIP w innej postaci niz raw.
     if (!existing) {
       const altNips = [
@@ -233,6 +294,21 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
             break;
           }
         } catch (_) {}
+      }
+    }
+    // Fallback 2: jak nadal nie znalezione, przelistuj liste wszystkich
+    // kontrahentow i znajdz po NIP (digits-only match). Slow ale niezawodne —
+    // iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryny i nie zwraca
+    // niektorych istniejacych rekordow. List endpoint dziala niezawodnie.
+    if (!existing) {
+      try {
+        const fromList = await findContractorInList(nip);
+        if (fromList && fromList.Identyfikator) {
+          console.log(`[ifirma] upsertContractor: found via listContractors → identifier=${fromList.Identyfikator}`);
+          existing = fromList;
+        }
+      } catch (e) {
+        console.log('[ifirma] upsertContractor listContractors failed:', e.message);
       }
     }
   }
