@@ -56,24 +56,6 @@ function httpsPutJson(url, headers, bodyObj) {
   });
 }
 
-// PUT /iapi/abonent/miesiacksiegowy.json — przestawia bieżący miesiąc
-// księgowy konta. Wymagany klucz modułu "Abonent" (IFIRMA_API_KEY_ABONENT).
-//
-// FORMAT BODY: iFirma akceptuje flat PascalCase z DWOMA osobnymi polami:
-// {"MiesiacKsiegowy": N, "RokKsiegowy": Y}. Mirror odpowiedzi z GET (która
-// zwraca {response: {MiesiacKsiegowy: 4, RokKsiegowy: 2026}}). Wcześniej
-// próbowałem {MiesiacKsiegowy:{Miesiac,Rok}} (nested) i {miesiac,rok}
-// (flat lowercase) — oba odrzucone z "Niepoprawna zawartość żądania".
-// PUT /iapi/abonent/miesiacksiegowy.json — przestawia miesiąc księgowy
-// iFirma akceptuje TYLKO relatywne kroki:
-//   { "MiesiacKsiegowy": "NAST" } — w przód o 1
-//   { "MiesiacKsiegowy": "POPRZ" } — w tył o 1
-//   { ..., "PrzeniesDaneZPoprzedniegoRoku": true } — przy przekroczeniu roku
-// NIE ma możliwości set-by-value. Implementacja: GET aktualnego stanu, obliczyć
-// delta, iterować NAST/POPRZ aż osiągniemy cel.
-//
-// Źródło: https://api.ifirma.pl/pobranie-i-zmiana-ustawionego-miesiaca-ksiegowego/
-
 async function stepAccountingMonth(direction, crossYear, keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
@@ -97,36 +79,31 @@ async function setAccountingMonth(targetMiesiac, targetRok) {
   if (!login || !keyHexAbonent) {
     throw new Error('IFIRMA_API_KEY_ABONENT not set — wygeneruj klucz Abonent w iFirma → Konfiguracja → API i wpisz w Railway (lub fallback IFIRMA_API_KEY).');
   }
-  // Pobierz aktualny stan
   const current = await getAccountingMonth();
   const curM = current.body && current.body.response && current.body.response.MiesiacKsiegowy;
   const curR = current.body && current.body.response && current.body.response.RokKsiegowy;
   if (!curM || !curR) throw new Error('Nie udało się odczytać aktualnego miesiąca księgowego iFirma');
   console.log(`[ifirma] setAccountingMonth: current=${curR}-${String(curM).padStart(2,'0')} target=${targetRok}-${String(targetMiesiac).padStart(2,'0')}`);
 
-  // Oblicz delta w miesiącach (dodatnia = przód, ujemna = tył)
   let delta = (targetRok - curR) * 12 + (targetMiesiac - curM);
   if (delta === 0) return { ok: true, message: 'already at target' };
 
-  // Sanity: nie więcej niż 24 miesięcy iteracji
   if (Math.abs(delta) > 24) {
     throw new Error(`Differential too large (${delta} months) — set manually in iFirma UI`);
   }
 
-  // Iteruj NAST/POPRZ
   let m = curM, y = curR;
   const direction = delta > 0 ? 'NAST' : 'POPRZ';
   const steps = Math.abs(delta);
   for (let i = 0; i < steps; i++) {
-    // Sprawdź czy ten krok przekracza rok
     let crossYear = false;
     if (direction === 'NAST') {
-      crossYear = (m === 12); // grudzień → styczeń
+      crossYear = (m === 12);
       await stepAccountingMonth('NAST', crossYear);
       m = m === 12 ? 1 : m + 1;
       if (crossYear) y++;
     } else {
-      crossYear = (m === 1); // styczeń → grudzień
+      crossYear = (m === 1);
       await stepAccountingMonth('POPRZ', crossYear);
       m = m === 1 ? 12 : m - 1;
       if (crossYear) y--;
@@ -176,11 +153,9 @@ function httpsPostJson(url, headers, bodyObj) {
   });
 }
 
-// ============ NBP RATE ============
-
 async function fetchNbpRate(date) {
   let d = new Date(date);
-  d.setDate(d.getDate() - 1); // NBP rate from the day preceding the invoice date
+  d.setDate(d.getDate() - 1);
   for (let i = 0; i < 5; i++) {
     const ds = d.toISOString().slice(0, 10);
     const url = `https://api.nbp.pl/api/exchangerates/rates/A/EUR/${ds}/?format=json`;
@@ -195,8 +170,6 @@ async function fetchNbpRate(date) {
   }
   throw new Error('NBP rate not found for date: ' + date);
 }
-
-// ============ SEARCH CONTRACTOR ============
 
 async function searchContractor(nip) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -222,19 +195,6 @@ async function searchContractor(nip) {
 }
 
 // ============ UPSERT CONTRACTOR ============
-//
-// Push aktualnych danych kontrahenta z naszej bazy do iFirmy PRZED wystawieniem
-// FV. iFirma trzyma wlasna kopie rekordu kontrahenta. Gdy w bodyiu FV
-// przekazemy IdentyfikatorKontrahenta — iFirma uzywa swojej kopii i ignoruje
-// inline Kontrahent. Bez tego korekta np. kodu pocztowego w naszej bazie nigdy
-// nie dociera do faktur.
-//
-// API iFirma (https://api.ifirma.pl/edycja-danych-kontrahenta/):
-//   POST /iapi/kontrahenci.json — utworzenie nowego (auth: faktura)
-//   PUT  /iapi/kontrahenci/{IDENTYFIKATOR}.json — pelna aktualizacja
-//        (kazde pole nieprzeslane = wyzerowane po stronie iFirmy)
-// Dlatego mergujemy: nasze dane (priorytet) + istniejace pola z iFirmy
-// (telefon/email/PrefiksUE jakie u nich byly).
 
 async function upsertContractor({ name, nip, address, postCode, city, country, email, phone, osobaFizyczna } = {}) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -288,13 +248,10 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
   if (status !== 200 || (kod != null && kod !== 0)) {
     throw Object.assign(new Error(`iFirma upsertContractor POST: ${info || JSON.stringify(resp)}`), { ifirmaRaw: resp });
   }
-  // iFirma POST zwraca albo response.Identyfikator albo response.Wynik (czasem string).
   const r1 = (resp && resp.response) || {};
   const identifier = r1.Identyfikator || (r1.Wynik && (r1.Wynik.Identyfikator || r1.Wynik)) || null;
   return { ok: true, action: 'created', identifier };
 }
-
-// ============ FETCH INVOICES ============
 
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -319,7 +276,6 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
     const auth = generateAuth(urlBase, '', login, keyHex);
 
     console.log('[ifirma] fetching:', fullUrl);
-    console.log('[ifirma] auth header:', auth.substring(0, 50) + '...');
 
     const { status: httpStatus, body } = await httpsGetRaw(fullUrl, {
       Authentication: auth,
@@ -328,7 +284,6 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
     const bodyStr = body.toString();
     console.log('[ifirma] response status:', httpStatus, 'body length:', bodyStr.length);
-    console.log('[ifirma] raw response (first 500 chars):', bodyStr.substring(0, 500));
 
     let data;
     try { data = JSON.parse(bodyStr); }
@@ -357,7 +312,6 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Enrich contractor data from iFirma if address/postCode missing
   let enriched = {};
   if (kontrahent.nip && (!kontrahent.address || !kontrahent.postCode)) {
     try {
@@ -384,6 +338,8 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   const _country = kontrahent.country || enriched.Kraj;
   const _ifirmaId = kontrahent.ifirmaId || enriched.IdentyfikatorKontrahenta;
 
+  console.log(`[ifirma] FV final contractor fields: nip=${_nip} ulica="${_ulica}" kod="${_kod}" miasto="${_miasto}" kraj="${_country}" ifirmaId=${_ifirmaId}`);
+
   const isNetto = priceMode === 'netto';
   console.log('[ifirma] Price mode:', priceMode || 'brutto (default)');
 
@@ -394,11 +350,6 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
     const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
     console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)', p.isDelivery ? '(delivery)' : '');
-    // GTU per pozycja:
-    //   - delivery / transport → GTU_13 (świadczenie usług transportowych)
-    //   - reszta (towary kosmetyczne) → GTU_12 (zachowane zachowanie istniejące)
-    // iFirma odrzuca pustą wartość GTU gdy pole obecne, dlatego ZAWSZE
-    // ustawiamy któryś kod — nie omijamy pola na delivery.
     const isDelivery = !!p.isDelivery;
     const gtuCode = isDelivery ? 'GTU_13' : 'GTU_12';
     const Jednostka = isDelivery ? 'usł.' : 'szt.';
@@ -449,7 +400,6 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     const auth = generateAuth(url, bodyStr, login, keyHex);
     console.log('[ifirma] creating invoice for', kontrahent.name);
     console.log('[ifirma] CREATE INVOICE URL:', url);
-    console.log('[ifirma] CREATE INVOICE AUTH:', auth.slice(0, 60) + '...');
     console.log('[ifirma] CREATE INVOICE REQUEST BODY:', JSON.stringify(body, null, 2));
     return httpsPostJson(url, { Authentication: auth }, body);
   };
@@ -489,15 +439,54 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     }
   }
 
+  // Auto-retry: gdy iFirma odrzuca z powodu brakujacego pola kontrahenta
+  // (Kod 201 z komunikatem "Pole 'Kontrahent.XXX' jest wymagane" — np.
+  // KodPocztowy, Ulica, Miejscowosc). iFirma uzywa swojej zacachowanej
+  // kopii rekordu kontrahenta (bo body ma IdentyfikatorKontrahenta), wiec
+  // nawet jak my dajemy inline KodPocztowy, iFirma ignoruje. Fix: wymuszamy
+  // upsertContractor (PUT na iFirma) z danymi ktore mamy, potem retry FV.
+  //
+  // Caller w invoices.js juz robi upsertContractor PRZED createInvoice, ale
+  // ten retry obsluguje przypadki gdy: (a) tamten upsert padl cicho catchem,
+  // (b) iFirma cache'owala stary rekord, (c) my mamy postCode tylko teraz.
+  const isContractorFieldError = (kod === 201 || kod === '201') &&
+    typeof informacja === 'string' &&
+    /Pole.*['"]?Kontrahent\.[A-Za-z]+['"]?.*wymagan/i.test(informacja);
+
+  if (isContractorFieldError && _nip) {
+    const missingField = (informacja.match(/Kontrahent\.([A-Za-z]+)/) || [])[1] || 'unknown';
+    console.log(`[ifirma] Kod 201 brakujace pole Kontrahent.${missingField} ("${informacja}") — auto-fix upsertContractor + retry`);
+    try {
+      const upRes = await upsertContractor({
+        name: kontrahent.name,
+        nip: _nip,
+        address: _ulica,
+        postCode: _kod,
+        city: _miasto,
+        country: _country || 'Polska',
+        email: kontrahent.email,
+        phone: kontrahent.phone,
+      });
+      console.log(`[ifirma] auto-fix upsertContractor: ${upRes.action} id=${upRes.identifier}`);
+      ({ status, body: resp } = await postOnce());
+      fullResp = JSON.stringify(resp);
+      kod = resp && resp.response && resp.response.Kod;
+      informacja = resp && resp.response && resp.response.Informacja;
+      console.log('[ifirma] retry create invoice (po contractor fix) status:', status, fullResp.slice(0, 300));
+    } catch (e) {
+      console.log('[ifirma] auto-fix upsertContractor padł:', e.message);
+      throw Object.assign(
+        new Error('iFirma error: ' + fullResp + ' (auto-fix kontrahenta nieudany: ' + e.message + ')'),
+        { ifirmaRaw: resp }
+      );
+    }
+  }
+
   if (status !== 200 || (kod != null && kod !== 0)) {
     console.log('[ifirma] API error:', fullResp);
     throw Object.assign(new Error('iFirma error: ' + fullResp), { ifirmaRaw: resp });
   }
 
-  // iFirma response shape varies — try a few paths.
-  // Observed: { response: { Wynik: { PelnyNumer, FakturaId } } }
-  // Also seen: { response: { Identyfikator: <id>, Informacja: "...wystawiono..." } }
-  // Defensively read from all of them.
   const r1 = resp.response || {};
   const wynik = r1.Wynik || resp.Wynik || {};
   const invoiceNumber = wynik.PelnyNumer || wynik.Numer || r1.PelnyNumer || r1.Numer || null;
@@ -507,8 +496,6 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   }
   return { ok: true, invoiceNumber, ifirmaId, ifirmaRaw: resp };
 }
-
-// ============ FETCH PDF ============
 
 async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -543,10 +530,8 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
     console.log('[ifirma] API error (PDF):', JSON.stringify({ status, body: bodyText }));
     throw new Error('iFirma PDF error: status ' + status + ' — ' + bodyText);
   }
-  return body; // Buffer
+  return body;
 }
-
-// ============ FETCH INVOICE DETAILS ============
 
 async function fetchInvoiceDetails(fakturaId, rodzaj) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -580,15 +565,8 @@ async function fetchInvoiceDetails(fakturaId, rodzaj) {
   try { data = JSON.parse(bodyStr); }
   catch (e) { throw new Error('iFirma invalid JSON (fetchInvoiceDetails): ' + bodyStr.slice(0, 200)); }
 
-  // iFirma niespojnie owija odpowiedzi: GET /fakturakraj/{id} zwraca
-  // {response: {Pozycje, Kontrahent, ...}}, niektore inne endpointy
-  // {response: {Wynik: {...}}}. Unwrap oba patterny do flat object zeby
-  // caller czytal directly details.Pozycje / details.Kontrahent /
-  // details.PelnyNumer (jpk.js i invoice-backfill.js tez tak oczekiwaly).
   return (data.response && data.response.Wynik) || (data.response) || data;
 }
-
-// ============ DELETE INVOICE ============
 
 async function deleteInvoice(fakturaId, rodzaj) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
@@ -624,8 +602,6 @@ async function deleteInvoice(fakturaId, rodzaj) {
   });
 }
 
-// ============ REGISTER PAYMENT ============
-
 async function registerPayment(invoiceNumber, type, amount, currency, date) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
@@ -654,8 +630,6 @@ async function registerPayment(invoiceNumber, type, amount, currency, date) {
   return result;
 }
 
-// Diagnostyka — pobiera aktualny miesiąc księgowy + próbuje PUT z różnymi
-// kluczami żeby sprawdzić który działa. Używane przez /api/ifirma/_diag-month.
 async function getAccountingMonth(keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
@@ -665,7 +639,6 @@ async function getAccountingMonth(keyOverride) {
   return { status, body: JSON.parse(body.toString()) };
 }
 
-// Diagnostyka — wykonuje JEDEN krok NAST/POPRZ. Body: {direction, crossYear?}.
 async function trySetAccountingMonth(direction, crossYear, keyOverride) {
   const k = (keyOverride || keyHexAbonent || '').trim();
   if (!login || !k) throw new Error('login or key missing');
@@ -684,4 +657,3 @@ module.exports = {
   registerPayment, setAccountingMonth,
   getAccountingMonth, trySetAccountingMonth,
 };
-
