@@ -1847,4 +1847,105 @@ router.get('/glob/country-ids', async (req, res) => {
   }
 });
 
+// POST /api/glob/parse-address
+// Parsuje paste-blob (lub krotka nazwe) na strukture odbiorcy. Klient
+// wkleja "Maria Schmidt, Pozo Winds SL, C/ Mayor 12, 35600 Puerto del
+// Rosario, Spain" → dostaje {name, street, houseNumber, postCode, city,
+// country, phone, email}. Jak to krotka nazwa bez adresu → zwraca tylko
+// {name}, frontend uzyje jako receiverSearch (fuzzy match po
+// kontrahentach).
+//
+// Claude Haiku 4.5 (najtanszy, jakosc OK dla parsingu structured data).
+router.post('/glob/parse-address', async (req, res) => {
+  const { text } = req.body || {};
+  if (!text || !String(text).trim()) {
+    return res.status(400).json({ ok: false, error: 'text required' });
+  }
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  if (!apiKey) {
+    return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY not set' });
+  }
+  const MODEL = process.env.ADDRESS_PARSE_MODEL || 'claude-haiku-4-5-20251001';
+  const systemPrompt = 'Jestes parserem adresow odbiorcow paczek. Zwracasz TYLKO JSON, bez komentarzy ani markdownu, bez ``` wokol.';
+  const userPrompt = `Wyciagnij dane odbiorcy z ponizszego tekstu. Zwroc JSON w formacie:
+{"name": string|null, "street": string|null, "houseNumber": string|null, "postCode": string|null, "city": string|null, "country": string|null, "phone": string|null, "email": string|null}
+
+Zasady:
+- Jak to TYLKO nazwa firmy/osoby bez adresu (krotki tekst): zwroc tylko {"name": "..."} reszta null.
+- Jak pelny adres: wypelnij wszystko co da sie wywnioskowac.
+- country: ISO-2 (PL/ES/DE/FR/IT/PT/NL/GB/...). Jak nie da sie ustalic, daj null.
+- postCode: format docelowy (bez spacji w PL/ES, ze spacja w GB jak jest).
+- houseNumber: oddziel od ulicy jak rozpoznasz (np. "Mayor 12" -> street:"Mayor", houseNumber:"12").
+- Jak ulica + numer wspolnie ("Calle Mayor 12, planta 3"): street="Calle Mayor", houseNumber="12, planta 3".
+- phone: cyfry + ewentualny + na poczatku.
+- email: tylko jak jest jawnie podany.
+
+Tekst:
+---
+${text}
+---`;
+
+  const body = JSON.stringify({
+    model: MODEL,
+    max_tokens: 1000,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }],
+  });
+
+  const result = await new Promise((resolve, reject) => {
+    const r = https.request('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+    }, response => {
+      const chunks = [];
+      response.on('data', c => chunks.push(c));
+      response.on('end', () => {
+        const txt = Buffer.concat(chunks).toString();
+        if (response.statusCode >= 400) return reject(new Error('Anthropic ' + response.statusCode + ': ' + txt.slice(0, 300)));
+        try {
+          const j = JSON.parse(txt);
+          const t = j.content && j.content[0] && j.content[0].text;
+          if (!t) return reject(new Error('Anthropic empty: ' + txt.slice(0, 300)));
+          resolve(t.trim());
+        } catch (e) {
+          reject(new Error('Anthropic invalid JSON: ' + txt.slice(0, 300)));
+        }
+      });
+    });
+    r.on('error', reject);
+    r.write(body);
+    r.end();
+  });
+
+  // Try to parse JSON z output. Czasem Claude zwroci z dodatkowym tekstem
+  // mimo "TYLKO JSON" - probujemy wyciagnac pierwszy obiekt {...}.
+  let parsed = null;
+  try {
+    parsed = JSON.parse(result);
+  } catch (_) {
+    const match = result.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { parsed = JSON.parse(match[0]); } catch (_) {}
+    }
+  }
+  if (!parsed) {
+    return res.json({ ok: false, error: 'parse error', raw: result.slice(0, 500) });
+  }
+
+  // Czysci: usun puste stringi
+  const cleaned = {};
+  for (const k of ['name', 'street', 'houseNumber', 'postCode', 'city', 'country', 'phone', 'email']) {
+    const v = parsed[k];
+    if (v != null && String(v).trim()) cleaned[k] = String(v).trim();
+    else cleaned[k] = null;
+  }
+
+  res.json({ ok: true, parsed: cleaned });
+});
+
 module.exports = router;
