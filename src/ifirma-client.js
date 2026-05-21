@@ -196,15 +196,45 @@ async function searchContractor(nip) {
 
 // ============ UPSERT CONTRACTOR ============
 
-async function upsertContractor({ name, nip, address, postCode, city, country, email, phone, osobaFizyczna } = {}) {
+async function upsertContractor({ name, nip, address, postCode, city, country, email, phone, osobaFizyczna, identifier } = {}) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
   if (!nip) throw new Error('upsertContractor: NIP required');
 
+  // Identifier override: caller (np. invoices.js po lookup w naszej bazie)
+  // moze przekazac wprost iFirma Identyfikator. Pomijamy wtedy searchContractor —
+  // to KRYTYCZNE bo iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryśny
+  // (kontrahent moze istniec pod Identyfikatorem, ale search-by-NIP zwraca empty).
+  // Bez tego override-u, niemozliwy byl PUT do tych "ukrytych" kontrahentow
+  // (kazdy upsert tylko POST create -> duplikat -> blad).
   let existing = null;
-  try {
-    existing = await searchContractor(nip);
-  } catch (e) {
-    console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
+  if (identifier) {
+    existing = { Identyfikator: identifier };
+    console.log(`[ifirma] upsertContractor: identifier override = ${identifier} (skip search)`);
+  } else {
+    try {
+      existing = await searchContractor(nip);
+    } catch (e) {
+      console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
+    }
+    // Fallback: jak search po raw NIP zwraca empty, sprobuj wariantow formatu
+    // (PL prefix, dashes). iFirma czasem trzyma NIP w innej postaci niz raw.
+    if (!existing) {
+      const altNips = [
+        `PL${nip}`,
+        String(nip).replace(/(\d{3})(\d{3})(\d{2})(\d{2})$/, '$1-$2-$3-$4'),
+        String(nip).replace(/(\d{3})(\d{2})(\d{2})(\d{3})$/, '$1-$2-$3-$4'),
+      ].filter(v => v && v !== String(nip));
+      for (const alt of altNips) {
+        try {
+          const r = await searchContractor(alt);
+          if (r && r.Identyfikator) {
+            console.log(`[ifirma] upsertContractor: found via alt NIP format "${alt}" → identifier=${r.Identyfikator}`);
+            existing = r;
+            break;
+          }
+        } catch (_) {}
+      }
+    }
   }
 
   const body = {
@@ -249,8 +279,8 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
     throw Object.assign(new Error(`iFirma upsertContractor POST: ${info || JSON.stringify(resp)}`), { ifirmaRaw: resp });
   }
   const r1 = (resp && resp.response) || {};
-  const identifier = r1.Identyfikator || (r1.Wynik && (r1.Wynik.Identyfikator || r1.Wynik)) || null;
-  return { ok: true, action: 'created', identifier };
+  const newId = r1.Identyfikator || (r1.Wynik && (r1.Wynik.Identyfikator || r1.Wynik)) || null;
+  return { ok: true, action: 'created', identifier: newId };
 }
 
 async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
@@ -312,6 +342,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
 
   const today = new Date().toISOString().slice(0, 10);
 
+  // Enrich contractor data from iFirma if address/postCode missing
   let enriched = {};
   if (kontrahent.nip && (!kontrahent.address || !kontrahent.postCode)) {
     try {
@@ -466,6 +497,11 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
         country: _country || 'Polska',
         email: kontrahent.email,
         phone: kontrahent.phone,
+        // KLUCZOWE: jak mamy iFirma Identyfikator (z body FV przez
+        // IdentyfikatorKontrahenta), wymus PUT do tego konkretnego rekordu.
+        // Inaczej searchContractor-by-NIP moze zwrocic empty (iFirma quirk) i
+        // upsert pojdzie POST create -> duplikat NIP -> kolejny blad.
+        identifier: _ifirmaId,
       });
       console.log(`[ifirma] auto-fix upsertContractor: ${upRes.action} id=${upRes.identifier}`);
       ({ status, body: resp } = await postOnce());
