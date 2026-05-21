@@ -9,6 +9,8 @@
 //
 // Model domyslnie claude-haiku-4-5 (najtanszy, jakosc OK dla tlumaczen
 // biznesowych). Override przez env EMAIL_TRANSLATE_MODEL.
+//
+// (deploy bump — Railway stuck na crash loopie z poprzednich truncated commitow)
 
 const https = require('https');
 
