@@ -79,6 +79,80 @@ router.post('/agent/sudo', asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// POST /api/agent/email-context
+//
+// Wrapper ktory prefixuje email-context (metadata + body) jako stringu do
+// query, potem deleguje do wybranego sub-agenta. Uzywane przez UI panel
+// AI w widoku maila — user kliknie ikone/Cmd+K na otwartym mailu, pisze
+// po polsku (lub voice-input transkrybowany przez Web Speech API),
+// a agent decyduje co zrobic (wystaw FV / zamow paczke / dodaj
+// kontrahenta / odpowiedz).
+//
+// Body:
+//   {
+//     query: string,                  // intent w naturalnym jezyku (PL)
+//     emailContext: {                 // metadata otwartego maila
+//       from, to, subject, date,
+//       body, language?,
+//       contractorId?, contractorName?, contractorNip?,
+//       attachments?: [{filename, contentType, size}]
+//     },
+//     target?: 'sudo' (default) | 'accounting' | 'accounting-es' |
+//              'communication' | 'communication-es' | 'operations' | 'logistics',
+//     chatId?: string
+//   }
+//
+// Zero zmian w sub-agentach — wzorzec analogiczny do dateContextPrefix
+// ktorego sub-agenty juz akceptuja w treści query.
+router.post('/agent/email-context', asyncHandler(async (req, res) => {
+  const { query, emailContext, target = 'sudo', chatId } = req.body || {};
+  if (!query || typeof query !== 'string') {
+    return res.status(400).json({ error: 'query (string) required' });
+  }
+  if (!emailContext || typeof emailContext !== 'object') {
+    return res.status(400).json({ error: 'emailContext (object) required' });
+  }
+
+  const processors = {
+    sudo: processSudoQuery,
+    accounting: processAccountingQuery,
+    'accounting-es': processAccountingEsQuery,
+    communication: processCommunicationQuery,
+    'communication-es': processCommunicationEsQuery,
+    operations: processOperationsQuery,
+    logistics: processLogisticsQuery,
+  };
+  const fn = processors[target];
+  if (!fn) {
+    return res.status(400).json({ error: 'unknown target', allowed: Object.keys(processors) });
+  }
+
+  const lines = ['[KONTEKST MAILA]'];
+  if (emailContext.from) lines.push(`Od: ${emailContext.from}`);
+  if (emailContext.to) lines.push(`Do: ${emailContext.to}`);
+  if (emailContext.subject) lines.push(`Temat: ${emailContext.subject}`);
+  if (emailContext.date) lines.push(`Data: ${emailContext.date}`);
+  if (emailContext.contractorName || emailContext.contractorNip) {
+    const nipPart = emailContext.contractorNip ? ` (NIP ${emailContext.contractorNip})` : '';
+    lines.push(`Kontrahent: ${emailContext.contractorName || '?'}${nipPart}`);
+  }
+  if (emailContext.contractorId) lines.push(`ContractorId: ${emailContext.contractorId}`);
+  if (emailContext.language) lines.push(`Jezyk maila: ${emailContext.language}`);
+  if (Array.isArray(emailContext.attachments) && emailContext.attachments.length) {
+    const att = emailContext.attachments.map(a => `${a.filename || '?'} (${a.contentType || '?'}, ${a.size || 0}B)`).join(', ');
+    lines.push(`Zalaczniki: ${att}`);
+  }
+  if (emailContext.body) {
+    lines.push('Tresc maila:');
+    // Limit do 2000 znakow zeby nie blow-upowac kontekstu
+    lines.push(String(emailContext.body).slice(0, 2000));
+  }
+  const prefix = lines.join('\n') + '\n\n[POLECENIE USER]\n';
+
+  const result = await fn(prefix + query, { chatId });
+  res.json(result);
+}));
+
 // Context recovery: surfaces last N minutes of activity so the Master
 // agent can re-orient itself after a context-window pause. Called when
 // user says ambiguous things like "następny", "tak", "dalej" without

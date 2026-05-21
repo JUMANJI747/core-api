@@ -14,6 +14,7 @@ const { notifyMailResult } = require('../services/notify-mail-result');
 const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');
+const { translateToPl, translateFromPl, countryToLang } = require('../services/email-translate');
 
 const OFFER_PDFS = {
   FR: { fileId: '112mOTMThWgaCAoy70E6JMG-dAnPYetqx', filename: 'Offre_SurfStickBell.pdf' },
@@ -1318,6 +1319,127 @@ router.post('/send-tracking-emails-batch', async (req, res) => {
     if (!r.ok && stopOnError) break;
   }
   res.json({ ok: true, total: list.length, processed: results.length, counts, results });
+});
+
+// POST /api/emails/:id/translate-to-pl
+// Lazy tlumaczenie pelnego body maila na polski. Cache wyniku w
+// extras.translatedBodyPl + extras.translatedAt. Body params:
+//   { force?: boolean } — wymus re-translate (ignoruje cache).
+router.post('/emails/:id/translate-to-pl', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { force = false } = req.body || {};
+    const email = await prisma.email.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, bodyFull: true, bodyPreview: true, subject: true, extras: true, tags: true },
+    });
+    if (!email) return res.status(404).json({ error: 'email not found' });
+
+    const cached = email.extras && email.extras.translatedBodyPl;
+    if (cached && !force) {
+      return res.json({
+        ok: true,
+        translatedBody: cached,
+        translatedSubject: (email.extras && email.extras.translatedSubjectPl) || null,
+        cached: true,
+        sourceLang: (email.extras && email.extras.translatedSourceLang) || (email.extras && email.extras.language) || null,
+      });
+    }
+
+    const text = email.bodyFull || email.bodyPreview || '';
+    if (!text.trim()) {
+      return res.json({ ok: true, translatedBody: '', translatedSubject: null, cached: false, sourceLang: null });
+    }
+
+    // Wykryty jezyk z klasyfikacji w pollerze (zapisany w extras.language albo
+    // jako tag 'lang:XX' — sprawdzamy oba)
+    let sourceLang = (email.extras && email.extras.language) || null;
+    if (!sourceLang && Array.isArray(email.tags)) {
+      const langTag = email.tags.find(t => typeof t === 'string' && /^[a-z]{2}$/i.test(t) && t.length === 2);
+      if (langTag) sourceLang = langTag.toLowerCase();
+    }
+
+    const [translatedBody, translatedSubject] = await Promise.all([
+      translateToPl(text, sourceLang),
+      email.subject ? translateToPl(email.subject, sourceLang) : Promise.resolve(null),
+    ]);
+
+    await prisma.email.update({
+      where: { id: email.id },
+      data: {
+        extras: {
+          ...(email.extras || {}),
+          translatedBodyPl: translatedBody,
+          translatedSubjectPl: translatedSubject,
+          translatedSourceLang: sourceLang,
+          translatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    res.json({ ok: true, translatedBody, translatedSubject, cached: false, sourceLang });
+  } catch (e) {
+    console.error('[translate-to-pl] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/emails/translate
+// Generic translate dla composera (PL -> jezyk odbiorcy). Auto-detect target
+// jak nie podany: contractor.country -> jezyk, lub poprzednie maile w watku
+// (przez replyToEmailId). Body:
+//   { text, sourceLang?='pl', targetLang?, contractorId?, replyToEmailId? }
+router.post('/emails/translate', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { text, sourceLang = 'pl', targetLang, contractorId, replyToEmailId } = req.body || {};
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: 'text required' });
+    }
+
+    let effectiveTarget = targetLang;
+    let autoDetected = false;
+
+    // Auto-detect via contractor.country
+    if (!effectiveTarget && contractorId) {
+      const c = await prisma.contractor.findUnique({
+        where: { id: contractorId },
+        select: { country: true },
+      });
+      if (c && c.country) {
+        const lang = countryToLang(c.country);
+        if (lang) { effectiveTarget = lang; autoDetected = true; }
+      }
+    }
+
+    // Auto-detect via thread (poprzedni mail)
+    if (!effectiveTarget && replyToEmailId) {
+      const e = await prisma.email.findUnique({
+        where: { id: replyToEmailId },
+        select: { tags: true, extras: true },
+      });
+      if (e) {
+        let lang = (e.extras && e.extras.language) || null;
+        if (!lang && Array.isArray(e.tags)) {
+          const langTag = e.tags.find(t => typeof t === 'string' && /^[a-z]{2}$/i.test(t) && t.length === 2);
+          if (langTag) lang = langTag.toLowerCase();
+        }
+        if (lang) { effectiveTarget = lang; autoDetected = true; }
+      }
+    }
+
+    if (!effectiveTarget) effectiveTarget = 'en'; // ostateczny fallback
+
+    if (effectiveTarget === sourceLang) {
+      return res.json({ ok: true, translatedText: text, sourceLang, targetLang: effectiveTarget, autoDetected, noop: true });
+    }
+
+    const translatedText = await translateFromPl(text, effectiveTarget, sourceLang);
+    res.json({ ok: true, translatedText, sourceLang, targetLang: effectiveTarget, autoDetected });
+  } catch (e) {
+    console.error('[emails/translate] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 module.exports = router;
