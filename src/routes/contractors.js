@@ -619,10 +619,52 @@ router.get('/', async (req, res) => {
   if (tag) where.tags = { has: tag };
   const contractors = await prisma.contractor.findMany({ where, take, orderBy: { updatedAt: 'desc' } });
 
-  // Fuzzy fallback: if naive `name contains` failed (e.g. "holaola" vs
-  // "Hola Ola" — spacing differs) and no other filter narrowed the set,
-  // load all contractors and score them against the search term.
-  if (search && contractors.length === 0 && !country && !tag) {
+  // Contact-name match: user pisze "wystaw FV dla Marco" - Marco to imie
+  // kontaktu w extras.contacts[].name, nie nazwa firmy. Lokalny JS filter
+  // (jsonpath w Prismie ograniczony; <2000 rekordow z extras to <100ms).
+  // Dolaczamy match'e do wyniku z `name contains` dedup po id.
+  let merged = [...contractors];
+  if (search && !tag) {
+    const searchLower = String(search).toLowerCase().trim();
+    if (searchLower.length >= 2) {
+      try {
+        const candidatesWithExtras = await prisma.contractor.findMany({
+          where: country ? { country: { equals: country, mode: 'insensitive' } } : {},
+          select: { id: true, name: true, nip: true, country: true, email: true, primaryEmail: true, phone: true, city: true, address: true, tags: true, source: true, extras: true, createdAt: true, updatedAt: true },
+          take: 2000,
+        });
+        const contactMatches = candidatesWithExtras.filter(c => {
+          const ex = c.extras;
+          if (!ex || typeof ex !== 'object') return false;
+          const contacts = ex.contacts;
+          if (!Array.isArray(contacts)) return false;
+          return contacts.some(ct => {
+            if (!ct || typeof ct !== 'object') return false;
+            const nm = (ct.name || ct.personName || '').toString().toLowerCase();
+            return nm && nm.includes(searchLower);
+          });
+        });
+        const existingIds = new Set(merged.map(c => c.id));
+        for (const cm of contactMatches) {
+          if (existingIds.has(cm.id)) continue;
+          if (merged.length >= take) break;
+          merged.push({ ...cm, matchedBy: 'contact' });
+          existingIds.add(cm.id);
+        }
+        if (contactMatches.length) {
+          console.log(`[contractors/search] contact-name match: "${search}" → ${contactMatches.length} kontrahentow z dopasowaniem w extras.contacts`);
+        }
+      } catch (e) {
+        console.warn('[contractors/search] contact-name match failed (non-fatal):', e.message);
+      }
+    }
+  }
+
+  // Fuzzy fallback: if naive `name contains` (and contact match) failed
+  // (e.g. "holaola" vs "Hola Ola" — spacing differs) and no other filter
+  // narrowed the set, load all contractors and score them against the
+  // search term.
+  if (search && merged.length === 0 && !country && !tag) {
     const all = await prisma.contractor.findMany({
       select: { id: true, name: true, nip: true, country: true, email: true, phone: true, city: true, address: true, tags: true, source: true, extras: true, createdAt: true, updatedAt: true },
       take: 500,
@@ -638,7 +680,7 @@ router.get('/', async (req, res) => {
     }
   }
 
-  res.json(contractors);
+  res.json(merged);
 });
 
 router.get('/:id', async (req, res) => {
