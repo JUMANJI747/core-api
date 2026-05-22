@@ -171,13 +171,19 @@ async function fetchNbpRate(date) {
   throw new Error('NBP rate not found for date: ' + date);
 }
 
-async function searchContractor(nip) {
+// iFirma's GET /iapi/kontrahenci/{fraza}.json szuka po NAZWIE/FRAZIE kontrahenta,
+// nie scisle po NIP. Stary n8n workflow uzywal nazwy jako klucza:
+//   const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(nazwa)}.json`
+// To wyjasnia czemu search-by-NIP czesto zwraca empty mimo ze kontrahent istnieje
+// (NIP w iFirmie moze byc w innym formacie). Search po NAZWIE jest niezawodny.
+async function searchContractor(query) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+  if (!query) return null;
 
-  const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(nip)}.json`;
+  const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(query)}.json`;
   const auth = generateAuth(url, '', login, keyHex);
 
-  console.log('[ifirma] searching contractor by NIP:', nip);
+  console.log('[ifirma] searching contractor by query:', query);
 
   const { status, body } = await httpsGetRaw(url, {
     Authentication: auth,
@@ -197,45 +203,57 @@ async function searchContractor(nip) {
 // Lista wszystkich kontrahentow z paginacja. Fallback gdy searchContractor
 // (GET /iapi/kontrahenci/{nip}.json) zwraca empty dla danego NIP, mimo ze
 // kontrahent obviously istnieje (iFirma quirk dla niektorych rekordow).
-// Probujemy 3 warianty URL bo iFirma docs sa niespojne i format zmienia
-// sie miedzy podsystemami:
-//   1. /iapi/kontrahenci.json?strona=1
-//   2. /iapi/kontrahenci/lista/1/100.json (path-style pagination)
-//   3. /iapi/kontrahenci.json (bez params, hope for default list)
+// KRYTYCZNE: HMAC liczy sie z URL BEZ query params (jak fetchInvoices),
+// inaczej iFirma zwraca Kod 403 "Niepoprawny hash przesylanej wiadomosci".
+// Paginujemy strona=1..N az zwroci empty (max 50 stron = 5000 kontrahentow).
 async function listContractors() {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
-  const candidates = [
-    'https://www.ifirma.pl/iapi/kontrahenci.json?strona=1&iloscNaStronie=200',
-    'https://www.ifirma.pl/iapi/kontrahenci/lista/1/200.json',
-    'https://www.ifirma.pl/iapi/kontrahenci.json',
-  ];
+  const all = [];
+  const baseUrl = 'https://www.ifirma.pl/iapi/kontrahenci.json';
+  const auth = generateAuth(baseUrl, '', login, keyHex); // HMAC z path bez query
+  let page = 1;
+  const PAGE_SIZE = 200;
+  const MAX_PAGES = 50;
 
-  for (const fullUrl of candidates) {
+  while (page <= MAX_PAGES) {
+    const fullUrl = `${baseUrl}?strona=${page}&iloscNaStronie=${PAGE_SIZE}`;
     try {
-      // HMAC sig bierze tylko path+query bez fragmentow query w niektorych
-      // wzorcach iFirma — probujemy z URL "as-is" najpierw.
-      const auth = generateAuth(fullUrl, '', login, keyHex);
-      console.log('[ifirma] listContractors trying:', fullUrl);
+      console.log(`[ifirma] listContractors page ${page}:`, fullUrl);
       const { status, body } = await httpsGetRaw(fullUrl, {
         Authentication: auth,
         Accept: 'application/json',
       });
       const bodyStr = body.toString();
-      console.log('[ifirma] listContractors status:', status, bodyStr.slice(0, 200));
-      if (status !== 200) continue;
-      let data;
-      try { data = JSON.parse(bodyStr); } catch (_) { continue; }
-      const arr = (data && data.response && data.response.Wynik) || (data && data.response && Array.isArray(data.response) ? data.response : null);
-      if (Array.isArray(arr) && arr.length) {
-        console.log(`[ifirma] listContractors got ${arr.length} contractors via ${fullUrl}`);
-        return arr;
+      if (status !== 200) {
+        console.log(`[ifirma] listContractors page ${page} HTTP ${status}:`, bodyStr.slice(0, 200));
+        break;
       }
+      let data;
+      try { data = JSON.parse(bodyStr); } catch (_) {
+        console.log(`[ifirma] listContractors page ${page} non-JSON:`, bodyStr.slice(0, 200));
+        break;
+      }
+      const kod = data && data.response && data.response.Kod;
+      const info = data && data.response && data.response.Informacja;
+      const arr = (data && data.response && data.response.Wynik) || [];
+      if (kod != null && kod !== 0) {
+        console.log(`[ifirma] listContractors page ${page} iFirma Kod ${kod}: ${info}`);
+        break;
+      }
+      console.log(`[ifirma] listContractors page ${page}: ${arr.length} contractors (running total ${all.length + arr.length})`);
+      if (!Array.isArray(arr) || arr.length === 0) break;
+      all.push(...arr);
+      if (arr.length < PAGE_SIZE) break; // last page
+      page++;
     } catch (e) {
-      console.log('[ifirma] listContractors URL failed:', fullUrl, '-', e.message);
+      console.log(`[ifirma] listContractors page ${page} error:`, e.message);
+      break;
     }
   }
-  return [];
+
+  console.log(`[ifirma] listContractors total: ${all.length}`);
+  return all;
 }
 
 // Wyszukaj kontrahenta po NIP przelistujac liste (fallback gdy search-by-NIP
@@ -261,24 +279,41 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
   if (!nip) throw new Error('upsertContractor: NIP required');
 
-  // Identifier override: caller (np. invoices.js po lookup w naszej bazie)
-  // moze przekazac wprost iFirma Identyfikator. Pomijamy wtedy searchContractor —
-  // to KRYTYCZNE bo iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryśny
-  // (kontrahent moze istniec pod Identyfikatorem, ale search-by-NIP zwraca empty).
-  // Bez tego override-u, niemozliwy byl PUT do tych "ukrytych" kontrahentow
-  // (kazdy upsert tylko POST create -> duplikat -> blad).
+  // Identifier override: caller (np. invoices.js) moze przekazac wprost
+  // iFirma Identyfikator. Pomijamy wtedy szukanie i lecimy bezposrednio PUT.
   let existing = null;
   if (identifier) {
     existing = { Identyfikator: identifier };
     console.log(`[ifirma] upsertContractor: identifier override = ${identifier} (skip search)`);
   } else {
-    try {
-      existing = await searchContractor(nip);
-    } catch (e) {
-      console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
+    // PRIMARY: search po NAZWIE (iFirma's GET /kontrahenci/{fraza}.json
+    // matchuje po nazwie/frazie, NIE po NIP — stary n8n workflow tak uzywal).
+    // To najniezawodniejsza droga: wpisz "APTEKA CENTRUM" → iFirma zwroci
+    // pelny rekord z Identyfikator + KodPocztowy + Ulica etc.
+    if (name) {
+      try {
+        const r = await searchContractor(name);
+        if (r && r.Identyfikator) {
+          console.log(`[ifirma] upsertContractor: found by name "${name}" → identifier=${r.Identyfikator}`);
+          existing = r;
+        }
+      } catch (e) {
+        console.log('[ifirma] upsertContractor: searchContractor(name) failed:', e.message);
+      }
     }
-    // Fallback 1: jak search po raw NIP zwraca empty, sprobuj wariantow formatu
-    // (PL prefix, dashes). iFirma czasem trzyma NIP w innej postaci niz raw.
+    // Fallback 1: search po NIP raw
+    if (!existing) {
+      try {
+        const r = await searchContractor(nip);
+        if (r && r.Identyfikator) {
+          console.log(`[ifirma] upsertContractor: found by NIP "${nip}" → identifier=${r.Identyfikator}`);
+          existing = r;
+        }
+      } catch (e) {
+        console.log('[ifirma] upsertContractor: searchContractor(nip) failed:', e.message);
+      }
+    }
+    // Fallback 2: alt NIP formats (PL prefix, dashes)
     if (!existing) {
       const altNips = [
         `PL${nip}`,
@@ -296,10 +331,7 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
         } catch (_) {}
       }
     }
-    // Fallback 2: jak nadal nie znalezione, przelistuj liste wszystkich
-    // kontrahentow i znajdz po NIP (digits-only match). Slow ale niezawodne —
-    // iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryny i nie zwraca
-    // niektorych istniejacych rekordow. List endpoint dziala niezawodnie.
+    // Fallback 3: przelistuj liste wszystkich kontrahentow
     if (!existing) {
       try {
         const fromList = await findContractorInList(nip);
@@ -421,20 +453,25 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   // Enrich contractor data from iFirma if address/postCode missing
   let enriched = {};
   if (kontrahent.nip && (!kontrahent.address || !kontrahent.postCode)) {
-    try {
-      const ifirmaContractor = await searchContractor(kontrahent.nip);
-      if (ifirmaContractor) {
-        console.log('[ifirma] enriched contractor data from iFirma:', ifirmaContractor.Ulica, ifirmaContractor.KodPocztowy, ifirmaContractor.Miejscowosc);
-        enriched = {
-          Ulica: ifirmaContractor.Ulica || '',
-          KodPocztowy: ifirmaContractor.KodPocztowy || '',
-          Miejscowosc: ifirmaContractor.Miejscowosc || '',
-          Kraj: ifirmaContractor.Kraj || '',
-          ...(ifirmaContractor.Identyfikator ? { IdentyfikatorKontrahenta: ifirmaContractor.Identyfikator } : {}),
-        };
+    // Try name first (matches iFirma's actual search strategy), fallback NIP
+    let ifirmaContractor = null;
+    if (kontrahent.name) {
+      try { ifirmaContractor = await searchContractor(kontrahent.name); } catch (_) {}
+    }
+    if (!ifirmaContractor) {
+      try { ifirmaContractor = await searchContractor(kontrahent.nip); } catch (e) {
+        console.log('[ifirma] searchContractor failed (non-fatal):', e.message);
       }
-    } catch (e) {
-      console.log('[ifirma] searchContractor failed (non-fatal):', e.message);
+    }
+    if (ifirmaContractor) {
+      console.log('[ifirma] enriched contractor data from iFirma:', ifirmaContractor.Ulica, ifirmaContractor.KodPocztowy, ifirmaContractor.Miejscowosc);
+      enriched = {
+        Ulica: ifirmaContractor.Ulica || '',
+        KodPocztowy: ifirmaContractor.KodPocztowy || '',
+        Miejscowosc: ifirmaContractor.Miejscowosc || '',
+        Kraj: ifirmaContractor.Kraj || '',
+        ...(ifirmaContractor.Identyfikator ? { IdentyfikatorKontrahenta: ifirmaContractor.Identyfikator } : {}),
+      };
     }
   }
 
@@ -556,9 +593,14 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   // Caller w invoices.js juz robi upsertContractor PRZED createInvoice, ale
   // ten retry obsluguje przypadki gdy: (a) tamten upsert padl cicho catchem,
   // (b) iFirma cache'owala stary rekord, (c) my mamy postCode tylko teraz.
+  // iFirma raporruje brakujace pola kontrahenta na 2 sposoby (zalezy od endpointa):
+  //   - createInvoice: "Pole 'Kontrahent.KodPocztowy' jest wymagane" (PascalCase)
+  //   - upsertContractor PUT/POST: "Nieudana walidacja obiektu 'adres.kodPocztowy': Pole nie moze byc puste"
+  // Lapie oba wzorce.
   const isContractorFieldError = (kod === 201 || kod === '201') &&
     typeof informacja === 'string' &&
-    /Pole.*['"]?Kontrahent\.[A-Za-z]+['"]?.*wymagan/i.test(informacja);
+    (/Pole.*['"]?Kontrahent\.[A-Za-z]+['"]?.*wymagan/i.test(informacja) ||
+     /['"]?adres\.[a-zA-Z]+['"]?.*puste/i.test(informacja));
 
   if (isContractorFieldError && _nip) {
     const missingField = (informacja.match(/Kontrahent\.([A-Za-z]+)/) || [])[1] || 'unknown';
