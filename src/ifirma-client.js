@@ -171,13 +171,19 @@ async function fetchNbpRate(date) {
   throw new Error('NBP rate not found for date: ' + date);
 }
 
-async function searchContractor(nip) {
+// iFirma GET /iapi/kontrahenci/{fraza}.json szuka po NAZWIE/FRAZIE kontrahenta,
+// nie scisle po NIP. Sprawdzone w starym n8n workflow ktory zawsze uzywal
+// nazwy jako klucza. Search po NIP raw czesto zwraca empty mimo ze
+// kontrahent istnieje (np. APTEKA CENTRUM NIP 8451905380 — empty po NIP, ale
+// found po "APTEKA CENTRUM"). Wywoluj z nazwa jak masz, fallback NIP.
+async function searchContractor(query) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+  if (!query) return null;
 
-  const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(nip)}.json`;
+  const url = `https://www.ifirma.pl/iapi/kontrahenci/${encodeURIComponent(query)}.json`;
   const auth = generateAuth(url, '', login, keyHex);
 
-  console.log('[ifirma] searching contractor by NIP:', nip);
+  console.log('[ifirma] searching contractor by query:', query);
 
   const { status, body } = await httpsGetRaw(url, {
     Authentication: auth,
@@ -273,24 +279,55 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
   if (!nip) throw new Error('upsertContractor: NIP required');
 
-  // Identifier override: caller (np. invoices.js po lookup w naszej bazie)
-  // moze przekazac wprost iFirma Identyfikator. Pomijamy wtedy searchContractor —
-  // to KRYTYCZNE bo iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryśny
-  // (kontrahent moze istniec pod Identyfikatorem, ale search-by-NIP zwraca empty).
-  // Bez tego override-u, niemozliwy byl PUT do tych "ukrytych" kontrahentow
-  // (kazdy upsert tylko POST create -> duplikat -> blad).
+  // === KASKADA SZUKANIA ISTNIEJACEGO KONTRAHENTA ===
+  //
+  // iFirma jest nieprzewidywalna w temacie szukania kontrahenta:
+  //   - GET /iapi/kontrahenci/{fraza}.json — matchuje po NAZWIE, czasem
+  //     po NIP. Czasem zwraca empty dla rekordow ktore istnieja (sprawdzone:
+  //     APTEKA CENTRUM NIP 8451905380 — empty po NIP, found po nazwie).
+  //   - NIP w iFirmie moze byc w roznych formatach (PL prefix, dashes XXX-XX-XX-XXX).
+  //   - Niektore rekordy sa wylacznie w liscie /iapi/kontrahenci.json, nie po
+  //     pojedynczym lookup.
+  //
+  // Kaskada (kazdy stopien powstal z konkretnego bug-fixu, kolejnosc po
+  // niezawodnosci):
+  //   0. identifier override (caller wprost podaje iFirma Identyfikator).
+  //   1. search po NAZWIE — najniezawodniejszy (workflow n8n tak uzywal).
+  //   2. search po NIP raw.
+  //   3. search po NIP w alt formatach (PL prefix, dashes 3-3-2-2 / 3-2-2-3).
+  //   4. listContractors paginowana + match digits-only po NIP.
+  //
+  // Pierwszy match konczy kaskade. Wszystkie padaja -> POST create (nowy kontrahent).
   let existing = null;
   if (identifier) {
     existing = { Identyfikator: identifier };
     console.log(`[ifirma] upsertContractor: identifier override = ${identifier} (skip search)`);
   } else {
-    try {
-      existing = await searchContractor(nip);
-    } catch (e) {
-      console.log('[ifirma] upsertContractor: searchContractor failed (treating as new):', e.message);
+    // 1. By name (PRIMARY)
+    if (name) {
+      try {
+        const r = await searchContractor(name);
+        if (r && r.Identyfikator) {
+          console.log(`[ifirma] upsertContractor: found by name "${name}" → identifier=${r.Identyfikator}`);
+          existing = r;
+        }
+      } catch (e) {
+        console.log('[ifirma] upsertContractor: searchContractor(name) failed:', e.message);
+      }
     }
-    // Fallback 1: jak search po raw NIP zwraca empty, sprobuj wariantow formatu
-    // (PL prefix, dashes). iFirma czasem trzyma NIP w innej postaci niz raw.
+    // 2. By NIP raw
+    if (!existing) {
+      try {
+        const r = await searchContractor(nip);
+        if (r && r.Identyfikator) {
+          console.log(`[ifirma] upsertContractor: found by NIP "${nip}" → identifier=${r.Identyfikator}`);
+          existing = r;
+        }
+      } catch (e) {
+        console.log('[ifirma] upsertContractor: searchContractor(nip) failed:', e.message);
+      }
+    }
+    // 3. Alt NIP formats (PL prefix, dashes)
     if (!existing) {
       const altNips = [
         `PL${nip}`,
@@ -301,17 +338,14 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
         try {
           const r = await searchContractor(alt);
           if (r && r.Identyfikator) {
-            console.log(`[ifirma] upsertContractor: found via alt NIP format "${alt}" → identifier=${r.Identyfikator}`);
+            console.log(`[ifirma] upsertContractor: found via alt NIP "${alt}" → identifier=${r.Identyfikator}`);
             existing = r;
             break;
           }
         } catch (_) {}
       }
     }
-    // Fallback 2: jak nadal nie znalezione, przelistuj liste wszystkich
-    // kontrahentow i znajdz po NIP (digits-only match). Slow ale niezawodne —
-    // iFirma's GET /iapi/kontrahenci/{NIP}.json bywa kapryny i nie zwraca
-    // niektorych istniejacych rekordow. List endpoint dziala niezawodnie.
+    // 4. Pelna lista
     if (!existing) {
       try {
         const fromList = await findContractorInList(nip);
@@ -320,7 +354,7 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
           existing = fromList;
         }
       } catch (e) {
-        console.log('[ifirma] upsertContractor listContractors failed:', e.message);
+        console.log('[ifirma] upsertContractor: listContractors failed:', e.message);
       }
     }
   }
@@ -431,31 +465,18 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
   const today = new Date().toISOString().slice(0, 10);
 
   // Enrich contractor data from iFirma if address/postCode missing
-  let enriched = {};
-  if (kontrahent.nip && (!kontrahent.address || !kontrahent.postCode)) {
-    try {
-      const ifirmaContractor = await searchContractor(kontrahent.nip);
-      if (ifirmaContractor) {
-        console.log('[ifirma] enriched contractor data from iFirma:', ifirmaContractor.Ulica, ifirmaContractor.KodPocztowy, ifirmaContractor.Miejscowosc);
-        enriched = {
-          Ulica: ifirmaContractor.Ulica || '',
-          KodPocztowy: ifirmaContractor.KodPocztowy || '',
-          Miejscowosc: ifirmaContractor.Miejscowosc || '',
-          Kraj: ifirmaContractor.Kraj || '',
-          ...(ifirmaContractor.Identyfikator ? { IdentyfikatorKontrahenta: ifirmaContractor.Identyfikator } : {}),
-        };
-      }
-    } catch (e) {
-      console.log('[ifirma] searchContractor failed (non-fatal):', e.message);
-    }
-  }
-
+  // Pre-upsert w invoices.js wywoluje upsertContractor PRZED createInvoice
+  // i juz pcha dane do iFirmy oraz zwraca aktualny rekord. Dlatego nie robimy
+  // tu drugiej rundy searchContractor + enrichment — bylby dubel. Pole
+  // kontrahent.ifirmaId zwraca z upserta jak istnieje, postCode/address/city
+  // przekazujemy ze ifirma-payload.js. Auto-retry przy 'Pole Kontrahent.X
+  // wymagane' nizej nadal sluzy jako safety net na edge cases.
   const _nip = kontrahent.nip;
-  const _ulica = kontrahent.address || enriched.Ulica;
-  const _kod = kontrahent.postCode || enriched.KodPocztowy;
-  const _miasto = kontrahent.city || enriched.Miejscowosc;
-  const _country = kontrahent.country || enriched.Kraj;
-  const _ifirmaId = kontrahent.ifirmaId || enriched.IdentyfikatorKontrahenta;
+  const _ulica = kontrahent.address || '';
+  const _kod = kontrahent.postCode || '';
+  const _miasto = kontrahent.city || '';
+  const _country = kontrahent.country || '';
+  const _ifirmaId = kontrahent.ifirmaId || null;
 
   console.log(`[ifirma] FV final contractor fields: nip=${_nip} ulica="${_ulica}" kod="${_kod}" miasto="${_miasto}" kraj="${_country}" ifirmaId=${_ifirmaId}`);
 

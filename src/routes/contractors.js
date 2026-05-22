@@ -10,6 +10,7 @@ const { geocodeAndSave } = require('../services/geocode');
 const { geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
 const { searchContractor: ifirmaSearchContractor, upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
+const { extractPostCode, extractCityAfterPostCode } = require('../utils/address');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
 // Nominatim is slow / down we still return the contractor. The 1 req/sec
@@ -54,25 +55,21 @@ router.post('/upsert', async (req, res) => {
 
     if (!n.name) return res.status(400).json({ error: 'name required' });
 
-    // Auto-extract postCode + city z address jak agent przekazal wszystko
-    // w jednym stringu (np. "ul. Jagielly 1A, 11-500 Gizycko"). Bez tego
-    // nawet z nowym tool schema agent moze nie rozbic na components.
+    // Auto-extract postCode + city z address jak agent wkleil caly adres
+    // jako jeden string (np. "ul. Jagielly 1A, 11-500 Gizycko"). Helpers
+    // w utils/address.js wspoldzielone z services/ifirma-payload.js.
     if (!n.postCode && n.address) {
-      const zipMatch = n.address.match(/\b(\d{2}-\d{3})\b/);
-      if (zipMatch) {
-        n.postCode = zipMatch[1];
-        console.log(`[contractors/upsert] auto-extract postCode "${n.postCode}" z address "${n.address}"`);
+      const zip = extractPostCode(n.address);
+      if (zip) {
+        n.postCode = zip;
+        console.log(`[contractors/upsert] auto-extract postCode "${zip}" z address "${n.address}"`);
       }
     }
     if (!n.city && n.address && n.postCode) {
-      const afterZip = n.address.split(n.postCode)[1] || '';
-      const cityMatch = afterZip.match(/^[,\s]+([A-Za-zÀ-ſ][\wÀ-ſ\s\-]+?)(?:[,\s]|$)/);
-      if (cityMatch) {
-        const candidateCity = cityMatch[1].trim().replace(/[,;]+$/, '');
-        if (candidateCity.length > 1 && candidateCity.length < 50) {
-          n.city = candidateCity;
-          console.log(`[contractors/upsert] auto-extract city "${n.city}" z address`);
-        }
+      const city = extractCityAfterPostCode(n.address, n.postCode);
+      if (city) {
+        n.city = city;
+        console.log(`[contractors/upsert] auto-extract city "${city}" z address`);
       }
     }
 
