@@ -805,12 +805,12 @@ router.get('/inbox-stats', async (req, res) => {
   try {
     const rows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND', inbox: { not: null } },
+      where: { direction: 'INBOUND' },
       _count: { _all: true },
     });
     const unreadRows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND', inbox: { not: null }, isRead: false },
+      where: { direction: 'INBOUND', isRead: false },
       _count: { _all: true },
     });
     const unreadMap = Object.fromEntries(unreadRows.map(r => [r.inbox, r._count._all]));
@@ -1642,7 +1642,7 @@ router.post('/emails/sent-rescan', async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error('[sent-rescan] error:', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(500).json(result);
   }
 });
 
