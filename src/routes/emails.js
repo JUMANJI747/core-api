@@ -1600,8 +1600,8 @@ router.post('/emails/sent-rescan', async (req, res) => {
     if (!inbox || typeof inbox !== 'string') {
       return res.status(400).json({ error: 'inbox (string) required' });
     }
-    if (daysBack < 1 || daysBack > 365) {
-      return res.status(400).json({ error: 'daysBack must be 1..365' });
+    if (daysBack < 1 || daysBack > 3650) {
+      return res.status(400).json({ error: 'daysBack must be 1..3650' });
     }
     const { rescanSentSince } = require('../inbox-poller');
     const result = await rescanSentSince(inbox, daysBack);
