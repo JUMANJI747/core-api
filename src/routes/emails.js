@@ -14,7 +14,8 @@ const { notifyMailResult } = require('../services/notify-mail-result');
 const { scoreContractor } = require('../services/contractor-match');
 const { OFFER_TEMPLATES } = require('../offer-templates');
 const { parseOrderWithLLM } = require('../order-llm-parser');
-const { translateToPl, translateFromPl, countryToLang } = require('../services/email-translate');
+const { translateToPl, translateFromPl, countryToLang, langName } = require('../services/email-translate');
+const { fetchInvoicePdf } = require('../ifirma-client');
 
 const OFFER_PDFS = {
   FR: { fileId: '112mOTMThWgaCAoy70E6JMG-dAnPYetqx', filename: 'Offre_SurfStickBell.pdf' },
@@ -1643,6 +1644,212 @@ router.post('/emails/sent-rescan', async (req, res) => {
   } catch (e) {
     console.error('[sent-rescan] error:', e.message);
     res.status(500).json(result);
+  }
+});
+
+// POST /api/emails/draft-with-invoice
+//
+// Tworzy DRAFT maila z PDF faktury w attachments + tresc przetlumaczona
+// na jezyk kontrahenta. Uzywane przez accounting-agent w flow'ie
+// "wyslij FV X mailem" — user widzi pelen draft (Od / Do / Temat / PDF
+// w zalaczniku / body w jezyku odbiorcy / tlumaczenie PL) PRZED
+// wyslaniem. Wyslanie idzie przez POST /api/send-email/:id/confirm.
+//
+// Body: {
+//   invoiceNumber?: string,  // "88" lub "88/2026" (backend normalizuje)
+//   invoiceId?: string,      // UUID — pomija lookup po number
+//   toEmail?: string,        // default: contractor.primaryEmail/email
+//   customNote?: string,     // dodatkowa tresc do body (np. "zgodnie z rozmowa")
+// }
+//
+// Response: {
+//   ok, draftId, from, to, subject, body, bodyPl, lang, langName,
+//   attachments: [{filename, sizeKB}]
+// }
+router.post('/emails/draft-with-invoice', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { invoiceNumber, invoiceId, toEmail, customNote } = req.body || {};
+    if (!invoiceNumber && !invoiceId) {
+      return res.status(400).json({ error: 'invoiceNumber or invoiceId required' });
+    }
+
+    // 1. Resolve FV. Akceptujemy UUID lub luzny numer ("88", "88/2026",
+    //    "FV 88") — wzor z send-invoice-email zeby UX byl spojny.
+    function normalizeInvoiceQuery(input) {
+      if (!input) return null;
+      const stripped = String(input).trim()
+        .replace(/^(?:fv|faktura|faktur[aęoy])\s*\/?\s*/i, '')
+        .replace(/^nr\s*/i, '')
+        .trim();
+      if (/^\d+\/\d{4}$/.test(stripped)) return stripped;
+      if (/^\d+\/\d{2}$/.test(stripped)) {
+        const [n, yy] = stripped.split('/');
+        return n + '/20' + yy;
+      }
+      if (/^\d+$/.test(stripped)) return stripped + '/' + new Date().getFullYear();
+      return stripped;
+    }
+
+    let invoice = null;
+    if (invoiceId) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(invoiceId);
+      if (isUuid) {
+        invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      }
+    }
+    if (!invoice && invoiceNumber) {
+      const normalized = normalizeInvoiceQuery(invoiceNumber);
+      const queries = [normalized, invoiceNumber].filter((v, i, a) => v && a.indexOf(v) === i);
+      for (const q of queries) {
+        invoice = await prisma.invoice.findFirst({
+          where: { number: { equals: q, mode: 'insensitive' } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (invoice) break;
+      }
+    }
+    if (!invoice) return res.status(404).json({ error: `Invoice not found: "${invoiceNumber || invoiceId}"` });
+
+    // 2. Resolve recipient. toEmail explicit > contractor.primaryEmail > contractor.email.
+    const contractor = invoice.contractorId
+      ? await prisma.contractor.findUnique({ where: { id: invoice.contractorId } })
+      : null;
+    const looksLikeEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+    let to = looksLikeEmail(toEmail) ? toEmail.trim() : null;
+    let toSource = to ? 'request' : null;
+    if (!to && contractor) {
+      if (contractor.primaryEmail && looksLikeEmail(contractor.primaryEmail)) {
+        to = contractor.primaryEmail.trim();
+        toSource = 'contractor.primaryEmail';
+      } else if (contractor.email && looksLikeEmail(contractor.email)) {
+        to = contractor.email.trim();
+        toSource = 'contractor.email';
+      }
+    }
+    if (!to) {
+      return res.status(400).json({
+        error: 'toEmail not provided and contractor has no email on record',
+        hint: 'Pass toEmail explicit albo uzupelnij primaryEmail/email kontrahenta.',
+      });
+    }
+
+    // 3. Pobierz PDF z iFirmy.
+    let pdfBuffer;
+    try {
+      pdfBuffer = await fetchInvoicePdf(invoice.number, invoice.type, invoice.ifirmaId);
+    } catch (e) {
+      return res.status(502).json({ error: `iFirma PDF fetch failed: ${e.message}` });
+    }
+    const filename = `Faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
+    const sizeKB = Math.round(pdfBuffer.length / 102.4) / 10;
+
+    // 4. Wybierz jezyk odbiorcy. Priorytet: kraj kontrahenta -> TLD adresu -> EN.
+    function tldToLang(email) {
+      const m = String(email || '').toLowerCase().match(/@[^@\s]+\.([a-z]{2,3})$/);
+      const map = { fr: 'fr', es: 'es', de: 'de', it: 'it', pt: 'pt', pl: 'pl', nl: 'nl' };
+      return m ? (map[m[1]] || null) : null;
+    }
+    let lang = countryToLang(contractor && contractor.country);
+    let langSource = lang ? 'contractor.country' : null;
+    if (!lang) {
+      lang = tldToLang(to);
+      if (lang) langSource = 'tld';
+    }
+    if (!lang) { lang = 'en'; langSource = 'fallback'; }
+    const LANG_UI = (lang || 'en').toLowerCase();
+
+    // 5. Body templates per jezyk. Trzymamy je krotkie — to draft, user moze
+    //    edytowac przed wyslaniem (w przyszlosci /send-email/:id/edit).
+    //    PL ekwiwalent osobno — wyslemy do klienta wersje w jego jezyku,
+    //    a PL tlumaczenie pokazujemy user-owi do podgladu w drafcie.
+    const contractorName = (contractor && contractor.name) || 'Customer';
+    const note = (customNote && String(customNote).trim()) || '';
+    const BODY_TEMPLATES = {
+      pl: `Dzień dobry,\n\nW załączniku przesyłam fakturę ${invoice.number}.${note ? '\n\n' + note : ''}\n\nPozdrawiam,\nMichał Pałyska\nSurf Stick Bell`,
+      en: `Dear ${contractorName},\n\nPlease find attached invoice ${invoice.number}.${note ? '\n\n' + note : ''}\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell`,
+      es: `Hola,\n\nAdjunto la factura ${invoice.number}.${note ? '\n\n' + note : ''}\n\nUn saludo,\nMichał Pałyska\nSurf Stick Bell`,
+      de: `Guten Tag,\n\nIm Anhang die Rechnung ${invoice.number}.${note ? '\n\n' + note : ''}\n\nMit freundlichen Grüßen,\nMichał Pałyska\nSurf Stick Bell`,
+      fr: `Bonjour,\n\nVeuillez trouver en pièce jointe la facture ${invoice.number}.${note ? '\n\n' + note : ''}\n\nCordialement,\nMichał Pałyska\nSurf Stick Bell`,
+      it: `Buongiorno,\n\nIn allegato la fattura ${invoice.number}.${note ? '\n\n' + note : ''}\n\nCordiali saluti,\nMichał Pałyska\nSurf Stick Bell`,
+      pt: `Olá,\n\nSegue em anexo a fatura ${invoice.number}.${note ? '\n\n' + note : ''}\n\nCumprimentos,\nMichał Pałyska\nSurf Stick Bell`,
+      nl: `Geachte heer/mevrouw,\n\nIn de bijlage vindt u factuur ${invoice.number}.${note ? '\n\n' + note : ''}\n\nMet vriendelijke groet,\nMichał Pałyska\nSurf Stick Bell`,
+    };
+    const SUBJECT_TEMPLATES = {
+      pl: `Faktura ${invoice.number} - Surf Stick Bell`,
+      en: `Invoice ${invoice.number} - Surf Stick Bell`,
+      es: `Factura ${invoice.number} - Surf Stick Bell`,
+      de: `Rechnung ${invoice.number} - Surf Stick Bell`,
+      fr: `Facture ${invoice.number} - Surf Stick Bell`,
+      it: `Fattura ${invoice.number} - Surf Stick Bell`,
+      pt: `Fatura ${invoice.number} - Surf Stick Bell`,
+      nl: `Factuur ${invoice.number} - Surf Stick Bell`,
+    };
+    const body = BODY_TEMPLATES[LANG_UI] || BODY_TEMPLATES.en;
+    const subject = SUBJECT_TEMPLATES[LANG_UI] || SUBJECT_TEMPLATES.en;
+
+    // 6. Tlumaczenie do PL. Jak body juz po polsku — pomijamy.
+    let bodyPl = null;
+    if (LANG_UI !== 'pl') {
+      try {
+        bodyPl = await translateToPl(body, LANG_UI);
+      } catch (e) {
+        console.warn('[draft-with-invoice] translateToPl failed:', e.message);
+        bodyPl = '(tlumaczenie PL niedostepne — ' + e.message + ')';
+      }
+    } else {
+      bodyPl = body;
+    }
+
+    // 7. Default from. Bierzemy pierwszy account z mail-sender (info@...).
+    const accounts = (typeof getAccounts === 'function') ? (getAccounts() || []) : [];
+    const fromAccount = accounts.find(a => /^info@/i.test(a.user || '')) || accounts[0];
+    const from = (fromAccount && fromAccount.user) || process.env.DEFAULT_FROM_EMAIL || 'info@surfstickbell.com';
+
+    // 8. Stworz DRAFT email + zapisz attachment z PDF. EmailAttachment.data
+    //    to Bytes — Prisma akceptuje Buffer.
+    const draft = await prisma.email.create({
+      data: {
+        direction: 'DRAFT',
+        inbox: extractInbox(from),
+        fromEmail: from,
+        toEmail: to,
+        subject,
+        bodyPreview: (body || '').slice(0, 300),
+        bodyFull: body,
+        contractorId: invoice.contractorId || null,
+      },
+    });
+    await prisma.emailAttachment.create({
+      data: {
+        emailId: draft.id,
+        filename,
+        contentType: 'application/pdf',
+        size: pdfBuffer.length,
+        data: pdfBuffer,
+      },
+    });
+
+    res.json({
+      ok: true,
+      draftId: draft.id,
+      from,
+      to,
+      toSource,
+      subject,
+      body,
+      bodyPl,
+      lang: LANG_UI,
+      langName: langName(LANG_UI),
+      langSource,
+      invoiceNumber: invoice.number,
+      invoiceId: invoice.id,
+      contractorName: contractor && contractor.name,
+      attachments: [{ filename, sizeKB }],
+    });
+  } catch (e) {
+    console.error('[draft-with-invoice] error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
