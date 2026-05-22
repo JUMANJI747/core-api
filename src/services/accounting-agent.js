@@ -28,12 +28,12 @@ function buildTools() {
 
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ SurfStickBell. Plain text, krótko, ceny brutto.
 
-╔════════════════════════════════════════╗
+╔═══════════════════════════════════════╗
 ║ AKTUALNA DATA (HARD-CODED PER REQUEST) ║
 ║ DZIS:        {{TODAY}}                 ║
 ║ BIEŻĄCY ROK: {{YEAR}}                  ║
 ║ ZESZŁY ROK:  {{LAST_YEAR}}             ║
-╚════════════════════════════════════════╝
+╚═══════════════════════════════════════╝
 
 ZASADA #-1 — INTERPRETACJA "TEN ROK":
 "ten rok" / "tym roku" / "w tym roku" / "this year" / "ostatni rok" →
@@ -143,7 +143,7 @@ year+month z kontekstu + email z wiadomosci. NIE pytaj usera o jaki
 miesiac chodzi, NIE deleguj do innego sub-agenta.
 
 FLOW WYSTAWIENIA FV:
-0. NAJPIERW find_contractor z dokładnym fragmentem nazwy ktorą user podał ("easy
+0. NAJPIERW find_contractor z dokładnym fragmentem nazwy którą user podał ("easy
    surf michał lussa" → search="easy surf"; "Awa Surf" → search="awa surf").
    Jak wynik EMPTY → NIE halucynuj danych. Zapytaj usera o NIP+adres,
    potem verify_nip i upsert_contractor żeby dodać do bazy. DOPIERO POTEM
@@ -224,11 +224,11 @@ ZASADY:
   NIE pisz "wysłałem" bez bloku confirmation. NIE wymyślaj messageId / sizeKB / sentAt. Jeśli messageId=null napisz "MessageId: brak (SMTP nie zwrócił)".
 - Plain text, listy z "-", krótko bez wstępów
 
-╔════════════════════════════════════╗
+╔══════════════════════════════════╗
 ║ PRZYPOMNIENIE — DZIS: {{TODAY}}    ║
 ║ "ten rok" / "tym roku" = {{YEAR}}  ║
 ║ NIE {{LAST_YEAR}}, NIE 2024.       ║
-╚════════════════════════════════════╝`;
+╚═══════════════════════════════════╝`;
 
 const tools = [
   {
@@ -257,13 +257,16 @@ const tools = [
   },
   {
     name: 'upsert_contractor',
-    description: 'Dodaj nowego kontrahenta do bazy (lub zaktualizuj jak NIP juz istnieje). Wywoluj PO verify_nip albo jak user podaje pelne dane (nazwa+NIP+adres). Zwraca contractor.id.',
+    description: 'Dodaj nowego kontrahenta do bazy (lub zaktualizuj jak NIP juz istnieje). Wywoluj PO verify_nip albo jak user podaje pelne dane (nazwa+NIP+adres+kod pocztowy). Po zapisie backend auto-pushuje dane do iFirmy (fire-and-forget) - czyli FV bedzie miala wszystko od razu. Zwraca contractor.id.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string' }, nip: { type: 'string' },
         type: { type: 'string', description: 'BUSINESS lub PERSON. Default BUSINESS.' },
-        country: { type: 'string' }, city: { type: 'string' }, address: { type: 'string' },
+        country: { type: 'string', description: 'Kraj (Polska, ES, DE, itd.)' },
+        city: { type: 'string', description: 'Miasto (np. "Gizycko")' },
+        address: { type: 'string', description: 'Ulica + numer (np. "ul. Jagielly 1A")' },
+        postCode: { type: 'string', description: 'Kod pocztowy. PL: format "11-500". ES: "35600". WAZNE: ZAWSZE wyciagnij z wiadomosci user-a jak jest podany — bez kodu pocztowego iFirma odrzuca FV (Pole Kontrahent.KodPocztowy jest wymagane).' },
         email: { type: 'string' }, phone: { type: 'string' },
       },
       required: ['name'],

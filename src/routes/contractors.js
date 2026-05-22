@@ -9,7 +9,7 @@ const { scoreContractor } = require('../services/contractor-match');
 const { geocodeAndSave } = require('../services/geocode');
 const { geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
-const { searchContractor: ifirmaSearchContractor } = require('../ifirma-client');
+const { searchContractor: ifirmaSearchContractor, upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
 // Nominatim is slow / down we still return the contractor. The 1 req/sec
@@ -44,6 +44,7 @@ router.post('/upsert', async (req, res) => {
       country: trim(body.country),
       city: trim(body.city),
       address: trim(body.address),
+      postCode: trim(body.postCode) || trim(body.postalCode) || trim(body.zipCode) || null,
       notes: trim(body.notes),
       type: body.type || 'BUSINESS',
       tags: Array.isArray(body.tags) ? body.tags.filter(t => t && String(t).trim()) : [],
@@ -52,6 +53,26 @@ router.post('/upsert', async (req, res) => {
     };
 
     if (!n.name) return res.status(400).json({ error: 'name required' });
+
+    // Canonicalize: postCode + address fields trafiaja do extras.billingAddress.
+    // Bez tego pole nie ma gdzie usiasc — Contractor model nie ma kolumny
+    // postCode, a iFirma push (auto-sync + invoice-confirm) potrzebuje go
+    // strukturalnie. extras.billingAddress to standardowe miejsce (czytane
+    // tez przez invoices.js przy budowie payloadu FV).
+    function buildBillingAddress(existingBilling) {
+      const eb = (existingBilling && typeof existingBilling === 'object') ? existingBilling : {};
+      const street = n.address || eb.street || null;
+      const city = n.city || eb.city || null;
+      const postCode = n.postCode || eb.postCode || null;
+      const country = n.country || eb.country || null;
+      // Tylko zapisuj jak cos sensownego mamy
+      if (!street && !city && !postCode && !country) return null;
+      return {
+        street, city, postCode, country,
+        source: eb.source || n.source || 'upsert',
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
     // Optional delivery address — appended to extras.locations[] (idempotent).
     // This is the shipping address; distinct from the billing/main address
@@ -107,6 +128,11 @@ router.post('/upsert', async (req, res) => {
     if (existing) {
       const mergedExtras = { ...(existing.extras || {}), ...n.extras };
 
+      // Merge billingAddress: nowe pola top-level (address/city/country/postCode)
+      // mocza istniejace extras.billingAddress.* (z preserve).
+      const newBilling = buildBillingAddress(mergedExtras.billingAddress);
+      if (newBilling) mergedExtras.billingAddress = newBilling;
+
       if (n.nip && existing.nip && n.nip !== existing.nip) {
         mergedExtras.nipList = Array.from(new Set([existing.nip, n.nip, ...(mergedExtras.nipList || [])]));
       }
@@ -144,6 +170,8 @@ router.post('/upsert', async (req, res) => {
       });
     } else {
       const createExtras = { ...n.extras };
+      const newBilling = buildBillingAddress(createExtras.billingAddress);
+      if (newBilling) createExtras.billingAddress = newBilling;
       if (deliveryAddress) {
         const { list, added } = appendLocation(createExtras.locations, deliveryAddress, n.country);
         createExtras.locations = list;
@@ -168,6 +196,30 @@ router.post('/upsert', async (req, res) => {
     }
     res.json(deliveryAddress ? { ...contractor, deliveryAddressAdded } : contractor);
     scheduleGeocode(prisma, contractor);
+    // Fire-and-forget push do iFirmy (jak NIP istnieje). Zapewnia ze przy
+    // pierwszej probie wystawienia FV kontrahent w iFirmie ma juz aktualne
+    // dane (postCode, ulica, miasto). Bez tego iFirma tworzyla kontrahenta
+    // auto z inline body FV ale czasem bez postCode -> FV padala.
+    if (contractor.nip) {
+      setImmediate(async () => {
+        try {
+          const billing = (contractor.extras && contractor.extras.billingAddress) || {};
+          const result = await ifirmaUpsertContractor({
+            name: contractor.name,
+            nip: contractor.nip,
+            address: contractor.address || billing.street || '',
+            city: contractor.city || billing.city || '',
+            postCode: billing.postCode || '',
+            country: contractor.country || billing.country || 'Polska',
+            email: contractor.email || '',
+            phone: contractor.phone || '',
+          });
+          console.log(`[contractors/upsert] auto-sync iFirma OK: ${contractor.nip} → ${result.action} id=${result.identifier}`);
+        } catch (e) {
+          console.warn(`[contractors/upsert] auto-sync iFirma failed (non-fatal): ${contractor.nip} → ${e.message}`);
+        }
+      });
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
