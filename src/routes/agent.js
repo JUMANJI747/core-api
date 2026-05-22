@@ -10,109 +10,79 @@ const { processCommunicationEsQuery } = require('../services/communication-agent
 const { processOperationsQuery } = require('../services/operations-agent');
 const { processSudoQuery } = require('../services/sudo-agent');
 
-// Stateless agent endpoints. Master agent (n8n) sends a self-contained query
-// (with any context it wants the sub-agent to see), gets back a text reply.
-
 router.post('/agent/logistics', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processLogisticsQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/accounting', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processAccountingQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processAccountingEsQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/communication', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processCommunicationQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/communication-es', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processCommunicationEsQuery(query, { chatId });
   res.json(result);
 }));
 
 router.post('/agent/operations', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processOperationsQuery(query, { chatId });
   res.json(result);
 }));
 
-// Sudo / power agent — pełen dostęp do bazy + każdego endpointu backendu
-// + GK API. Wywoływane gdy zwykły flow zawodzi albo user chce wprost
-// wymuszenie ("sudo X" / "wymuś Y" / "@admin Z" w prompcie Master).
 router.post('/agent/sudo', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
   const result = await processSudoQuery(query, { chatId });
   res.json(result);
 }));
 
 // POST /api/agent/email-context
 //
-// Wrapper ktory prefixuje email-context (metadata + body) + HISTORIA MAILI
-// kontrahenta (10 ostatnich INBOUND, najnowsze pierwsze) jako stringu do
-// query, potem deleguje do wybranego sub-agenta. Uzywane przez UI panel
-// AI w widoku maila — quick-prompt "Wystaw FV" / "Zamow paczke" / "Dodaj
-// kontrahenta" + free text.
+// Wrapper ktory prefixuje email-context (metadata + body) + historia maili
+// kontrahenta (10 ostatnich INBOUND, najnowsze pierwsze) + previousTurns
+// (rozmowa z UI panelu AI) jako stringu do query, potem deleguje do
+// wybranego sub-agenta.
 //
-// Default target = 'accounting' (Sonnet, najczestszy use case z mail-context).
-// 'sudo' (Opus) celowo NIE jest domyslnym targetem — drogi.
-//
-// Historia maili: pobierana z prisma.email po contractorId. Sluzy agentowi
-// do "wystaw FV na podstawie najswiezszego zamowienia" bez ekstra tool
-// call. Pomijamy aktualnie otwarty mail (po body match) — chodzi o tlo.
+// previousTurns sluzy zeby agent pamietal ostatni preview / draft / quote
+// gdy user mowi "tak" / "potwierdz" / "wystaw" - inaczej kazda tura jest
+// fresh i agent generuje nowy preview zamiast confirm'owac.
 //
 // Body:
 //   {
 //     query: string,
-//     emailContext: { from, to, subject, date, body, language?,
-//                     contractorId?, contractorName?, contractorNip?,
-//                     attachments? },
-//     target?: 'accounting' (default) | 'accounting-es' | 'communication' |
-//              'communication-es' | 'operations' | 'logistics' | 'sudo',
+//     emailContext: { from, to, subject, date, body, ... },
+//     target?: 'accounting' (default) | ...,
+//     previousTurns?: Array<{ role: 'user'|'assistant', text: string }>,
 //     chatId?: string
 //   }
 router.post('/agent/email-context', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { query, emailContext, target = 'accounting', chatId } = req.body || {};
-  if (!query || typeof query !== 'string') {
-    return res.status(400).json({ error: 'query (string) required' });
-  }
-  if (!emailContext || typeof emailContext !== 'object') {
-    return res.status(400).json({ error: 'emailContext (object) required' });
-  }
+  const { query, emailContext, target = 'accounting', chatId, previousTurns } = req.body || {};
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
+  if (!emailContext || typeof emailContext !== 'object') return res.status(400).json({ error: 'emailContext (object) required' });
 
   const processors = {
     sudo: processSudoQuery,
@@ -124,9 +94,7 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
     logistics: processLogisticsQuery,
   };
   const fn = processors[target];
-  if (!fn) {
-    return res.status(400).json({ error: 'unknown target', allowed: Object.keys(processors) });
-  }
+  if (!fn) return res.status(400).json({ error: 'unknown target', allowed: Object.keys(processors) });
 
   const lines = ['[KONTEKST MAILA]'];
   if (emailContext.from) lines.push(`Od: ${emailContext.from}`);
@@ -145,21 +113,13 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
   }
   if (emailContext.body) {
     lines.push('Tresc maila:');
-    // Limit do 2000 znakow zeby nie blow-upowac kontekstu
     lines.push(String(emailContext.body).slice(0, 2000));
   }
 
-  // Dorzuc HISTORIA MAILI KONTRAHENTA (10 ostatnich INBOUND, najnowsze pierwsze).
-  // Cel: pozwala agentowi wystawic FV "z najswiezszego zamowienia" bez
-  // ekstra tool call. Pomijamy mail ktory jest aktualnie otwarty (po body
-  // match) — chodzi o starsze tlo.
   if (emailContext.contractorId) {
     try {
       const history = await prisma.email.findMany({
-        where: {
-          contractorId: emailContext.contractorId,
-          direction: 'INBOUND',
-        },
+        where: { contractorId: emailContext.contractorId, direction: 'INBOUND' },
         orderBy: { createdAt: 'desc' },
         take: 11,
         select: { id: true, fromEmail: true, subject: true, bodyPreview: true, bodyFull: true, createdAt: true, tags: true },
@@ -186,20 +146,27 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
     }
   }
 
+  // POPRZEDNIE TURY — kluczowe zeby agent pamietal preview/draft/quote.
+  // Bez tego "tak" na potwierdzenie generuje nowy preview zamiast confirm.
+  if (Array.isArray(previousTurns) && previousTurns.length) {
+    const recent = previousTurns.slice(-10);
+    lines.push('');
+    lines.push(`POPRZEDNIE TURY ROZMOWY (${recent.length}, najstarsze pierwsze):`);
+    for (const t of recent) {
+      const who = t.role === 'user' ? '[USER]' : '[AGENT]';
+      const txt = String(t.text || '').slice(0, 1500);
+      lines.push(`${who} ${txt}`);
+    }
+    lines.push('');
+    lines.push('WAZNE: jak user mowi "tak"/"potwierdz"/"wystaw"/"ok" - odnosi sie do OSTATNIEGO twojego previewId/draftId/quoteId z poprzedniej tury [AGENT]. Wywolaj odpowiedni confirm tool (invoice_confirm/send_draft/order_shipment) z tym ID. NIE generuj nowego preview.');
+  }
+
   const prefix = lines.join('\n') + '\n\n[POLECENIE USER]\n';
 
   const result = await fn(prefix + query, { chatId });
   res.json(result);
 }));
 
-// Context recovery: surfaces last N minutes of activity so the Master
-// agent can re-orient itself after a context-window pause. Called when
-// user says ambiguous things like "następny", "tak", "dalej" without
-// naming a contractor — Master fetches this and reads "we just created
-// FV 78/2026 for Dani, and earlier we did 3 shipments to DE".
-//
-// Returns a compact human-readable summary + structured arrays. Window
-// defaults to 60min — pass ?minutes=N to widen.
 router.get('/agent/recent-activity', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const minutes = Math.max(1, Math.min(1440, Number(req.query.minutes) || 60));
