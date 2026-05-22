@@ -107,7 +107,8 @@ WDT vs KRAJOWA:
 KRÓTKIE POLECENIA UŻYTKOWNIKA (tak/ok/wyślij/potwierdź) — bez konkretów:
 Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastInvoiceId, lastContractorId).
 - lastAction="preview" + user "tak" → invoice_confirm
-- lastAction="confirmed" + user "wyślij" → invoice_send_email z lastInvoiceId
+- lastAction="confirmed" + user "wyślij mailem" → email_draft_with_invoice z invoiceId=lastInvoiceId (KROK 1, czekaj na akcept)
+- lastAction="email_draft" + user "tak/wyślij" → email_send_draft z draftId z poprzedniej odpowiedzi
 - brak kontekstu → zapytaj usera co konkretnie chce
 
 FLOW PACZKI WDT DLA KSIEGOWEJ (matched CMR + FV):
@@ -153,6 +154,59 @@ FLOW WYSTAWIENIA FV:
 2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
+
+FLOW WYSYLANIA FV MAILEM (ZAWSZE 2 KROKI — NIGDY BEZPOSREDNIO):
+Krok 1: email_draft_with_invoice({invoiceNumber, toEmail?, customNote?})
+        → tworzy DRAFT, backend attachuje PDF + tlumaczy body na jezyk
+        kontrahenta. Zwraca {draftId, from, to, subject, body, bodyPl,
+        lang, langName, attachments:[{filename, sizeKB}]}.
+Krok 2: POKAZ user-owi pelen draft DOSLOWNIE:
+        "DRAFT MAILA (czeka na akceptacje):
+         - Od: <from>
+         - Do: <to>
+         - Temat: <subject>
+         - Zalacznik: <attachments[0].filename> (<attachments[0].sizeKB>KB)
+         - Tresc (<langName>):
+           <body>
+         - Tlumaczenie PL:
+           <bodyPl>
+         DraftId: <draftId>
+         Wyslac?"
+Krok 3: User mowi "tak"/"wyslij"/"akceptuje" → email_send_draft({draftId})
+        → response.ok=true, mail wyslany. Pokaz confirm blok.
+
+NIGDY NIE WYSYLAJ BEZ KROKU 2+3. NIGDY nie uzywaj invoice_send_email
+(tool usuniety). Jak user mowi "wyslij FV 88 mailem" / "zalacz FV 88
+i wyslij" → ZAWSZE krok 1 (email_draft_with_invoice), pokaz draft,
+czekaj na potwierdzenie. Bez potwierdzenia NIE wolaj email_send_draft.
+
+ATTACH FV NA ZAWOLANIE:
+Gdy user mowi "zalacz fakture 88" / "wyslij maila z FV 88" / "FV 88
+mailem do klienta" — to wprost oznacza krok 1 z invoiceNumber:"88".
+Backend zatachuje PDF do draftu i pokaze blok "Zalacznik:
+Faktura_88_2026.pdf" — user widzi ze PDF bedzie w mailu. Po
+confirm: draft idzie z attachem.
+
+Gdy FV byla wystawiona przed chwila (lastAction='confirmed' w
+get_context), "wyslij to mailem" oznacza krok 1 z invoiceId =
+lastInvoiceId.
+
+CUSTOM NOTE W DRAFCIE:
+User mowi "wyslij FV 88 i napisz 'zgodnie z naszą rozmową'" → krok 1
+z customNote:"zgodnie z naszą rozmową". Note wkleja sie do body
+w jezyku kontrahenta. NIE zmieniaj sam body — backend lokalizuje.
+
+CONTACT SEARCH (Marco, Anna, Pedro etc):
+Gdy user pisze "wystaw FV dla Marco" / "FV dla Marco ze sklepu":
+Marco to imie KONTAKTU (osoby z extras.contacts[].name), NIE nazwa
+firmy. find_contractor zwraca tez matche po extras.contacts[].name
+(matchedBy='contact'). Jak find_contractor zwroci kilku pasujacych:
+  → POKAZ liste numerowana ("1. Sklep X (kontakt Marco), 2. Sklep Y
+    (kontakt Marco)") i zapytaj usera ktorego ma na mysli.
+  → Gdy user odpowie "1" / "ten pierwszy" / "Sklep X" — uzyj
+    contractorId z pozycji 1 z poprzedniej listy.
+NIE wybieraj losowo. NIE halucynuj. NIE proponuj nazw firm ktorych
+nie ma w find_contractor response.
 
 ⚠ FLOW NAPRAWY KONTRAHENTA W IFIRMIE (auto-recovery):
 Gdy invoice_confirm / invoice_preview zwroci blad z iFirmy o danych
@@ -205,23 +259,22 @@ SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest listing/sea
 - NIE rób disambiguacji ("Znalazłem 3 faktury z '65'") — backend bierze
   najświeższą z bieżącego roku. Jeśli user wprost chce inną ("daj 65/2025"),
   poda pełen numer.
-- Wysłanie mailem do klienta to invoice_send_email — różne od "daj".
+- Wysłanie mailem do klienta to email_draft_with_invoice + email_send_draft (2 kroki, z akceptacją) — różne od "daj".
 
 ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj odpowiedzi z historii
 - response.error → pokaż DOSŁOWNIE, NIE zgaduj przyczyn
 - response.ok=false z suggestions → pokaż user-owi listę żeby wybrał
 - NIE zmyślaj wartości / cen / numerów faktur — wszystko z odpowiedzi tool
-- response.confirmation → POKAŻ KAŻDE POLE DOSŁOWNIE z API (to jest twardy dowód że akcja się odbyła). Po invoice_send_email pokaż blok z faktycznymi wartościami:
+- response.confirmation → POKAŻ KAŻDE POLE DOSŁOWNIE z API (to jest twardy dowód że akcja się odbyła). Po email_send_draft pokaż blok z faktycznymi wartościami:
   "Wysłane ✓
-   - Numer: <invoiceNumber>
    - Z: <from>
    - Do: <to>
    - Temat: <subject>
-   - PDF: <attachmentFilename> (<attachmentSizeKB> KB)
-   - MessageId: <messageId>
-   - Wysłano: <sentAt>"
-  NIE pisz "wysłałem" bez bloku confirmation. NIE wymyślaj messageId / sizeKB / sentAt. Jeśli messageId=null napisz "MessageId: brak (SMTP nie zwrócił)".
+   - DraftId: <emailId>
+   - MessageId: <messageId>"
+  NIE pisz "wysłałem" bez bloku confirmation. NIE wymyślaj messageId. Jeśli messageId=null napisz "MessageId: brak (SMTP nie zwrócił)".
+- Po email_draft_with_invoice ZAWSZE pokaz pelen draft (Od/Do/Temat/Zalacznik/Tresc/Tlumaczenie PL/DraftId) i zapytaj "Wyslac?" — NIGDY nie wolaj email_send_draft samemu.
 - Plain text, listy z "-", krótko bez wstępów
 
 ╔══════════════════════════════════╗
@@ -329,15 +382,27 @@ const tools = [
     input_schema: { type: 'object', properties: {} },
   },
   {
-    name: 'invoice_send_email',
-    description: 'Wyślij PDF faktury mailem do klienta. invoiceId z odpowiedzi invoice_confirm, toEmail z bazy lub od user-a.',
+    name: 'email_draft_with_invoice',
+    description: 'KROK 1 wysylki FV mailem. Tworzy DRAFT maila z PDF faktury w zalaczniku + tresc przetlumaczona na jezyk kontrahenta. NIE WYSYLA. Po tym toolu MUSISZ pokazac user-owi pelen draft (Od/Do/Temat/Zalacznik/body w jezyku odbiorcy/tlumaczenie PL) i CZEKAC na potwierdzenie. Zwraca {draftId, from, to, subject, body, bodyPl, lang, langName, attachments}. Akceptuje invoiceNumber ("88", "88/2026") LUB invoiceId (UUID). toEmail opcjonalne (default: contractor.primaryEmail/email). customNote opcjonalne — dodatkowa linia w body (np. "zgodnie z rozmowa").',
     input_schema: {
       type: 'object',
       properties: {
-        invoiceId: { type: 'string', description: 'UUID faktury z bazy (z invoice_confirm response)' },
-        toEmail: { type: 'string', description: 'Email odbiorcy faktury' },
+        invoiceNumber: { type: 'string', description: 'Numer faktury, np. "88" (rok dolozy backend) lub "88/2026"' },
+        invoiceId: { type: 'string', description: 'UUID faktury (alternatywa do invoiceNumber)' },
+        toEmail: { type: 'string', description: 'Email odbiorcy. Opcjonalne — bez = contractor.primaryEmail z bazy.' },
+        customNote: { type: 'string', description: 'Dodatkowa tresc do body draftu (np. "Zgodnie z naszą rozmową telefoniczną"). Backend wstawi przed podpisem.' },
       },
-      required: ['invoiceId', 'toEmail'],
+    },
+  },
+  {
+    name: 'email_send_draft',
+    description: 'KROK 2 wysylki FV mailem. Wysyla wczesniej przygotowany DRAFT (po akceptacji user-a). Argument draftId z email_draft_with_invoice response. Bez akceptacji user-a NIE WOLAJ TEGO TOOL-a.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        draftId: { type: 'string', description: 'UUID draftu z email_draft_with_invoice response' },
+      },
+      required: ['draftId'],
     },
   },
   {
@@ -495,7 +560,8 @@ const tools = [
 const ENDPOINT_MAP = {
   invoice_preview: ['POST', '/api/ifirma/invoice-preview'],
   invoice_confirm: ['POST', '/api/ifirma/invoice-confirm-latest'],
-  invoice_send_email: ['POST', '/api/ifirma/send-invoice-email'],
+  email_draft_with_invoice: ['POST', '/api/emails/draft-with-invoice'],
+  email_send_draft: ['POST', '/api/send-email/:draftId/confirm'],
   list_products: ['GET', '/api/products'],
   expand_box: ['GET', '/api/products/expand-box'], // qty/ean as query
   ifirma_sync: ['POST', '/api/ifirma/sync'],
@@ -554,7 +620,9 @@ async function processAccountingQuery(query, ctx = {}) {
   // is rare; but typical "tak" alone is confirm).
   if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query)) forcedTool = 'invoice_confirm';
   else if (PDF_TELEGRAM_INTENT_RE.test(query)) forcedTool = 'send_invoice_pdf_telegram';
-  else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'invoice_send_email';
+  // "wyslij FV X mailem" → ZAWSZE krok 1 (draft), nigdy bezposrednia wysylka.
+  // User musi zaakceptowac draft osobnym poleceniem -> dopiero wtedy email_send_draft.
+  else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'email_draft_with_invoice';
   else if (SYNC_INTENT.test(query)) forcedTool = 'ifirma_sync';
   else if (ANALYTICS_INTENT.test(query)) forcedTool = 'analytics';
   else if (PREVIEW_INTENT.test(query)) forcedTool = 'invoice_preview';
