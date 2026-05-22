@@ -54,6 +54,28 @@ router.post('/upsert', async (req, res) => {
 
     if (!n.name) return res.status(400).json({ error: 'name required' });
 
+    // Auto-extract postCode + city z address jak agent przekazal wszystko
+    // w jednym stringu (np. "ul. Jagielly 1A, 11-500 Gizycko"). Bez tego
+    // nawet z nowym tool schema agent moze nie rozbic na components.
+    if (!n.postCode && n.address) {
+      const zipMatch = n.address.match(/\b(\d{2}-\d{3})\b/);
+      if (zipMatch) {
+        n.postCode = zipMatch[1];
+        console.log(`[contractors/upsert] auto-extract postCode "${n.postCode}" z address "${n.address}"`);
+      }
+    }
+    if (!n.city && n.address && n.postCode) {
+      const afterZip = n.address.split(n.postCode)[1] || '';
+      const cityMatch = afterZip.match(/^[,\s]+([A-Za-zÀ-ſ][\wÀ-ſ\s\-]+?)(?:[,\s]|$)/);
+      if (cityMatch) {
+        const candidateCity = cityMatch[1].trim().replace(/[,;]+$/, '');
+        if (candidateCity.length > 1 && candidateCity.length < 50) {
+          n.city = candidateCity;
+          console.log(`[contractors/upsert] auto-extract city "${n.city}" z address`);
+        }
+      }
+    }
+
     // Canonicalize: postCode + address fields trafiaja do extras.billingAddress.
     // Bez tego pole nie ma gdzie usiasc — Contractor model nie ma kolumny
     // postCode, a iFirma push (auto-sync + invoice-confirm) potrzebuje go
