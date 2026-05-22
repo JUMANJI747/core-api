@@ -586,12 +586,19 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         where: { contractorId: contractor.id, type: 'billing' },
         orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
       }).catch(() => null);
+      // PostCode chain z fallbackiem regexowym: jak zadne strukturalne pole nie
+      // ma kodu, sprobuj wyciagnac PL format \d{2}-\d{3} z address (np.
+      // "ul. Jagielly 1A, 11-500 Gizycko" -> "11-500").
+      const _addressBlob = [contractor.address, billingAddr && billingAddr.street, billing.street, cExtras.street, contractor.city, billingAddr && billingAddr.city, billing.city, cExtras.city].filter(Boolean).join(' ');
+      const _zipFromBlob = (_addressBlob.match(/\b\d{2}-\d{3}\b/) || [])[0] || '';
+      const _postCode = (billingAddr && billingAddr.postalCode) || billing.postCode || cExtras.postCode || cExtras.zipCode || cExtras.postalCode || _zipFromBlob || '';
+      console.log(`[invoice-confirm] kontrahent fields: nip=${contractor.nip} addr="${contractor.address || ''}" city="${contractor.city || ''}" postCode="${_postCode}" (zipFromBlob="${_zipFromBlob}")`);
       const kontrahentPayload = {
         name: contractor.name,
         nip: contractor.nip,
         address: contractor.address || (billingAddr && billingAddr.street) || billing.street || cExtras.street || '',
         city: contractor.city || (billingAddr && billingAddr.city) || billing.city || cExtras.city || '',
-        postCode: (billingAddr && billingAddr.postalCode) || billing.postCode || cExtras.postCode || cExtras.zipCode || cExtras.postalCode || '',
+        postCode: _postCode,
         country: contractor.country || (billingAddr && billingAddr.country) || billing.country || '',
         email: contractor.primaryEmail || contractor.email || '',
         phone: contractor.phone || '',
@@ -810,12 +817,16 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       where: { contractorId: contractor.id, type: 'billing' },
       orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
     }).catch(() => null);
+    const _addressBlob2 = [contractor.address, billingAddr2 && billingAddr2.street, billing2.street, cExtras2.street, contractor.city, billingAddr2 && billingAddr2.city, billing2.city, cExtras2.city].filter(Boolean).join(' ');
+    const _zipFromBlob2 = (_addressBlob2.match(/\b\d{2}-\d{3}\b/) || [])[0] || '';
+    const _postCode2 = (billingAddr2 && billingAddr2.postalCode) || billing2.postCode || cExtras2.postCode || cExtras2.zipCode || cExtras2.postalCode || _zipFromBlob2 || '';
+    console.log(`[invoice-confirm/${previewId}] kontrahent fields: nip=${contractor.nip} addr="${contractor.address || ''}" city="${contractor.city || ''}" postCode="${_postCode2}" (zipFromBlob="${_zipFromBlob2}")`);
     const kontrahentPayload2 = {
       name: contractor.name,
       nip: contractor.nip,
       address: contractor.address || (billingAddr2 && billingAddr2.street) || billing2.street || cExtras2.street || '',
       city: contractor.city || (billingAddr2 && billingAddr2.city) || billing2.city || cExtras2.city || '',
-      postCode: (billingAddr2 && billingAddr2.postalCode) || billing2.postCode || cExtras2.postCode || cExtras2.zipCode || cExtras2.postalCode || '',
+      postCode: _postCode2,
       country: contractor.country || (billingAddr2 && billingAddr2.country) || billing2.country || '',
       email: contractor.primaryEmail || contractor.email || '',
       phone: contractor.phone || '',
