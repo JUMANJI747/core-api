@@ -1325,11 +1325,46 @@ async function processSentItems(account) {
         if (!mail.toEmail || !mail.fromEmail) continue;
 
         // Dedup po messageId — gdy mail wysłaliśmy przez nasz sendMail,
-        // już jest w Email. Nie dublujemy.
+        // już jest w Email. Nie dublujemy. Z brackets-normalizacja bo
+        // mail-sender zapisuje <id@host>, a mailparser z IMAP fetch moze
+        // zwrocic czyste id albo z bracketami. Bez normalizacji dedup
+        // zawodzil i tworzylismy duplikat z empty body.
+        const normalizeMsgId = (m) => m ? String(m).trim().replace(/^<|>$/g, '').toLowerCase() : '';
         if (mail.messageId) {
-          const existing = await prisma.email.findFirst({ where: { messageId: mail.messageId } });
-          if (existing) {
-            console.log(`[inbox-poller] ${sentKey}: dedup by messageId, skip uid=${mail.uid}`);
+          const norm = normalizeMsgId(mail.messageId);
+          const candidates = await prisma.email.findMany({
+            where: {
+              OR: [
+                { messageId: mail.messageId },
+                { messageId: `<${norm}>` },
+                { messageId: norm },
+              ],
+            },
+            select: { id: true, messageId: true },
+            take: 5,
+          });
+          if (candidates.length) {
+            console.log(`[inbox-poller] ${sentKey}: dedup by messageId (normalized "${norm}") - skip uid=${mail.uid} (matched: ${candidates.map(c => c.id).join(',')})`);
+            continue;
+          }
+        }
+        // Fuzzy fallback: maile od nas wyslane przez sendMail mialy zapis
+        // sekundy wczesniej (przed APPEND do IMAP Sent). Jak messageId
+        // jakos nie matchuje, dedup po from+to+subject w 10min window.
+        if (mail.subject && mail.toEmail && mail.fromEmail) {
+          const cutoff = new Date(Date.now() - 10 * 60 * 1000);
+          const fuzzy = await prisma.email.findFirst({
+            where: {
+              direction: 'OUTBOUND',
+              subject: mail.subject,
+              toEmail: { equals: mail.toEmail, mode: 'insensitive' },
+              fromEmail: { equals: mail.fromEmail, mode: 'insensitive' },
+              createdAt: { gte: cutoff },
+            },
+            select: { id: true, messageId: true, createdAt: true },
+          });
+          if (fuzzy) {
+            console.log(`[inbox-poller] ${sentKey}: dedup fuzzy (subject+to+from+10min) - skip uid=${mail.uid} (matched: ${fuzzy.id}, msgId=${fuzzy.messageId})`);
             continue;
           }
         }

@@ -1414,7 +1414,7 @@ router.post('/emails/:id/translate-to-pl', async (req, res) => {
 // Generic translate dla composera (PL -> jezyk odbiorcy). Auto-detect target
 // jak nie podany: contractor.country -> jezyk, lub poprzednie maile w watku
 // (przez replyToEmailId). Body:
-//   { text, sourceLang = 'pl', targetLang, contractorId, replyToEmailId } = req.body || {};
+//   { text, sourceLang?='pl', targetLang?, contractorId?, replyToEmailId? }
 router.post('/emails/translate', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -1465,6 +1465,93 @@ router.post('/emails/translate', async (req, res) => {
   } catch (e) {
     console.error('[emails/translate] error:', e.message);
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/emails/cleanup-empty-outbound-dupes
+// Usun OUTBOUND maile ktore maja pusty bodyFull/bodyPreview, jezeli istnieje
+// SIBLING (ten sam toEmail+subject) z NIE-pustym body. Powstaja przez bug w
+// processSentItems gdy IMAP poller nie zdedupowal po messageId i utworzyl
+// drugi row z empty body (bo mailparser nie wyciagnal text z naszego
+// APPEND'owanego raw message). Wzmocnione dedup w inbox-poller juz zapobiega
+// nowym, ten endpoint czysci historyczne.
+//
+// Body: { dryRun?: boolean }
+router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { dryRun = false } = req.body || {};
+
+    // Znajdz OUTBOUND z empty body
+    const candidates = await prisma.email.findMany({
+      where: {
+        direction: 'OUTBOUND',
+        OR: [
+          { bodyFull: null },
+          { bodyFull: '' },
+        ],
+        subject: { not: null },
+        toEmail: { not: '' },
+      },
+      select: { id: true, subject: true, toEmail: true, fromEmail: true, createdAt: true, messageId: true },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    });
+
+    const toDelete = [];
+    for (const cand of candidates) {
+      // Sprawdz czy istnieje sibling (ten sam to+subject) z body
+      const sibling = await prisma.email.findFirst({
+        where: {
+          direction: 'OUTBOUND',
+          toEmail: cand.toEmail,
+          subject: cand.subject,
+          id: { not: cand.id },
+          NOT: [
+            { bodyFull: null },
+            { bodyFull: '' },
+          ],
+        },
+        select: { id: true, createdAt: true, bodyFull: true },
+      });
+      if (sibling) {
+        toDelete.push({
+          emptyId: cand.id,
+          emptyCreatedAt: cand.createdAt,
+          emptyMsgId: cand.messageId,
+          siblingId: sibling.id,
+          siblingCreatedAt: sibling.createdAt,
+          siblingBodyLen: (sibling.bodyFull || '').length,
+          subject: cand.subject,
+          toEmail: cand.toEmail,
+        });
+      }
+    }
+
+    if (dryRun) {
+      return res.json({
+        ok: true,
+        dryRun: true,
+        scanned: candidates.length,
+        wouldDelete: toDelete.length,
+        sample: toDelete.slice(0, 10),
+      });
+    }
+
+    let deleted = 0;
+    for (const item of toDelete) {
+      try {
+        await prisma.email.delete({ where: { id: item.emptyId } });
+        deleted++;
+      } catch (e) {
+        console.error('[cleanup-empty-outbound-dupes] delete failed:', item.emptyId, e.message);
+      }
+    }
+
+    res.json({ ok: true, scanned: candidates.length, deleted, sample: toDelete.slice(0, 10) });
+  } catch (e) {
+    console.error('[cleanup-empty-outbound-dupes] error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
