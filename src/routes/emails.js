@@ -792,6 +792,37 @@ router.get('/inbox-coverage', async (req, res) => {
   }
 });
 
+// ============ INBOX STATS (aggregated counts per inbox) ============
+//
+// Sidebar w /emails wymaga listy wszystkich skrzynek z licznikami unread.
+// Wczesniej liczyl to z `/api/emails?limit=500&direction=INBOUND` ale backend
+// cap'uje limit do 100, a po rescan (3000+ rows z createdAt=NOW()) top 100
+// dominuje ostatnio-inserted inbox i reszta znika z sidebar.
+//
+// Tutaj GROUP BY zwraca caly stan. direction=INBOUND filter, total + unread.
+router.get('/emails/inbox-stats', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const rows = await prisma.email.groupBy({
+      by: ['inbox'],
+      where: { direction: 'INBOUND', inbox: { not: null } },
+      _count: { _all: true },
+    });
+    const unreadRows = await prisma.email.groupBy({
+      by: ['inbox'],
+      where: { direction: 'INBOUND', inbox: { not: null }, isRead: false },
+      _count: { _all: true },
+    });
+    const unreadMap = Object.fromEntries(unreadRows.map(r => [r.inbox, r._count._all]));
+    const out = rows
+      .map(r => ({ inbox: r.inbox, total: r._count._all, unread: unreadMap[r.inbox] || 0 }))
+      .sort((a, b) => (b.unread - a.unread) || a.inbox.localeCompare(b.inbox));
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ FORCE POLL TRIGGER ============
 //
 // Wymusza inbox-pollera do natychmiastowego sprawdzenia wszystkich skrzynek
@@ -1587,7 +1618,6 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
 // Wymusza re-fetch IMAP Sent folder od daty N dni wstecz. Dla kazdego maila:
 //   - jak istnieje w bazie po messageId (norm) lub fuzzy match — UPDATE body
 //     jak puste, inaczej skip
-//   - jak nie istnieje — CREATE OUTBOUND
 //
 // Body: { inbox: string (required), daysBack?: number (default 30) }
 //
