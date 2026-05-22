@@ -199,6 +199,31 @@ router.get('/emails/:id', async (req, res) => {
       },
     });
     if (!email) return res.status(404).json({ error: 'Email not found' });
+    // Diag: pokaz co backend zwraca z bazy dla maila ktory user otwiera.
+    // Pomoze zdiagnozowac bug "(brak treści)" w UI mimo ze sendMail logi
+    // pokazaly zapis z body 43 znaki.
+    console.log(`[emails/:id] return id=${email.id} dir=${email.direction} subj="${(email.subject||'').slice(0,50)}" bodyFullLen=${(email.bodyFull||'').length} bodyPreviewLen=${(email.bodyPreview||'').length} bodyFullNull=${email.bodyFull===null} bodyPreviewNull=${email.bodyPreview===null}`);
+    // Sprawdz tez czy nie ma duplikatow OUTBOUND po toEmail+subject — moglo
+    // sie zdarzyc ze sendMail zapisal jeden, a processSentItems poller zrobil
+    // drugi z empty body (np. mismatch messageId formats).
+    if (email.direction === 'OUTBOUND' && email.subject && email.toEmail) {
+      const dupes = await prisma.email.findMany({
+        where: {
+          direction: 'OUTBOUND',
+          toEmail: email.toEmail,
+          subject: email.subject,
+          id: { not: email.id },
+        },
+        select: { id: true, bodyFull: true, messageId: true, createdAt: true },
+        take: 5,
+      });
+      if (dupes.length) {
+        console.log(`[emails/:id] DUPLICATES found for ${email.toEmail} "${email.subject}":`);
+        for (const d of dupes) {
+          console.log(`  id=${d.id} createdAt=${d.createdAt.toISOString()} bodyLen=${(d.bodyFull||'').length} msgId=${d.messageId}`);
+        }
+      }
+    }
     res.json(email);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -357,6 +382,7 @@ router.get('/attachment/:id/parse', async (req, res) => {
 router.post('/send-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
+    console.log(`[send-email] req.body keys: ${Object.keys(req.body || {}).join(',')} bodyLen: ${String(req.body && req.body.body || '').length} draft: ${req.body && req.body.draft}`);
     let { from, to, subject, body, replyTo, emailId: replyToEmailId, draft = true } = req.body;
 
     // Reply-in-thread: resolve from/to/subject from original email
@@ -1388,7 +1414,7 @@ router.post('/emails/:id/translate-to-pl', async (req, res) => {
 // Generic translate dla composera (PL -> jezyk odbiorcy). Auto-detect target
 // jak nie podany: contractor.country -> jezyk, lub poprzednie maile w watku
 // (przez replyToEmailId). Body:
-//   { text, sourceLang?='pl', targetLang?, contractorId?, replyToEmailId? }
+//   { text, sourceLang = 'pl', targetLang, contractorId, replyToEmailId } = req.body || {};
 router.post('/emails/translate', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
