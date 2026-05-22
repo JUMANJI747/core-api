@@ -61,6 +61,10 @@ function extractInbox(email) {
 // ============ SEND MAIL ============
 
 async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, references, attachments }) {
+  // Diag: pokaz co dokladnie wchodzi do sendMail. Pomoglo zdiagnozowac bug
+  // "wyslany mail pusty" — body byl pusty z frontu mimo ze user widzial tekst
+  // w composer textarea. Body znika gdzies w przesylce frontend->backend.
+  console.log(`[mail-sender] sendMail called: from=${from} to=${to} subjectLen=${(subject || '').length} bodyLen=${(body || '').length} bodyType=${typeof body} bodyPreview="${String(body || '').slice(0, 100)}"`);
   console.log('[mail-sender] IMAP_ACCOUNTS parsed:', JSON.stringify(getAccounts().map(a => ({ inbox: a.inbox, user: a.user, hasPass: !!a.pass }))));
   console.log('[mail-sender] looking for FROM:', from);
   const account = findAccount(from);
@@ -94,6 +98,7 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
     ...(inReplyTo ? { inReplyTo, references: references || inReplyTo } : {}),
     ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
   };
+  console.log(`[mail-sender] mailOptions: hasText=${!!mailOptions.text} hasHtml=${!!mailOptions.html} textLen=${(mailOptions.text || '').length}`);
 
   // Generate the raw RFC822 first so we can also APPEND it to the IMAP
   // Sent folder after SMTP delivery succeeds (Thunderbird / other IMAP
