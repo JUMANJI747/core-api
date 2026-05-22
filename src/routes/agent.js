@@ -81,31 +81,32 @@ router.post('/agent/sudo', asyncHandler(async (req, res) => {
 
 // POST /api/agent/email-context
 //
-// Wrapper ktory prefixuje email-context (metadata + body) jako stringu do
+// Wrapper ktory prefixuje email-context (metadata + body) + HISTORIA MAILI
+// kontrahenta (10 ostatnich INBOUND, najnowsze pierwsze) jako stringu do
 // query, potem deleguje do wybranego sub-agenta. Uzywane przez UI panel
-// AI w widoku maila — user kliknie ikone/Cmd+K na otwartym mailu, pisze
-// po polsku (lub voice-input transkrybowany przez Web Speech API),
-// a agent decyduje co zrobic (wystaw FV / zamow paczke / dodaj
-// kontrahenta / odpowiedz).
+// AI w widoku maila — quick-prompt "Wystaw FV" / "Zamow paczke" / "Dodaj
+// kontrahenta" + free text.
+//
+// Default target = 'accounting' (Sonnet, najczestszy use case z mail-context).
+// 'sudo' (Opus) celowo NIE jest domyslnym targetem — drogi.
+//
+// Historia maili: pobierana z prisma.email po contractorId. Sluzy agentowi
+// do "wystaw FV na podstawie najswiezszego zamowienia" bez ekstra tool
+// call. Pomijamy aktualnie otwarty mail (po body match) — chodzi o tlo.
 //
 // Body:
 //   {
-//     query: string,                  // intent w naturalnym jezyku (PL)
-//     emailContext: {                 // metadata otwartego maila
-//       from, to, subject, date,
-//       body, language?,
-//       contractorId?, contractorName?, contractorNip?,
-//       attachments?: [{filename, contentType, size}]
-//     },
-//     target?: 'sudo' (default) | 'accounting' | 'accounting-es' |
-//              'communication' | 'communication-es' | 'operations' | 'logistics',
+//     query: string,
+//     emailContext: { from, to, subject, date, body, language?,
+//                     contractorId?, contractorName?, contractorNip?,
+//                     attachments? },
+//     target?: 'accounting' (default) | 'accounting-es' | 'communication' |
+//              'communication-es' | 'operations' | 'logistics' | 'sudo',
 //     chatId?: string
 //   }
-//
-// Zero zmian w sub-agentach — wzorzec analogiczny do dateContextPrefix
-// ktorego sub-agenty juz akceptuja w treści query.
 router.post('/agent/email-context', asyncHandler(async (req, res) => {
-  const { query, emailContext, target = 'sudo', chatId } = req.body || {};
+  const prisma = req.app.locals.prisma;
+  const { query, emailContext, target = 'accounting', chatId } = req.body || {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query (string) required' });
   }
@@ -147,6 +148,44 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
     // Limit do 2000 znakow zeby nie blow-upowac kontekstu
     lines.push(String(emailContext.body).slice(0, 2000));
   }
+
+  // Dorzuc HISTORIA MAILI KONTRAHENTA (10 ostatnich INBOUND, najnowsze pierwsze).
+  // Cel: pozwala agentowi wystawic FV "z najswiezszego zamowienia" bez
+  // ekstra tool call. Pomijamy mail ktory jest aktualnie otwarty (po body
+  // match) — chodzi o starsze tlo.
+  if (emailContext.contractorId) {
+    try {
+      const history = await prisma.email.findMany({
+        where: {
+          contractorId: emailContext.contractorId,
+          direction: 'INBOUND',
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 11,
+        select: { id: true, fromEmail: true, subject: true, bodyPreview: true, bodyFull: true, createdAt: true, tags: true },
+      });
+      const openBodyHead = emailContext.body ? String(emailContext.body).slice(0, 80) : null;
+      const others = history
+        .filter(e => !openBodyHead || (e.bodyFull || e.bodyPreview || '').slice(0, 80) !== openBodyHead)
+        .slice(0, 10);
+      if (others.length) {
+        lines.push('');
+        lines.push(`HISTORIA MAILI KONTRAHENTA (${others.length}, najnowsze pierwsze):`);
+        for (const e of others) {
+          const date = e.createdAt.toISOString().slice(0, 10);
+          const subj = (e.subject || '(brak tematu)').slice(0, 80);
+          const preview = ((e.bodyFull || e.bodyPreview || '').replace(/\s+/g, ' ').trim()).slice(0, 250);
+          lines.push(`- [${date}] "${subj}"`);
+          if (preview) lines.push(`  ${preview}`);
+        }
+        lines.push('');
+        lines.push('Powyzsza historia jest dostepna od razu — uzyj jak user prosi o FV/order na podstawie zamowienia ktore klient wczesniej wyslal. NAJNOWSZE sa pierwsze.');
+      }
+    } catch (e) {
+      console.error('[agent/email-context] history fetch failed:', e.message);
+    }
+  }
+
   const prefix = lines.join('\n') + '\n\n[POLECENIE USER]\n';
 
   const result = await fn(prefix + query, { chatId });
@@ -166,7 +205,6 @@ router.get('/agent/recent-activity', asyncHandler(async (req, res) => {
   const minutes = Math.max(1, Math.min(1440, Number(req.query.minutes) || 60));
   const since = new Date(Date.now() - minutes * 60 * 1000);
 
-  // Pull everything in parallel — these are independent queries.
   const [recentInvoices, recentTransactions, recentEmailsOut, recentEmailsIn, recentContractors] = await Promise.all([
     prisma.invoice.findMany({
       where: { createdAt: { gte: since } },
@@ -205,7 +243,6 @@ router.get('/agent/recent-activity', asyncHandler(async (req, res) => {
     }),
   ]);
 
-  // Build a human-readable summary the Master can shove into prompt.
   const lines = [];
   lines.push(`Aktywność z ostatnich ${minutes} minut:`);
   if (recentInvoices.length) {
@@ -265,26 +302,11 @@ router.get('/agent/recent-activity', asyncHandler(async (req, res) => {
   });
 }));
 
-// Resolve what "tak"/"ok"/"1"/"wyślij" should confirm. Master agent calls
-// this whenever the user types a bare confirmation, so it doesn't have to
-// pattern-match across 7 different scenarios in its prompt. Backend looks
-// at three persistence layers and picks the most recent active item:
-//
-//   1) Email DRAFT (direction='DRAFT', created < 30 min) — covers mail
-//      replies AND auto-tracking-notify drafts.
-//   2) AgentContext id='ksiegowosc' lastAction='preview' (PL FV preview).
-//   3) quoteStore (in-memory) — recent GK courier quote.
-//
-// Returns { action, ...metadata } or { action: 'ambiguous', hint } when
-// nothing pending — in that case the "tak" likely answers a different
-// kind of yes/no question (e.g. "zapisać adres?") and the Master should
-// continue the conversation naturally.
 router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const cutoff = new Date(Date.now() - 30 * 60 * 1000);
   const candidates = [];
 
-  // 1) DRAFT mail
   try {
     const draft = await prisma.email.findFirst({
       where: { direction: 'DRAFT', createdAt: { gte: cutoff } },
@@ -306,7 +328,6 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
     }
   } catch (e) { console.error('[resolve-confirmation] draft probe error:', e.message); }
 
-  // 2) PL FV preview via AgentContext
   try {
     const acct = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc' } });
     const d = acct && acct.data;
@@ -322,7 +343,6 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
     }
   } catch (e) { console.error('[resolve-confirmation] preview probe error:', e.message); }
 
-  // 3) GK courier quote (in-memory)
   try {
     const quoteStore = req.app.locals.quoteStore || {};
     const keys = Object.keys(quoteStore);
@@ -355,8 +375,6 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
     });
   }
 
-  // Pick newest. Surface others so the Master can warn user if there's
-  // overlap ("masz 2 rzeczy do potwierdzenia, którą?").
   candidates.sort((a, b) => new Date(b.ts) - new Date(a.ts));
   const winner = candidates[0];
   const others = candidates.slice(1).map(c => ({ action: c.action, ts: c.ts }));
