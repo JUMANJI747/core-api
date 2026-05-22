@@ -1469,20 +1469,22 @@ router.post('/emails/translate', async (req, res) => {
 });
 
 // POST /api/emails/cleanup-empty-outbound-dupes
-// Usun OUTBOUND maile ktore maja pusty bodyFull/bodyPreview, jezeli istnieje
-// SIBLING (ten sam toEmail+subject) z NIE-pustym body. Powstaja przez bug w
-// processSentItems gdy IMAP poller nie zdedupowal po messageId i utworzyl
-// drugi row z empty body (bo mailparser nie wyciagnal text z naszego
-// APPEND'owanego raw message). Wzmocnione dedup w inbox-poller juz zapobiega
-// nowym, ten endpoint czysci historyczne.
-//
-// Body: { dryRun?: boolean }
+// Usun OUTBOUND maile ktore maja pusty bodyFull/bodyPreview. Tryby:
+//   - dryRun: pokaz co usuneloby
+//   - allowOrphans=false (default): usuwa TYLKO te ktore maja sibling (ten
+//     sam toEmail+subject) z NIE-pustym body. Bezpieczne — nie kasujemy
+//     unikalnych emaili.
+//   - allowOrphans=true: usuwa TEZ orphany (empty bez sibling) starsze niz
+//     orphansMinAgeDays (default 1 dzien) — uzywane gdy sa stare puste rows
+//     zostawione przez sknocony processSentItems przed wdrozeniem dedup
+//     fixu. Body zostalo utracone w mailparser, nie da sie odzyskac z bazy.
+//     Jak chcesz ratowac body — uzyj POST /api/emails/sent-rescan zeby
+//     pobrac raw IMAP Sent i uzupelnic body, dopiero POTEM cleanup.
 router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { dryRun = false } = req.body || {};
+    const { dryRun = false, allowOrphans = false, orphansMinAgeDays = 1 } = req.body || {};
 
-    // Znajdz OUTBOUND z empty body
     const candidates = await prisma.email.findMany({
       where: {
         direction: 'OUTBOUND',
@@ -1495,12 +1497,12 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
       },
       select: { id: true, subject: true, toEmail: true, fromEmail: true, createdAt: true, messageId: true },
       orderBy: { createdAt: 'desc' },
-      take: 1000,
+      take: 2000,
     });
 
     const toDelete = [];
+    const orphans = [];
     for (const cand of candidates) {
-      // Sprawdz czy istnieje sibling (ten sam to+subject) z body
       const sibling = await prisma.email.findFirst({
         where: {
           direction: 'OUTBOUND',
@@ -1525,7 +1527,22 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
           subject: cand.subject,
           toEmail: cand.toEmail,
         });
+      } else {
+        orphans.push({
+          emptyId: cand.id,
+          emptyCreatedAt: cand.createdAt,
+          emptyMsgId: cand.messageId,
+          subject: cand.subject,
+          toEmail: cand.toEmail,
+        });
       }
+    }
+
+    // Filter orphans po minAgeDays
+    let orphansToDelete = [];
+    if (allowOrphans) {
+      const cutoff = new Date(Date.now() - orphansMinAgeDays * 24 * 60 * 60 * 1000);
+      orphansToDelete = orphans.filter(o => new Date(o.emptyCreatedAt) < cutoff);
     }
 
     if (dryRun) {
@@ -1533,13 +1550,18 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
         ok: true,
         dryRun: true,
         scanned: candidates.length,
-        wouldDelete: toDelete.length,
-        sample: toDelete.slice(0, 10),
+        wouldDeleteWithSibling: toDelete.length,
+        orphansFound: orphans.length,
+        orphansToDelete: orphansToDelete.length,
+        allowOrphans,
+        orphansMinAgeDays,
+        sampleSibling: toDelete.slice(0, 5),
+        sampleOrphans: orphans.slice(0, 5),
       });
     }
 
     let deleted = 0;
-    for (const item of toDelete) {
+    for (const item of [...toDelete, ...orphansToDelete]) {
       try {
         await prisma.email.delete({ where: { id: item.emptyId } });
         deleted++;
@@ -1548,9 +1570,47 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, scanned: candidates.length, deleted, sample: toDelete.slice(0, 10) });
+    res.json({
+      ok: true,
+      scanned: candidates.length,
+      deleted,
+      deletedWithSibling: toDelete.length,
+      deletedOrphans: orphansToDelete.length,
+    });
   } catch (e) {
     console.error('[cleanup-empty-outbound-dupes] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/emails/sent-rescan
+// Wymusza re-fetch IMAP Sent folder od daty N dni wstecz. Dla kazdego maila:
+//   - jak istnieje w bazie po messageId (norm) lub fuzzy match — UPDATE body
+//     jak puste, inaczej skip
+//   - jak nie istnieje — CREATE OUTBOUND
+//
+// Body: { inbox: string (required), daysBack?: number (default 30) }
+//
+// Use case: skrzynka swiezo dodana (poller skipnal historie), albo cleanup
+// po starych "(brak treści)" rows ktore byly utworzone z empty body przez
+// sknocony mailparser w processSentItems przed dedup fixem.
+router.post('/emails/sent-rescan', async (req, res) => {
+  try {
+    const { inbox, daysBack = 30 } = req.body || {};
+    if (!inbox || typeof inbox !== 'string') {
+      return res.status(400).json({ error: 'inbox (string) required' });
+    }
+    if (daysBack < 1 || daysBack > 365) {
+      return res.status(400).json({ error: 'daysBack must be 1..365' });
+    }
+    const { rescanSentSince } = require('../inbox-poller');
+    const result = await rescanSentSince(inbox, daysBack);
+    if (!result.ok) {
+      return res.status(500).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error('[sent-rescan] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

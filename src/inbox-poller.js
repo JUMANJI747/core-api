@@ -1325,46 +1325,11 @@ async function processSentItems(account) {
         if (!mail.toEmail || !mail.fromEmail) continue;
 
         // Dedup po messageId — gdy mail wysłaliśmy przez nasz sendMail,
-        // już jest w Email. Nie dublujemy. Z brackets-normalizacja bo
-        // mail-sender zapisuje <id@host>, a mailparser z IMAP fetch moze
-        // zwrocic czyste id albo z bracketami. Bez normalizacji dedup
-        // zawodzil i tworzylismy duplikat z empty body.
-        const normalizeMsgId = (m) => m ? String(m).trim().replace(/^<|>$/g, '').toLowerCase() : '';
+        // już jest w Email. Nie dublujemy.
         if (mail.messageId) {
-          const norm = normalizeMsgId(mail.messageId);
-          const candidates = await prisma.email.findMany({
-            where: {
-              OR: [
-                { messageId: mail.messageId },
-                { messageId: `<${norm}>` },
-                { messageId: norm },
-              ],
-            },
-            select: { id: true, messageId: true },
-            take: 5,
-          });
-          if (candidates.length) {
-            console.log(`[inbox-poller] ${sentKey}: dedup by messageId (normalized "${norm}") - skip uid=${mail.uid} (matched: ${candidates.map(c => c.id).join(',')})`);
-            continue;
-          }
-        }
-        // Fuzzy fallback: maile od nas wyslane przez sendMail mialy zapis
-        // sekundy wczesniej (przed APPEND do IMAP Sent). Jak messageId
-        // jakos nie matchuje, dedup po from+to+subject w 10min window.
-        if (mail.subject && mail.toEmail && mail.fromEmail) {
-          const cutoff = new Date(Date.now() - 10 * 60 * 1000);
-          const fuzzy = await prisma.email.findFirst({
-            where: {
-              direction: 'OUTBOUND',
-              subject: mail.subject,
-              toEmail: { equals: mail.toEmail, mode: 'insensitive' },
-              fromEmail: { equals: mail.fromEmail, mode: 'insensitive' },
-              createdAt: { gte: cutoff },
-            },
-            select: { id: true, messageId: true, createdAt: true },
-          });
-          if (fuzzy) {
-            console.log(`[inbox-poller] ${sentKey}: dedup fuzzy (subject+to+from+10min) - skip uid=${mail.uid} (matched: ${fuzzy.id}, msgId=${fuzzy.messageId})`);
+          const existing = await prisma.email.findFirst({ where: { messageId: mail.messageId } });
+          if (existing) {
+            console.log(`[inbox-poller] ${sentKey}: dedup by messageId, skip uid=${mail.uid}`);
             continue;
           }
         }
@@ -1622,4 +1587,126 @@ async function getCoverageStats(daysBack = 30) {
   return stats;
 }
 
-module.exports = { pollAll, stopPolling, rescanInboxSince, getCoverageStats };
+// Wymusza re-fetch IMAP Sent folder od daty N dni wstecz. Tworzy OUTBOUND
+// rows dla maili ktorych nie ma w bazie, ALBO uzupełnia body dla istniejacych
+// rows z empty body (np. ktore powstaly przez sknocony mailparser na HTML-only
+// mailach).
+//
+// Wzor: jak rescanInboxSince ale dla folderu Sent + direction='OUTBOUND' +
+// upsert zamiast tylko create. Uzywane gdy:
+//   - skrzynka byla swiezo dodana i poller skipnal historie
+//   - user zauwazyl "(brak treści)" w wysłanych
+//   - wymagana konsolidacja po cleanup-empty-outbound-dupes
+async function rescanSentSince(inbox, daysBack = 30) {
+  const accounts = getAccounts();
+  const account = accounts.find(a => a.inbox === inbox);
+  if (!account) throw new Error(`inbox "${inbox}" not in IMAP_ACCOUNTS`);
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  const normalizeMsgId = (m) => m ? String(m).trim().replace(/^<|>$/g, '').toLowerCase() : '';
+  let imap;
+  let added = 0;
+  let updatedBody = 0;
+  let skippedDup = 0;
+  let skippedNoData = 0;
+  try {
+    imap = await connectImap(account);
+    const folderName = await findSentFolder(imap);
+    if (!folderName) {
+      console.log(`[sent-rescan] ${inbox}: no SENT folder found`);
+      try { imap.end(); } catch (_) {}
+      return { ok: false, error: 'no SENT folder found', inbox };
+    }
+    console.log(`[sent-rescan] ${inbox}: SENT folder = "${folderName}"`);
+    const mails = await fetchMailsSince(imap, since, folderName);
+    console.log(`[sent-rescan] ${inbox}: fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
+    for (const mail of mails) {
+      try {
+        if (!mail.fromEmail || !mail.toEmail) { skippedNoData++; continue; }
+        // Dedup z normalized messageId (3 warianty)
+        let existing = null;
+        if (mail.messageId) {
+          const norm = normalizeMsgId(mail.messageId);
+          existing = await prisma.email.findFirst({
+            where: {
+              OR: [
+                { messageId: mail.messageId },
+                { messageId: `<${norm}>` },
+                { messageId: norm },
+              ],
+            },
+            select: { id: true, bodyFull: true },
+          });
+        }
+        // Fuzzy fallback po from+to+subject+10min window jak messageId zawodzi
+        if (!existing && mail.subject && mail.fromEmail && mail.toEmail) {
+          const cutoff10min = mail.date ? new Date(new Date(mail.date).getTime() - 10 * 60 * 1000) : null;
+          if (cutoff10min) {
+            existing = await prisma.email.findFirst({
+              where: {
+                direction: 'OUTBOUND',
+                subject: mail.subject,
+                toEmail: { equals: mail.toEmail, mode: 'insensitive' },
+                fromEmail: { equals: mail.fromEmail, mode: 'insensitive' },
+                createdAt: { gte: cutoff10min },
+              },
+              select: { id: true, bodyFull: true },
+            });
+          }
+        }
+
+        if (existing) {
+          // Jak istnieje ale ma empty body, a my mamy non-empty z IMAP, uzupelnij
+          if ((!existing.bodyFull || existing.bodyFull === '') && mail.body && mail.body.trim()) {
+            await prisma.email.update({
+              where: { id: existing.id },
+              data: {
+                bodyPreview: (mail.body || '').slice(0, 300),
+                bodyFull: (mail.body || '').slice(0, 2000),
+              },
+            });
+            updatedBody++;
+          } else {
+            skippedDup++;
+          }
+          continue;
+        }
+
+        // Nowy row OUTBOUND
+        let contractorId = null;
+        const contractor = await prisma.contractor.findFirst({
+          where: { email: { contains: mail.toEmail, mode: 'insensitive' } },
+        }).catch(() => null);
+        if (contractor) contractorId = contractor.id;
+
+        await prisma.email.create({
+          data: {
+            direction: 'OUTBOUND',
+            inbox,
+            fromEmail: mail.fromEmail,
+            fromName: mail.fromName || null,
+            toEmail: mail.toEmail,
+            subject: mail.subject || null,
+            bodyPreview: (mail.body || '').slice(0, 300),
+            bodyFull: (mail.body || '').slice(0, 2000),
+            messageId: mail.messageId || null,
+            inReplyTo: mail.inReplyTo || null,
+            references: mail.references || null,
+            contractorId,
+            createdAt: mail.date || new Date(),
+          },
+        });
+        added++;
+      } catch (e) {
+        console.error('[sent-rescan] save error for uid=' + mail.uid + ':', e.message);
+      }
+    }
+    try { imap.end(); } catch (_) {}
+    return { ok: true, inbox, folderName, since: since.toISOString().slice(0,10), fetched: mails.length, added, updatedBody, skippedDup, skippedNoData };
+  } catch (e) {
+    console.error(`[sent-rescan] ${inbox} error:`, e.message);
+    try { if (imap) imap.end(); } catch (_) {}
+    return { ok: false, error: e.message, inbox };
+  }
+}
+
+module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats };
