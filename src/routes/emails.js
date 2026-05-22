@@ -800,7 +800,7 @@ router.get('/inbox-coverage', async (req, res) => {
 // dominuje ostatnio-inserted inbox i reszta znika z sidebar.
 //
 // Tutaj GROUP BY zwraca caly stan. direction=INBOUND filter, total + unread.
-router.get('/emails/inbox-stats', async (req, res) => {
+router.get('/inbox-stats', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const rows = await prisma.email.groupBy({
@@ -1618,6 +1618,7 @@ router.post('/emails/cleanup-empty-outbound-dupes', async (req, res) => {
 // Wymusza re-fetch IMAP Sent folder od daty N dni wstecz. Dla kazdego maila:
 //   - jak istnieje w bazie po messageId (norm) lub fuzzy match — UPDATE body
 //     jak puste, inaczej skip
+//   - jak nie istnieje — CREATE OUTBOUND
 //
 // Body: { inbox: string (required), daysBack?: number (default 30) }
 //
