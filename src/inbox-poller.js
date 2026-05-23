@@ -1477,6 +1477,7 @@ async function rescanInboxSince(inbox, daysBack = 3) {
   let imap;
   let added = 0;
   let dedupedExisting = 0;
+  let dateUpdated = 0;
   let filteredOut = 0;
   try {
     imap = await connectImap(account);
@@ -1490,10 +1491,33 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         if (!hardFilter(mail)) { filteredOut++; continue; }
         if (bounceFilter(mail)) { filteredOut++; continue; }
 
-        // Dedup po messageId
+        // Dedup po messageId — JEZELI istnieje, to sprawdz czy createdAt
+        // wymaga update'u na podstawie maila headera (poprzednie rescany
+        // tworzyly z createdAt=NOW() i miesaly chronologia).
         if (mail.messageId) {
-          const existing = await prisma.email.findFirst({ where: { messageId: mail.messageId } });
-          if (existing) { dedupedExisting++; continue; }
+          const existing = await prisma.email.findFirst({
+            where: { messageId: mail.messageId },
+            select: { id: true, createdAt: true, bodyFull: true },
+          });
+          if (existing) {
+            const updateData = {};
+            // Update createdAt jak mail.date jest valid i rozni sie > 1h od istniejacego
+            if (mail.date instanceof Date && !isNaN(mail.date.getTime())) {
+              const diff = Math.abs(existing.createdAt.getTime() - mail.date.getTime());
+              if (diff > 60 * 60 * 1000) updateData.createdAt = mail.date;
+            }
+            // Update body jak istniejacy jest pusty a mamy tresc
+            if ((!existing.bodyFull || existing.bodyFull.length < 5) && mail.body && mail.body.length > 5) {
+              updateData.bodyFull = mail.body.slice(0, 2000);
+              updateData.bodyPreview = mail.body.slice(0, 300);
+            }
+            if (Object.keys(updateData).length) {
+              await prisma.email.update({ where: { id: existing.id }, data: updateData });
+              if (updateData.createdAt) dateUpdated++;
+            }
+            dedupedExisting++;
+            continue;
+          }
         }
 
         // Link contractor po fromEmail
@@ -1517,6 +1541,8 @@ async function rescanInboxSince(inbox, daysBack = 3) {
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
             contractorId,
+            // Daty: jak header ma valid date, uzyj. Inaczej Prisma default = NOW()
+            ...(mail.date instanceof Date && !isNaN(mail.date.getTime()) ? { createdAt: mail.date } : {}),
           },
         });
         added++;
@@ -1536,7 +1562,7 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         console.log(`[inbox-rescan] ${inbox}: bumped lastUid → ${maxUid}`);
       }
     }
-    return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, filteredOut };
+    return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, dateUpdated, filteredOut };
   } finally {
     if (imap) try { imap.end(); } catch (_) {}
   }
