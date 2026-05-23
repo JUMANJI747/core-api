@@ -178,6 +178,41 @@ router.get('/emails', async (req, res) => {
     take,
     orderBy: { createdAt: 'desc' },
   });
+
+  // Dolaczamy replyId dla INBOUND - id najnowszego OUTBOUND/DRAFT ktory
+  // referencjuje ten mail (via inReplyTo). UI pokazuje ↩ badge na liscie,
+  // klik = navigate do tej odpowiedzi. Wymaga zeby INBOUND mial messageId.
+  try {
+    const inboundMsgIds = emails
+      .filter(e => e.direction === 'INBOUND' && e.messageId)
+      .map(e => e.messageId);
+    if (inboundMsgIds.length) {
+      const replies = await prisma.email.findMany({
+        where: {
+          direction: { in: ['OUTBOUND', 'DRAFT'] },
+          inReplyTo: { in: inboundMsgIds },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, inReplyTo: true, direction: true, createdAt: true },
+      });
+      const map = {};
+      for (const r of replies) {
+        if (!map[r.inReplyTo]) {
+          map[r.inReplyTo] = { id: r.id, direction: r.direction, createdAt: r.createdAt };
+        }
+      }
+      for (const e of emails) {
+        if (e.direction === 'INBOUND' && e.messageId && map[e.messageId]) {
+          e.replyId = map[e.messageId].id;
+          e.replyDirection = map[e.messageId].direction;
+          e.replyCreatedAt = map[e.messageId].createdAt;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[emails GET] reply lookup failed:', err.message);
+  }
+
   res.json(emails);
 });
 
