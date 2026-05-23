@@ -1171,77 +1171,91 @@ router.post('/backfill-shipping-from-gk', async (req, res) => {
   }
 });
 
-// One-shot cleanup: dedup extras.locations[] na wszystkich kontrahentach
-// uzywajac agresywnej normalizacji adresu. Po backfill z GK okazalo sie
-// ze "C/ Mayor 12" i "Calle Mayor 12" tworza 2 osobne entries - to
-// dedupuje wstecz.
-// Body: { dryRun?: boolean, minLocations?: number (default 2 - pomin kontrahentow z 1 lokacja) }
+// One-shot cleanup: dedup extras.locations[] z agresywna normalizacja.
+// Batched + logged zeby Railway nie zabijal procesu OOM.
+// Body: { dryRun?, minLocations? (default 2), limit? (default 50), offset? (default 0) }
 router.post('/dedup-locations', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { dedupLocations, fingerprint } = require('../services/dedup-locations');
   const dryRun = !!req.body.dryRun;
   const minLocations = Number(req.body.minLocations) || 2;
+  const limit = Math.min(Number(req.body.limit) || 50, 200); // CAP at 200 per call
+  const offset = Number(req.body.offset) || 0;
 
   try {
+    // Page contractors. Returns batch of `limit` contractors starting at offset.
+    // User wola endpoint wielokrotnie (offset=0, 50, 100, ...) zeby przejsc
+    // przez wszystkich bez OOM-a.
     const contractors = await prisma.contractor.findMany({
       select: { id: true, name: true, extras: true },
+      orderBy: { id: 'asc' },
+      skip: offset,
+      take: limit,
     });
 
     const stats = {
-      totalContractors: contractors.length,
+      offset,
+      limit,
+      batchSize: contractors.length,
       contractorsWithLocations: 0,
       contractorsProcessed: 0,
       totalLocationsBefore: 0,
       totalLocationsAfter: 0,
       removed: 0,
       contractorsUpdated: 0,
-      anomalies: [], // kontrahenci z >5 lokacjami po dedup (suspicious)
+      anomalies: [],
       errors: [],
     };
 
+    console.log(`[dedup-locations] batch offset=${offset} limit=${limit} got=${contractors.length} dryRun=${dryRun}`);
+
     for (const c of contractors) {
-      const extras = c.extras || {};
-      const locations = Array.isArray(extras.locations) ? extras.locations : [];
-      if (!locations.length) continue;
-      stats.contractorsWithLocations += 1;
-      if (locations.length < minLocations) continue;
-      stats.contractorsProcessed += 1;
-      stats.totalLocationsBefore += locations.length;
+      try {
+        const extras = c.extras || {};
+        const locations = Array.isArray(extras.locations) ? extras.locations : [];
+        if (!locations.length) continue;
+        stats.contractorsWithLocations += 1;
+        if (locations.length < minLocations) continue;
+        stats.contractorsProcessed += 1;
+        stats.totalLocationsBefore += locations.length;
 
-      const { result, removed } = dedupLocations(locations);
-      stats.totalLocationsAfter += result.length;
-      stats.removed += removed;
+        const { result, removed } = dedupLocations(locations);
+        stats.totalLocationsAfter += result.length;
+        stats.removed += removed;
 
-      if (result.length > 5) {
-        stats.anomalies.push({
-          contractorId: c.id,
-          name: c.name,
-          locationsBefore: locations.length,
-          locationsAfter: result.length,
-          sample: result.slice(0, 5).map(l => ({
-            street: l.street,
-            city: l.city,
-            postCode: l.postCode,
-            fingerprint: fingerprint(l),
-          })),
-        });
-      }
+        if (result.length > 5) {
+          stats.anomalies.push({
+            contractorId: c.id,
+            name: c.name,
+            locationsBefore: locations.length,
+            locationsAfter: result.length,
+            sample: result.slice(0, 3).map(l => ({
+              street: l.street,
+              city: l.city,
+              postCode: l.postCode,
+              fp: fingerprint(l),
+            })),
+          });
+        }
 
-      if (!dryRun && removed > 0) {
-        try {
+        if (!dryRun && removed > 0) {
           await prisma.contractor.update({
             where: { id: c.id },
             data: { extras: { ...extras, locations: result } },
           });
           stats.contractorsUpdated += 1;
-        } catch (e) {
-          stats.errors.push(`${c.name}: ${e.message}`);
+          console.log(`[dedup-locations] updated ${c.name}: ${locations.length} -> ${result.length}`);
         }
+      } catch (e) {
+        stats.errors.push(`${c.name}: ${e.message}`);
+        console.error(`[dedup-locations] error on ${c.name}:`, e.message);
       }
     }
 
-    res.json({ ok: true, dryRun, ...stats });
+    const hasMore = contractors.length === limit;
+    res.json({ ok: true, dryRun, hasMore, nextOffset: hasMore ? offset + limit : null, ...stats });
   } catch (e) {
+    console.error('[dedup-locations] fatal:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
