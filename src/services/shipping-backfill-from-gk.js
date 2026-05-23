@@ -155,6 +155,8 @@ async function backfillShippingFromGk(prisma, opts = {}) {
     }
   }
 
+  console.log(`[shipping-backfill] config: dryRun=${dryRun}, useLlm=${useLlm}, llmModule=${!!llm}, llmCap=${llmCap}, minScore=${minScore}`);
+
   for (const [normName, entry] of byName.entries()) {
     const { originalName, addresses } = entry;
     let matched = null;
@@ -176,6 +178,10 @@ async function backfillShippingFromGk(prisma, opts = {}) {
         matched = scored[0].c;
         matchType = 'fuzzy';
       }
+    }
+
+    if (!matched) {
+      console.log(`[shipping-backfill] no exact/fuzzy match for "${originalName}", useLlm=${useLlm}, llmAvailable=${!!llm}, llmCalls=${stats.llmCalls}/${llmCap}`);
     }
 
     // c) LLM fallback (opcjonalnie)
@@ -267,8 +273,12 @@ async function backfillShippingFromGk(prisma, opts = {}) {
   }
 
   // 6) Persist (chyba ze dryRun).
+  console.log(`[shipping-backfill] persist start: pending.size=${pending.size}, dryRun=${dryRun}, locationsAddedSoFar=${stats.locationsAdded}`);
   if (!dryRun) {
-    for (const bucket of pending.values()) {
+    const pendingArray = Array.from(pending.values());
+    console.log(`[shipping-backfill] persist phase: ${pendingArray.length} buckets`);
+    for (const bucket of pendingArray) {
+      console.log(`[shipping-backfill] persist bucket ${bucket.contractor.id} (${bucket.contractor.name}): newLocations=${bucket.newLocations.length}, existing=${bucket.existing.length}`);
       if (!bucket.newLocations.length) continue;
       const cExtras = (bucket.contractor.extras && typeof bucket.contractor.extras === 'object') ? bucket.contractor.extras : {};
       const merged = [...(Array.isArray(cExtras.locations) ? cExtras.locations : []), ...bucket.newLocations];
@@ -278,11 +288,14 @@ async function backfillShippingFromGk(prisma, opts = {}) {
           data: { extras: { ...cExtras, locations: merged } },
         });
         stats.contractorsUpdated += 1;
+        console.log(`[shipping-backfill] update OK ${bucket.contractor.id}, total locations now=${merged.length}`);
       } catch (e) {
+        console.log(`[shipping-backfill] update FAIL ${bucket.contractor.id}: ${e.message}`);
         stats.errors.push(`update ${bucket.contractor.id}: ${e.message}`);
       }
     }
   }
+  console.log(`[shipping-backfill] persist done: contractorsUpdated=${stats.contractorsUpdated}`);
 
   stats.unmatchedSample = stats.unmatched;
   delete stats.unmatched;
