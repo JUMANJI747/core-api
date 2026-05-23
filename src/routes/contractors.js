@@ -1260,4 +1260,70 @@ router.post('/dedup-locations', async (req, res) => {
   }
 });
 
+// Rollback GK backfill: usuwa wszystkie extras.locations[] gdzie source
+// zaczyna sie od 'gk_backfill'. Use case: po skrzepieniu na fuzzy match
+// zbyt liberalnym (minScore=70 zmieszal kontrahentow), trzeba zaczac
+// od poczatku z wyzszym progiem.
+// Body: { dryRun?: boolean }
+router.post('/rollback-gk-backfill', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const dryRun = !!req.body.dryRun;
+  try {
+    const contractors = await prisma.contractor.findMany({
+      select: { id: true, name: true, extras: true },
+    });
+    const stats = { scanned: contractors.length, contractorsAffected: 0, locationsRemoved: 0, contractorsUpdated: 0, errors: [] };
+    for (const c of contractors) {
+      try {
+        const extras = c.extras || {};
+        const locations = Array.isArray(extras.locations) ? extras.locations : [];
+        if (!locations.length) continue;
+        const kept = locations.filter(l => !(l.source && String(l.source).startsWith('gk_backfill')));
+        const removed = locations.length - kept.length;
+        if (removed === 0) continue;
+        stats.contractorsAffected += 1;
+        stats.locationsRemoved += removed;
+        if (!dryRun) {
+          await prisma.contractor.update({
+            where: { id: c.id },
+            data: { extras: { ...extras, locations: kept } },
+          });
+          stats.contractorsUpdated += 1;
+        }
+      } catch (e) {
+        stats.errors.push(`${c.name}: ${e.message}`);
+      }
+    }
+    res.json({ ok: true, dryRun, ...stats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Manual remove single location by index (uzywane do recznego czyszczenia
+// anomalii po backfill - np. user widzi w UI ze "Chalupy" jest u AWA SURF
+// po blednym fuzzy match, usuwa).
+// Body: { locationIndex: number }
+router.post('/:id/remove-location', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const id = req.params.id;
+  const idx = Number(req.body.locationIndex);
+  if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ error: 'locationIndex (number >=0) required' });
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id }, select: { id: true, name: true, extras: true } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+    const extras = c.extras || {};
+    const locations = Array.isArray(extras.locations) ? [...extras.locations] : [];
+    if (idx >= locations.length) return res.status(400).json({ error: `locationIndex out of range (have ${locations.length})` });
+    const removed = locations.splice(idx, 1)[0];
+    await prisma.contractor.update({
+      where: { id },
+      data: { extras: { ...extras, locations } },
+    });
+    res.json({ ok: true, removed, remaining: locations.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
