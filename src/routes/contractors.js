@@ -660,6 +660,95 @@ router.get('/', async (req, res) => {
     }
   }
 
+  // Enrich kazdy wiersz o shippingAddress (merged: ContractorAddress shipping/billing,
+  // extras.locations[0], extras.billingAddress, fallback Contractor.address/city/country).
+  // Frontend /shipments uzywa tego do auto-fill po klik "Znajdz".
+  async function enrichWithShippingAddress(c) {
+    try {
+      const cExtras = c.extras || {};
+
+      // 1. Preferuj extras.locations[0] (deliv addr explicit z agent flow)
+      const locations = Array.isArray(cExtras.locations) ? cExtras.locations : [];
+      if (locations.length) {
+        const loc = locations[0];
+        if (loc.street || loc.city || loc.postCode) {
+          return {
+            ...c,
+            shippingAddress: {
+              street: loc.street || '',
+              postCode: loc.postCode || '',
+              city: loc.city || '',
+              country: loc.country || c.country || '',
+              phone: loc.phone || c.phone || '',
+              email: loc.email || c.primaryEmail || c.email || '',
+              source: 'extras.locations[0]',
+            },
+          };
+        }
+      }
+
+      // 2. ContractorAddress (CRM v2) - shipping > billing
+      const addr = await prisma.contractorAddress.findFirst({
+        where: { contractorId: c.id, type: { in: ['shipping', 'delivery', 'billing'] } },
+        orderBy: [{ type: 'asc' }, { isPrimary: 'desc' }, { updatedAt: 'desc' }],
+      }).catch(() => null);
+      if (addr && (addr.street || addr.city)) {
+        return {
+          ...c,
+          shippingAddress: {
+            street: addr.street || '',
+            postCode: addr.postalCode || '',
+            city: addr.city || '',
+            country: addr.country || c.country || '',
+            phone: c.phone || '',
+            email: c.primaryEmail || c.email || '',
+            source: `contractorAddress.${addr.type}`,
+          },
+        };
+      }
+
+      // 3. extras.billingAddress (canonical billing in extras)
+      const billing = cExtras.billingAddress;
+      if (billing && (billing.street || billing.city || billing.postCode)) {
+        return {
+          ...c,
+          shippingAddress: {
+            street: billing.street || '',
+            postCode: billing.postCode || '',
+            city: billing.city || '',
+            country: billing.country || c.country || '',
+            phone: c.phone || '',
+            email: c.primaryEmail || c.email || '',
+            source: 'extras.billingAddress',
+          },
+        };
+      }
+
+      // 4. Fallback - Contractor.address/city/country + regex postCode
+      const postCodeFromAddr = c.address ? (extractPostCode(c.address) || '') : '';
+      if (c.address || c.city) {
+        return {
+          ...c,
+          shippingAddress: {
+            street: c.address || '',
+            postCode: postCodeFromAddr || cExtras.postCode || cExtras.zipCode || '',
+            city: c.city || '',
+            country: c.country || '',
+            phone: c.phone || '',
+            email: c.primaryEmail || c.email || '',
+            source: 'contractor.row',
+          },
+        };
+      }
+
+      // 5. Nic
+      return { ...c, shippingAddress: null };
+    } catch (e) {
+      console.warn('[enrichShippingAddress] failed:', e.message);
+      return { ...c, shippingAddress: null };
+    }
+  }
+
   // Fuzzy fallback: if naive `name contains` (and contact match) failed
   // (e.g. "holaola" vs "Hola Ola" — spacing differs) and no other filter
   // narrowed the set, load all contractors and score them against the
@@ -676,11 +765,13 @@ router.get('/', async (req, res) => {
       .slice(0, take);
     if (scored.length) {
       console.log(`[contractors/search] fuzzy fallback: "${search}" → ${scored.length} match(es), top: "${scored[0].c.name}" (score ${scored[0].score})`);
-      return res.json(scored.map(x => x.c));
+      const enrichedFuzzy = await Promise.all(scored.map(x => enrichWithShippingAddress(x.c)));
+      return res.json(enrichedFuzzy);
     }
   }
 
-  res.json(merged);
+  const enriched = await Promise.all(merged.map(c => enrichWithShippingAddress(c)));
+  res.json(enriched);
 });
 
 router.get('/:id', async (req, res) => {
