@@ -180,32 +180,127 @@ router.get('/emails', async (req, res) => {
   });
 
   // Dolaczamy replyId dla INBOUND - id najnowszego OUTBOUND/DRAFT ktory
-  // referencjuje ten mail (via inReplyTo). UI pokazuje ↩ badge na liscie,
-  // klik = navigate do tej odpowiedzi. Wymaga zeby INBOUND mial messageId.
+  // referencjuje ten mail. 3 strategie matchingu w kolejnosci od najpewniejszego:
+  //   1. inReplyTo exact match (normalized: trim, strip <>, lowercase)
+  //   2. references chain zawiera messageId (Thunderbird/Outlook czasem nie
+  //      wypelniaja inReplyTo ale dopisuja messageId do references)
+  //   3. Subject Re: + odbiorca match (fromEmail INBOUND == toEmail OUTBOUND)
+  //      w oknie 90 dni - fallback gdy headers nie dotarly poprawnie (np.
+  //      maile z webmaila lub przez forwarding)
   try {
-    const inboundMsgIds = emails
-      .filter(e => e.direction === 'INBOUND' && e.messageId)
-      .map(e => e.messageId);
-    if (inboundMsgIds.length) {
-      const replies = await prisma.email.findMany({
-        where: {
-          direction: { in: ['OUTBOUND', 'DRAFT'] },
-          inReplyTo: { in: inboundMsgIds },
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, inReplyTo: true, direction: true, createdAt: true },
-      });
-      const map = {};
-      for (const r of replies) {
-        if (!map[r.inReplyTo]) {
-          map[r.inReplyTo] = { id: r.id, direction: r.direction, createdAt: r.createdAt };
+    const inbounds = emails.filter(e => e.direction === 'INBOUND');
+    if (inbounds.length) {
+      // Normalizacja messageId — IMAP czasem zwraca z <>, czasem bez, czesto
+      // z whitespace na koncach. Zeby match dzialal po obu stronach (OUTBOUND
+      // wpisuje raw header value), buduje set wszystkich wariantow.
+      const normalize = (id) => (id || '').trim().replace(/^<|>$/g, '').toLowerCase();
+
+      const msgIdMap = {}; // norm -> inbound email
+      for (const e of inbounds) {
+        if (e.messageId) {
+          const n = normalize(e.messageId);
+          if (n) msgIdMap[n] = e;
         }
       }
+      const allNormIds = Object.keys(msgIdMap);
+
+      // Strategia 1+2: znajdz wszystkie OUTBOUND/DRAFT ktore w inReplyTo lub
+      // references referencuja ktorykolwiek z inbound messageIds.
+      // Prisma nie ma OR w array contains - robimy 2 osobne queries i merge.
+      const candidates = await prisma.email.findMany({
+        where: {
+          direction: { in: ['OUTBOUND', 'DRAFT'] },
+          createdAt: { gte: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) }, // limit do roku w tyl
+          OR: [
+            { inReplyTo: { not: null } },
+            { references: { not: null } },
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          inReplyTo: true,
+          references: true,
+          direction: true,
+          createdAt: true,
+          toEmail: true,
+          subject: true,
+        },
+      });
+
+      const replyMap = {}; // inboundId -> {id, direction, createdAt, source}
+
+      // Strategia 1: inReplyTo match
+      for (const c of candidates) {
+        if (!c.inReplyTo) continue;
+        const n = normalize(c.inReplyTo);
+        const inbound = msgIdMap[n];
+        if (inbound && !replyMap[inbound.id]) {
+          replyMap[inbound.id] = { id: c.id, direction: c.direction, createdAt: c.createdAt, source: 'inReplyTo' };
+        }
+      }
+
+      // Strategia 2: references contains
+      for (const c of candidates) {
+        if (!c.references) continue;
+        const refsLower = c.references.toLowerCase();
+        for (const normId of allNormIds) {
+          if (refsLower.includes(normId)) {
+            const inbound = msgIdMap[normId];
+            if (inbound && !replyMap[inbound.id]) {
+              replyMap[inbound.id] = { id: c.id, direction: c.direction, createdAt: c.createdAt, source: 'references' };
+            }
+          }
+        }
+      }
+
+      // Strategia 3: subject + recipient fallback. Dla INBOUND bez znalezionej
+      // odpowiedzi szuka OUTBOUND z subject startujacym od "Re:" i toEmail =
+      // fromEmail inbound, w oknie 90 dni od inbound.
+      const stillMissing = inbounds.filter(e => !replyMap[e.id]);
+      if (stillMissing.length) {
+        const fromEmails = [...new Set(stillMissing.map(e => (e.fromEmail || '').toLowerCase()).filter(Boolean))];
+        if (fromEmails.length) {
+          const subjectCandidates = await prisma.email.findMany({
+            where: {
+              direction: { in: ['OUTBOUND', 'DRAFT'] },
+              toEmail: { in: fromEmails, mode: 'insensitive' },
+              createdAt: { gte: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true, toEmail: true, subject: true, direction: true, createdAt: true },
+          });
+          // Normalizacja subjectu - strip "Re:", "Fwd:", "RE:" prefixy
+          const stripPrefix = (s) => (s || '').replace(/^\s*(re|fwd|fw|odp|wg|aw):\s*/i, '').trim().toLowerCase();
+          for (const inbound of stillMissing) {
+            const inboundSubj = stripPrefix(inbound.subject);
+            if (!inboundSubj) continue;
+            const inboundFrom = (inbound.fromEmail || '').toLowerCase();
+            const inboundDate = new Date(inbound.createdAt);
+            for (const c of subjectCandidates) {
+              if ((c.toEmail || '').toLowerCase() !== inboundFrom) continue;
+              if (stripPrefix(c.subject) !== inboundSubj) continue;
+              // OUTBOUND musi byc PO inbound (replyto, nie przed)
+              if (new Date(c.createdAt) < inboundDate) continue;
+              // W oknie 90 dni
+              const diffDays = (new Date(c.createdAt) - inboundDate) / (24 * 60 * 60 * 1000);
+              if (diffDays > 90) continue;
+              if (!replyMap[inbound.id]) {
+                replyMap[inbound.id] = { id: c.id, direction: c.direction, createdAt: c.createdAt, source: 'subject' };
+              }
+              break; // pierwszy match jest najswiezszy (sorted desc)
+            }
+          }
+        }
+      }
+
       for (const e of emails) {
-        if (e.direction === 'INBOUND' && e.messageId && map[e.messageId]) {
-          e.replyId = map[e.messageId].id;
-          e.replyDirection = map[e.messageId].direction;
-          e.replyCreatedAt = map[e.messageId].createdAt;
+        const r = replyMap[e.id];
+        if (r) {
+          e.replyId = r.id;
+          e.replyDirection = r.direction;
+          e.replyCreatedAt = r.createdAt;
+          e.replyMatchedBy = r.source;
         }
       }
     }
