@@ -5,6 +5,7 @@ const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
+const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
 const { scoreContractor } = require('../services/contractor-match');
 const { geocodeAndSave } = require('../services/geocode');
 const { geocodeContractor } = require('../services/geocode');
@@ -1142,6 +1143,30 @@ router.put('/:id/price', async (req, res) => {
     await prisma.contractor.update({ where: { id: req.params.id }, data: { extras } });
     res.json({ ok: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One-shot backfill — przeleci po WSZYSTKICH historycznych GK orderach,
+// zmatchuje odbiorcow z baza kontrahentow (exact -> fuzzy >=70 ->
+// opcjonalnie LLM) i dopisze pelne adresy dostawy do extras.locations[].
+// Trigger manualny (curl/PowerShell), nie cron — zmiana DB scope-wide.
+router.post('/backfill-shipping-from-gk', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const body = req.body || {};
+    const opts = {
+      dryRun: !!body.dryRun,
+      useLlm: !!body.useLlm,
+      limit: body.limit != null ? Number(body.limit) : undefined,
+      llmCap: body.llmCap != null ? Number(body.llmCap) : undefined,
+      minScore: body.minScore != null ? Number(body.minScore) : undefined,
+    };
+    console.log(`[backfill-shipping-from-gk] start opts=${JSON.stringify(opts)}`);
+    const result = await backfillShippingFromGk(prisma, opts);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[backfill-shipping-from-gk] error:', e.message, e.stack);
     res.status(500).json({ error: e.message });
   }
 });
