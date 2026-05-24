@@ -180,6 +180,105 @@ router.post('/transactions/manual', async (req, res) => {
   }
 });
 
+// POST /api/transactions/commission — open a commission deal. Towar zostawiony
+// u komisanta bez FV ani GK shipmentu. Po sezonie rozliczamy: czesc sprzedana
+// dostaje FV (PATCH hasInvoice + invoiceId), reszta wraca. Komisy NIGDY nie sa
+// kasowane przez rematch (chronione w petli 0 jak manual entries).
+//
+// body: {
+//   contractorSearch | contractorId, season?, expectedReturn?,
+//   items: [{ name, qty, unitPrice?, currency? }], notes?
+// }
+router.post('/transactions/commission', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { contractorSearch, contractorId, season, expectedReturn, items, notes, occurredAt } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: 'items: [{ name, qty }] is required' });
+    }
+
+    let contractor = null;
+    if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
+    if (!contractor && contractorSearch) {
+      const { scoreContractor } = require('../services/contractor-match');
+      const all = await prisma.contractor.findMany({ select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true } });
+      const scored = all.map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
+        .filter(x => x.score >= 50).sort((a, b) => b.score - a.score);
+      if (scored.length > 0) contractor = await prisma.contractor.findUnique({ where: { id: scored[0].contractor.id } });
+    }
+    if (!contractor) return res.status(404).json({ ok: false, error: 'Contractor not found by search/id' });
+
+    const totalQty = items.reduce((s, it) => s + Number(it.qty || 0), 0);
+    const itemsSummary = items.slice(0, 3).map(it => `${it.qty}× ${it.name || '?'}`).join(', ')
+      + (items.length > 3 ? `, +${items.length - 3}` : '');
+
+    const tx = await prisma.transaction.create({
+      data: {
+        contractorId: contractor.id,
+        contractorName: contractor.name,
+        amount: null,
+        currency: null,
+        occurredAt: occurredAt ? new Date(occurredAt) : new Date(),
+        // Towar zostawiony: order zlozony, wyslany, dostarczony. FV/payment pozniej.
+        hasOrder: true,
+        hasShipped: true,
+        hasDelivered: true,
+        deliveredAt: new Date(),
+        hasInvoice: false,
+        hasPayment: false,
+        itemsSummary,
+        itemsDetails: {
+          kind: 'commission',
+          consigned: items,
+          sold: null,
+          returned: null,
+          season: season || null,
+          expectedReturn: expectedReturn || null,
+          totalConsigned: totalQty,
+        },
+        notes: notes || `Komis${season ? ` (${season})` : ''} — zostawiono ${totalQty} szt., do odbioru po sezonie${expectedReturn ? ` (do ${expectedReturn})` : ''}`,
+        source: 'commission',
+        matchReason: 'commission opened',
+      },
+    });
+    res.json({ ok: true, transaction: tx });
+  } catch (e) {
+    console.error('[transactions/commission]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/transactions/:id/settle-commission — zamkniecie komisu po sezonie.
+// body: { sold: [{name, qty}], returned: [{name, qty}], invoiceNumber?, paidAmount?, currency? }
+router.post('/transactions/:id/settle-commission', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const tx = await prisma.transaction.findUnique({ where: { id: req.params.id } });
+    if (!tx) return res.status(404).json({ ok: false, error: 'transaction not found' });
+    if (tx.source !== 'commission') return res.status(400).json({ ok: false, error: 'not a commission deal' });
+
+    const { sold, returned, invoiceNumber, paidAmount, currency } = req.body || {};
+    const details = (tx.itemsDetails && typeof tx.itemsDetails === 'object') ? tx.itemsDetails : {};
+    details.sold = sold || details.sold;
+    details.returned = returned || details.returned;
+    details.settledAt = new Date().toISOString();
+
+    const update = { itemsDetails: details, matchReason: 'commission settled' };
+    if (invoiceNumber) { update.invoiceNumber = invoiceNumber; update.hasInvoice = true; }
+    if (paidAmount != null) {
+      update.amount = paidAmount;
+      update.currency = currency || tx.currency || 'PLN';
+      update.hasPayment = true;
+      update.paidAt = new Date();
+    }
+    const updated = await prisma.transaction.update({ where: { id: tx.id }, data: update });
+    res.json({ ok: true, transaction: updated });
+  } catch (e) {
+    console.error('[transactions/settle-commission]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/transactions/merge — manual merge two transactions into one.
 // Body accepts EITHER UUIDs (primaryId/secondaryId) OR Sheet row numbers
 // (primaryRow/secondaryRow). The "primary" survives and adopts every
@@ -370,29 +469,16 @@ router.post('/transactions/reset', async (req, res) => {
 });
 
 // POST /api/transactions/rematch
-// Zasada: source of truth dla FV = iFirma, dla shipment = GK. Rematch sluzy
-// tylko do utrzymania pamietanych par (FV ↔ shipment) i ich numerow deali.
-// Sieroty po FV usunietych z iFirma kasujemy, parowanie z istniejacych
-// shipmentow GK zostaje.
-//
-// Petle:
-//   0. Sprzatanie sierot — Tx z invoiceId wskazujacym na nieistniejaca FV
-//   1. Tworzenie Tx dla nowych FV (rebrand: każda FV ma jeden Tx)
-//   2. Tworzenie Tx dla nowych GK shipmentow
-//   3. Domkniecie luk: orphan-shipment Tx dorabia FV jesli pasuje
-//   4. Scal pary: orphan-FV Tx + orphan-shipment Tx tego samego kontrahenta
-//   5. Dedup po invoiceId i shipmentHash — jesli przeszly duplikaty
-//
-// Invariant: rematch NIGDY nie rozlacza juz sparowanych Tx ani nie nadpisuje
-// recznych checkboxow (flagi tylko false→true, nigdy true→false).
+// Przelatuje WSZYSTKIE istniejące Transaction i próbuje sparować te które
+// mają luki (brak invoiceId mimo istnienia FV w bazie, brak shipmentHash
+// mimo istnienia GK Order). Plus: przelatuje wszystkie Invoice które nie
+// mają jeszcze Transaction i odpala trackInvoice. Same dla GK Orders.
 //
 // dryRun=true zwraca plan bez modyfikacji.
 router.post('/transactions/rematch', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { dryRun = false } = req.body || {};
   const report = {
-    orphansDeleted: 0,
-    orphansDetached: 0,
     invoicesScanned: 0,
     invoicesAdded: 0,
     invoicesAlreadyTracked: 0,
@@ -400,17 +486,16 @@ router.post('/transactions/rematch', async (req, res) => {
     shipmentsAdded: 0,
     shipmentsAlreadyTracked: 0,
     txMerged: 0,
-    txCollapsed: 0,
-    dedupedInvoices: 0,
-    dedupedShipments: 0,
     samples: [],
   };
   try {
-    // 0. Sprzatanie sierot — Tx z invoiceId wskazujacym na nieistniejaca FV
-    //    (usunieta z iFirma) prowadzi do rozjazdu listy z iFirma. Reagujemy:
+    // 0. Sprzatanie sierot — Transaction z invoiceId wskazujacym na nieistniejaca
+    //    FV (usunieta z iFirma) prowadzi do rozjazdu listy z iFirma. Reagujemy:
     //    - ma shipmentHash  -> wyzeruj invoiceId, zostaje jako shipment-only/sample
     //    - source='manual'  -> zostaw (uzytkownik to swiadomy wpis)
     //    - inaczej          -> skasuj
+    report.orphansDeleted = 0;
+    report.orphansDetached = 0;
     const txWithInvoice = await prisma.transaction.findMany({
       where: { invoiceId: { not: null } },
       select: { id: true, invoiceId: true, shipmentHash: true, source: true },
@@ -432,7 +517,7 @@ router.post('/transactions/rematch', async (req, res) => {
             });
           }
           report.orphansDetached++;
-        } else if (tx.source === 'manual') {
+        } else if (tx.source === 'manual' || tx.source === 'commission') {
           continue;
         } else {
           if (!dryRun) await prisma.transaction.delete({ where: { id: tx.id } });
@@ -488,19 +573,21 @@ router.post('/transactions/rematch', async (req, res) => {
       if (tx.invoiceId) report.txMerged++;
     }
 
-    // 3. Domkniecie luk — dla kazdej Transaction bez invoiceId (czyli z luznym
-    //    shipmentem), znajdz pasujaca FV ktora jeszcze nie zostala wziejeta
-    //    przez zadnego Transaction i ja dopisz.
+    // 3. Próba domknięcia luk w open Transaction — dla każdej z hasInvoice=false
+    //    z contractorId, szukaj invoice pasującej po dacie+amount; analogicznie
+    //    hasShipped=false → szukaj GK ordera z bazy GK po contractor+date.
     const openInvoiceless = await prisma.transaction.findMany({
       where: { invoiceId: null, contractorId: { not: null } },
     });
     for (const tx of openInvoiceless) {
+      // Szukaj invoice tej samej contractorId w ±30 dni od tx.occurredAt z amountem ±5%.
       const since = new Date(tx.occurredAt); since.setDate(since.getDate() - 30);
       const until = new Date(tx.occurredAt); until.setDate(until.getDate() + 30);
       const candidates = await prisma.invoice.findMany({
         where: { contractorId: tx.contractorId, issueDate: { gte: since, lte: until } },
       });
       for (const inv of candidates) {
+        // Sprawdź czy ta invoice nie jest już w innej Transaction
         const taken = await prisma.transaction.findFirst({ where: { invoiceId: inv.id } });
         if (taken) continue;
         const amountMatch = !tx.amount || !inv.grossAmount ||
@@ -525,6 +612,8 @@ router.post('/transactions/rematch', async (req, res) => {
 
     // 4. Scal dwa osierocone Transactions tego samego kontrahenta:
     //    T_inv (invoiceId set, shipmentHash null) + T_ship (invoiceId null, shipmentHash set).
+    //    Po scaleniu: zachowujemy T_ship (anchor wczesniejszy zwykle), dopisujemy FV, kasujemy T_inv.
+    report.txCollapsed = 0;
     const orphanInvoiceTxs = await prisma.transaction.findMany({
       where: { invoiceId: { not: null }, shipmentHash: null, contractorId: { not: null } },
     });
@@ -565,7 +654,11 @@ router.post('/transactions/rematch', async (req, res) => {
       report.samples.push({ txId: txShip.id, contractorName: txShip.contractorName, collapsed: 'FV ' + txInv.invoiceNumber });
     }
 
-    // 5. Dedup po invoiceId i shipmentHash
+    // 5. Dedup po invoiceId i shipmentHash — jesli dwa Tx maja ten sam invoiceId
+    //    lub shipmentHash, scal je w jeden (zachowaj ten ze shipmentem lub
+    //    najwczesniejszy; reszte skasuj po dolepieniu pol/flag).
+    report.dedupedInvoices = 0;
+    report.dedupedShipments = 0;
     const dedupBy = async (field) => {
       const all = await prisma.transaction.findMany({
         where: { [field]: { not: null } },
@@ -580,6 +673,8 @@ router.post('/transactions/rematch', async (req, res) => {
       let removed = 0;
       for (const [, txs] of grouped) {
         if (txs.length < 2) continue;
+        // primary: ten ze shipmentHash (jesli dedup po invoiceId), inaczej ten z invoiceId.
+        // Fallback: najwczesniejszy.
         const otherKey = field === 'invoiceId' ? 'shipmentHash' : 'invoiceId';
         const primary = txs.find(t => t[otherKey]) || txs[0];
         const duplicates = txs.filter(t => t.id !== primary.id);
@@ -644,6 +739,7 @@ router.get('/operations/sample-followups', async (req, res) => {
   const shippedThreshold = new Date(now - undeliveredAfterDays * 24 * 60 * 60 * 1000);
 
   try {
+    // Bierz wszystkie shipped transactions w oknie z contractorId.
     const shipments = await prisma.transaction.findMany({
       where: {
         hasShipped: true,
@@ -666,6 +762,7 @@ router.get('/operations/sample-followups', async (req, res) => {
 
     if (!shipments.length) return res.json({ ok: true, count: 0, followups: [] });
 
+    // Per shipment sprawdz czy contractor mial wczesniejsza FV.
     const contractorIds = [...new Set(shipments.map(s => s.contractorId))];
     const earliestInvoiceByContractor = new Map();
     const invs = await prisma.invoice.findMany({
@@ -678,6 +775,7 @@ router.get('/operations/sample-followups', async (req, res) => {
         earliestInvoiceByContractor.set(inv.contractorId, inv);
       }
     }
+    // To samo dla EsInvoice — przez linkedEsContractorId.
     const plToEsLink = new Map();
     const linked = await prisma.contractor.findMany({
       where: { id: { in: contractorIds }, linkedEsContractorId: { not: null } },
@@ -691,6 +789,7 @@ router.get('/operations/sample-followups', async (req, res) => {
         orderBy: { invoiceDate: 'asc' },
       });
       for (const inv of esInvs) {
+        // znajdz PL contractor po linked ES
         for (const [plId, esId] of plToEsLink) {
           if (esId === inv.contractorId) {
             const existing = earliestInvoiceByContractor.get(plId);
@@ -702,10 +801,12 @@ router.get('/operations/sample-followups', async (req, res) => {
       }
     }
 
+    // Filter — sample = brak FV PRZED wysylka.
     const followups = [];
     for (const s of shipments) {
       const firstInv = earliestInvoiceByContractor.get(s.contractorId);
       if (firstInv && new Date(firstInv.issueDate || firstInv.invoiceDate) < new Date(s.occurredAt)) {
+        // Mial FV przed wysylka — to nie sample, klient z historia. Skip.
         continue;
       }
       const daysSinceDelivery = s.hasDelivered && s.deliveredAt
@@ -724,7 +825,7 @@ router.get('/operations/sample-followups', async (req, res) => {
         deliveredAt: s.deliveredAt,
         hasDeliveredConfirmed: s.hasDelivered,
         daysSinceDelivery,
-        sampleConfirmed: !firstInv,
+        sampleConfirmed: !firstInv, // 100% pewne — zero FV w bazie
         followupUrgent: daysSinceDelivery >= minDaysSinceDelivery,
       });
     }
@@ -751,6 +852,7 @@ router.patch('/transactions/:id', async (req, res) => {
     for (const k of allowed) {
       if (k in req.body) data[k] = req.body[k];
     }
+    // auto-set timestamps when toggling on
     if (data.hasDelivered === true && req.body.deliveredAt !== undefined) {
       data.deliveredAt = req.body.deliveredAt ? new Date(req.body.deliveredAt) : new Date();
     }
