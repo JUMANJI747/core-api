@@ -1618,4 +1618,289 @@ router.post('/backfill-location-last-used', async (req, res) => {
   }
 });
 
+// Wariant LLM: fuzzy matching adresow z GK orderow do extras.locations[]
+// uzywajac Claude Haiku 4.5. Toleruje literowki, skroty (ul./str.), rozne
+// kolejnosci czesci adresu, oraz roznice w nazwie odbiorcy (NAIXX vs Naixx S.L.).
+// Body: { dryRun?: boolean, limit?: number|null, confidenceThreshold?: number (0.7),
+//   onlyMissing?: boolean (true) }
+router.post('/backfill-location-last-used-llm', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const body = req.body || {};
+    const dryRun = !!body.dryRun;
+    const limit = body.limit != null ? Number(body.limit) : null;
+    const confidenceThreshold = body.confidenceThreshold != null ? Number(body.confidenceThreshold) : 0.7;
+    const onlyMissing = body.onlyMissing != null ? !!body.onlyMissing : true;
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    }
+
+    const AnthropicPkg = require('@anthropic-ai/sdk');
+    const Anthropic = AnthropicPkg.default || AnthropicPkg;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const MODEL = 'claude-haiku-4-5-20251001';
+
+    const norm = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // Inline Levenshtein (max ~15 lines).
+    function lev(a, b) {
+      a = a || ''; b = b || '';
+      if (a === b) return 0;
+      if (!a.length) return b.length;
+      if (!b.length) return a.length;
+      const dp = new Array(b.length + 1);
+      for (let j = 0; j <= b.length; j++) dp[j] = j;
+      for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0]; dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = dp[j];
+          dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+          prev = tmp;
+        }
+      }
+      return dp[b.length];
+    }
+
+    const { getOrders } = require('../glob-client');
+    function extractOrders(data) {
+      if (!data) return [];
+      if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+        return data[0].results;
+      }
+      if (Array.isArray(data)) return data;
+      return data.results || data.items || data.data || [];
+    }
+
+    const allContractorsRaw = await prisma.contractor.findMany({
+      select: { id: true, name: true, extras: true },
+      ...(limit ? { take: limit } : {}),
+    });
+
+    const allContractors = onlyMissing
+      ? allContractorsRaw.filter(c => {
+          const extras = (typeof c.extras === 'object' && c.extras) || {};
+          const locs = Array.isArray(extras.locations) ? extras.locations : [];
+          return locs.some(l => l && l.lastUsedAt == null);
+        })
+      : allContractorsRaw;
+
+    console.log(`[backfill-loc-llm] start: contractors=${allContractors.length} (raw=${allContractorsRaw.length}), dryRun=${dryRun}, threshold=${confidenceThreshold}, onlyMissing=${onlyMissing}`);
+
+    // Pobierz GK ordery raz.
+    const pageSize = 100;
+    const targetTotal = 100000;
+    const allOrders = [];
+    for (let offset = 0; offset < targetTotal; offset += pageSize) {
+      let data;
+      try {
+        data = await getOrders({ limit: pageSize, offset });
+      } catch (e) {
+        console.log(`[backfill-loc-llm] orders page offset=${offset} error: ${e.message}`);
+        break;
+      }
+      const batch = extractOrders(data);
+      if (batch.length === 0) break;
+      allOrders.push(...batch);
+      if (batch.length < pageSize) break;
+    }
+    console.log(`[backfill-loc-llm] fetched orders=${allOrders.length}`);
+
+    // Buduj indeks Map<lowercased receiverName, Array<order>>.
+    const ordersByName = new Map();
+    const flatOrders = [];
+    for (const o of allOrders) {
+      const r = o.receiverAddress || o.receiver || {};
+      const recvName = r.name || (o.delivery && (o.delivery.receiverName || o.delivery.name)) || null;
+      const date = o.creationDate || o.created_at || o.createdAt || null;
+      const flat = {
+        id: o.id || o.uuid || null,
+        date,
+        receiverName: recvName,
+        street: r.street || null,
+        city: r.city || null,
+        postCode: r.postCode || r.zipCode || null,
+        country: r.country || null,
+      };
+      flatOrders.push(flat);
+      const key = norm(recvName);
+      if (!key) continue;
+      if (!ordersByName.has(key)) ordersByName.set(key, []);
+      ordersByName.get(key).push(flat);
+    }
+
+    const SYSTEM_PROMPT = `Jestes asystentem ktory dopasowuje adresy dostaw z zamowien do zapisanych lokalizacji kontrahenta. Dla danego kontrahenta dostaniesz:
+- jego nazwe + tablice jego zapisanych lokalizacji (kazda ma indeks i adres)
+- tablice zamowien z systemu GK (kazde ma indeks, date, nazwe odbiorcy, ulice, miasto, kod, kraj)
+
+Twoje zadanie: dla kazdego zamowienia zdecyduj czy adres dostawy pasuje do ktorejs zapisanej lokalizacji kontrahenta. Toleruj:
+- literowki, rozne wielkosci liter
+- skroty: "ul.", "str.", "c/", "avda.", "pol. ind."
+- rozne kolejnosci czesci adresu, dodatkowe przecinki/spacje
+- nazwa odbiorcy moze sie roznic od nazwy kontrahenta (np. "NAIXX" vs "Naixx S.L.", "surfmarket" vs "SurfMarket Vigo")
+- ta sama lokalizacja zapisana 2x z drobnymi roznicami -> matchuj do TEJ z nizszym indeksem
+
+Zwroc TYLKO JSON, bez markdown, bez komentarza. Format:
+{"matches":[{"orderIdx":0,"locationIdx":0,"confidence":0.95}]}
+
+Pomin zamowienia ktore nie pasuja do zadnej lokalizacji (nie wlaczaj ich w \`matches\`). \`confidence\` to liczba 0-1.`;
+
+    const stats = {
+      ok: true,
+      scanned: 0,
+      contractorsAffected: 0,
+      locationsUpdated: 0,
+      llmCalls: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      sampleUpdates: [],
+      errors: [],
+    };
+
+    for (const c of allContractors) {
+      stats.scanned += 1;
+      if (stats.scanned % 10 === 0) {
+        console.log(`[backfill-loc-llm] progress: ${stats.scanned}/${allContractors.length}, affected=${stats.contractorsAffected}, locsUpdated=${stats.locationsUpdated}, llmCalls=${stats.llmCalls}`);
+      }
+
+      const extras = (typeof c.extras === 'object' && c.extras) || {};
+      const locations = Array.isArray(extras.locations) ? extras.locations.map(l => ({ ...l })) : [];
+      if (!locations.length) continue;
+      const targetName = norm(c.name);
+      if (!targetName) continue;
+
+      const firstTok = targetName.split(' ')[0] || '';
+      // Znajdz kandydatow.
+      const candidateSet = new Map(); // id-or-idx -> flat
+      for (let i = 0; i < flatOrders.length; i++) {
+        const fo = flatOrders[i];
+        const rn = norm(fo.receiverName);
+        if (!rn) continue;
+        let match = false;
+        if (firstTok && (rn.includes(firstTok) || targetName.includes(rn.split(' ')[0] || ''))) {
+          match = true;
+        } else if (lev(rn, targetName) < 4) {
+          match = true;
+        }
+        if (match) candidateSet.set(fo.id || `idx-${i}`, fo);
+      }
+
+      let candidates = Array.from(candidateSet.values());
+      if (!candidates.length) continue;
+
+      if (candidates.length > 50) {
+        candidates = candidates
+          .slice()
+          .sort((a, b) => {
+            const da = a.date ? new Date(a.date).getTime() : 0;
+            const db = b.date ? new Date(b.date).getTime() : 0;
+            return db - da;
+          })
+          .slice(0, 50);
+      }
+
+      // Build user message.
+      const locLines = locations.map((l, i) => `[${i}] ${l.street || ''}, ${l.city || ''}, ${l.postCode || ''}, ${l.country || ''}`).join('\n');
+      const ordLines = candidates.map((o, i) => `[${i}] ${o.date || ''} | ${o.receiverName || ''} | ${o.street || ''}, ${o.city || ''}, ${o.postCode || ''}, ${o.country || ''}`).join('\n');
+      const userMessage = `Kontrahent: ${c.name}\nLokalizacje:\n${locLines}\n\nZamowienia GK:\n${ordLines}`;
+
+      let resp;
+      try {
+        resp = await client.messages.create({
+          model: MODEL,
+          max_tokens: 2000,
+          system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+          messages: [{ role: 'user', content: userMessage }],
+        });
+        stats.llmCalls += 1;
+      } catch (e) {
+        console.log(`[backfill-loc-llm] LLM FAIL ${c.id}: ${e.message}`);
+        stats.errors.push({ contractorId: c.id, message: `llm: ${e.message}` });
+        continue;
+      }
+
+      if (resp && resp.usage) {
+        stats.totalInputTokens += (resp.usage.input_tokens || 0) + (resp.usage.cache_read_input_tokens || 0) + (resp.usage.cache_creation_input_tokens || 0);
+        stats.totalOutputTokens += resp.usage.output_tokens || 0;
+      }
+
+      const txt = (resp && resp.content && resp.content[0] && resp.content[0].text) || '';
+      let parsed;
+      try {
+        parsed = JSON.parse(txt);
+      } catch (e) {
+        // Try to strip markdown fences.
+        const cleaned = txt.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+        try { parsed = JSON.parse(cleaned); } catch (e2) {
+          console.log(`[backfill-loc-llm] parse FAIL ${c.id}: ${e2.message} raw=${txt.slice(0, 200)}`);
+          stats.errors.push({ contractorId: c.id, message: `parse: ${e2.message}` });
+          continue;
+        }
+      }
+
+      const matches = (parsed && Array.isArray(parsed.matches)) ? parsed.matches : [];
+      if (!matches.length) continue;
+
+      // Zbierz najnowsza date per locationIdx.
+      const dateByLocIdx = new Map();
+      for (const m of matches) {
+        if (!m || typeof m.locationIdx !== 'number' || typeof m.orderIdx !== 'number') continue;
+        const conf = Number(m.confidence);
+        if (!(conf >= confidenceThreshold)) continue;
+        const ord = candidates[m.orderIdx];
+        if (!ord || !ord.date) continue;
+        if (m.locationIdx < 0 || m.locationIdx >= locations.length) continue;
+        const prev = dateByLocIdx.get(m.locationIdx);
+        if (!prev || new Date(ord.date) > new Date(prev)) {
+          dateByLocIdx.set(m.locationIdx, ord.date);
+        }
+      }
+
+      let contractorChanged = false;
+      for (const [idx, orderDate] of dateByLocIdx.entries()) {
+        const loc = locations[idx];
+        if (!loc) continue;
+        const orderIso = new Date(orderDate).toISOString();
+        const prev = loc.lastUsedAt ? new Date(loc.lastUsedAt).toISOString() : null;
+        const next = (prev && prev >= orderIso) ? prev : orderIso;
+        if (next !== prev) {
+          locations[idx] = { ...loc, lastUsedAt: next };
+          contractorChanged = true;
+          stats.locationsUpdated += 1;
+          if (stats.sampleUpdates.length < 10) {
+            stats.sampleUpdates.push({
+              contractorId: c.id,
+              contractorName: c.name,
+              locationIndex: idx,
+              prevLastUsedAt: prev,
+              newLastUsedAt: next,
+            });
+          }
+        }
+      }
+
+      if (contractorChanged) {
+        stats.contractorsAffected += 1;
+        if (!dryRun) {
+          try {
+            await prisma.contractor.update({
+              where: { id: c.id },
+              data: { extras: { ...extras, locations } },
+            });
+          } catch (e) {
+            console.log(`[backfill-loc-llm] update FAIL ${c.id}: ${e.message}`);
+            stats.errors.push({ contractorId: c.id, message: `update: ${e.message}` });
+          }
+        }
+      }
+    }
+
+    console.log(`[backfill-loc-llm] done: scanned=${stats.scanned}, affected=${stats.contractorsAffected}, locsUpdated=${stats.locationsUpdated}, llmCalls=${stats.llmCalls}, inTok=${stats.totalInputTokens}, outTok=${stats.totalOutputTokens}, dryRun=${dryRun}`);
+    res.json(stats);
+  } catch (e) {
+    console.error('[backfill-loc-llm] error:', e.message, e.stack);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
