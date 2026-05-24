@@ -392,6 +392,8 @@ router.post('/transactions/rematch', async (req, res) => {
     shipmentsAlreadyTracked: 0,
     txMerged: 0,
     txCollapsed: 0,
+    dedupedInvoices: 0,
+    dedupedShipments: 0,
     samples: [],
   };
   try {
@@ -521,6 +523,56 @@ router.post('/transactions/rematch', async (req, res) => {
       report.txMerged++;
       report.samples.push({ txId: txShip.id, contractorName: txShip.contractorName, collapsed: 'FV ' + txInv.invoiceNumber });
     }
+
+    // 5. Dedup po invoiceId i shipmentHash — jesli dwa Tx maja ten sam invoiceId
+    //    lub shipmentHash, scal je w jeden (zachowaj ten ze shipmentem lub
+    //    najwczesniejszy; reszte skasuj po dolepieniu pol/flag).
+    const dedupBy = async (field) => {
+      const all = await prisma.transaction.findMany({
+        where: { [field]: { not: null } },
+        orderBy: { occurredAt: 'asc' },
+      });
+      const grouped = new Map();
+      for (const tx of all) {
+        const k = tx[field];
+        if (!grouped.has(k)) grouped.set(k, []);
+        grouped.get(k).push(tx);
+      }
+      let removed = 0;
+      for (const [, txs] of grouped) {
+        if (txs.length < 2) continue;
+        // primary: ten ze shipmentHash (jesli dedup po invoiceId), inaczej ten z invoiceId.
+        // Fallback: najwczesniejszy.
+        const otherKey = field === 'invoiceId' ? 'shipmentHash' : 'invoiceId';
+        const primary = txs.find(t => t[otherKey]) || txs[0];
+        const duplicates = txs.filter(t => t.id !== primary.id);
+        const update = {};
+        let notesAccum = primary.notes || '';
+        for (const dup of duplicates) {
+          for (const k of ['shipmentHash', 'shipmentNumber', 'trackingNumber', 'invoiceId', 'invoiceNumber', 'emailId', 'paymentRef', 'amount', 'currency', 'itemsSummary', 'itemsDetails', 'deliveredAt', 'paidAt']) {
+            if (primary[k] == null && dup[k] != null && update[k] === undefined) update[k] = dup[k];
+          }
+          for (const k of ['hasOrder', 'hasInvoice', 'hasShipped', 'hasDelivered', 'hasPayment']) {
+            if (!primary[k] && dup[k]) update[k] = true;
+          }
+          if (dup.notes && !notesAccum.includes(dup.notes)) {
+            notesAccum = [notesAccum, dup.notes].filter(Boolean).join(' | ');
+          }
+        }
+        if (notesAccum !== (primary.notes || '')) update.notes = notesAccum;
+        update.matchReason = (primary.matchReason || '') + ` | rematch: deduped ${duplicates.length} by ${field}`;
+
+        if (dryRun) { removed += duplicates.length; continue; }
+        await prisma.transaction.update({ where: { id: primary.id }, data: update });
+        for (const d of duplicates) {
+          await prisma.transaction.delete({ where: { id: d.id } });
+          removed++;
+        }
+      }
+      return removed;
+    };
+    report.dedupedInvoices = await dedupBy('invoiceId');
+    report.dedupedShipments = await dedupBy('shipmentHash');
 
     res.json({ ok: true, dryRun, ...report });
   } catch (e) {
