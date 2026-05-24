@@ -1052,6 +1052,141 @@ router.post('/:id/delivery-address', async (req, res) => {
   }
 });
 
+// Punktowy import GK delivery addresses do KONKRETNEGO kontrahenta po
+// wskazanej nazwie odbiorcy z GK orders. Use case: backfill auto nie
+// zlapal pary (np. GK "ID Logistics Super Pharm" vs CRM "Super Pharm",
+// zbyt daleko od fuzzy progu) — user wybiera contractor.id w CRM i
+// podaje receiverName z GK, my dociagamy unikalne adresy do
+// extras.locations[] z source='gk_import_by_receiver'.
+// Body: { receiverName: string } (required, 400 jak brak)
+router.post('/:id/import-gk-by-receiver', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const receiverName = (req.body && req.body.receiverName) || null;
+    if (!receiverName || !String(receiverName).trim()) {
+      return res.status(400).json({ error: 'receiverName (string) required in body' });
+    }
+
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    // Reuse tej samej sciezki co backfill: getOrders z paginacja po 100,
+    // ten sam wrapper unwrap (results / array / etc.).
+    const { getOrders } = require('../glob-client');
+    function extractOrders(data) {
+      if (!data) return [];
+      if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+        return data[0].results;
+      }
+      if (Array.isArray(data)) return data;
+      return data.results || data.items || data.data || [];
+    }
+
+    const pageSize = 100;
+    const targetTotal = 100000;
+    const orders = [];
+    for (let offset = 0; offset < targetTotal; offset += pageSize) {
+      let data;
+      try {
+        data = await getOrders({ limit: pageSize, offset });
+      } catch (e) {
+        console.log(`[import-gk-by-receiver] page offset=${offset} error: ${e.message}`);
+        break;
+      }
+      const batch = extractOrders(data);
+      if (batch.length === 0) break;
+      orders.push(...batch);
+      if (batch.length < pageSize) break;
+    }
+    console.log(`[import-gk-by-receiver] fetched ${orders.length} GK orders, filtering by receiverName="${receiverName}"`);
+
+    // Filter case+space insensitive po nazwie odbiorcy. GK realnie trzyma
+    // nazwe w receiverAddress.name (czasem receiver.name); spec wspomina
+    // delivery.receiverName, wiec sprawdzamy wszystkie warianty.
+    const target = String(receiverName).trim().toLowerCase();
+    const matched = orders.filter(o => {
+      const r = o.receiverAddress || o.receiver || {};
+      const candidates = [r.name, o.delivery && o.delivery.receiverName, o.delivery && o.delivery.name];
+      return candidates.some(n => String(n || '').trim().toLowerCase() === target);
+    });
+    console.log(`[import-gk-by-receiver] matched ${matched.length}/${orders.length} orders`);
+
+    // Dedup adresow (street|houseNumber|postCode|city|country, lowercased).
+    // Adresy w tej samej normalizacji co backfill (receiverAddress fields).
+    const norm = (s) => (s || '').toString().toLowerCase().trim();
+    const seen = new Map(); // fp -> address
+    for (const o of matched) {
+      const r = o.receiverAddress || o.receiver || {};
+      const address = {
+        street: r.street || null,
+        houseNumber: r.houseNumber || null,
+        city: r.city || null,
+        postCode: r.postCode || r.zipCode || null,
+        country: r.countryCode || r.country || null,
+        contactPerson: r.contactPerson || null,
+        phone: r.phone || null,
+        email: r.email || null,
+      };
+      const fp = `${norm(address.street)}|${norm(address.houseNumber)}|${norm(address.postCode)}|${norm(address.city)}|${norm(address.country)}`;
+      if (fp === '||||') continue; // adres pusty
+      if (!seen.has(fp)) seen.set(fp, address);
+    }
+    const uniqueAddresses = Array.from(seen.values());
+    console.log(`[import-gk-by-receiver] unique addresses=${uniqueAddresses.length}`);
+
+    // Dla kazdego unikalnego adresu — ta sama logika co
+    // POST /:id/delivery-address: dedup wzgledem istniejacych
+    // extras.locations[] po (street|city|postCode) i push.
+    const extras = (typeof c.extras === 'object' && c.extras) || {};
+    const locations = Array.isArray(extras.locations) ? [...extras.locations] : [];
+    let locationsAdded = 0;
+    let locationsSkippedDup = 0;
+    for (const a of uniqueAddresses) {
+      const dup = locations.find(l =>
+        norm(l.street) === norm(a.street) &&
+        norm(l.city) === norm(a.city) &&
+        norm(l.postCode) === norm(a.postCode)
+      );
+      if (dup) { locationsSkippedDup += 1; continue; }
+      locations.push({
+        street: a.street || null,
+        houseNumber: a.houseNumber || null,
+        city: a.city || null,
+        postCode: a.postCode || null,
+        country: a.country || c.country || null,
+        contactPerson: a.contactPerson || null,
+        phone: a.phone || null,
+        email: a.email || null,
+        source: 'gk_import_by_receiver',
+        receiverName: receiverName,
+        addedAt: new Date().toISOString(),
+      });
+      locationsAdded += 1;
+    }
+
+    if (locationsAdded > 0) {
+      await prisma.contractor.update({
+        where: { id: req.params.id },
+        data: { extras: { ...extras, locations } },
+      });
+    }
+
+    res.json({
+      ok: true,
+      contractorId: c.id,
+      receiverName,
+      ordersMatched: matched.length,
+      uniqueAddresses: uniqueAddresses.length,
+      locationsAdded,
+      locationsSkippedDup,
+      sampleAddresses: uniqueAddresses.slice(0, 5),
+    });
+  } catch (e) {
+    console.error('[import-gk-by-receiver] error:', e.message, e.stack);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Search contractor's INBOUND emails for a delivery address (signature /
 // "ship to" / "dostawa" lines). Calls Claude (Haiku 4.5) — has a token
 // cost, so it's a separate endpoint that the agent invokes only when the
