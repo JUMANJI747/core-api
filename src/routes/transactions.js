@@ -375,6 +375,10 @@ router.post('/transactions/reset', async (req, res) => {
 // mimo istnienia GK Order). Plus: przelatuje wszystkie Invoice które nie
 // mają jeszcze Transaction i odpala trackInvoice. Same dla GK Orders.
 //
+// Invariant: rematch NIGDY nie rozlacza juz sparowanych Transaction. Bierze
+// wylacznie niesparowane FV (bez invoiceId), niesparowane GK shipmenty
+// (bez shipmentHash) i osierocone Transactions tego samego kontrahenta.
+//
 // dryRun=true zwraca plan bez modyfikacji.
 router.post('/transactions/rematch', async (req, res) => {
   const prisma = req.app.locals.prisma;
@@ -387,6 +391,7 @@ router.post('/transactions/rematch', async (req, res) => {
     shipmentsAdded: 0,
     shipmentsAlreadyTracked: 0,
     txMerged: 0,
+    txCollapsed: 0,
     samples: [],
   };
   try {
@@ -437,9 +442,9 @@ router.post('/transactions/rematch', async (req, res) => {
       if (tx.invoiceId) report.txMerged++;
     }
 
-    // 3. Próba domknięcia luk w open Transaction — dla każdej z hasInvoice=false
-    //    z contractorId, szukaj invoice pasującej po dacie+amount; analogicznie
-    //    hasShipped=false → szukaj GK ordera z bazy GK po contractor+date.
+    // 3. Domkniecie luk — dla kazdej Transaction bez invoiceId (czyli z luznym
+    //    shipmentem), znajdz pasujaca FV ktora jeszcze nie zostala wziejeta
+    //    przez zadnego Transaction i ja dopisz.
     const openInvoiceless = await prisma.transaction.findMany({
       where: { invoiceId: null, contractorId: { not: null } },
     });
@@ -472,6 +477,49 @@ router.post('/transactions/rematch', async (req, res) => {
         report.samples.push({ txId: tx.id, contractorName: tx.contractorName, paired: 'invoice ' + inv.number });
         break;
       }
+    }
+
+    // 4. Scal dwa osierocone Transactions tego samego kontrahenta:
+    //    T_inv (invoiceId set, shipmentHash null) + T_ship (invoiceId null, shipmentHash set).
+    //    Po scaleniu: zachowujemy T_ship (anchor wczesniejszy zwykle), dopisujemy FV, kasujemy T_inv.
+    const orphanInvoiceTxs = await prisma.transaction.findMany({
+      where: { invoiceId: { not: null }, shipmentHash: null, contractorId: { not: null } },
+    });
+    for (const txInv of orphanInvoiceTxs) {
+      const since = new Date(txInv.occurredAt); since.setDate(since.getDate() - 30);
+      const until = new Date(txInv.occurredAt); until.setDate(until.getDate() + 30);
+      const txShip = await prisma.transaction.findFirst({
+        where: {
+          contractorId: txInv.contractorId,
+          invoiceId: null,
+          shipmentHash: { not: null },
+          occurredAt: { gte: since, lte: until },
+        },
+        orderBy: { occurredAt: 'asc' },
+      });
+      if (!txShip) continue;
+      if (dryRun) { report.txCollapsed++; continue; }
+      await prisma.$transaction([
+        prisma.transaction.update({
+          where: { id: txShip.id },
+          data: {
+            invoiceId: txInv.invoiceId,
+            invoiceNumber: txInv.invoiceNumber,
+            hasInvoice: true,
+            hasPayment: txInv.hasPayment || undefined,
+            paidAt: txInv.paidAt || undefined,
+            amount: txInv.amount || txShip.amount,
+            currency: txInv.currency || txShip.currency,
+            itemsSummary: txShip.itemsSummary || txInv.itemsSummary,
+            itemsDetails: txShip.itemsDetails || txInv.itemsDetails,
+            matchReason: (txShip.matchReason || '') + ' | rematch: collapsed orphan FV ' + (txInv.invoiceNumber || txInv.id),
+          },
+        }),
+        prisma.transaction.delete({ where: { id: txInv.id } }),
+      ]);
+      report.txCollapsed++;
+      report.txMerged++;
+      report.samples.push({ txId: txShip.id, contractorName: txShip.contractorName, collapsed: 'FV ' + txInv.invoiceNumber });
     }
 
     res.json({ ok: true, dryRun, ...report });
