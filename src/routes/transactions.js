@@ -42,11 +42,35 @@ router.get('/transactions', async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      prisma.transaction.findMany({ where, orderBy: { occurredAt: 'desc' }, take: lim, skip: off }),
+      prisma.transaction.findMany({
+        where,
+        orderBy: { occurredAt: 'desc' },
+        take: lim,
+        skip: off,
+        include: {
+          contractor: { select: { id: true, name: true, country: true, nip: true } },
+        },
+      }),
       prisma.transaction.count({ where }),
     ]);
 
-    res.json({ ok: true, total, returned: items.length, transactions: items });
+    // Enrich with Invoice details (fetched in one batch for transactions with invoiceId)
+    const invoiceIds = items.map(t => t.invoiceId).filter(Boolean);
+    let invoiceMap = new Map();
+    if (invoiceIds.length) {
+      const invoices = await prisma.invoice.findMany({
+        where: { id: { in: invoiceIds } },
+        select: { id: true, contractorCountry: true, currency: true, status: true, paidAmount: true, grossAmount: true, issueDate: true, ifirmaType: true, type: true },
+      });
+      invoiceMap = new Map(invoices.map(inv => [inv.id, inv]));
+    }
+
+    const transactions = items.map(t => ({
+      ...t,
+      invoice: t.invoiceId ? (invoiceMap.get(t.invoiceId) || null) : null,
+    }));
+
+    res.json({ ok: true, total, returned: transactions.length, transactions });
   } catch (e) {
     console.error('[transactions]', e.message);
     res.status(500).json({ ok: false, error: e.message });
@@ -583,6 +607,35 @@ router.get('/operations/sample-followups', async (req, res) => {
   } catch (e) {
     console.error('[operations/sample-followups] error:', e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/transactions/:id — update notes, checkboxes, items summary
+router.patch('/transactions/:id', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { id } = req.params;
+    const allowed = ['notes', 'hasOrder', 'hasInvoice', 'hasShipped', 'hasDelivered', 'hasPayment', 'itemsSummary'];
+    const data = {};
+    for (const k of allowed) {
+      if (k in req.body) data[k] = req.body[k];
+    }
+    // auto-set timestamps when toggling on
+    if (data.hasDelivered === true && req.body.deliveredAt !== undefined) {
+      data.deliveredAt = req.body.deliveredAt ? new Date(req.body.deliveredAt) : new Date();
+    }
+    if (data.hasPayment === true && req.body.paidAt !== undefined) {
+      data.paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
+    }
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ ok: false, error: 'no allowed fields in body' });
+    }
+    const updated = await prisma.transaction.update({ where: { id }, data });
+    res.json({ ok: true, transaction: updated });
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ ok: false, error: 'transaction not found' });
+    console.error('[transactions PATCH]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
