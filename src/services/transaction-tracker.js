@@ -53,6 +53,11 @@ async function maybeSyncToSheet(prisma, tx, action) {
 //      shorter = stronger) and amount (linear within ±1% hard filter).
 //   3. Below threshold or no contractor → create new Transaction (orphan
 //      until merged manually).
+//
+// Rematch invariant: auto-merge writes (trackInvoice/trackShipment "merge"
+// branch) NEVER demote a manual decision — flags only go true→true or
+// undefined-skipped. Hard truths from source-of-truth (FV paid, GK
+// delivered) may promote false→true, but never the other way.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Matching constants
@@ -278,7 +283,7 @@ async function trackShipment(prisma, gkOrder, opts = {}) {
         shipmentNumber: gkOrder.number || gkOrder.orderNumber,
         trackingNumber,
         hasShipped: true,
-        hasDelivered: status === 'DELIVERED',
+        hasDelivered: status === 'DELIVERED' ? true : undefined,
         deliveredAt: status === 'DELIVERED' ? (gkOrder.deliveryDate ? new Date(gkOrder.deliveryDate) : new Date()) : undefined,
         matchScore: match.score,
         matchReason: 'merged with invoice: ' + match.reason,
