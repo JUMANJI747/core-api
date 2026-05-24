@@ -1019,6 +1019,7 @@ router.post('/:id/delivery-address', async (req, res) => {
     const locations = Array.isArray(extras.locations) ? [...extras.locations] : [];
     const norm = (s) => (s || '').toString().toLowerCase().trim();
 
+    const nowIso = new Date().toISOString();
     const newLoc = {
       street: street || null,
       houseNumber: houseNumber || null,
@@ -1029,16 +1030,23 @@ router.post('/:id/delivery-address', async (req, res) => {
       phone: phone || null,
       email: email || null,
       source: source || 'manual',
-      addedAt: new Date().toISOString(),
+      addedAt: nowIso,
+      lastUsedAt: nowIso,
     };
 
-    const dup = locations.find(l =>
+    const dupIdx = locations.findIndex(l =>
       norm(l.street) === norm(newLoc.street) &&
       norm(l.city) === norm(newLoc.city) &&
       norm(l.postCode) === norm(newLoc.postCode)
     );
-    if (dup) {
-      return res.json({ ok: true, deduplicated: true, location: dup, totalLocations: locations.length });
+    if (dupIdx !== -1) {
+      const updated = { ...locations[dupIdx], lastUsedAt: nowIso };
+      locations[dupIdx] = updated;
+      await prisma.contractor.update({
+        where: { id: req.params.id },
+        data: { extras: { ...extras, locations } },
+      });
+      return res.json({ ok: true, deduplicated: true, location: updated, lastUsedAt: nowIso, totalLocations: locations.length });
     }
 
     locations.push(newLoc);
@@ -1046,7 +1054,7 @@ router.post('/:id/delivery-address', async (req, res) => {
       where: { id: req.params.id },
       data: { extras: { ...extras, locations } },
     });
-    res.json({ ok: true, location: newLoc, totalLocations: locations.length });
+    res.json({ ok: true, location: newLoc, lastUsedAt: nowIso, totalLocations: locations.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1457,6 +1465,155 @@ router.post('/:id/remove-location', async (req, res) => {
     });
     res.json({ ok: true, removed, remaining: locations.length });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One-shot backfill — przeleci po WSZYSTKICH kontrahentach i dla kazdego
+// pobiera GK ordery, matchuje po nazwie odbiorcy (exact lowercased) i
+// ustawia extras.locations[i].lastUsedAt = max(istniejacy, najnowsza data
+// matchujacego ordera) dla pasujacych adresow (street|city|postCode norm).
+// Body: { dryRun?: boolean, limit?: number (default null = wszyscy) }
+router.post('/backfill-location-last-used', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const body = req.body || {};
+    const dryRun = !!body.dryRun;
+    const limit = body.limit != null ? Number(body.limit) : null;
+
+    const norm = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').trim();
+    const fpAddr = (l) => `${norm(l.street)}|${norm(l.city)}|${norm(l.postCode)}`;
+
+    const { getOrders } = require('../glob-client');
+    function extractOrders(data) {
+      if (!data) return [];
+      if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
+        return data[0].results;
+      }
+      if (Array.isArray(data)) return data;
+      return data.results || data.items || data.data || [];
+    }
+
+    const allContractors = await prisma.contractor.findMany({
+      select: { id: true, name: true, extras: true },
+      ...(limit ? { take: limit } : {}),
+    });
+    console.log(`[backfill-location-last-used] start: contractors=${allContractors.length}, dryRun=${dryRun}`);
+
+    const stats = {
+      ok: true,
+      scanned: 0,
+      contractorsAffected: 0,
+      locationsUpdated: 0,
+      sampleUpdates: [],
+      errors: [],
+    };
+
+    for (const c of allContractors) {
+      stats.scanned += 1;
+      if (stats.scanned % 20 === 0) {
+        console.log(`[backfill-location-last-used] progress: ${stats.scanned}/${allContractors.length}, affected=${stats.contractorsAffected}, locsUpdated=${stats.locationsUpdated}`);
+      }
+
+      const extras = (typeof c.extras === 'object' && c.extras) || {};
+      const locations = Array.isArray(extras.locations) ? extras.locations.map(l => ({ ...l })) : [];
+      if (!locations.length) continue;
+
+      const targetName = norm(c.name);
+      if (!targetName) continue;
+
+      // Pobierz GK ordery (paging po 100).
+      const pageSize = 100;
+      const targetTotal = 100000;
+      const orders = [];
+      for (let offset = 0; offset < targetTotal; offset += pageSize) {
+        let data;
+        try {
+          data = await getOrders({ limit: pageSize, offset });
+        } catch (e) {
+          console.log(`[backfill-location-last-used] contractor=${c.id} page offset=${offset} error: ${e.message}`);
+          stats.errors.push(`contractor ${c.id} page ${offset}: ${e.message}`);
+          break;
+        }
+        const batch = extractOrders(data);
+        if (batch.length === 0) break;
+        orders.push(...batch);
+        if (batch.length < pageSize) break;
+      }
+
+      // Filtruj ordery po nazwie odbiorcy (exact lowercased).
+      const matched = orders.filter(o => {
+        const r = o.receiverAddress || o.receiver || {};
+        const candidates = [r.name, o.delivery && o.delivery.receiverName, o.delivery && o.delivery.name];
+        return candidates.some(n => norm(n) === targetName);
+      });
+      if (!matched.length) continue;
+
+      // Build map fp -> latest date among matched orders.
+      const dateByFp = new Map();
+      for (const o of matched) {
+        const r = o.receiverAddress || o.receiver || {};
+        const addr = {
+          street: r.street || null,
+          city: r.city || null,
+          postCode: r.postCode || r.zipCode || null,
+        };
+        const fp = fpAddr(addr);
+        if (fp === '||') continue;
+        const date = o.creationDate || o.created_at || o.createdAt || null;
+        if (!date) continue;
+        const prev = dateByFp.get(fp);
+        if (!prev || new Date(date) > new Date(prev)) dateByFp.set(fp, date);
+      }
+      if (!dateByFp.size) continue;
+
+      let contractorChanged = false;
+      for (let i = 0; i < locations.length; i++) {
+        const loc = locations[i];
+        const fp = fpAddr(loc);
+        if (fp === '||') continue;
+        const orderDate = dateByFp.get(fp);
+        if (!orderDate) continue;
+        const orderIso = new Date(orderDate).toISOString();
+        const prev = loc.lastUsedAt ? new Date(loc.lastUsedAt).toISOString() : null;
+        const next = (prev && prev >= orderIso) ? prev : orderIso;
+        if (next !== prev) {
+          locations[i] = { ...loc, lastUsedAt: next };
+          contractorChanged = true;
+          stats.locationsUpdated += 1;
+          if (stats.sampleUpdates.length < 5) {
+            stats.sampleUpdates.push({
+              contractorId: c.id,
+              contractorName: c.name,
+              locationIndex: i,
+              addressFp: fp,
+              prevLastUsedAt: prev,
+              newLastUsedAt: next,
+            });
+          }
+        }
+      }
+
+      if (contractorChanged) {
+        stats.contractorsAffected += 1;
+        if (!dryRun) {
+          try {
+            await prisma.contractor.update({
+              where: { id: c.id },
+              data: { extras: { ...extras, locations } },
+            });
+          } catch (e) {
+            console.log(`[backfill-location-last-used] update FAIL ${c.id}: ${e.message}`);
+            stats.errors.push(`update ${c.id}: ${e.message}`);
+          }
+        }
+      }
+    }
+
+    console.log(`[backfill-location-last-used] done: scanned=${stats.scanned}, affected=${stats.contractorsAffected}, locsUpdated=${stats.locationsUpdated}, dryRun=${dryRun}`);
+    res.json(stats);
+  } catch (e) {
+    console.error('[backfill-location-last-used] error:', e.message, e.stack);
     res.status(500).json({ error: e.message });
   }
 });
