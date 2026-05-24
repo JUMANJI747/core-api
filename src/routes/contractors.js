@@ -1903,4 +1903,62 @@ Pomin zamowienia ktore nie pasuja do zadnej lokalizacji (nie wlaczaj ich w \`mat
   }
 });
 
+// GET /api/contractors/map-points — dokladne dane (lat, lng, last invoice,
+// open transactions) dla mapy w Dashboard. Pod auth middleware (x-api-key).
+router.get('/map-points', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const pl = await prisma.contractor.findMany({
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
+      select: { id: true, name: true, lat: true, lng: true, address: true, city: true, country: true, nip: true },
+    });
+    const es = await prisma.esContractor.findMany({
+      where: { lat: { not: null }, lng: { not: null }, geocodingStatus: { in: ['ok', 'ok_llm'] } },
+      select: { id: true, name: true, lat: true, lng: true, address: true, city: true, province: true, postalCode: true, country: true },
+    });
+
+    const invoiceById = new Map();
+    const openTxById = new Map();
+    if (pl.length) {
+      const plIds = pl.map(c => c.id);
+      const lastInvoices = await prisma.$queryRaw`
+        SELECT DISTINCT ON ("contractorId") "contractorId", "number", "issueDate", "grossAmount", "currency"
+        FROM "Invoice" WHERE "contractorId" = ANY(${plIds})
+        ORDER BY "contractorId", "issueDate" DESC
+      `;
+      lastInvoices.forEach(r => invoiceById.set(r.contractorId, r));
+      const openCounts = await prisma.transaction.groupBy({
+        by: ['contractorId'],
+        where: { contractorId: { in: plIds }, OR: [{ hasPayment: false }, { hasDelivered: false }] },
+        _count: { _all: true },
+      });
+      openCounts.forEach(r => openTxById.set(r.contractorId, r._count._all));
+    }
+
+    const points = [
+      ...pl.map(c => ({
+        id: c.id, source: 'PL', name: c.name, lat: c.lat, lng: c.lng,
+        address: c.address || null, city: c.city || null, country: c.country || null, nip: c.nip || null,
+        lastInvoice: invoiceById.has(c.id) ? {
+          number: invoiceById.get(c.id).number,
+          date: invoiceById.get(c.id).issueDate,
+          amount: invoiceById.get(c.id).grossAmount,
+          currency: invoiceById.get(c.id).currency,
+        } : null,
+        openTransactions: openTxById.get(c.id) || 0,
+      })),
+      ...es.map(c => ({
+        id: c.id, source: 'ES', name: c.name, lat: c.lat, lng: c.lng,
+        address: c.address || null, city: c.city || null, country: c.country || null,
+        province: c.province || null, postalCode: c.postalCode || null,
+        lastInvoice: null, openTransactions: 0,
+      })),
+    ];
+    res.json({ ok: true, count: points.length, points });
+  } catch (e) {
+    console.error('[contractors/map-points]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
