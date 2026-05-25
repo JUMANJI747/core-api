@@ -1019,9 +1019,16 @@ router.get('/inbox-stats', async (req, res) => {
       _count: { _all: true },
     });
     const unreadMap = Object.fromEntries(unreadRows.map(r => [r.inbox, r._count._all]));
+    // Important unread: CLIENT_REPLY or COURIER_ALERT, unread — te same co idą na Telegram.
+    const importantRows = await prisma.email.groupBy({
+      by: ['inbox'],
+      where: { direction: 'INBOUND', isRead: false, tags: { hasSome: ['CLIENT_REPLY', 'COURIER_ALERT'] } },
+      _count: { _all: true },
+    });
+    const importantMap = Object.fromEntries(importantRows.map(r => [r.inbox, r._count._all]));
     const out = rows
-      .map(r => ({ inbox: r.inbox, total: r._count._all, unread: unreadMap[r.inbox] || 0 }))
-      .sort((a, b) => (b.unread - a.unread) || a.inbox.localeCompare(b.inbox));
+      .map(r => ({ inbox: r.inbox, total: r._count._all, unread: unreadMap[r.inbox] || 0, importantUnread: importantMap[r.inbox] || 0 }))
+      .sort((a, b) => (b.importantUnread - a.importantUnread) || (b.unread - a.unread) || a.inbox.localeCompare(b.inbox));
     res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
