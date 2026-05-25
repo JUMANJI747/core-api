@@ -1022,7 +1022,7 @@ router.get('/inbox-stats', async (req, res) => {
     // Important unread: CLIENT_REPLY or COURIER_ALERT, unread — te same co idą na Telegram.
     const importantRows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND', isRead: false, tags: { hasSome: ['CLIENT_REPLY', 'COURIER_ALERT'] } },
+      where: { direction: 'INBOUND', isRead: false, tags: { has: 'tg_notified' } },
       _count: { _all: true },
     });
     const importantMap = Object.fromEntries(importantRows.map(r => [r.inbox, r._count._all]));

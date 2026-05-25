@@ -1153,6 +1153,12 @@ async function processAccount(account) {
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
+            // Oznacz maila tagiem tg_notified — frontend podświetla tylko te maile
+            // na niebiesko (dopóki nie przeczytane). Stare maile bez tego taga = brak wyróżnienia.
+            await prisma.email.update({
+              where: { id: savedEmail.id },
+              data: { tags: { push: 'tg_notified' } },
+            });
           } catch (tgErr) {
             console.error(`[inbox-poller] Telegram error:`, tgErr.message);
           }
