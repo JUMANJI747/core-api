@@ -168,13 +168,22 @@ router.get('/emails/check-sent', async (req, res) => {
 
 router.get('/emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { inbox, direction, isRead, limit, fromEmail, search, contractorId } = req.query;
+  const { inbox, direction, isRead, limit, fromEmail, search, contractorId, folder } = req.query;
   const where = {};
   if (inbox) where.inbox = inbox;
   if (direction) where.direction = direction;
   if (isRead !== undefined) where.isRead = isRead === 'true';
   if (fromEmail) where.fromEmail = { contains: fromEmail, mode: 'insensitive' };
   if (contractorId) where.contractorId = contractorId;
+  // folder-based tag filtering
+  if (folder === 'trash') {
+    where.tags = { has: 'trash' };
+  } else if (folder === 'archived') {
+    where.tags = { has: 'archived' };
+  } else if (!folder || folder === 'inbox') {
+    // domyslnie ukrywamy archived i trash
+    where.NOT = { tags: { hasSome: ['archived', 'trash'] } };
+  }
   if (search) {
     const searchTerm = search.includes('@') ? search.split('@')[0] : search;
     where.OR = [
@@ -330,6 +339,56 @@ router.patch('/emails/:id/read', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const email = await prisma.email.update({ where: { id: req.params.id }, data: { isRead: true } });
   res.json(email);
+});
+
+router.patch('/emails/:id/archive', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const email = await prisma.email.findUnique({ where: { id: req.params.id }, select: { tags: true } });
+  if (!email) return res.status(404).json({ error: 'not found' });
+  const has = (email.tags || []).includes('archived');
+  const tags = has ? (email.tags || []).filter(t => t !== 'archived') : [...(email.tags || []), 'archived'];
+  const updated = await prisma.email.update({ where: { id: req.params.id }, data: { tags } });
+  res.json({ ok: true, archived: !has, email: updated });
+});
+
+router.patch('/emails/:id/trash', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const email = await prisma.email.findUnique({ where: { id: req.params.id }, select: { tags: true } });
+  if (!email) return res.status(404).json({ error: 'not found' });
+  const has = (email.tags || []).includes('trash');
+  const tags = has ? (email.tags || []).filter(t => t !== 'trash') : [...(email.tags || []), 'trash'];
+  const updated = await prisma.email.update({ where: { id: req.params.id }, data: { tags } });
+  res.json({ ok: true, trashed: !has, email: updated });
+});
+
+router.post('/emails/bulk-action', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { ids, action } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids required' });
+  if (!['archive', 'trash', 'read', 'unread', 'unarchive', 'untrash'].includes(action)) {
+    return res.status(400).json({ error: 'action must be one of: archive, trash, read, unread, unarchive, untrash' });
+  }
+  let affected = 0;
+  for (const id of ids) {
+    try {
+      if (action === 'read') {
+        await prisma.email.update({ where: { id }, data: { isRead: true } });
+      } else if (action === 'unread') {
+        await prisma.email.update({ where: { id }, data: { isRead: false } });
+      } else {
+        const email = await prisma.email.findUnique({ where: { id }, select: { tags: true } });
+        if (!email) continue;
+        let tags = email.tags || [];
+        if (action === 'archive') { if (!tags.includes('archived')) tags = [...tags, 'archived']; }
+        else if (action === 'unarchive') { tags = tags.filter(t => t !== 'archived'); }
+        else if (action === 'trash') { if (!tags.includes('trash')) tags = [...tags, 'trash']; }
+        else if (action === 'untrash') { tags = tags.filter(t => t !== 'trash'); }
+        await prisma.email.update({ where: { id }, data: { tags } });
+      }
+      affected++;
+    } catch (_) { /* skip missing */ }
+  }
+  res.json({ ok: true, action, affected });
 });
 
 // ============ EMAIL DETAIL WITH ATTACHMENTS ============
