@@ -890,12 +890,11 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   };
 
   const previewId = crypto.randomUUID();
-  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body, chatId: body.chatId || null });
+  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body, chatId: body.chatId || null, source: body.source || null });
 
-  // Telegram-notyfikacja preview (ground truth — niezależnie od tego co
-  // agent napisze w swojej odpowiedzi). User widzi prawdziwe qty/ceny przed
-  // potwierdzeniem. Best-effort.
-  try {
+  // Telegram-notyfikacja preview — POMIJANA gdy source=frontend (frontend
+  // pokazuje preview w UI, Telegram dostaje tylko gdy wywolane z bota/agenta).
+  if (body.source !== 'frontend') try {
     const tgChatId = await getEsChatId(prisma, body.chatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (tgToken && tgChatId) {
@@ -951,7 +950,7 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
 // ============ INVOICE CONFIRM ============
 
 async function confirmEsPreview(stored) {
-  const { preview, contractor, lines, invoiceDate, chatId: storedChatId } = stored;
+  const { preview, contractor, lines, invoiceDate, chatId: storedChatId, source: storedSource } = stored;
   const period = preview.period;
 
   // Optional footer override from Config (lets Nikodem change IBAN without
@@ -1051,13 +1050,12 @@ async function confirmEsPreview(stored) {
     console.error('[cs invoice-confirm] local persist failed:', e.message);
   }
 
-  // PDF → Telegram (best-effort, but report truthfully whether it actually
-  // landed). Telegram API returns 200 with {ok:false, description:"..."} for
-  // recoverable failures (chat not found, bot blocked, file too big), so we
-  // must inspect the response body rather than trust the await resolving.
+  // PDF → Telegram — pomijane gdy source=frontend (frontend sam pokazuje wynik).
   let pdfSent = false;
   let pdfError = null;
-  try {
+  if (storedSource === 'frontend') {
+    pdfError = 'skipped: source=frontend';
+  } else try {
     const tgChat = await getEsChatId(prisma, storedChatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (!tgToken) pdfError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
