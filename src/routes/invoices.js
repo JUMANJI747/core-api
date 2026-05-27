@@ -360,6 +360,27 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const waluta = effectiveCountry === 'PL' ? 'PLN' : 'EUR';
     const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
 
+    // VIES fresh check przed WDT — blokuje jesli NIP nieaktywny w VIES
+    if (rodzaj === 'wdt' && contractor.nip) {
+      try {
+        const nip = contractor.nip.replace(/[\s-]/g, '').toUpperCase();
+        const cc = nip.slice(0, 2);
+        const num = nip.slice(2);
+        if (cc.length === 2 && /^[A-Z]{2}$/.test(cc)) {
+          const { httpsPost: hp } = require('../http');
+          const viesData = await hp('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {}, { countryCode: cc, vatNumber: num });
+          if (viesData.valid !== true) {
+            return res.status(400).json({
+              error: `VIES: NIP ${nip} nieaktywny (${viesData.valid === false ? 'invalid' : 'brak odpowiedzi'}). Nie mozna wystawic WDT 0%. Sprawdz NIP kontrahenta.`,
+              vies: { vatNumber: nip, valid: false, name: viesData.name || null },
+            });
+          }
+        }
+      } catch (viesErr) {
+        console.warn('[invoice-preview] VIES check failed (non-blocking):', viesErr.message);
+      }
+    }
+
     // Auto-persist znormalizowanego ISO-2 gdy w bazie był pełny tekst
     // ("Polska"/"Hiszpania") albo pusto a wykryliśmy non-PL przez NIP.
     // Robimy update tylko gdy nowa wartość różni się od obecnej.

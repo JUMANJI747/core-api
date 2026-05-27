@@ -631,6 +631,91 @@ router.post('/admin/contractors/:id/unlink-es', async (req, res) => {
   }
 });
 
+// POST /api/admin/contractor-cleanup — batch fix kontrahenta:
+// aktualizuj NIP/email/nazwe, linkuj maile, linkuj fakture, ustaw kraj.
+// body: { contractorId, updates: { nip?, email?, name?, country?, address?, city? },
+//         linkInvoiceNumber?, linkEmails?: boolean }
+router.post('/admin/contractor-cleanup', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { contractorId, updates, linkInvoiceNumber, linkEmails } = req.body || {};
+    if (!contractorId) return res.status(400).json({ error: 'contractorId required' });
+
+    const contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
+    if (!contractor) return res.status(404).json({ error: 'contractor not found' });
+
+    const result = { updated: {}, linkedInvoice: null, linkedEmails: 0, linkedTransactions: 0 };
+
+    // 1. Update contractor fields
+    if (updates && Object.keys(updates).length) {
+      const allowed = ['nip', 'email', 'primaryEmail', 'name', 'country', 'address', 'city', 'phone'];
+      const data = {};
+      for (const k of allowed) { if (updates[k] !== undefined) data[k] = updates[k]; }
+      if (Object.keys(data).length) {
+        await prisma.contractor.update({ where: { id: contractorId }, data });
+        result.updated = data;
+      }
+    }
+
+    // 2. Link invoice by number
+    if (linkInvoiceNumber) {
+      const inv = await prisma.invoice.findFirst({ where: { number: { contains: linkInvoiceNumber } } });
+      if (inv) {
+        await prisma.invoice.update({ where: { id: inv.id }, data: { contractorId } });
+        // Update Transaction too
+        const tx = await prisma.transaction.findFirst({ where: { invoiceId: inv.id } });
+        if (tx) {
+          await prisma.transaction.update({
+            where: { id: tx.id },
+            data: { contractorId, contractorName: updates?.name || contractor.name },
+          });
+          result.linkedTransactions++;
+        }
+        result.linkedInvoice = inv.number;
+      }
+    }
+
+    // 3. Link unlinked emails by contractor email
+    if (linkEmails) {
+      const email = updates?.email || contractor.email;
+      if (email) {
+        const { count } = await prisma.email.updateMany({
+          where: { contractorId: null, OR: [
+            { fromEmail: { equals: email, mode: 'insensitive' } },
+            { toEmail: { equals: email, mode: 'insensitive' } },
+          ]},
+          data: { contractorId },
+        });
+        result.linkedEmails = count;
+      }
+    }
+
+    // 4. Link orphan Transactions by contractorName
+    const name = updates?.name || contractor.name;
+    if (name) {
+      const words = name.toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+      if (words.length) {
+        const orphanTxs = await prisma.transaction.findMany({
+          where: { contractorId: null, contractorName: { not: null } },
+          select: { id: true, contractorName: true },
+        });
+        for (const tx of orphanTxs) {
+          const txName = (tx.contractorName || '').toLowerCase();
+          if (words.some(w => txName.includes(w))) {
+            await prisma.transaction.update({ where: { id: tx.id }, data: { contractorId, contractorName: name } });
+            result.linkedTransactions++;
+          }
+        }
+      }
+    }
+
+    res.json({ ok: true, contractorId, ...result });
+  } catch (e) {
+    console.error('[admin/contractor-cleanup]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/admin/vies-check — sprawdz NIP w VIES (pomijajac cache)
 router.post('/admin/vies-check', async (req, res) => {
   const { vatNumber: raw } = req.body || {};
