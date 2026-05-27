@@ -424,7 +424,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 
       const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
       try {
-        const r = await fn(prisma, fullQuery, null, previousTurns.slice(-6));
+        const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
         results.push({ agent: agentName, text: r.text || r.error || JSON.stringify(r).slice(0, 500) });
       } catch (e) {
         results.push({ agent: agentName, text: `Blad ${agentName}: ${e.message}` });
