@@ -348,4 +348,95 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
   res.json({ ...winner, ...(others.length ? { alternatives: others } : {}) });
 }));
 
+// POST /api/agent/assistant — tani router (Haiku) który decyduje którego
+// agenta (Sonnet) wywołać i łączy wyniki. Dla frontu — zero Opus.
+// Body: { query, context: { contractorId?, ... }, previousTurns? }
+router.post('/agent/assistant', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const Anthropic = require('@anthropic-ai/sdk');
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const { query, context = {}, previousTurns = [] } = req.body || {};
+  if (!query) return res.status(400).json({ error: 'query required' });
+
+  // Haiku router — decyduje którego agenta wywołać
+  const routerPrompt = `Jestes routerem. Na podstawie zapytania usera zdecyduj ktory agent powinien je obsluzyc.
+
+Dostepni agenci:
+- accounting: faktura PL (iFirma), NIP, VIES, preview/confirm faktury
+- accounting-es: faktura ES (Contasimple/Kanary)
+- communication: email, odpowiedzi, tlumaczenia, kontakt z klientem PL
+- communication-es: email ES/Kanary
+- logistics: paczki, GlobKurier, tracking, wysylki
+- operations: deale, transakcje, matching FV-shipment, Google Sheets
+
+Jesli zapytanie wymaga WIELU agentow, podaj ich w kolejnosci.
+Jesli to prosta edycja danych kontrahenta (NIP, email, adres) — odpowiedz "direct" (bez agenta, frontend zrobi sam).
+
+Kontekst: ${JSON.stringify(context).slice(0, 500)}
+
+Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["direct"],"reason":"..."}`;
+
+  try {
+    const routerResp = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 200,
+      messages: [
+        ...previousTurns.slice(-4).map(t => ({ role: t.role, content: t.text })),
+        { role: 'user', content: `${routerPrompt}\n\nZapytanie: ${query}` },
+      ],
+    });
+    const routerText = routerResp.content.map(b => b.text || '').join('');
+    let routing;
+    try {
+      const match = routerText.match(/\{[\s\S]*\}/);
+      routing = match ? JSON.parse(match[0]) : { agents: ['accounting'], reason: 'parse fallback' };
+    } catch (_) {
+      routing = { agents: ['accounting'], reason: 'parse error: ' + routerText.slice(0, 100) };
+    }
+
+    if (routing.agents[0] === 'direct') {
+      return res.json({ ok: true, text: 'To mozesz zrobic przyciskiem "Edytuj" — zmien pole i kliknij Zapisz.', routing, source: 'router' });
+    }
+
+    // Wywołaj agentów po kolei
+    const processors = {
+      accounting: processAccountingQuery,
+      'accounting-es': processAccountingEsQuery,
+      communication: processCommunicationQuery,
+      'communication-es': processCommunicationEsQuery,
+      operations: processOperationsQuery,
+      logistics: processLogisticsQuery,
+    };
+
+    const results = [];
+    for (const agentName of (routing.agents || ['accounting']).slice(0, 3)) {
+      const fn = processors[agentName];
+      if (!fn) continue;
+
+      // Build context string
+      const ctxLines = [];
+      if (context.contractorId) ctxLines.push(`ContractorId: ${context.contractorId}`);
+      if (context.contractorName) ctxLines.push(`Kontrahent: ${context.contractorName}`);
+      if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
+      if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
+      if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+      const ctxStr = ctxLines.join('\n');
+
+      const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
+      try {
+        const r = await fn(prisma, fullQuery, null, previousTurns.slice(-6));
+        results.push({ agent: agentName, text: r.text || r.error || JSON.stringify(r).slice(0, 500) });
+      } catch (e) {
+        results.push({ agent: agentName, text: `Blad ${agentName}: ${e.message}` });
+      }
+    }
+
+    const combined = results.map(r => r.text).join('\n\n---\n\n');
+    res.json({ ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant' });
+  } catch (e) {
+    console.error('[agent/assistant]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+}));
+
 module.exports = router;
