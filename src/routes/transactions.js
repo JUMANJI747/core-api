@@ -610,31 +610,54 @@ router.post('/transactions/rematch', async (req, res) => {
       }
     }
 
-    // 4. Scal dwa osierocone Transactions tego samego kontrahenta:
+    // 4. Scal dwa osierocone Transactions:
     //    T_inv (invoiceId set, shipmentHash null) + T_ship (invoiceId null, shipmentHash set).
-    //    Po scaleniu: zachowujemy T_ship (anchor wczesniejszy zwykle), dopisujemy FV, kasujemy T_inv.
+    //    Matchuje po: (a) contractorId jesli oba maja, (b) contractorName fuzzy jesli
+    //    brakuje contractorId na jednym z nich. Okno ±30 dni.
     report.txCollapsed = 0;
     const orphanInvoiceTxs = await prisma.transaction.findMany({
-      where: { invoiceId: { not: null }, shipmentHash: null, contractorId: { not: null } },
+      where: { invoiceId: { not: null }, shipmentHash: null },
     });
+    const shipmentOnlyTxs = await prisma.transaction.findMany({
+      where: { invoiceId: null, shipmentHash: { not: null } },
+    });
+    const usedShipIds = new Set();
     for (const txInv of orphanInvoiceTxs) {
       const since = new Date(txInv.occurredAt); since.setDate(since.getDate() - 30);
       const until = new Date(txInv.occurredAt); until.setDate(until.getDate() + 30);
-      const txShip = await prisma.transaction.findFirst({
-        where: {
-          contractorId: txInv.contractorId,
-          invoiceId: null,
-          shipmentHash: { not: null },
-          occurredAt: { gte: since, lte: until },
-        },
-        orderBy: { occurredAt: 'asc' },
-      });
+
+      let txShip = null;
+      // (a) po contractorId
+      if (txInv.contractorId) {
+        txShip = shipmentOnlyTxs.find(t =>
+          !usedShipIds.has(t.id) &&
+          t.contractorId === txInv.contractorId &&
+          new Date(t.occurredAt) >= since && new Date(t.occurredAt) <= until
+        ) || null;
+      }
+      // (b) fuzzy po contractorName
+      if (!txShip && txInv.contractorName) {
+        const invName = (txInv.contractorName || '').toLowerCase();
+        const invWords = invName.split(/\s+/).filter(w => w.length >= 3);
+        if (invWords.length) {
+          txShip = shipmentOnlyTxs.find(t => {
+            if (usedShipIds.has(t.id)) return false;
+            if (new Date(t.occurredAt) < since || new Date(t.occurredAt) > until) return false;
+            const shipName = (t.contractorName || '').toLowerCase();
+            return invWords.some(w => shipName.includes(w)) || shipName.split(/\s+/).some(w => w.length >= 3 && invName.includes(w));
+          }) || null;
+        }
+      }
+
       if (!txShip) continue;
+      usedShipIds.add(txShip.id);
       if (dryRun) { report.txCollapsed++; continue; }
       await prisma.$transaction([
         prisma.transaction.update({
           where: { id: txShip.id },
           data: {
+            contractorId: txShip.contractorId || txInv.contractorId || undefined,
+            contractorName: txShip.contractorName || txInv.contractorName || undefined,
             invoiceId: txInv.invoiceId,
             invoiceNumber: txInv.invoiceNumber,
             hasInvoice: true,
