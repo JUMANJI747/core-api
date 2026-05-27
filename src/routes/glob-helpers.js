@@ -14,6 +14,7 @@ const PACKAGE_PRESETS = {
 
 const PRODUCT_WEIGHTS = {
   stick: 1, mascara: 1, gel: 1, daily: 1, care: 1, lips: 0.5, collection: 2,
+  'box-stick': 1, 'box-mascara': 1, 'box-collection': 2,
 };
 
 function calculatePackageFromItems(items) {
@@ -23,12 +24,17 @@ function calculatePackageFromItems(items) {
     const name = (item.name || item.productName || item.productEan || '').toLowerCase();
     const qty = item.qty || item.quantity || 1;
     let productType = 'stick';
-    if (name.includes('mascara') || name.includes('girl')) productType = 'mascara';
+    if (name.includes('box') && name.includes('stick')) productType = 'box-stick';
+    else if (name.includes('box') && name.includes('mascara')) productType = 'box-mascara';
+    else if (name.includes('box') && name.includes('collection')) productType = 'box-collection';
+    else if (name.includes('box') && name.includes('ekspozytor')) productType = 'box-stick';
+    else if (name.includes('box')) productType = 'box-stick';
+    else if (name.includes('mascara') || name.includes('girl')) productType = 'mascara';
     else if (name.includes('gel')) productType = 'gel';
     else if (name.includes('daily')) productType = 'daily';
     else if (name.includes('care')) productType = 'care';
     else if (name.includes('lip')) productType = 'lips';
-    else if (name.includes('collection') || name.includes('box')) productType = 'collection';
+    else if (name.includes('collection')) productType = 'collection';
     const weightPer30 = PRODUCT_WEIGHTS[productType] || 1;
     totalWeight += (qty / 30) * weightPer30;
     // Kartonik mieści standardowo 30 szt, ale upycha się do 36 (świadoma
