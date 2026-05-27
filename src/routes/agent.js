@@ -378,7 +378,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 
   try {
     const routerResp = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: process.env.ASSISTANT_ROUTER_MODEL || 'claude-sonnet-4-5-20250929',
       max_tokens: 200,
       messages: [
         ...previousTurns.slice(-4).map(t => ({ role: t.role, content: t.text })),
