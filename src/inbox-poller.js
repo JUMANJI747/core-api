@@ -23,7 +23,7 @@ function getAccounts() {
 
 // ============ VAT CACHE ============
 
-const VAT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const VAT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h — VIES status moze sie zmienic
 const vatCache = new Map(); // key: normalized VAT number, value: {valid, name, timestamp}
 
 // ============ HARD FILTER ============

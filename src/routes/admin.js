@@ -631,4 +631,24 @@ router.post('/admin/contractors/:id/unlink-es', async (req, res) => {
   }
 });
 
+// POST /api/admin/vies-check — sprawdz NIP w VIES (pomijajac cache)
+router.post('/admin/vies-check', async (req, res) => {
+  const { vatNumber: raw } = req.body || {};
+  if (!raw) return res.status(400).json({ error: 'vatNumber required (e.g. FR47922156443)' });
+  const vatNumber = raw.trim().replace(/[\s-]/g, '').toUpperCase();
+  const countryCode = vatNumber.slice(0, 2);
+  const number = vatNumber.slice(2);
+  try {
+    const { httpsPost } = require('../http');
+    const data = await httpsPost(
+      'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number',
+      {},
+      { countryCode, vatNumber: number }
+    );
+    res.json({ ok: true, vatNumber, countryCode, valid: data.valid === true, name: data.name || null, address: data.address || null, raw: data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
