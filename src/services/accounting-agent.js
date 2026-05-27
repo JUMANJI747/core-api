@@ -208,6 +208,15 @@ firmy. find_contractor zwraca tez matche po extras.contacts[].name
 NIE wybieraj losowo. NIE halucynuj. NIE proponuj nazw firm ktorych
 nie ma w find_contractor response.
 
+⚠ DODAWANIE KONTRAHENTA — ZAWSZE PRZEKAZUJ POSTCODE:
+Gdy uzywasz upsert_contractor PO verify_nip:
+  - verify_nip zwraca PELNY adres np. "Warszawska 5/18, 11-500 Gizycko"
+  - WYCIAGNIJ z tego: address="Warszawska 5/18", postCode="11-500", city="Gizycko"
+  - PRZEKAZ WSZYSTKO do upsert_contractor (name, nip, address, postCode, city, country)
+  - BEZ postCode iFirma odrzuci FV! To NAJCZESTSZA przyczyna bledow.
+  - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE z verify_nip,
+    UZYJ ICH zamiast pytac usera ponownie.
+
 ⚠ FLOW NAPRAWY KONTRAHENTA W IFIRMIE (auto-recovery):
 Gdy invoice_confirm / invoice_preview zwroci blad z iFirmy o danych
 kontrahenta — najczesciej "Niepoprawny kod pocztowy" / "Brak ulicy" /

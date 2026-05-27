@@ -66,6 +66,15 @@ router.post('/upsert', async (req, res) => {
         console.log(`[contractors/upsert] auto-extract postCode "${zip}" z address "${n.address}"`);
       }
     }
+    // Fallback: wyciagnij postCode z city (np. "11-500 Gizycko" lub "Gizycko 11-500")
+    if (!n.postCode && n.city) {
+      const zip = extractPostCode(n.city);
+      if (zip) {
+        n.postCode = zip;
+        n.city = n.city.replace(zip, '').replace(/[,\s]+/g, ' ').trim();
+        console.log(`[contractors/upsert] auto-extract postCode "${zip}" z city "${n.city}"`);
+      }
+    }
     if (!n.city && n.address && n.postCode) {
       const city = extractCityAfterPostCode(n.address, n.postCode);
       if (city) {
