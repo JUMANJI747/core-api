@@ -355,8 +355,39 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const { query, context = {}, previousTurns = [] } = req.body || {};
+  const { query, context = {}, previousTurns = [], lastAgent = null } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query required' });
+
+  // Jeśli jest lastAgent i query to krótka odpowiedź (1-2 słowa, numer, "tak/ok/1/2/3")
+  // → kontynuuj z tym samym agentem bez pytania routera
+  const isShortReply = query.length < 50 && /^(tak|ok|nie|1|2|3|opcja|wybierz|dalej|potwierdz)/i.test(query.trim());
+  if (lastAgent && isShortReply) {
+    const processors = {
+      accounting: processAccountingQuery,
+      'accounting-es': processAccountingEsQuery,
+      communication: processCommunicationQuery,
+      'communication-es': processCommunicationEsQuery,
+      operations: processOperationsQuery,
+      logistics: processLogisticsQuery,
+    };
+    const fn = processors[lastAgent];
+    if (fn) {
+      try {
+        const ctxLines = [];
+        if (context.contractorId) ctxLines.push(`ContractorId: ${context.contractorId}`);
+        if (context.contractorName) ctxLines.push(`Kontrahent: ${context.contractorName}`);
+        if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
+        if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
+        if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+        const ctxStr = ctxLines.join('\n');
+        const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
+        const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-8) });
+        return res.json({ ok: true, text: r.text || r.error || JSON.stringify(r).slice(0, 500), agents: [lastAgent], source: 'continue' });
+      } catch (e) {
+        return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
+      }
+    }
+  }
 
   // Haiku router — decyduje którego agenta wywołać
   const routerPrompt = `Jestes routerem. Na podstawie zapytania usera zdecyduj ktory agent powinien je obsluzyc.
