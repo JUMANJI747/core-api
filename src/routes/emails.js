@@ -1548,6 +1548,82 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
   }
 }
 
+// Preview tracking email — same lookup as send but returns composed message
+// without actually sending. Frontend shows this for confirmation.
+router.post('/send-tracking-email/preview', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { compose, pickLang, validateShipmentReady } = require('../services/tracking-notify');
+  const { buildTrackingUrl } = require('../services/tracking-urls');
+  const { getOrders } = require('../glob-client');
+  const { scoreContractor } = require('../services/contractor-match');
+
+  try {
+    const search = (req.body || {}).search;
+    const contractorEmailOverride = (req.body || {}).contractorEmail;
+    if (!search) return res.json({ ok: false, error: 'search required' });
+
+    const data = await getOrders({ search, limit: 5 });
+    const items = (data && (data.results || data.items || data.data)) || (Array.isArray(data) ? data : []);
+    const unwrapped = Array.isArray(items) && items.length === 1 && items[0] && Array.isArray(items[0].results) ? items[0].results : items;
+    if (!unwrapped || !unwrapped.length) return res.json({ ok: false, error: `No shipment found for "${search}"` });
+
+    const shipment = unwrapped[0];
+    const recv = shipment.receiverAddress || shipment.receiver || {};
+    const trackingNumber = shipment.trackingNumber || shipment.tracking || '';
+    const carrierName = shipment.courierName || shipment.carrier || shipment.productName || '';
+    const trackingUrl = buildTrackingUrl(trackingNumber, carrierName);
+
+    let toEmail = contractorEmailOverride || recv.email || '';
+    let resolvedContractor = null;
+    if (!toEmail || !toEmail.includes('@')) {
+      const all = await prisma.contractor.findMany({
+        select: { id: true, name: true, email: true, primaryEmail: true, country: true },
+      });
+      const recvName = (recv.name || recv.companyName || recv.contactPerson || '').trim();
+      if (recvName) {
+        const scored = all.map(c => ({ c, s: scoreContractor(c, recvName) })).filter(x => x.s >= 50).sort((a, b) => b.s - a.s);
+        if (scored.length) {
+          resolvedContractor = scored[0].c;
+          toEmail = resolvedContractor.primaryEmail || resolvedContractor.email || toEmail;
+        }
+      }
+    }
+    if (!toEmail) return res.json({ ok: false, error: 'recipient email not found', shipment: { trackingNumber, name: recv.name } });
+
+    const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    const msg = compose({ country, trackingNumber, carrier: carrierName, trackingUrl });
+
+    // Check if already sent
+    const alreadySent = await prisma.email.findFirst({
+      where: { direction: 'OUTBOUND', toEmail: { equals: toEmail, mode: 'insensitive' }, subject: { contains: trackingNumber } },
+      select: { id: true, createdAt: true },
+    });
+
+    res.json({
+      ok: true,
+      preview: {
+        to: toEmail,
+        subject: msg.subject,
+        body: msg.text,
+        html: msg.html,
+        trackingUrl,
+        trackingNumber,
+        carrier: carrierName,
+        country,
+        recipientName: recv.name || recv.companyName || '',
+        recipientCity: recv.city || '',
+        contractorId: resolvedContractor?.id || null,
+        contractorName: resolvedContractor?.name || null,
+      },
+      alreadySent: alreadySent ? { id: alreadySent.id, date: alreadySent.createdAt } : null,
+      shipmentNumber: shipment.number || shipment.orderNumber || null,
+    });
+  } catch (e) {
+    console.error('[send-tracking-email/preview]', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // End-to-end single-shot — find shipment by hint (contractor / city / GK#
 // / email), resolve customer email, send tracking link in their language.
 // Body: { search?, contractorEmail?, from?, chatId? }
