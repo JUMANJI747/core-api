@@ -548,7 +548,8 @@ router.get('/attachment/:id', async (req, res) => {
     const att = await prisma.emailAttachment.findUnique({ where: { id: req.params.id } });
     if (!att) return res.status(404).json({ error: 'Attachment not found' });
     res.setHeader('Content-Type', att.contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${att.filename}"`);
+    // inline = iOS pokazuje viewer z share button; attachment = silent download
+    res.setHeader('Content-Disposition', `inline; filename="${att.filename}"`);
     res.send(att.data);
   } catch (e) {
     res.status(500).json({ error: e.message });

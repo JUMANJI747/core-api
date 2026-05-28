@@ -188,7 +188,10 @@ router.get('/glob/labels/:hash', async (req, res) => {
     const result = await getOrderLabels(req.params.hash, format);
     if (result.status !== 200) return res.status(result.status).json({ error: 'Label fetch failed' });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="CMR-${req.params.hash.slice(0, 12)}.pdf"`);
+    // inline (nie attachment) — iOS Safari pokazuje wtedy PDF w wbudowanym
+    // viewerze z share buttonem (AirDrop, mail, Files, druk). Attachment
+    // wymusza download w tle bez UI.
+    res.setHeader('Content-Disposition', `inline; filename="CMR-${req.params.hash.slice(0, 12)}.pdf"`);
     res.send(result.body);
   } catch (err) {
     console.error('[glob/labels]', err.message);
