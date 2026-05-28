@@ -435,6 +435,16 @@ router.get('/emails/:id', async (req, res) => {
         for (const d of dupes) {
           console.log(`  id=${d.id} createdAt=${d.createdAt.toISOString()} bodyLen=${(d.bodyFull||'').length} msgId=${d.messageId}`);
         }
+        // Fallback: jesli ten rekord ma puste bodyFull, ale duplikat ma tresc — pokaz z duplikatu.
+        // IMAP sent-rescan czasem tworzy stub bez body; oryginal z sendMail ma body.
+        if (!email.bodyFull || !email.bodyFull.trim()) {
+          const withBody = dupes.find(d => d.bodyFull && d.bodyFull.trim());
+          if (withBody) {
+            email.bodyFull = withBody.bodyFull;
+            email.bodyPreview = (withBody.bodyFull || '').replace(/<[^>]*>/g, '').slice(0, 300);
+            console.log(`[emails/:id] body recovered from duplicate ${withBody.id}`);
+          }
+        }
       }
     }
     res.json(email);
