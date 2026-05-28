@@ -54,6 +54,7 @@ app.use('/api', require('./routes/admin'));
 app.use('/api', require('./routes/activity'));
 app.use('/api', require('./routes/cron'));
 app.use('/api', require('./routes/transactions'));
+app.use('/api', require('./routes/push'));
 app.use('/api/contasimple', require('./routes/contasimple'));
 
 // ============ ERROR MIDDLEWARE ============

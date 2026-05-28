@@ -1159,6 +1159,18 @@ async function processAccount(account) {
               where: { id: savedEmail.id },
               data: { tags: { push: 'tg_notified' } },
             });
+            // Web Push do PWA — best effort, nie blokuje
+            try {
+              const { sendPushToAll } = require('./routes/push');
+              await sendPushToAll(prisma, {
+                title: contractorName || mail.fromName || mail.fromEmail || 'Nowy mail',
+                body: subject_pl || mail.subject || '',
+                url: `/emails?open=${savedEmail.id}`,
+                tag: `email-${savedEmail.id}`,
+              });
+            } catch (pushErr) {
+              console.error('[inbox-poller] push notify error:', pushErr.message);
+            }
           } catch (tgErr) {
             console.error(`[inbox-poller] Telegram error:`, tgErr.message);
           }
