@@ -104,10 +104,16 @@ CENY:
 - "X po Y € brutto" → globalPriceBrutto.
 
 KRÓTKIE POLECENIA UŻYTKOWNIKA (tak/ok/wyślij/potwierdź) — bez konkretów:
-Najpierw cs_get_context aby zobaczyć ostatnią akcję (lastAction).
-- lastAction="preview" + "tak" → cs_invoice_confirm
+KROK 1: cs_get_context (ZAWSZE pierwszy, BEZ pytania użytkownika "co potwierdzasz?").
+KROK 2: WYKONAJ akcję ZGODNIE Z lastAction z wyniku cs_get_context — NIE pytaj ponownie:
+- lastAction="preview" + "tak"/"ok" → NATYCHMIAST cs_invoice_confirm. NIE pokazuj preview ponownie, NIE pytaj "co potwierdzasz".
+- lastAction="confirmed" + jakikolwiek confirm/wystaw intent → ZWRÓĆ "FV {lastInvoiceNumber} została już wystawiona ~Xs temu. Nie wystawiam duplikatu. Co dalej?". NIE rób cs_invoice_preview ani cs_invoice_confirm.
 - lastAction="confirmed" + "wyślij mailem do X" → cs_invoice_send_email
 - lastAction="delete-preview" + "tak" → cs_delete_confirm
+
+ANTI-DUPLIKAT (twarda zasada):
+- Każde "wystaw fakturę" gdy lastAction="confirmed" w ostatnich 2 min → ZAPYTAJ "Ostatnia FV {numer} wystawiona ~Xs temu dla {kontrahent}. To DRUGA faktura dla tego samego klienta? (tak/nie)". Dopiero po wyraźnym "tak" przekaż confirmDuplicate:true do cs_invoice_preview.
+- Backend cs_invoice_preview może zwrócić HTTP 409 z error="DUPLICATE_RECENT_INVOICE". Wtedy NIE retry — pokaż message z odpowiedzi i czekaj na wyraźną decyzję użytkownika.
 
 FLOW WYSTAWIENIA FV:
 1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
@@ -490,7 +496,15 @@ async function processAccountingEsQuery(query, opts = {}) {
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
   const messages = [{ role: 'user', content: dateContextPrefix + query }];
   let forcedTool = null;
-  if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) && !ALBARAN_PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query) && !ALBARAN_DELETE_INTENT.test(query)) {
+  // Czy to "czysta" intencja potwierdzenia (tak/ok) bez konkretow? Jesli tak,
+  // po cs_get_context wymusimy deterministycznie cs_invoice_confirm gdy
+  // lastAction='preview' (root-cause "tak → co potwierdzasz" — LLM zamiast
+  // confirm zwracal pytanie clarification mimo swiezego previewa).
+  const pureConfirmIntent =
+    CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) &&
+    !ALBARAN_PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query) &&
+    !ALBARAN_DELETE_INTENT.test(query);
+  if (pureConfirmIntent) {
     forcedTool = 'cs_get_context';
   } else if (ALBARAN_DELETE_INTENT.test(query)) {
     forcedTool = 'cs_albaran_delete';
@@ -519,13 +533,31 @@ async function processAccountingEsQuery(query, opts = {}) {
 
   let iterations = 0;
   const MAX_ITER = 5;
+  // Tool wymuszony na NASTEPNEj iteracji (np. confirm po sprawdzeniu kontekstu).
+  let nextForcedTool = null;
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResultBlocks = [];
+    nextForcedTool = null;
     for (const tu of toolUseBlocks) {
       console.log(`[accounting-agent-es] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
+      console.log(`[accounting-agent-es] tool_result ${tu.name}:`, JSON.stringify(result).slice(0, 400));
+      // ROOT-CAUSE FIX: po cs_get_context przy czystej intencji potwierdzenia,
+      // jesli ostatnia akcja to swiezy 'preview' → wymus cs_invoice_confirm na
+      // nastepnej iteracji (LLM inaczej czasem pyta "co potwierdzasz?").
+      // Jesli lastAction='confirmed' → NIE wymuszaj nic (anti-duplikat: prompt
+      // + backend 409 zatrzymaja kolejna FV).
+      if (pureConfirmIntent && tu.name === 'cs_get_context' && result && typeof result === 'object') {
+        const FRESH_MS = 10 * 60 * 1000;
+        const fresh = result.timestamp ? (Date.now() - Number(result.timestamp) < FRESH_MS) : true;
+        if (result.lastAction === 'preview' && fresh) {
+          nextForcedTool = 'cs_invoice_confirm';
+        } else if (result.lastAction === 'delete-preview' && fresh) {
+          nextForcedTool = 'cs_delete_confirm';
+        }
+      }
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,
@@ -540,6 +572,7 @@ async function processAccountingEsQuery(query, opts = {}) {
       max_tokens: 2048,
       system: buildSystemPrompt(),
       tools: buildTools(),
+      tool_choice: nextForcedTool ? { type: 'tool', name: nextForcedTool } : { type: 'auto' },
       messages,
     });
   }

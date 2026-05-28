@@ -844,6 +844,28 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'contractor exists locally but has no contasimpleId — re-run /sync-customers or create in Contasimple first' });
   }
 
+  // ANTI-DUPLIKAT: jesli ostatnia FV dla tego klienta wystawiona < 2 min temu,
+  // to prawie na pewno duplikat (agent zaptlil sie na "wystaw" / "tak"). Zwroc
+  // HTTP 409 — agent ma pokazac komunikat i poczekac, NIE retry. Bypass przez
+  // body.confirmDuplicate=true (uzytkownik swiadomie chce druga FV).
+  if (!body.confirmDuplicate) {
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const recentInvoice = await prisma.esInvoice.findFirst({
+      where: { contractorId: contractor.id, invoiceDate: { gte: twoMinAgo } },
+      orderBy: { invoiceDate: 'desc' },
+      select: { number: true, invoiceDate: true, totalAmount: true },
+    });
+    if (recentInvoice) {
+      const secsAgo = Math.round((Date.now() - new Date(recentInvoice.invoiceDate).getTime()) / 1000);
+      return res.status(409).json({
+        ok: false,
+        error: 'DUPLICATE_RECENT_INVOICE',
+        message: `Ostatnia FV dla ${contractor.name} wystawiona ${secsAgo}s temu (${recentInvoice.number || '—'}, ${recentInvoice.totalAmount} €). To prawie na pewno duplikat. Aby wymusic, dodaj confirmDuplicate:true.`,
+        recentInvoice,
+      });
+    }
+  }
+
   // Expand items into positions (resolving templates / fuzzy product lookup).
   let positions;
   try {
