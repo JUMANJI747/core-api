@@ -185,12 +185,20 @@ router.get('/emails', async (req, res) => {
     where.NOT = { tags: { hasSome: ['archived', 'trash'] } };
   }
   if (search) {
-    const searchTerm = search.includes('@') ? search.split('@')[0] : search;
-    where.OR = [
-      { fromEmail: { contains: searchTerm, mode: 'insensitive' } },
-      { fromName: { contains: searchTerm, mode: 'insensitive' } },
-      { subject: { contains: searchTerm, mode: 'insensitive' } },
+    const s = String(search).trim();
+    const or = [
+      { fromEmail: { contains: s, mode: 'insensitive' } },
+      { toEmail: { contains: s, mode: 'insensitive' } },
+      { fromName: { contains: s, mode: 'insensitive' } },
+      { subject: { contains: s, mode: 'insensitive' } },
     ];
+    // Jak to email — sprawdz tez po domenie i po local-part jako fallback.
+    if (s.includes('@')) {
+      const [local, domain] = s.split('@');
+      if (domain) or.push({ fromEmail: { contains: domain, mode: 'insensitive' } });
+      if (local) or.push({ fromEmail: { contains: local, mode: 'insensitive' } });
+    }
+    where.OR = or;
   }
   const take = Math.min(parseInt(limit) || 20, 100);
   const emails = await prisma.email.findMany({
