@@ -565,10 +565,15 @@ router.get('/attachment/:id', async (req, res) => {
   try {
     const att = await prisma.emailAttachment.findUnique({ where: { id: req.params.id } });
     if (!att) return res.status(404).json({ error: 'Attachment not found' });
-    res.setHeader('Content-Type', att.contentType);
+    // Prisma 6 zwraca Bytes jako Uint8Array (nie Buffer). res.send() z czystym
+    // Uint8Array serializuje do JSON (psuje binaria — "Invalid PDF structure").
+    // Buffer.from() gwarantuje wyslanie surowych bajtow.
+    const buf = Buffer.isBuffer(att.data) ? att.data : Buffer.from(att.data);
+    res.setHeader('Content-Type', att.contentType || 'application/octet-stream');
     // inline = iOS pokazuje viewer z share button; attachment = silent download
     res.setHeader('Content-Disposition', `inline; filename="${att.filename}"`);
-    res.send(att.data);
+    res.setHeader('Content-Length', buf.length);
+    res.end(buf);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

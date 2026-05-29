@@ -248,9 +248,13 @@ router.get('/document/:id', async (req, res) => {
   try {
     const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
     if (!doc) return res.status(404).json({ error: 'Document not found' });
-    res.setHeader('Content-Type', doc.mimeType);
+    // Prisma 6: Bytes -> Uint8Array; res.send() serializuje go do JSON i psuje
+    // binaria. Buffer.from() wymusza surowe bajty.
+    const buf = Buffer.isBuffer(doc.data) ? doc.data : Buffer.from(doc.data);
+    res.setHeader('Content-Type', doc.mimeType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
-    res.send(doc.data);
+    res.setHeader('Content-Length', buf.length);
+    res.end(buf);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
