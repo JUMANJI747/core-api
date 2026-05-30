@@ -277,4 +277,20 @@ async function getCustomRequiredFields(productId, senderCountryId, receiverCount
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields };
+// Oficjalna lista krajów GK (GET /v1/countries) — autorytatywne mapowanie
+// id <-> isoCode. Zastepuje zgadywanie countryId z prefiksu telefonu w
+// historii odbiorcow. Zwraca tablice { id, name, isoCode, isUEMember, ... }.
+async function getCountries(acceptLanguage = 'pl') {
+  const token = await getToken();
+  const resp = await httpsRequest(
+    'https://api.globkurier.pl/v1/countries',
+    'GET',
+    { 'X-Auth-Token': token, 'Accept-Language': acceptLanguage }
+  );
+  if (resp.status !== 200) {
+    throw new Error('GlobKurier /v1/countries failed: ' + JSON.stringify(resp.body).slice(0, 200));
+  }
+  return resp.body;
+}
+
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields, getCountries };

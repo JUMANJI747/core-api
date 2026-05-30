@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, getAddons, getOrderLabels, createOrder, getOrders } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { scoreContractor } = require('../services/contractor-match');
 const {
@@ -713,16 +713,32 @@ router.post('/glob/quote', async (req, res) => {
     // discovery i ponownie sprawdzić — saves the user from manually
     // calling /glob/discover-countries.
     if (!receiverCountryIdMapped && receiver.country && receiver.country !== 'PL') {
-      console.log(`[glob/quote] auto-discovery: ${receiver.country} brakuje, skanuje historię GK...`);
+      // 1) Autorytatywne: GET /v1/countries — pełna oficjalna lista (też nowe
+      //    kraje jak BG bez wcześniejszej wysyłki).
+      console.log(`[glob/quote] auto-discovery: ${receiver.country} brakuje, pobieram oficjalną listę GK /v1/countries...`);
       try {
-        const r = await runCountryDiscovery(prisma);
-        const newMerged = { ...COUNTRY_IDS, ...(r.merged || {}) };
+        const api = await syncCountriesFromApi(prisma);
+        const newMerged = { ...COUNTRY_IDS, ...(api.merged || {}) };
         receiverCountryIdMapped = newMerged[receiver.country];
         if (receiverCountryIdMapped) {
-          console.log(`[glob/quote] auto-discovery: ${receiver.country} → ${receiverCountryIdMapped} (scan ${r.totalScanned} receivers)`);
+          console.log(`[glob/quote] /v1/countries: ${receiver.country} → ${receiverCountryIdMapped} (${api.count} krajów)`);
         }
       } catch (e) {
-        console.error('[glob/quote] auto-discovery failed:', e.message);
+        console.error('[glob/quote] /v1/countries failed:', e.message);
+      }
+      // 2) Fallback: skan historii odbiorców (heurystyka prefiksu telefonu).
+      if (!receiverCountryIdMapped) {
+        console.log(`[glob/quote] auto-discovery fallback: skanuje historię GK dla ${receiver.country}...`);
+        try {
+          const r = await runCountryDiscovery(prisma);
+          const newMerged = { ...COUNTRY_IDS, ...(r.merged || {}) };
+          receiverCountryIdMapped = newMerged[receiver.country];
+          if (receiverCountryIdMapped) {
+            console.log(`[glob/quote] auto-discovery: ${receiver.country} → ${receiverCountryIdMapped} (scan ${r.totalScanned} receivers)`);
+          }
+        } catch (e) {
+          console.error('[glob/quote] auto-discovery failed:', e.message);
+        }
       }
     }
 
@@ -1753,6 +1769,49 @@ function phoneToIso(phone) {
 // {countryCode → countryId}, scala z istniejącą mapą i zapisuje w
 // Skanuje historię odbiorców GK i mapuje countryId → ISO przez prefix
 // telefonu odbiorcy. Idempotent — merguje wynik z Config 'gk_country_ids'.
+// Autorytatywne źródło: GET /v1/countries. Buduje mapę ISO→countryId z
+// oficjalnej listy GK (zawiera WSZYSTKIE obsługiwane kraje, też nowe jak BG,
+// bez potrzeby wcześniejszej wysyłki). Zapisuje do Config 'gk_country_ids'
+// (ten sam klucz co quote). Zwraca też nieobsługiwane (lock != null).
+async function syncCountriesFromApi(prisma) {
+  const list = await getCountries('pl');
+  if (!Array.isArray(list)) {
+    throw new Error('GK /v1/countries zwróciło nieoczekiwany format: ' + JSON.stringify(list).slice(0, 200));
+  }
+  const isoToId = {};
+  const meta = {};
+  const locked = [];
+  for (const c of list) {
+    const iso = (c.isoCode || '').toUpperCase();
+    if (!iso || !c.id) continue;
+    isoToId[iso] = c.id;
+    meta[iso] = {
+      id: c.id,
+      name: c.name,
+      isUEMember: c.isUEMember,
+      isRoadTransportAvailable: c.isRoadTransportAvailable,
+      lock: c.lock || null,
+    };
+    if (c.lock) locked.push(iso);
+  }
+  const existing = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+  let previous = {};
+  if (existing && existing.value) {
+    try {
+      const parsed = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value;
+      if (parsed && typeof parsed === 'object') previous = parsed;
+    } catch (_) {}
+  }
+  // API jest autorytatywne — nadpisuje wartości z heurystyki telefonowej.
+  const merged = { ...previous, ...isoToId };
+  await prisma.config.upsert({
+    where: { key: 'gk_country_ids' },
+    update: { value: JSON.stringify(merged) },
+    create: { key: 'gk_country_ids', value: JSON.stringify(merged) },
+  });
+  return { count: list.length, isoToId, merged, meta, locked };
+}
+
 // Wyciągnięte z /glob/discover-countries żeby quote mogło auto-retry
 // gdy kraj brakuje w mapie.
 async function runCountryDiscovery(prisma) {
@@ -1825,6 +1884,40 @@ router.post('/glob/discover-countries', async (req, res) => {
     });
   } catch (e) {
     console.error('[glob/discover-countries] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Sync z oficjalnej listy GK (GET /v1/countries) → Config 'gk_country_ids'.
+// Najlepszy sposób aktywacji nowego kraju (np. Bułgaria) — bez wcześniejszej
+// wysyłki i bez zgadywania z prefiksu telefonu.
+router.post('/glob/sync-countries', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const before = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+    const prev = (() => { try { return before && before.value ? JSON.parse(before.value) : {}; } catch (_) { return {}; } })();
+    const r = await syncCountriesFromApi(prisma);
+    const newCountries = Object.keys(r.isoToId).filter(k => !prev[k]);
+    res.json({
+      ok: true,
+      countriesFromApi: r.count,
+      newCountriesAdded: newCountries,
+      locked: r.locked,
+      mergedMap: r.merged,
+      meta: r.meta,
+    });
+  } catch (e) {
+    console.error('[glob/sync-countries] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Surowa lista krajów z GK API (bez zapisu) — diagnostyka.
+router.get('/glob/countries', async (req, res) => {
+  try {
+    const list = await getCountries(req.query.lang || 'pl');
+    res.json({ ok: true, count: Array.isArray(list) ? list.length : 0, countries: list });
+  } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
