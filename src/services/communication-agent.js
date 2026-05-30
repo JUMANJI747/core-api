@@ -41,6 +41,7 @@ WYSYŁKA TRACKINGU:
 - ZAWSZE używaj **send_tracking_to_customer** (single) lub **send_tracking_to_customers_batch** (lista). NIE buduj sam draftu z send_email.
 - Te tooly automatycznie ustawiają from='delivery@surfstickbell.com', resolve email klienta z bazy, dobierają język, generują link do kuriera. JEDEN call.
 - send_email używaj TYLKO do "klasycznych" maili (odpowiedzi na notyfikacje, oferty), NIE do trackingu.
+- BRAK MAILA KONTRAHENTA: gdy response.error="NO_CONTRACTOR_EMAIL" (needsEmail=true) — NIE wysyłaj na żaden zastępczy adres, NIE zmyślaj że wysłano. Pokaż user-owi response.message DOSŁOWNIE i POCZEKAJ. Gdy user poda adres e-mail → wywołaj send_tracking_to_customer PONOWNIE z tym samym search + contractorEmail=<podany adres>. Backend dopisze ten mail do kontrahenta i wyśle tracking.
 
 PREVIEW DRAFT MAILA (po send_email z draft:true):
 Response zawiera preview.body (do wysłania) + opcjonalnie
@@ -253,7 +254,7 @@ const tools = [
       type: 'object',
       properties: {
         search: { type: 'string', description: 'Fragment do wyszukania paczki: nazwa firmy / miasto / numer GK' },
-        contractorEmail: { type: 'string', description: 'Opcjonalny override adresu — domyślnie używa contractor.email z bazy' },
+        contractorEmail: { type: 'string', description: 'Adres odbiorcy. Domyślnie backend bierze z kontrahenta (primaryEmail/kontakty/email). Gdy backend zwróci NO_CONTRACTOR_EMAIL i user poda adres ręcznie — przekaż go tutaj; backend dopisze go do kontrahenta i wyśle.' },
         from: { type: 'string', description: 'Opcjonalny nadawca — domyślnie pierwsze konto z IMAP_ACCOUNTS (zwykle info@)' },
       },
       required: ['search'],

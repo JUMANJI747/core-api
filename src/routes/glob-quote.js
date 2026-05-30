@@ -1164,7 +1164,28 @@ router.post('/glob/order', async (req, res) => {
     const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || '';
     const receiverCity = receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || '';
     const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
-    const receiverEmail = receiver.email || cGkData.email || (contractorForReceiver && contractorForReceiver.email) || DEFAULT_RECEIVER_EMAIL;
+    // Mail odbiorcy: sprawdz primaryEmail i ContractorContact (CRM v2), nie tylko
+    // plaskie .email — inaczej maile z auto-importu/backfillu "znikaja" i wpada
+    // DEFAULT (nasz delivery@), przez co tracking idzie sam do siebie.
+    let contractorBestEmail = '';
+    if (contractorForReceiver) {
+      const prim = contractorForReceiver.primaryEmail;
+      const flat = contractorForReceiver.email;
+      if (prim && /@/.test(prim)) contractorBestEmail = prim;
+      else if (flat && /@/.test(flat)) contractorBestEmail = flat;
+      if (!contractorBestEmail) {
+        try {
+          const contacts = await prisma.contractorContact.findMany({
+            where: { contractorId: contractorForReceiver.id, type: 'email' },
+            orderBy: [{ isPrimary: 'desc' }],
+            select: { value: true },
+          });
+          const hit = contacts.find((x) => x.value && /@/.test(x.value));
+          if (hit) contractorBestEmail = hit.value;
+        } catch (_) {}
+      }
+    }
+    const receiverEmail = receiver.email || cGkData.email || contractorBestEmail || DEFAULT_RECEIVER_EMAIL;
 
     // Mapowanie ISO-2 → numeryczny kod telefoniczny (subset E.164). Używamy
     // do normalizacji telefonu odbiorcy gdy zaczyna się wiodącym '0' a kraj

@@ -1354,6 +1354,43 @@ router.post('/emails/imap-diag', async (req, res) => {
 // route handler so the batch endpoint can call it in a loop without
 // going through Express. Returns the same shape the single-call route
 // returns, plus the input search string for the batch summary.
+// Adresy "nasze" — nigdy nie traktuj ich jako maila klienta. Bez tego, gdy
+// GlobKurier ma zapisany delivery@... jako odbiorce (fallback przy braku maila
+// kontrahenta), tracking poszedlby sam do siebie.
+const OWN_TRACKING_EMAILS = new Set(
+  [process.env.TRACKING_NOTIFY_FROM, 'delivery@surfstickbell.com']
+    .filter(Boolean)
+    .map((e) => String(e).trim().toLowerCase())
+);
+const isEmailAddr = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+const isOwnEmailAddr = (s) => isEmailAddr(s) && OWN_TRACKING_EMAILS.has(s.trim().toLowerCase());
+
+// Najlepszy mail kontrahenta: primaryEmail -> ContractorContact(email; isPrimary
+// najpierw) -> plaskie email. Pomija adresy "nasze". Zwraca null gdy brak — wtedy
+// pytamy usera (NIE wysylamy na zastepczy adres).
+async function bestContractorEmail(prisma, contractorId) {
+  if (!contractorId) return null;
+  let rec = null;
+  try {
+    rec = await prisma.contractor.findUnique({
+      where: { id: contractorId },
+      select: { email: true, primaryEmail: true },
+    });
+  } catch (_) {}
+  if (rec && isEmailAddr(rec.primaryEmail) && !isOwnEmailAddr(rec.primaryEmail)) return rec.primaryEmail.trim();
+  try {
+    const contacts = await prisma.contractorContact.findMany({
+      where: { contractorId, type: 'email' },
+      orderBy: [{ isPrimary: 'desc' }],
+      select: { value: true },
+    });
+    const hit = contacts.find((x) => isEmailAddr(x.value) && !isOwnEmailAddr(x.value));
+    if (hit) return hit.value.trim();
+  } catch (_) {}
+  if (rec && isEmailAddr(rec.email) && !isOwnEmailAddr(rec.email)) return rec.email.trim();
+  return null;
+}
+
 async function processTrackingSearch(prisma, { search, contractorEmail, from: fromOverride, reqChatId }) {
   if (!search || typeof search !== 'string') return { ok: false, error: 'search required', search };
   try {
@@ -1504,26 +1541,54 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     }
     const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
 
-    // 3) Resolve recipient email — explicit override > already-resolved
-    //    contractor > GK receiver email > local Contractor by name fuzzy.
-    let toEmail = contractorEmail || null;
-    if (!toEmail && resolvedContractor && resolvedContractor.email) toEmail = resolvedContractor.email;
-    if (!toEmail && recv.email) toEmail = recv.email;
+    // 3) Resolve recipient email. NIGDY nie wysylamy na nasz wlasny adres
+    //    (delivery@...) — gdyby GK mial go zapisany jako odbiorce, tracking
+    //    poszedlby sam do siebie. Kolejnosc: jawny override > kontrahent
+    //    (primaryEmail/ContractorContact/email) > mail odbiorcy z GK (o ile
+    //    nie nasz) > kontrahent dopasowany po nazwie odbiorcy.
+    let toEmail = (isEmailAddr(contractorEmail) && !isOwnEmailAddr(contractorEmail)) ? contractorEmail.trim() : null;
+    if (!toEmail && resolvedContractor) toEmail = await bestContractorEmail(prisma, resolvedContractor.id);
+    if (!toEmail && isEmailAddr(recv.email) && !isOwnEmailAddr(recv.email)) toEmail = recv.email.trim();
     if (!toEmail && recv.name) {
       const c = await prisma.contractor.findFirst({
         where: { name: { contains: recv.name.split(' ')[0], mode: 'insensitive' } },
-        select: { email: true, country: true },
+        select: { id: true },
       });
-      if (c && c.email) toEmail = c.email;
+      if (c) toEmail = await bestContractorEmail(prisma, c.id);
     }
     if (!toEmail) {
+      const who = (resolvedContractor && resolvedContractor.name) || recv.name || search;
       return {
         ok: false,
-        error: 'recipient email not found',
+        error: 'NO_CONTRACTOR_EMAIL',
+        needsEmail: true,
+        contractor: resolvedContractor
+          ? { id: resolvedContractor.id, name: resolvedContractor.name }
+          : (recv.name ? { name: recv.name } : null),
+        message: `Nie mam adresu e-mail do kontrahenta ${who}. Podaj adres — dopisze go do kontrahenta i wysle tracking. (Albo dodaj w CRM → Kontrahenci → ${who} → pole Email.)`,
         search,
         shipment: { trackingNumber, name: recv.name, city: recv.city, country: recv.country },
-        suggestion: 'pass contractorEmail in body, or set Contractor.email for this customer',
       };
+    }
+
+    // "Dopisz do kontrahenta": gdy mail podany jawnie (user na czacie), a
+    // kontrahent go nie ma — zapisz, zeby nastepnym razem nie pytac.
+    if (isEmailAddr(contractorEmail) && !isOwnEmailAddr(contractorEmail) && resolvedContractor && resolvedContractor.id) {
+      try {
+        const existing = await prisma.contractor.findUnique({
+          where: { id: resolvedContractor.id },
+          select: { email: true, primaryEmail: true },
+        });
+        const patch = {};
+        if (!isEmailAddr(existing && existing.email)) patch.email = contractorEmail.trim();
+        if (!isEmailAddr(existing && existing.primaryEmail)) patch.primaryEmail = contractorEmail.trim().toLowerCase();
+        if (Object.keys(patch).length) {
+          await prisma.contractor.update({ where: { id: resolvedContractor.id }, data: patch });
+          console.log(`[send-tracking-email] zapisano e-mail do kontrahenta ${resolvedContractor.id}: ${contractorEmail.trim()}`);
+        }
+      } catch (e) {
+        console.error('[send-tracking-email] zapis e-maila kontrahenta nieudany:', e.message);
+      }
     }
 
     // 3) Pre-send validation: status sane + tracking is a real carrier

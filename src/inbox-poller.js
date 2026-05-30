@@ -971,9 +971,27 @@ async function processAccount(account) {
         let contractorId = null;
         let contractorName = null;
         if (mail.fromEmail) {
-          const contractor = await prisma.contractor.findFirst({
-            where: { email: { equals: mail.fromEmail, mode: 'insensitive' } },
+          const fe = String(mail.fromEmail).trim();
+          // Dopasuj po dowolnym polu mailowym: plaskie email, primaryEmail
+          // (CRM v2) oraz ContractorContact — inaczej zamowienia od klientow,
+          // ktorych mail jest tylko w primaryEmail/kontaktach, nie linkuja sie.
+          let contractor = await prisma.contractor.findFirst({
+            where: {
+              OR: [
+                { email: { equals: fe, mode: 'insensitive' } },
+                { primaryEmail: { equals: fe.toLowerCase() } },
+              ],
+            },
           });
+          if (!contractor) {
+            try {
+              const contact = await prisma.contractorContact.findFirst({
+                where: { type: 'email', value: { equals: fe, mode: 'insensitive' } },
+                select: { contractorId: true },
+              });
+              if (contact) contractor = await prisma.contractor.findUnique({ where: { id: contact.contractorId } });
+            } catch (_) {}
+          }
           if (contractor) {
             contractorId = contractor.id;
             contractorName = contractor.name;
