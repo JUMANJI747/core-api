@@ -535,7 +535,11 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       netto = Math.round(brutto / 1.23 * 100) / 100;
       vat = Math.round((brutto - netto) * 100) / 100;
     }
-    const terminPlatnosci = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Termin platnosci: domyslnie 7 dni, ale edytowalny przez req.body.paymentDays
+    // (np. user mowi "30 dni"). Walidacja: liczba > 0, inaczej fallback 7.
+    const pdRaw = Number(req.body && req.body.paymentDays);
+    const paymentDays = Number.isFinite(pdRaw) && pdRaw > 0 ? Math.round(pdRaw) : 7;
+    const terminPlatnosci = new Date(Date.now() + paymentDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const vatMode = rodzaj === 'wdt' ? 'WDT 0%' : `krajowa VAT ${Math.round(0.23 * 100)}%`;
     const preview = {
@@ -548,10 +552,11 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       pozycje: linee,
       suma: { brutto, netto, vat },
       terminPlatnosci,
+      paymentDays,
     };
 
     const previewId = require('crypto').randomUUID();
-    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode });
+    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays });
 
     prisma.agentContext.upsert({
       where: { id: 'ksiegowosc' },
@@ -585,6 +590,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     if (!stored) return res.status(404).json({ error: 'Brak aktywnego podglądu. Utwórz nowy.' });
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
+    const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
 
     // STRICT routing: tylko per-request chatId, brak fallback Config.
     const reqChatId = req.body && req.body.chatId;
@@ -618,6 +624,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         pozycje,
         rodzaj,
         priceMode,
+        paymentDays,
       });
     } catch (ifirmaErr) {
       const raw = ifirmaErr.ifirmaRaw || null;
@@ -675,7 +682,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         ifirmaId: ifirmaIdNum,
         number: pelnyNumer,
         issueDate: new Date(),
-        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        dueDate: new Date(Date.now() + paymentDays * 24 * 60 * 60 * 1000),
         grossAmount: brutto,
         currency: waluta,
         paidAmount: 0,
@@ -804,6 +811,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
+    const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
 
     const kontrahentPayload2 = await buildIfirmaContractorPayload(prisma, contractor);
     console.log(`[invoice-confirm/${previewId}] kontrahent fields: nip=${kontrahentPayload2.nip} addr="${kontrahentPayload2.address}" city="${kontrahentPayload2.city}" postCode="${kontrahentPayload2.postCode}" ifirmaId=${kontrahentPayload2.ifirmaId}`);
@@ -822,6 +830,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       waluta,
       rodzaj,
       priceMode: storedPriceMode,
+      paymentDays,
     });
 
     const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
@@ -836,7 +845,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
         ifirmaId,
         number: pelnyNumer,
         issueDate: new Date(),
-        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        dueDate: new Date(Date.now() + paymentDays * 24 * 60 * 60 * 1000),
         grossAmount: brutto,
         currency: waluta,
         paidAmount: 0,

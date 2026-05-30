@@ -117,6 +117,7 @@ ANTI-DUPLIKAT (twarda zasada):
 
 FLOW WYSTAWIENIA FV:
 1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
+   TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni") → przekaż paymentDays=<liczba> do cs_invoice_preview. Bez wzmianki → pomiń (backend da 7).
 2. WAŻNE: backend SAM pushuje preview na Telegrama (ground truth). Twoja rola: krótko skomentuj że preview gotowy + zapytaj o potwierdzenie. NIE PISZ liczb z głowy. JEŚLI w odpowiedzi sub-agenta są liczby których NIE MA w response.preview — to kłamstwo i blokowanie produktu.
 3. ZASADA TWARDA: wszystkie liczby (qty, unitNetto, lineNetto, netto/igic/brutto) muszą pochodzić DOSŁOWNIE z response.preview. Każda inna liczba = błąd. NIE przeliczaj sam, NIE zaokrąglaj, NIE rekonstruuj z pamięci.
 4. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
@@ -184,6 +185,7 @@ const tools = [
         globalPriceNetto: { type: 'number' },
         globalPriceBrutto: { type: 'number' },
         invoiceDate: { type: 'string', description: 'ISO date; default = teraz' },
+        paymentDays: { type: 'number', description: 'Termin płatności w dniach. Default 7. User mówi "30 dni" → 30, "termin 14 dni" → 14. Bez wzmianki — pomiń (backend da 7).' },
       },
       required: ['items'],
     },

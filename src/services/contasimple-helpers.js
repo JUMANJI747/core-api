@@ -323,7 +323,11 @@ const NIKODEM_DEFAULTS = {
 
 function buildContasimplePayload({ targetEntityId, lines, invoiceDate, overrides = {} }) {
   const date = invoiceDate || new Date().toISOString();
-  const dueDate = new Date(new Date(date).getTime() + NIKODEM_DEFAULTS.paymentTermDays * 24 * 60 * 60 * 1000);
+  // Termin platnosci: domyslnie 7 dni (NIKODEM_DEFAULTS), ale edytowalny przez
+  // overrides.paymentDays (np. user mowi "30 dni"). Walidacja: liczba > 0.
+  const pdRaw = Number(overrides.paymentDays);
+  const paymentTermDays = Number.isFinite(pdRaw) && pdRaw > 0 ? Math.round(pdRaw) : NIKODEM_DEFAULTS.paymentTermDays;
+  const dueDate = new Date(new Date(date).getTime() + paymentTermDays * 24 * 60 * 60 * 1000);
 
   // Minimal payload — verified working via direct curl against api.contasimple.com.
   // Earlier attempts that included productId/productName/vatAmount/discountPercentage/

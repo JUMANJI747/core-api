@@ -454,7 +454,7 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
-async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
+async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode, paymentDays = 7 }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const isWdt = rodzaj === 'wdt';
@@ -521,7 +521,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode }) {
     MiejsceWystawienia: 'Warszawa',
     DataSprzedazy: today,
     FormatDatySprzedazy: 'DZN',
-    TerminPlatnosci: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    TerminPlatnosci: new Date(Date.now() + (Number(paymentDays) > 0 ? Math.round(Number(paymentDays)) : 7) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     SposobZaplaty: 'PRZ',
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',

@@ -151,7 +151,9 @@ FLOW WYSTAWIENIA FV:
    invoice_preview z contractorSearch=<dokladna nazwa z find_contractor.name>.
    Jak wynik 2+ → POKAŻ liste user-owi i zapytaj "Ktorego masz na mysli?".
 1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma
-2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId
+   TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni", "płatne 21 dni")
+   → przekaż paymentDays=<liczba> do invoice_preview. Bez wzmianki → pomiń (backend da 7).
+2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId (w tym terminPlatnosci)
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
 
@@ -381,6 +383,7 @@ const tools = [
         },
         globalPriceNetto: { type: 'number', description: 'Cena netto dla wszystkich pozycji (gdy user mówi "po X netto")' },
         globalPriceBrutto: { type: 'number', description: 'Cena brutto dla wszystkich pozycji' },
+        paymentDays: { type: 'number', description: 'Termin płatności w dniach. Default 7. User mówi "30 dni" → 30, "termin 14 dni" → 14. Bez wzmianki — pomiń (backend da 7).' },
       },
       required: ['items'],
     },

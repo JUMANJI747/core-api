@@ -888,6 +888,11 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   });
 
   const invoiceDate = body.invoiceDate || new Date().toISOString();
+  // Termin platnosci: domyslnie 7 dni, ale edytowalny przez body.paymentDays
+  // (np. user mowi "30 dni"). Walidacja: liczba > 0, inaczej fallback 7.
+  const pdRaw = Number(body.paymentDays);
+  const paymentDays = Number.isFinite(pdRaw) && pdRaw > 0 ? Math.round(pdRaw) : 7;
+  const expirationDate = new Date(new Date(invoiceDate).getTime() + paymentDays * 24 * 60 * 60 * 1000).toISOString();
 
   const preview = {
     contractor: {
@@ -908,11 +913,13 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
     lines,
     totals,
     invoiceDate,
+    paymentDays,
+    expirationDate,
     period: cs.dateToPeriod(invoiceDate),
   };
 
   const previewId = crypto.randomUUID();
-  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, body, chatId: body.chatId || null, source: body.source || null });
+  saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, paymentDays, body, chatId: body.chatId || null, source: body.source || null });
 
   // Telegram-notyfikacja preview — POMIJANA gdy source=frontend (frontend
   // pokazuje preview w UI, Telegram dostaje tylko gdy wywolane z bota/agenta).
@@ -974,6 +981,8 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
 async function confirmEsPreview(stored) {
   const { preview, contractor, lines, invoiceDate, chatId: storedChatId, source: storedSource } = stored;
   const period = preview.period;
+  const storedPdRaw = Number(stored.paymentDays);
+  const paymentDays = Number.isFinite(storedPdRaw) && storedPdRaw > 0 ? Math.round(storedPdRaw) : 7;
 
   // Optional footer override from Config (lets Nikodem change IBAN without
   // a deploy by setting Config key `contasimple_invoice_footer`).
@@ -1003,6 +1012,7 @@ async function confirmEsPreview(stored) {
     invoiceDate,
     overrides: {
       number: nextNumber,
+      paymentDays,
       ...(footerOverride != null ? { footer: footerOverride } : {}),
     },
   });
