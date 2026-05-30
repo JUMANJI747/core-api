@@ -104,18 +104,23 @@ function validateShipmentReady({ trackingNumber, status, recvName, expectedName 
   if (/^GK\d{9,}/i.test(String(trackingNumber).trim())) {
     return { ok: false, reason: `tracking number "${trackingNumber}" looks like a GK internal id, not a carrier tracking — wait for GK to populate the real number` };
   }
+  // Tu mamy juz REALNY numer kuriera (nie GK-wewnetrzny). Status typu
+  // "zarejestrowano / jeszcze nienadana" NIE blokuje wysylki — strona kuriera
+  // (np. DPD) pokazuje wtedy dane przesylki, a klient dostaje dzialajacy link.
+  // Wczesniej taka blokada wstrzymywala poprawne wysylki. Zostaje miekkie
+  // ostrzezenie (tylko do logow / informacyjnie), nie ma=false.
   const s = String(status || '').toLowerCase();
-  const NOT_READY = ['register', 'zarejestrow', 'awaiting', 'pickup', 'oczek', 'nowe', 'new ', 'pre-shipment'];
-  if (NOT_READY.some(t => s.includes(t))) {
-    return { ok: false, reason: `status "${status}" indicates parcel is registered but not yet picked up by carrier — tracking page will show no data` };
-  }
+  const NOT_YET_DISPATCHED = ['register', 'zarejestrow', 'awaiting', 'pickup', 'oczek', 'nowe', 'new ', 'pre-shipment'];
+  const earlyStage = NOT_YET_DISPATCHED.some(t => s.includes(t));
+  // Niezgodnosc odbiorcy = powazny blad (wyslalibysmy tracking nie temu klientowi)
+  // — to zostaje twarda blokada.
   if (expectedName && recvName) {
     const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     if (!norm(recvName).includes(norm(expectedName).slice(0, 5)) && !norm(expectedName).includes(norm(recvName).slice(0, 5))) {
       return { ok: false, reason: `recipient mismatch — GK receiver "${recvName}" doesn't match expected "${expectedName}"` };
     }
   }
-  return { ok: true };
+  return { ok: true, warning: earlyStage ? `parcel registered, not yet dispatched (status "${status}") — link works and shows registration` : null };
 }
 
 function escapeHtml(s) {
