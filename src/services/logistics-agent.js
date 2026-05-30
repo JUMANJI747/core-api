@@ -280,17 +280,30 @@ async function processLogisticsQuery(query, ctx = {}) {
   // ORDER_INTENT matches only confirmations ("tak", "zamów najtańszą") and
   // carrier-specific picks ("zamów DPD"). Phrases like "zamów paczkę do X"
   // fall under QUOTE_INTENT — they need pricing first, then a separate "tak".
-  let forcedTool = null;
-  if (DELETE_INTENT.test(query)) forcedTool = 'delete_shipment';
-  else if (LABEL_INTENT.test(query)) forcedTool = 'send_label';
-  // Address-lookup intents must beat plain SEARCH_INTENT — agent kept
-  // picking search_shipments for "szukaj adresu w wysyłkach" because of
-  // the shared "szukaj"/"wysyłki" tokens; explicit phrase tests fix it.
-  else if (ADDRESS_FROM_ORDERS_INTENT.test(query)) forcedTool = 'find_delivery_address_in_gk_orders';
-  else if (ADDRESS_FROM_EMAILS_INTENT.test(query)) forcedTool = 'find_delivery_address_in_emails';
-  else if (SEARCH_INTENT.test(query)) forcedTool = 'search_shipments';
-  else if (ORDER_INTENT.test(query)) forcedTool = 'order_shipping';
-  else if (QUOTE_INTENT.test(query)) forcedTool = 'quote_shipping';
+  //
+  // WAŻNE: Master (n8n) prefiksuje wiadomość kontekstem (podsumowanie FV/
+  // wyceny) PRZED faktyczną komendą usera. To psuło wykrywanie potwierdzeń
+  // bo ORDER_INTENT ma `^\s*tak` (kotwica początku) — z prefiksem "tak"/"zamów"
+  // nie były na początku, intencja przepadała i agent wpadał w pętlę re-quote.
+  // Dlatego intencje oceniamy na OSTATNIEJ NIEPUSTEJ LINII (= realna komenda
+  // usera), z fallbackiem do całości.
+  const lastLine = (query.trim().split('\n').map(s => s.trim()).filter(Boolean).pop()) || query;
+  const detectIntent = (text) => {
+    if (DELETE_INTENT.test(text)) return 'delete_shipment';
+    if (LABEL_INTENT.test(text)) return 'send_label';
+    // Address-lookup intents must beat plain SEARCH_INTENT — agent kept
+    // picking search_shipments for "szukaj adresu w wysyłkach" because of
+    // the shared "szukaj"/"wysyłki" tokens; explicit phrase tests fix it.
+    if (ADDRESS_FROM_ORDERS_INTENT.test(text)) return 'find_delivery_address_in_gk_orders';
+    if (ADDRESS_FROM_EMAILS_INTENT.test(text)) return 'find_delivery_address_in_emails';
+    if (SEARCH_INTENT.test(text)) return 'search_shipments';
+    if (ORDER_INTENT.test(text)) return 'order_shipping';
+    if (QUOTE_INTENT.test(text)) return 'quote_shipping';
+    return null;
+  };
+  // Najpierw realna komenda (ostatnia linia), potem cała wiadomość.
+  let forcedTool = detectIntent(lastLine) || detectIntent(query);
+  console.log(`[logistics-agent] forcedTool=${forcedTool} | lastLine="${lastLine.slice(0, 80)}"`);
 
   let response = await anthropic.messages.create({
     model: MODEL,
@@ -303,13 +316,27 @@ async function processLogisticsQuery(query, ctx = {}) {
 
   let iterations = 0;
   const MAX_ITER = 5;
+  let orderPlaced = false;
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
+      // Anti-pętla: jeśli zamówienie już zostało złożone w tej turze, NIE
+      // pozwól modelowi zrobić ponownej wyceny/zamówienia (klasyczny loop
+      // "tak"→re-quote). Zwróć stub, żeby model tylko zaraportował sukces.
+      if (orderPlaced && (tu.name === 'quote_shipping' || tu.name === 'order_shipping')) {
+        console.log(`[logistics-agent] BLOKADA pętli: pomijam ${tu.name} po udanym order w tej turze`);
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify({ ok: false, blocked: true, error: 'Zamówienie już złożone w tej turze — nie powtarzam. Zaraportuj wynik poprzedniego order_shipping.' }),
+        });
+        continue;
+      }
       console.log(`[logistics-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
+      if (tu.name === 'order_shipping' && result && result.ok) orderPlaced = true;
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,
@@ -324,6 +351,8 @@ async function processLogisticsQuery(query, ctx = {}) {
       max_tokens: 2048,
       system: SYSTEM_PROMPT,
       tools,
+      // Po udanym order — niech model tylko pisze tekst (zero kolejnych tooli).
+      tool_choice: orderPlaced ? { type: 'none' } : { type: 'auto' },
       messages,
     });
   }
