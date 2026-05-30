@@ -2042,3 +2042,5 @@ ${text}
 });
 
 module.exports = router;
+// Eksport pomocniczy do startowego self-heal w index.js.
+module.exports.syncCountriesFromApi = syncCountriesFromApi;

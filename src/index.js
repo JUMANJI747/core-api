@@ -71,6 +71,35 @@ const server = app.listen(PORT, () => {
   console.log(`Core API running on port ${PORT}`);
 });
 
+// ============ GK COUNTRIES SELF-HEAL ============
+// Przy starcie upewnij się, że mapa krajów GlobKurier (Config 'gk_country_ids')
+// jest kompletna. Jeśli pusta lub szczątkowa (<50 wpisów), pobierz pełną
+// oficjalną listę z GET /v1/countries — cały świat, w tym cała Europa.
+// Nieblokujące i best-effort: brak credentiali GK / błąd sieci nie wstrzymuje
+// startu. Dzięki temu nikt nie musi odpalać sync ręcznie po deployu.
+(async () => {
+  try {
+    if (!process.env.GLOBKURIER_EMAIL || !process.env.GLOBKURIER_PASSWORD) return;
+    const cfg = await prisma.config.findUnique({ where: { key: 'gk_country_ids' } });
+    let count = 0;
+    if (cfg && cfg.value) {
+      try {
+        const parsed = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+        if (parsed && typeof parsed === 'object') count = Object.keys(parsed).length;
+      } catch (_) {}
+    }
+    if (count >= 50) {
+      console.log(`[startup] GK country map OK (${count} krajów)`);
+      return;
+    }
+    const { syncCountriesFromApi } = require('./routes/glob-quote');
+    const r = await syncCountriesFromApi(prisma);
+    console.log(`[startup] GK country map zsynchronizowana: ${r.count} krajów z /v1/countries`);
+  } catch (e) {
+    console.error('[startup] GK country sync skipped:', e.message);
+  }
+})();
+
 // ============ INBOX POLLER ============
 const { stopPolling } = require('./inbox-poller');
 
