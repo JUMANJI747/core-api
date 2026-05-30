@@ -85,6 +85,7 @@ const LEGAL_FORM_TO_COUNTRY = [
   { re: /\bs\.?\s?a\.?\s?s\.?\b/i, country: 'FR' },
   { re: /\bs\.?\s?à\.?\s?r\.?\s?l\.?\b/i, country: 'FR' },
   { re: /\bs\.?\s?p\.?\s?z\s?o\.?\s?o\.?\b/i, country: 'PL' },
+  { re: /\b(unipessoal\s+)?lda\.?\b/i, country: 'PT' },
   { re: /\bltd\b/i, country: 'GB' },
 ];
 

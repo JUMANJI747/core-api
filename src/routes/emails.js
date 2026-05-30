@@ -1391,6 +1391,30 @@ async function bestContractorEmail(prisma, contractorId) {
   return null;
 }
 
+// ccTLD adresu e-mail -> ISO-2 (tylko kraje z jezykiem szablonu). ".pt" -> PT.
+function tldToIso(email) {
+  const m = String(email || '').toLowerCase().trim().match(/\.([a-z]{2})>?$/);
+  if (!m) return null;
+  const KNOWN = new Set(['PL', 'DE', 'AT', 'CH', 'FR', 'BE', 'LU', 'ES', 'NL', 'PT', 'IT']);
+  const t = m[1].toUpperCase();
+  return KNOWN.has(t) ? t : null;
+}
+
+// Dobor kraju (=> jezyk maila) odbiorcy — to samo co robil "stary" system doboru
+// jezyka: kraj kontrahenta (znormalizowany do ISO) -> kraj odbiorcy z GK ->
+// prefiks NIP UE -> forma prawna w nazwie (LDA->PT, GmbH->DE) -> ccTLD e-maila.
+function resolveTrackingCountry({ contractor, recvCountry, recvName, email }) {
+  const { normalizeIso, nipPrefixToCountry, legalFormToCountry } = require('../services/country-helper');
+  return (
+    normalizeIso(contractor && contractor.country) ||
+    normalizeIso(recvCountry) ||
+    nipPrefixToCountry(contractor && contractor.nip) ||
+    legalFormToCountry((contractor && contractor.name) || recvName) ||
+    tldToIso(email) ||
+    ''
+  );
+}
+
 async function processTrackingSearch(prisma, { search, contractorEmail, from: fromOverride, reqChatId }) {
   if (!search || typeof search !== 'string') return { ok: false, error: 'search required', search };
   try {
@@ -1403,12 +1427,12 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     if (isEmail) {
       resolvedContractor = await prisma.contractor.findFirst({
         where: { email: { equals: search.trim(), mode: 'insensitive' } },
-        select: { id: true, name: true, email: true, country: true },
+        select: { id: true, name: true, email: true, country: true, nip: true },
       });
     } else {
       resolvedContractor = await prisma.contractor.findFirst({
         where: { name: { contains: search.split(/\s+/)[0], mode: 'insensitive' } },
-        select: { id: true, name: true, email: true, country: true },
+        select: { id: true, name: true, email: true, country: true, nip: true },
       });
     }
 
@@ -1609,7 +1633,7 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     // 4) Send via the shared tracking-notify helper — same template the
     //    automatic post-createOrder hook uses, so the brand voice is
     //    consistent whether it's auto or user-triggered.
-    const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
     const r = await sendTrackingNotification({
       toEmail,
       country,
@@ -1666,7 +1690,7 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     let resolvedContractor = null;
     if (!toEmail || !toEmail.includes('@')) {
       const all = await prisma.contractor.findMany({
-        select: { id: true, name: true, email: true, primaryEmail: true, country: true },
+        select: { id: true, name: true, email: true, primaryEmail: true, country: true, nip: true },
       });
       const recvName = (recv.name || recv.companyName || recv.contactPerson || '').trim();
       if (recvName) {
@@ -1679,7 +1703,7 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     }
     if (!toEmail) return res.json({ ok: false, error: 'recipient email not found', shipment: { trackingNumber, name: recv.name } });
 
-    const country = (resolvedContractor && resolvedContractor.country) || recv.country || '';
+    const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
     const msg = compose({ country, trackingNumber, carrier: carrierName, trackingUrl });
 
     // Check if already sent
