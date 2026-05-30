@@ -158,6 +158,29 @@ async function handleSearchOrders(req, res) {
       };
     });
 
+    // Lista GK czesto nie ma jeszcze numeru kuriera dla swiezo zarejestrowanych
+    // paczek (numer siedzi na osobnym /v1/order/tracking) — bez niego znika link
+    // "Sledz" w CRM. Dociagamy go, ale TYLKO dla brakujacych i z limitem, zeby
+    // nie robic dziesiatek wywolan GK na duzej liscie.
+    const MISSING_TRACKING_LOOKUP_LIMIT = 15;
+    const needLookup = mapped.filter(m => !m.tracking && m.orderNumber).slice(0, MISSING_TRACKING_LOOKUP_LIMIT);
+    if (needLookup.length) {
+      await Promise.all(needLookup.map(async (m) => {
+        try {
+          const t = await getOrderTracking(m.orderNumber);
+          const candidate = t && (t.trackingNumber || t.tracking
+            || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+            || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+          if (candidate && String(candidate).trim()) {
+            m.tracking = String(candidate).trim();
+            m.trackingUrl = buildTrackingUrl(m.carrier, m.tracking);
+          }
+        } catch (e) {
+          console.error('[glob/orders] getOrderTracking fallback failed for', m.orderNumber, e.message);
+        }
+      }));
+    }
+
     res.json({ ok: true, orders: mapped, total: mapped.length });
   } catch (err) {
     console.error('[glob/orders]', err.message);

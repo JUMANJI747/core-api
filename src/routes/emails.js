@@ -1684,7 +1684,7 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     const recv = shipment.receiverAddress || shipment.receiver || {};
     const trackingNumber = shipment.trackingNumber || shipment.tracking || '';
     const carrierName = shipment.courierName || shipment.carrier || shipment.productName || '';
-    const trackingUrl = buildTrackingUrl(trackingNumber, carrierName);
+    const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
 
     let toEmail = contractorEmailOverride || recv.email || '';
     let resolvedContractor = null;
