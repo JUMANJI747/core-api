@@ -97,8 +97,25 @@ NOWY MAIL (nie odpowiedź):
 OFERTY:
 - "wyślij ofertę do X" → send_offer (contractorSearch + opcjonalnie language).
 
-WYSYŁKA FAKTURY:
-- "wyślij fakturę N do klienta" → send_invoice_email z {invoiceId}.
+WYSYŁKA FAKTURY — DWA PRZYPADKI:
+A) SAMA faktura, bez własnej treści ("wyślij fakturę N do klienta", "wyślij FV mailem do X")
+   → send_invoice_email z {invoiceId}. Leci od razu szablonem w języku odbiorcy (bez draftu).
+B) Faktura + WŁASNA treść ("wyślij fakturę I NAPISZ że...", "napisz do kontrahenta że dziękujemy,
+   w załączniku FV, paczkę wyślemy jutro")
+   → email_draft_with_invoice z {invoiceNumber, customNote:"<treść usera>"}. To DRAFT — NIE wysyła.
+   1. Response ma body (język odbiorcy) + bodyPl (tłumaczenie dla Ciebie). POKAŻ user-owi OBA:
+        Draft do wysłania ({langName}):
+        ---
+        {body}
+        ---
+        Tłumaczenie PL (tylko podgląd):
+        ---
+        {bodyPl}
+        ---
+        Wysłać? "tak"
+   2. Dopiero po "tak" → confirm_draft (wyśle draft RAZEM z PDF faktury).
+   3. NIGDY nie wołaj confirm_draft sam, bez akceptacji usera.
+- invoiceNumber weź z kontekstu rozmowy (ostatnio wystawiona/omawiana FV).
 - toEmail OPCJONALNY: jeśli NIE znasz prawdziwego adresu, POMIŃ to pole — backend sam pobierze z Contractor.email albo z historii korespondencji (Email model).
 - toEmail MUSI być formatem 'local@domena.tld'. NIE wpisuj tam:
   · nazwy firmy ("Delart Ochnik sp.k." → ŹLE)
@@ -201,6 +218,19 @@ const tools = [
     },
   },
   {
+    name: 'email_draft_with_invoice',
+    description: 'DRAFT maila z PDF faktury w załączniku + WŁASNA treść, przetłumaczona na język odbiorcy. NIE WYSYŁA. Używaj GDY user chce dołożyć własną wiadomość do faktury ("wyślij fakturę I NAPISZ że...", "napisz do kontrahenta że dziękujemy, w załączniku FV, wyślemy jutro"). Treść usera przekaż jako customNote. Zwraca {draftId, from, to, subject, body (jęz. odbiorcy), bodyPl (tłumaczenie dla Ciebie), lang, langName, attachments}. Po tym toolu POKAŻ user-owi draft (body + bodyPl) i CZEKAJ na "tak" — wtedy confirm_draft wyśle go z PDF.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        invoiceNumber: { type: 'string', description: 'Numer faktury, np. "101" (rok dołoży backend) lub "101/2026". Weź z kontekstu rozmowy.' },
+        invoiceId: { type: 'string', description: 'UUID faktury (alternatywa do invoiceNumber).' },
+        toEmail: { type: 'string', description: 'OPCJONALNY: adres odbiorcy (local@domena.tld). Pomiń jeśli nie znasz — backend dobierze z kontrahenta.' },
+        customNote: { type: 'string', description: 'WŁASNA treść od usera (np. "Dziękujemy za zamówienie. Paczkę wyślemy jutro rano."). Backend wstawi ją do body i przetłumaczy na język odbiorcy.' },
+      },
+    },
+  },
+  {
     name: 'parse_attachments',
     description: 'Parsuj załączniki maila (PDF/image). Wykrywa zamówienia, zwraca pozycje. Użyj gdy mail ma attachmentCount > 0.',
     input_schema: {
@@ -287,6 +317,7 @@ const ENDPOINT_MAP = {
   confirm_draft: ['POST', '/api/send-email/confirm-latest'],
   send_offer: ['POST', '/api/send-offer'],
   send_invoice_email: ['POST', '/api/ifirma/send-invoice-email'],
+  email_draft_with_invoice: ['POST', '/api/emails/draft-with-invoice'],
   parse_attachments: ['POST', '/api/emails/:emailId/parse-attachments'],
   check_sent: ['GET', '/api/emails/check-sent'],
   analyze_leads: ['POST', '/api/leads/analyze'],
@@ -308,9 +339,16 @@ const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
 const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
+// Faktura + WŁASNA treść → draft (jęz. odbiorcy + tłumaczenie PL), nie jednokrokowy send.
+// "wyślij fakturę I NAPISZ że...", "napisz do kontrahenta że ... fv ...".
+const INVOICE_TOKEN = /\b(faktur|fakt\b|fv)\b/iu;
+const COMPOSE_VERB = /\b(napisz|dopisz|dodaj|dopis|napis)/iu;
 const PARSE_INTENT = /\bparsuj zal|otw[oó]rz zal|sprawd[zź] zal/iu;
 const CHECK_SENT_INTENT = /\bczy (fakt|fv).{0,40}(wysy[lł]ana|wys[lł]aliśmy|by[lł]a wys)/iu;
-const CONFIRM_INTENT = /^\s*(tak|ok|potwierd|akceptu|wy[sś]lij( go| j[ąa])?)\b/iu;
+// "tak"/"ok"/"potwierdź"/"akceptuję" = potwierdzenie (może mieć dalszy ciąg).
+// Samo "wyślij"/"wyślij go"/"wyślij ją" = potwierdzenie TYLKO gdy to cała wiadomość —
+// inaczej "wyślij fakturę..." / "wyślij ofertę..." byłyby błędnie brane za confirm.
+const CONFIRM_INTENT = /^\s*(?:(?:tak|ok|potwierd|akceptu)\b|wy[sś]lij(?: go| j[ąa])?\s*$)/iu;
 
 async function processCommunicationQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -322,7 +360,10 @@ async function processCommunicationQuery(query, ctx = {}) {
 
   const messages = [{ role: 'user', content: query }];
   let forcedTool = null;
-  if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
+  // Faktura + własna treść → ZAWSZE draft (sprawdzane przed CONFIRM_INTENT, bo
+  // "wyślij fakturę i napisz..." zaczyna się od "wyślij" i fałszywie łapałoby confirm).
+  if (INVOICE_TOKEN.test(query) && COMPOSE_VERB.test(query)) forcedTool = 'email_draft_with_invoice';
+  else if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';
   else if (EXTRACT_NIP_INTENT.test(query)) forcedTool = 'extract_nip';
   else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';

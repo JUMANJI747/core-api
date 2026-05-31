@@ -1177,6 +1177,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       IT: { subject: 'Fattura {n} - Surf Stick Bell', body: 'Buongiorno,\n\nIn allegato la fattura.\n\nCordiali saluti,\nMichał Pałyska\nSurf Stick Bell', html: 'Buongiorno,<br><br>In allegato la fattura.<br><br>Cordiali saluti,<br>Michał Pałyska<br>Surf Stick Bell' },
       DE: { subject: 'Rechnung {n} - Surf Stick Bell', body: 'Guten Tag,\n\nDie Rechnung im Anhang.\n\nMit freundlichen Grüßen,\nMichał Pałyska\nSurf Stick Bell', html: 'Guten Tag,<br><br>Die Rechnung im Anhang.<br><br>Mit freundlichen Grüßen,<br>Michał Pałyska<br>Surf Stick Bell' },
       FR: { subject: 'Facture {n} - Surf Stick Bell', body: 'Bonjour,\n\nVeuillez trouver la facture en pièce jointe.\n\nCordialement,\nMichał Pałyska\nSurf Stick Bell', html: 'Bonjour,<br><br>Veuillez trouver la facture en pièce jointe.<br><br>Cordialement,<br>Michał Pałyska<br>Surf Stick Bell' },
+      NL: { subject: 'Factuur {n} - Surf Stick Bell', body: 'Geachte heer/mevrouw,\n\nIn de bijlage vindt u de factuur.\n\nMet vriendelijke groet,\nMichał Pałyska\nSurf Stick Bell', html: 'Geachte heer/mevrouw,<br><br>In de bijlage vindt u de factuur.<br><br>Met vriendelijke groet,<br>Michał Pałyska<br>Surf Stick Bell' },
       EN: { subject: 'Invoice {n} - Surf Stick Bell', body: 'Hello,\n\nPlease find the invoice attached.\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell', html: 'Hello,<br><br>Please find the invoice attached.<br><br>Best regards,<br>Michał Pałyska<br>Surf Stick Bell' },
     };
     // Resolve language with cascade priority:
@@ -1189,7 +1190,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       const m = String(email).toLowerCase().match(/@[^@\s]+\.([a-z]{2,3})$/);
       if (!m) return null;
       const tld = m[1];
-      const map = { fr: 'FR', es: 'ES', de: 'DE', it: 'IT', pt: 'PT', pl: 'PL' };
+      const map = { fr: 'FR', es: 'ES', de: 'DE', it: 'IT', pt: 'PT', pl: 'PL', nl: 'NL' };
       return map[tld] || null;
     }
     function detectLangFromBody(text) {
@@ -1201,6 +1202,7 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
         { lang: 'IT', words: ['buongiorno', 'grazie', 'cordiali saluti', 'siamo', 'vorrei'] },
         { lang: 'PT', words: ['olá', 'obrigado', 'cumprimentos', 'estamos', 'somos'] },
         { lang: 'DE', words: ['guten tag', 'mit freundlichen', 'danke', 'wir sind', 'ihre'] },
+        { lang: 'NL', words: ['geachte', 'met vriendelijke groet', 'bedankt', 'wij zijn', 'kunnen we', 'bestelling', 'onderstaand'] },
         { lang: 'PL', words: ['dzień dobry', 'pozdrawiam', 'dziękuję', 'jesteśmy'] },
       ];
       let best = null, bestScore = 0;

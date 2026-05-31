@@ -749,6 +749,9 @@ router.post('/send-email/confirm', async (req, res) => {
     if (!email) return res.status(404).json({ error: 'Email not found' });
     if (email.direction !== 'DRAFT') return res.status(400).json({ error: 'Not a draft' });
 
+    // Dolacz zapisane zalaczniki (np. PDF faktury z draft-with-invoice).
+    const draftAtts = await prisma.emailAttachment.findMany({ where: { emailId: email.id } });
+
     if (await wasRecentlySent(prisma, email.toEmail, email.subject, email.bodyFull)) {
       console.log('[dedup] Skipping duplicate confirm to', email.toEmail, email.subject);
       await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
@@ -762,6 +765,9 @@ router.post('/send-email/confirm', async (req, res) => {
       body: email.bodyFull || '',
       inReplyTo: email.inReplyTo || undefined,
       references: email.references || undefined,
+      attachments: draftAtts.length
+        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+        : undefined,
     });
 
     await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
@@ -784,6 +790,10 @@ router.post('/send-email/confirm-latest', async (req, res) => {
     });
     if (!draft) return res.json({ ok: false, error: 'Brak aktywnego draftu' });
 
+    // Drafty z FV (draft-with-invoice) maja PDF zapisany jako EmailAttachment.
+    // Bez tego wysylka szla z pustym mailem — faktura gubila sie po "tak".
+    const draftAtts = await prisma.emailAttachment.findMany({ where: { emailId: draft.id } });
+
     if (await wasRecentlySent(prisma, draft.toEmail, draft.subject, draft.bodyFull)) {
       console.log('[dedup] Skipping duplicate confirm-latest to', draft.toEmail, draft.subject);
       await prisma.email.update({ where: { id: draft.id }, data: { direction: 'OUTBOUND' } });
@@ -799,6 +809,9 @@ router.post('/send-email/confirm-latest', async (req, res) => {
         body: draft.bodyFull || '',
         inReplyTo: draft.inReplyTo || undefined,
         references: draft.references || undefined,
+        attachments: draftAtts.length
+          ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+          : undefined,
       });
     } catch (sendErr) {
       await notifyMailResult(prisma, {
@@ -833,6 +846,9 @@ router.post('/send-email/:id/confirm', async (req, res) => {
     if (!email) return res.status(404).json({ error: 'Email not found' });
     if (email.direction !== 'DRAFT') return res.status(400).json({ error: 'Not a draft' });
 
+    // Dolacz zapisane zalaczniki (np. PDF faktury z draft-with-invoice).
+    const draftAtts = await prisma.emailAttachment.findMany({ where: { emailId: email.id } });
+
     if (await wasRecentlySent(prisma, email.toEmail, email.subject, email.bodyFull)) {
       console.log('[dedup] Skipping duplicate /:id/confirm to', email.toEmail, email.subject);
       await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
@@ -846,6 +862,9 @@ router.post('/send-email/:id/confirm', async (req, res) => {
       body: email.bodyFull || '',
       inReplyTo: email.inReplyTo || undefined,
       references: email.references || undefined,
+      attachments: draftAtts.length
+        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+        : undefined,
     });
 
     await prisma.email.update({ where: { id: email.id }, data: { direction: 'OUTBOUND' } });
