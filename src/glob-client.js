@@ -123,7 +123,19 @@ async function getProducts(senderCountryId = 1, receiverCountryId) {
 async function createOrder(orderData) {
   const token = await getToken();
   const resp = await httpsRequest('https://api.globkurier.pl/v1/order', 'POST', { 'X-Auth-Token': token }, orderData);
-  return resp.body;
+  const body = resp.body;
+  // GlobKurier sygnalizuje odrzucenie zamowienia przez HTTP status, a
+  // httpsRequest NIE rejectuje na 4xx/5xx. Bez tej kontroli odpowiedz bez
+  // .hash/.errors (np. 401 wygasly token, 500, bare {message}) przechodzila
+  // dalej jako "sukces bez hasha" -> phantom order. Traktuj non-2xx jako twardy
+  // blad z realna trescia od GK, zeby agent NIGDY nie potwierdzil zamowienia
+  // ktorego API nie potwierdzilo.
+  if (resp.status && (resp.status < 200 || resp.status >= 300)) {
+    if (body && typeof body === 'object' && (body.errors || body.error || body.fields)) return body;
+    const detail = typeof body === 'string' ? body.slice(0, 300) : JSON.stringify(body || {}).slice(0, 300);
+    return { error: `GlobKurier HTTP ${resp.status}: ${detail || 'brak tresci'}` };
+  }
+  return body;
 }
 
 // Cancel / delete a shipment in GK. Body: {orderHash}. GK responds 200
