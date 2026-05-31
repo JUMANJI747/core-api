@@ -847,19 +847,25 @@ router.post('/glob/quote', async (req, res) => {
       weight,
       date: pickupDate,
     };
+    let pickupApiDown = false;
     await Promise.all(offers.slice(0, TOP_OFFERS_TO_PROBE).map(async (o) => {
       try {
         const nearest = await findNearestPickupDate(o.productId, pickupParamsBase, PROBE_MAX_DAYS);
         o.nearestPickup = nearest; // { date, timeFrom, timeTo, daysAhead } or null
       } catch (e) {
+        // GK pickupTimeRanges nie odpowiada (timeout) — to NIE znaczy "brak
+        // terminow". Oznaczamy jako nieznany i pokazujemy ceny mimo wszystko.
+        if (e && e.pickupApiDown) pickupApiDown = true;
         o.nearestPickup = null;
       }
     }));
 
     // If every probed offer came back with no slots, surface a clear
     // message to the agent instead of letting it blindly propose an order.
+    // ALE tylko gdy to realny brak terminow — nie gdy API odbioru padlo
+    // (wtedy ceny sa wazne, user moze zamowic, termin dobierze sie przy orderze).
     const probedOffers = offers.slice(0, TOP_OFFERS_TO_PROBE);
-    const allNoSlots = probedOffers.length > 0 && probedOffers.every(o => o.nearestPickup === null);
+    const allNoSlots = !pickupApiDown && probedOffers.length > 0 && probedOffers.every(o => o.nearestPickup === null);
     if (allNoSlots) {
       return res.json({
         ok: false,
@@ -902,6 +908,10 @@ router.post('/glob/quote', async (req, res) => {
       await prisma.quote.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 30 * 60 * 1000) } } });
     } catch (e) {
       console.warn('[glob/quote] durable persist failed:', e.message);
+    }
+
+    if (pickupApiDown) {
+      warnings.push('Terminy odbioru chwilowo niedostępne (GlobKurier pickupTimeRanges nie odpowiada) — ceny są aktualne, termin odbioru dobierze się przy zamawianiu.');
     }
 
     res.json({

@@ -247,8 +247,16 @@ async function getPickupTimes(productId, params) {
 // Returns: { date, timeFrom, timeTo, daysAhead } or null.
 async function findNearestPickupDate(productId, params, maxDays = 10) {
   const start = params.date ? new Date(params.date) : new Date();
+  // Twardy budzet na cala sonde jednej oferty. Gdy GK pickupTimeRanges
+  // wisi/timeoutuje, NIE mielimy 14 dni × 25s — to zawieszalo cala wycene
+  // na minuty. Po przekroczeniu budzetu (lub pierwszym bledzie) odpuszczamy.
+  const deadline = Date.now() + 20000;
 
   for (let i = 0; i < maxDays; i++) {
+    if (Date.now() > deadline) {
+      console.log(`[glob-client] findNearestPickupDate productId=${productId} budzet 20s przekroczony po ${i} dniach — odpuszczam`);
+      return null;
+    }
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     const dateStr = d.toISOString().split('T')[0];
@@ -256,8 +264,14 @@ async function findNearestPickupDate(productId, params, maxDays = 10) {
     try {
       resp = await getPickupTimes(productId, { ...params, date: dateStr });
     } catch (e) {
-      console.log('[glob-client] findNearestPickupDate iter', dateStr, 'error:', e.message);
-      continue;
+      // Blad (timeout/sieć) != "ten dzien zajety". To znak ze GK nie
+      // odpowiada — nie ma sensu probowac kolejnych dni (kazdy timeoutuje
+      // tak samo). Rzucamy dalej, zeby caller odroznil "API padlo" od
+      // "brak terminow" i mogl pokazac ceny mimo braku terminu odbioru.
+      console.log('[glob-client] findNearestPickupDate iter', dateStr, 'error:', e.message, '— przerywam sonde tej oferty');
+      const err = new Error(`pickupTimeRanges unavailable: ${e.message}`);
+      err.pickupApiDown = true;
+      throw err;
     }
     const list = extractPickupSlots(resp);
     if (list.length > 0) {
