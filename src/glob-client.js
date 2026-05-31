@@ -29,6 +29,14 @@ function httpsRequest(url, method, headers, body) {
         catch (e) { resolve({ status: res.statusCode, body: text }); }
       });
     });
+    // GlobKurier potrafi zawisnac i dopiero po ~40s zwrocic 502 (nginx) — to
+    // bylo zrodlo "czekam minute". Twardy timeout: zrywamy po 25s zamiast wisiec
+    // do upadku ich gatewaya. selfCall/handler dostaje czysty blad i moze
+    // zaraportowac "GK nie odpowiada" zamiast halucynowac sukces.
+    const GK_TIMEOUT_MS = parseInt(process.env.GLOBKURIER_TIMEOUT_MS || '25000', 10);
+    req.setTimeout(GK_TIMEOUT_MS, () => {
+      req.destroy(new Error(`GlobKurier timeout po ${GK_TIMEOUT_MS}ms (${method} ${parsed.pathname})`));
+    });
     req.on('error', reject);
     if (data) req.write(data);
     req.end();
