@@ -116,6 +116,10 @@ B) Faktura + WŁASNA treść ("wyślij fakturę I NAPISZ że...", "napisz do kon
    2. Dopiero po "tak" → confirm_draft (wyśle draft RAZEM z PDF faktury).
    3. NIGDY nie wołaj confirm_draft sam, bez akceptacji usera.
 - invoiceNumber weź z kontekstu rozmowy (ostatnio wystawiona/omawiana FV).
+C) FV JUŻ wysłana, user chce "drugi mail z treścią" / "wyślij drugą wiadomość" / akceptuje
+   propozycję dopisania treści → to ZWYKŁY mail przez send_email (NIE send_invoice_email,
+   NIE załączaj ponownie FV). Treść i odbiorcę (np. info@tiki.nl) weź z HISTORII rozmowy,
+   napisz w języku odbiorcy (np. NL dla holenderskiego klienta), draft → pokaż → "tak".
 - toEmail OPCJONALNY: jeśli NIE znasz prawdziwego adresu, POMIŃ to pole — backend sam pobierze z Contractor.email albo z historii korespondencji (Email model).
 - toEmail MUSI być formatem 'local@domena.tld'. NIE wpisuj tam:
   · nazwy firmy ("Delart Ochnik sp.k." → ŹLE)
@@ -336,7 +340,10 @@ const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie ma
 const ANALYZE_LEADS_INTENT = /\b(przeanaliz\w*\s+mail|status\s+lead|kto\s+czeka|co\s+wymaga|zaleg[lł]\w*\s+w[ąa]tk|kto\s+dosta[lł]\s+sample|martw\w*\s+w[ąa]tk|niedoko[nń]czon|wymaga\w*\s+akcj|do\s+odpis)/iu;
 const EXTRACT_NIP_INTENT = /\b(znajd[zź]\s+nip|wyci[ąa]gnij\s+nip|nip\s+w\s+mail|dane\s+kontrahenta\s+(po|z)\s+mail|znajd[zź]\s+ust[\s\-]?idnr|szukaj\s+nip|extract\s+vat)/iu;
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
-const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
+// Komponowanie maila (draft tekstowy). Łapie też follow-upy: "drugi mail",
+// "mail z treścią" — bez tokenu faktury, więc to zwykła wiadomość, nie ponowna FV.
+// "mail\b" nie złapie "mailem" (→ "wyślij fakturę mailem" tu nie wpada).
+const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć]|wy[sś]lij(?: drugi| kolejny| nowy| jeszcze jeden)? mail\b|(?:drugi|kolejny|nowy|jeszcze jeden) mail\b|mail z tre[sś]ci|wiadomo[sś][cć] z tre[sś]ci)/iu;
 const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
 // Faktura + WŁASNA treść → draft (jęz. odbiorcy + tłumaczenie PL), nie jednokrokowy send.
@@ -358,7 +365,21 @@ async function processCommunicationQuery(query, ctx = {}) {
     return { text: 'Brak query.', error: 'no_query' };
   }
 
-  const messages = [{ role: 'user', content: query }];
+  // Dołącz ostatnie tury rozmowy, żeby agent rozumiał follow-upy typu
+  // "wyślij drugi mail z treścią" — treść/odbiorca/fakt-że-FV-już-poszła
+  // bywają ustalone we WCZEŚNIEJSZYCH turach, nie w bieżącym query.
+  const history = Array.isArray(ctx.previousTurns) ? ctx.previousTurns : [];
+  const messages = [];
+  for (const t of history.slice(-6)) {
+    if (!t || (t.role !== 'user' && t.role !== 'assistant')) continue;
+    const text = typeof t.text === 'string' ? t.text : (typeof t.content === 'string' ? t.content : '');
+    if (!text.trim()) continue;
+    messages.push({ role: t.role, content: text.slice(0, 1500) });
+  }
+  // Anthropic wymaga, by pierwszą wiadomością był user.
+  while (messages.length && messages[0].role !== 'user') messages.shift();
+  messages.push({ role: 'user', content: query });
+
   let forcedTool = null;
   // Faktura + własna treść → ZAWSZE draft (sprawdzane przed CONFIRM_INTENT, bo
   // "wyślij fakturę i napisz..." zaczyna się od "wyślij" i fałszywie łapałoby confirm).
