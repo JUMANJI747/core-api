@@ -1410,9 +1410,25 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
-    delete quoteStore[quoteId];
-
     const orderHash = result && (result.hash || result.orderHash);
+    const orderNumber = result && result.number;
+    // Hard guard against false "ordered" confirmations: GlobKurier MUST return a
+    // hash or order number. Without that proof no shipment exists — return a
+    // failure so the agent cannot hallucinate "zamówione". The quote is kept (in
+    // memory + DB) so the user can retry the same courier pick.
+    if (!orderHash && !orderNumber) {
+      console.error('[glob/order] GK response has no hash/number — treating as FAILURE:', JSON.stringify(result).slice(0, 400));
+      return res.status(200).json({
+        ok: false,
+        error: 'GlobKurier nie potwierdził zamówienia (brak numeru/hash w odpowiedzi). Paczka NIE została utworzona — spróbuj ponownie lub wybierz innego kuriera.',
+        carrier: selectedOffer && selectedOffer.carrier,
+        receiverName: receiver && receiver.name,
+      });
+    }
+
+    delete quoteStore[quoteId];
+    // Quote consumed on confirmed success — drop the durable copy too.
+    try { await prisma.quote.delete({ where: { id: String(quoteId) } }); } catch (_) {}
 
     // Operations tracker — link to existing Transaction (matched against an
     // earlier-created invoice) or open a new one. Best-effort.
