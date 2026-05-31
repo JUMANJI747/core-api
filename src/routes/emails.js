@@ -2163,17 +2163,40 @@ router.post('/emails/draft-with-invoice', async (req, res) => {
     const filename = `Faktura_${invoice.number.replace(/\//g, '_')}.pdf`;
     const sizeKB = Math.round(pdfBuffer.length / 102.4) / 10;
 
-    // 4. Wybierz jezyk odbiorcy. Priorytet: kraj kontrahenta -> TLD adresu -> EN.
-    function tldToLang(email) {
-      const m = String(email || '').toLowerCase().match(/@[^@\s]+\.([a-z]{2,3})$/);
-      const map = { fr: 'fr', es: 'es', de: 'de', it: 'it', pt: 'pt', pl: 'pl', nl: 'nl' };
-      return m ? (map[m[1]] || null) : null;
+    // 4. Wybierz jezyk odbiorcy. Priorytet (regula biznesowa):
+    //    1. contractor.country  2. jezyk ostatniego maila OD kontrahenta  3. EN.
+    //    TLD adresu pominiety — klient bywa na gmail/outlook, TLD nic nie mowi.
+    function detectLangFromBody(text) {
+      if (!text) return null;
+      const t = String(text).toLowerCase();
+      const patterns = [
+        { lang: 'fr', words: ['bonjour', 'cordialement', 'merci', 'votre', 'pouvez', 'nous sommes'] },
+        { lang: 'es', words: ['hola', 'saludos', 'gracias', 'buenos días', 'buenas tardes', 'estamos', 'somos'] },
+        { lang: 'it', words: ['buongiorno', 'grazie', 'cordiali saluti', 'siamo', 'vorrei'] },
+        { lang: 'pt', words: ['olá', 'obrigado', 'cumprimentos', 'estamos', 'somos'] },
+        { lang: 'de', words: ['guten tag', 'mit freundlichen', 'danke', 'wir sind', 'ihre'] },
+        { lang: 'nl', words: ['geachte', 'met vriendelijke groet', 'bedankt', 'wij zijn', 'kunnen we', 'bestelling', 'onderstaand'] },
+        { lang: 'pl', words: ['dzień dobry', 'pozdrawiam', 'dziękuję', 'jesteśmy'] },
+      ];
+      let best = null, bestScore = 0;
+      for (const p of patterns) {
+        const score = p.words.filter(w => t.includes(w)).length;
+        if (score > bestScore) { bestScore = score; best = p.lang; }
+      }
+      return bestScore >= 2 ? best : null;
     }
     let lang = countryToLang(contractor && contractor.country);
     let langSource = lang ? 'contractor.country' : null;
-    if (!lang) {
-      lang = tldToLang(to);
-      if (lang) langSource = 'tld';
+    if (!lang && invoice.contractorId) {
+      try {
+        const lastIn = await prisma.email.findFirst({
+          where: { contractorId: invoice.contractorId, direction: 'INBOUND' },
+          orderBy: { createdAt: 'desc' },
+          select: { bodyFull: true, bodyPreview: true },
+        });
+        const detected = detectLangFromBody(lastIn && (lastIn.bodyFull || lastIn.bodyPreview));
+        if (detected) { lang = detected; langSource = 'contractor_last_email'; }
+      } catch (_) { /* ignore */ }
     }
     if (!lang) { lang = 'en'; langSource = 'fallback'; }
     const LANG_UI = (lang || 'en').toLowerCase();

@@ -1181,18 +1181,9 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       EN: { subject: 'Invoice {n} - Surf Stick Bell', body: 'Hello,\n\nPlease find the invoice attached.\n\nBest regards,\nMichał Pałyska\nSurf Stick Bell', html: 'Hello,<br><br>Please find the invoice attached.<br><br>Best regards,<br>Michał Pałyska<br>Surf Stick Bell' },
     };
     // Resolve language with cascade priority:
-    //   1. recipient email TLD (.fr/.es/.de/.it/.pt/.pl) — strongest signal
-    //   2. contractor.country (DB)
-    //   3. detect from original email body when reply-in-thread
-    //   4. EN fallback
-    function tldToLang(email) {
-      if (!email) return null;
-      const m = String(email).toLowerCase().match(/@[^@\s]+\.([a-z]{2,3})$/);
-      if (!m) return null;
-      const tld = m[1];
-      const map = { fr: 'FR', es: 'ES', de: 'DE', it: 'IT', pt: 'PT', pl: 'PL', nl: 'NL' };
-      return map[tld] || null;
-    }
+    //   1. contractor.country (DB) — najpewniejsze
+    //   2. język maila OD kontrahenta (emailId lub ostatni INBOUND)
+    //   3. EN fallback
     function detectLangFromBody(text) {
       if (!text) return null;
       const t = String(text).toLowerCase();
@@ -1215,14 +1206,33 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       return bestScore >= 2 ? best : null;
     }
 
-    let lang = tldToLang(to);
-    let langSource = lang ? 'tld' : null;
-    if (!lang && TEMPLATES[country]) { lang = country; langSource = 'contractor.country'; }
-    if (!lang && emailId) {
+    // Kaskada języka (kolejność wg reguły biznesowej):
+    //   1. contractor.country — najpewniejsze (np. NL z VIES)
+    //   2. język maila OD kontrahenta — z podanego emailId, a gdy go brak,
+    //      z ostatniego maila INBOUND tego kontrahenta (klient bywa na Gmailu,
+    //      więc TLD adresu nic nie mówi — liczy się treść).
+    //   3. EN.
+    // TLD adresu świadomie pominięty — mylił przy klientach z gmail/outlook.
+    let lang = null;
+    let langSource = null;
+    if (TEMPLATES[country]) { lang = country; langSource = 'contractor.country'; }
+    if (!lang) {
       try {
-        const orig = await prisma.email.findUnique({ where: { id: emailId }, select: { bodyFull: true, bodyPreview: true } });
-        const detected = detectLangFromBody((orig && (orig.bodyFull || orig.bodyPreview)) || '');
-        if (detected && TEMPLATES[detected]) { lang = detected; langSource = 'email_body'; }
+        let body = null;
+        if (emailId) {
+          const orig = await prisma.email.findUnique({ where: { id: emailId }, select: { bodyFull: true, bodyPreview: true } });
+          body = orig && (orig.bodyFull || orig.bodyPreview);
+        }
+        if (!body && invoice.contractorId) {
+          const lastIn = await prisma.email.findFirst({
+            where: { contractorId: invoice.contractorId, direction: 'INBOUND' },
+            orderBy: { createdAt: 'desc' },
+            select: { bodyFull: true, bodyPreview: true },
+          });
+          body = lastIn && (lastIn.bodyFull || lastIn.bodyPreview);
+        }
+        const detected = detectLangFromBody(body || '');
+        if (detected && TEMPLATES[detected]) { lang = detected; langSource = emailId ? 'email_body' : 'contractor_last_email'; }
       } catch (_) { /* ignore */ }
     }
     if (!lang) { lang = 'EN'; langSource = 'fallback'; }
