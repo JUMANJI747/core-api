@@ -407,7 +407,9 @@ Kontekst: ${JSON.stringify(context).slice(0, 500)}
 
 Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["direct"],"reason":"..."}`;
 
+  const tTurn = Date.now();
   try {
+    const tRouter = Date.now();
     const routerResp = await anthropic.messages.create({
       model: process.env.ASSISTANT_ROUTER_MODEL || 'claude-sonnet-4-5-20250929',
       max_tokens: 200,
@@ -416,6 +418,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
         { role: 'user', content: `${routerPrompt}\n\nZapytanie: ${query}` },
       ],
     });
+    console.log(`[agent/assistant] [timing] router → ${Date.now() - tRouter}ms (in=${routerResp.usage && routerResp.usage.input_tokens}, out=${routerResp.usage && routerResp.usage.output_tokens})`);
     const routerText = routerResp.content.map(b => b.text || '').join('');
     let routing;
     try {
@@ -454,14 +457,18 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
       const ctxStr = ctxLines.join('\n');
 
       const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
+      const tAgent = Date.now();
       try {
         const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
+        console.log(`[agent/assistant] [timing] agent ${agentName} → ${Date.now() - tAgent}ms (${r.iterations != null ? r.iterations + ' rund' : '?'})`);
         results.push({ agent: agentName, text: r.text || r.error || JSON.stringify(r).slice(0, 500) });
       } catch (e) {
+        console.log(`[agent/assistant] [timing] agent ${agentName} ERROR → ${Date.now() - tAgent}ms`);
         results.push({ agent: agentName, text: `Blad ${agentName}: ${e.message}` });
       }
     }
 
+    console.log(`[agent/assistant] [timing] CALA TURA → ${Date.now() - tTurn}ms (agenci: ${results.map(r => r.agent).join('+') || 'brak'})`);
     const combined = results.map(r => r.text).join('\n\n---\n\n');
     res.json({ ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant' });
   } catch (e) {

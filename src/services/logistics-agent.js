@@ -312,6 +312,7 @@ async function processLogisticsQuery(query, ctx = {}) {
   let forcedTool = detectIntent(lastLine) || detectIntent(query);
   console.log(`[logistics-agent] forcedTool=${forcedTool} | lastLine="${lastLine.slice(0, 80)}"`);
 
+  let tLlm = Date.now();
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
@@ -320,6 +321,7 @@ async function processLogisticsQuery(query, ctx = {}) {
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
   });
+  console.log(`[logistics-agent] [timing] LLM#0 → ${Date.now() - tLlm}ms (in=${response.usage && response.usage.input_tokens}, out=${response.usage && response.usage.output_tokens}, stop=${response.stop_reason})`);
 
   let iterations = 0;
   const MAX_ITER = 5;
@@ -353,6 +355,7 @@ async function processLogisticsQuery(query, ctx = {}) {
     messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
     messages.push({ role: 'user', content: toolResultBlocks });
 
+    tLlm = Date.now();
     response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
@@ -362,6 +365,7 @@ async function processLogisticsQuery(query, ctx = {}) {
       tool_choice: orderPlaced ? { type: 'none' } : { type: 'auto' },
       messages,
     });
+    console.log(`[logistics-agent] [timing] LLM#${iterations} → ${Date.now() - tLlm}ms (in=${response.usage && response.usage.input_tokens}, out=${response.usage && response.usage.output_tokens}, stop=${response.stop_reason})`);
   }
 
   const textBlock = response.content.find(b => b.type === 'text');

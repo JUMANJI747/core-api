@@ -69,11 +69,13 @@ function buildExecuteTool({ endpointMap, logPrefix, transformBody }) {
     // tego kto pisał, nie do statycznego telegram_chat_id z Config.
     if (ctx.chatId && body.chatId == null) body.chatId = ctx.chatId;
     const expanded = expandPath(pathTemplate, body);
+    const t0 = Date.now();
     try {
       const resp = await selfCall(method, expanded.path, expanded.body);
+      console.log(`${logPrefix} [timing] tool ${name} ${method} ${expanded.path.split('?')[0]} → ${Date.now() - t0}ms (status ${resp.status})`);
       return resp.body;
     } catch (err) {
-      console.error(`${logPrefix} tool ${name} error:`, err.message);
+      console.error(`${logPrefix} tool ${name} error (${Date.now() - t0}ms):`, err.message);
       return { error: err.message };
     }
   };
