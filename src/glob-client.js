@@ -237,24 +237,51 @@ async function getPickupTimes(productId, params) {
   return resp.body;
 }
 
-// Walk forward day by day from `startDate` (default today) and return the
-// first day that has at least one pickup window. GK's documented endpoint
-// answers per-date — but in practice we've seen responses where the slot
-// `.date` differs from the requested date (i.e. GK already returned the
-// nearest available). So we still iterate as a fallback, but a single
-// call is often enough.
+// Find the nearest bookable pickup window. GK's pickupTimeRanges, gdy
+// zapytac o "dzis", SAM zwraca sloty z `.date` ustawiona na najblizszy
+// dostepny termin — nie trzeba pytac dzien po dniu. Wiec robimy JEDNO
+// wywolanie i ufamy zwroconej dacie. Petla po dniach zostaje tylko jako
+// waski fallback (gdyby GK kiedys oddal pusto bez podpowiedzi), z twardym
+// budzetem i natychmiastowym przerwaniem gdy API nie odpowiada.
 //
 // Returns: { date, timeFrom, timeTo, daysAhead } or null.
 async function findNearestPickupDate(productId, params, maxDays = 10) {
   const start = params.date ? new Date(params.date) : new Date();
-  // Twardy budzet na cala sonde jednej oferty. Gdy GK pickupTimeRanges
-  // wisi/timeoutuje, NIE mielimy 14 dni × 25s — to zawieszalo cala wycene
-  // na minuty. Po przekroczeniu budzetu (lub pierwszym bledzie) odpuszczamy.
   const deadline = Date.now() + 20000;
 
-  for (let i = 0; i < maxDays; i++) {
+  const slotFromResp = (resp, dateStr) => {
+    const list = extractPickupSlots(resp);
+    if (!list.length) return null;
+    const slot = list[0];
+    const resolvedDate = slot.date || dateStr;
+    const daysAhead = Math.max(0, Math.round((new Date(resolvedDate) - start) / 86400000));
+    return {
+      date: resolvedDate,
+      timeFrom: slot.from || slot.timeFrom || null,
+      timeTo: slot.to || slot.timeTo || null,
+      daysAhead,
+    };
+  };
+
+  // 1) Jedno wywolanie o najblizszy termin (GK sam podaje nearest w .date).
+  const startStr = start.toISOString().split('T')[0];
+  let firstResp;
+  try {
+    firstResp = await getPickupTimes(productId, { ...params, date: startStr });
+  } catch (e) {
+    console.log('[glob-client] findNearestPickupDate', startStr, 'error:', e.message, '— API odbioru nie odpowiada');
+    const err = new Error(`pickupTimeRanges unavailable: ${e.message}`);
+    err.pickupApiDown = true;
+    throw err;
+  }
+  const first = slotFromResp(firstResp, startStr);
+  if (first) return first;
+  console.log(`[glob-client] pickupTimeRanges productId=${productId} date=${startStr} pusto; raw: ${JSON.stringify(firstResp || {}).slice(0, 300)}`);
+
+  // 2) Fallback: pusto bez podpowiedzi — dopytaj kolejne dni (rzadkie).
+  for (let i = 1; i < maxDays; i++) {
     if (Date.now() > deadline) {
-      console.log(`[glob-client] findNearestPickupDate productId=${productId} budzet 20s przekroczony po ${i} dniach — odpuszczam`);
+      console.log(`[glob-client] findNearestPickupDate productId=${productId} budzet 20s — odpuszczam po ${i} dniach`);
       return null;
     }
     const d = new Date(start);
@@ -264,36 +291,12 @@ async function findNearestPickupDate(productId, params, maxDays = 10) {
     try {
       resp = await getPickupTimes(productId, { ...params, date: dateStr });
     } catch (e) {
-      // Blad (timeout/sieć) != "ten dzien zajety". To znak ze GK nie
-      // odpowiada — nie ma sensu probowac kolejnych dni (kazdy timeoutuje
-      // tak samo). Rzucamy dalej, zeby caller odroznil "API padlo" od
-      // "brak terminow" i mogl pokazac ceny mimo braku terminu odbioru.
-      console.log('[glob-client] findNearestPickupDate iter', dateStr, 'error:', e.message, '— przerywam sonde tej oferty');
       const err = new Error(`pickupTimeRanges unavailable: ${e.message}`);
       err.pickupApiDown = true;
       throw err;
     }
-    const list = extractPickupSlots(resp);
-    if (list.length > 0) {
-      const slot = list[0];
-      // Slot.date may differ from requested date — GK can return the
-      // soonest available date even when asked about today.
-      const resolvedDate = slot.date || dateStr;
-      const requestedAhead = i;
-      const actualDaysAhead = Math.max(0, Math.round((new Date(resolvedDate) - start) / 86400000));
-      return {
-        date: resolvedDate,
-        timeFrom: slot.from || slot.timeFrom || null,
-        timeTo: slot.to || slot.timeTo || null,
-        daysAhead: actualDaysAhead || requestedAhead,
-      };
-    }
-    // First iteration with empty result — log raw shape so we can see
-    // what GK actually returned (helps diagnose schema drift / auth issues).
-    if (i === 0) {
-      const sample = JSON.stringify(resp || {}).slice(0, 300);
-      console.log(`[glob-client] pickupTimeRanges productId=${productId} date=${dateStr} returned no slots; raw sample: ${sample}`);
-    }
+    const slot = slotFromResp(resp, dateStr);
+    if (slot) return slot;
   }
   return null;
 }
