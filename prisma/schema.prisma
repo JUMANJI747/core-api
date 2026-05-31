@@ -444,6 +444,19 @@ model AgentContext {
   updatedAt DateTime @updatedAt
 }
 
+// Durable backing store for GlobKurier quotes. The hot path keeps quotes in
+// req.app.locals.quoteStore (in-memory, fast), but that is lost on restart and
+// not shared across instances — so /glob/order could miss a just-made quote and
+// the agent would re-quote instead of ordering. Persisting here lets /glob/order
+// resolve the quote (by id or most-recent) regardless. Pruned after 30 min.
+model Quote {
+  id        String   @id
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 // ============ SENDERS (GlobKurier) ============
 
 model Sender {

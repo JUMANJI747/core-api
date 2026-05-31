@@ -894,6 +894,15 @@ router.post('/glob/quote', async (req, res) => {
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
     }
+    // Persist durably so /glob/order can resolve the quote even if the in-memory
+    // store was lost (restart) or the order lands on another instance. Best-effort
+    // — a DB hiccup must not break quoting.
+    try {
+      await prisma.quote.create({ data: { id: quoteId, data: quoteStore[quoteId] } });
+      await prisma.quote.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 30 * 60 * 1000) } } });
+    } catch (e) {
+      console.warn('[glob/quote] durable persist failed:', e.message);
+    }
 
     res.json({
       ok: true,
@@ -944,23 +953,37 @@ router.post('/glob/order', async (req, res) => {
       || !/^\d{10,}$/.test(String(quoteId));
     if (isLatestSentinel) {
       const keys = Object.keys(quoteStore).sort((a, b) => b - a);
-      if (keys.length > 0) {
-        const fallback = keys[0];
-        console.log(`[glob/order] quoteId "${quoteId}" treated as "latest" → ${fallback}`);
-        quoteId = fallback;
-      } else {
-        quoteId = null;
+      quoteId = keys.length > 0 ? keys[0] : null;
+      if (quoteId) console.log(`[glob/order] sentinel quoteId → latest in memory: ${quoteId}`);
+    }
+
+    let quote = quoteId ? quoteStore[quoteId] : null;
+
+    // Durable fallback: the in-memory store can be empty after a restart or when
+    // the order lands on a different instance than the quote — which made the
+    // agent re-quote instead of ordering. Resolve from the Quote table: by
+    // explicit id, otherwise the most recent quote within the 30-min TTL.
+    if (!quote) {
+      try {
+        const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+        let row = null;
+        if (!isLatestSentinel && quoteId) {
+          row = await prisma.quote.findUnique({ where: { id: String(quoteId) } });
+        } else {
+          row = await prisma.quote.findFirst({ where: { createdAt: { gte: cutoff } }, orderBy: { createdAt: 'desc' } });
+        }
+        if (row && row.createdAt >= cutoff) {
+          quote = row.data;
+          quoteId = row.id;
+          console.log(`[glob/order] quote ${quoteId} resolved from DB fallback`);
+        }
+      } catch (e) {
+        console.warn('[glob/order] DB quote fallback failed:', e.message);
       }
     }
 
-    if (!quoteId) {
-      console.log('[glob/order] No quoteId and store empty — abort');
-      return res.status(200).json({ ok: false, error: 'Brak quoteId — najpierw POST /api/glob/quote' });
-    }
-
-    const quote = quoteStore[quoteId];
     if (!quote) {
-      console.log(`[glob/order] Quote ${quoteId} not in store (expired/wrong id) — abort`);
+      console.log(`[glob/order] Quote unresolved (id=${quoteId}) — abort`);
       return res.status(200).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
     }
 
