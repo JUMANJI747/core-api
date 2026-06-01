@@ -320,6 +320,13 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
       if (Date.now() - new Date(q.createdAt).getTime() >= 30 * 60 * 1000) continue;
       if (!newest || new Date(q.createdAt) > new Date(newest.createdAt)) newest = { id: k, q };
     }
+    // DB fallback — pamiec procesu bywa pusta (restart / inna instancja), a
+    // wycena jest trwale zapisana. Bez tego "tak" po wycenie nie znajdowalo
+    // zamowienia i Master wpadal w petle re-wyceny.
+    if (!newest) {
+      const row = await prisma.quote.findFirst({ where: { createdAt: { gte: cutoff } }, orderBy: { createdAt: 'desc' } });
+      if (row && row.data) newest = { id: row.id, q: row.data };
+    }
     if (newest) {
       const offers = newest.q.offers || [];
       const cheapest = offers.length ? offers.slice().sort((a, b) => (a.price || 0) - (b.price || 0))[0] : null;
