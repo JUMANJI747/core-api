@@ -822,60 +822,12 @@ router.post('/glob/quote', async (req, res) => {
       maxWeight: p.maxWeight,
     }));
 
-    // Resolve realistic pickup date per top-5 offer (parallel). GlobKurier
-    // returns no terms on weekends/holidays/before cutoff, so the requested
-    // pickupDate often isn't actually bookable — checking up front lets us
-    // show the user the soonest realistic date and keeps order_shipping
-    // from blindly retrying carriers in a loop.
-    //
-    // Send the full sender address to /pickupTimeRanges (GK doc: "providing
-    // as much data as possible allows for better matching of shipping dates
-    // for a given location"). DPD especially can flip a "no slots" answer
-    // to "available" when given the actual city / street, not just postcode.
-    const TOP_OFFERS_TO_PROBE = 5;
-    const PROBE_MAX_DAYS = 14;
-    const senderExtras = (typeof sender.extras === 'object' && sender.extras) || {};
-    const pickupParamsBase = {
-      senderCountryId,
-      senderPostCode: sender.postCode || '',
-      senderCity: sender.city || senderExtras.city || '',
-      senderStreet: senderExtras.street || sender.street || '',
-      senderHouseNumber: senderExtras.houseNumber || sender.houseNumber || '',
-      receiverCountryId,
-      receiverPostCode: receiver.postCode || '',
-      receiverCity: receiver.city || '',
-      weight,
-      date: pickupDate,
-    };
-    let pickupApiDown = false;
-    await Promise.all(offers.slice(0, TOP_OFFERS_TO_PROBE).map(async (o) => {
-      try {
-        const nearest = await findNearestPickupDate(o.productId, pickupParamsBase, PROBE_MAX_DAYS);
-        o.nearestPickup = nearest; // { date, timeFrom, timeTo, daysAhead } or null
-      } catch (e) {
-        // GK pickupTimeRanges nie odpowiada (timeout) — to NIE znaczy "brak
-        // terminow". Oznaczamy jako nieznany i pokazujemy ceny mimo wszystko.
-        if (e && e.pickupApiDown) pickupApiDown = true;
-        o.nearestPickup = null;
-      }
-    }));
-
-    // If every probed offer came back with no slots, surface a clear
-    // message to the agent instead of letting it blindly propose an order.
-    // ALE tylko gdy to realny brak terminow — nie gdy API odbioru padlo
-    // (wtedy ceny sa wazne, user moze zamowic, termin dobierze sie przy orderze).
-    const probedOffers = offers.slice(0, TOP_OFFERS_TO_PROBE);
-    const allNoSlots = !pickupApiDown && probedOffers.length > 0 && probedOffers.every(o => o.nearestPickup === null);
-    if (allNoSlots) {
-      return res.json({
-        ok: false,
-        noPickupAnyOffer: true,
-        offers, // include offers so agent can describe what was tried
-        sender: { name: sender.companyName || sender.name, city: sender.city, country: sender.country },
-        receiver: { name: receiver.name, city: receiver.city, country: receiver.country, postCode: receiver.postCode },
-        message: `GlobKurier nie ma dostępnych terminów odbioru dla żadnej z ${probedOffers.length} ofert na trasie ${sender.country || '?'} → ${receiver.country || '?'} w ciągu ${PROBE_MAX_DAYS} dni — najpewniej długi weekend / święto. Spróbuj ponownie za parę dni albo zmień datę odbioru ręcznie (parametr pickupDate).`,
-      });
-    }
+    // Termin odbioru NIE jest sprawdzany na etapie wyceny — cena pochodzi z
+    // /v1/products (getQuote) i nie zalezy od pickupTimeRanges. Sondowanie
+    // terminow tutaj (5 ofert × dni) tylko ozdabialo tabele kolumna "Odbior",
+    // a biło w wolny/padajacy endpoint i zawieszalo wycene na minuty.
+    // Termin dobiera sie dopiero przy zamawianiu (/glob/order) dla JEDNEJ
+    // wybranej oferty: dzis → jutro → fallback najblizszy wolny.
 
     // declaredValue — required by some carriers (esp. cross-border FedEx)
     // for customs/insurance. Priority: explicit user input → sum(items)
@@ -908,10 +860,6 @@ router.post('/glob/quote', async (req, res) => {
       await prisma.quote.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 30 * 60 * 1000) } } });
     } catch (e) {
       console.warn('[glob/quote] durable persist failed:', e.message);
-    }
-
-    if (pickupApiDown) {
-      warnings.push('Terminy odbioru chwilowo niedostępne (GlobKurier pickupTimeRanges nie odpowiada) — ceny są aktualne, termin odbioru dobierze się przy zamawianiu.');
     }
 
     res.json({
@@ -1059,48 +1007,32 @@ router.post('/glob/order', async (req, res) => {
       return d.toISOString().split('T')[0];
     }
 
-    function extractPickupList(data) {
-      if (!data) return [];
-      if (Array.isArray(data)) return data;
-      return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
-    }
-
     // Prefer the pickup slot already resolved by quote_shipping for this
     // offer — saves an API roundtrip and guarantees we use a date the
     // carrier actually accepts. Fall back to live lookup only when the
     // quote didn't probe this offer (e.g. it was beyond TOP_OFFERS_TO_PROBE).
-    if (selectedOffer.nearestPickup && selectedOffer.nearestPickup.date) {
-      pickupDate = selectedOffer.nearestPickup.date;
-      pickupTimeFrom = selectedOffer.nearestPickup.timeFrom || pickupTimeFrom;
-      pickupTimeTo = selectedOffer.nearestPickup.timeTo || pickupTimeTo;
-      console.log('[glob/order] Using pre-resolved pickup from quote:', pickupDate, pickupTimeFrom, '-', pickupTimeTo);
-    } else {
-     try {
-      const pickupData = await getPickupTimes(selectedOffer.productId, {
+    // Termin odbioru dobieramy DOPIERO TU (nie przy wycenie), dla wybranej
+    // oferty. Reguła: dziś → jutro → fallback najbliższy wolny. GK przy
+    // zapytaniu o dzień sam zwraca slot z .date na najbliższy dostępny, więc
+    // findNearestPickupDate ogarnia cały fallback jednym wywołaniem (z petlą
+    // dni jako zapas). Gdy pickupTimeRanges nie odpowiada — nie blokujemy
+    // zamówienia: zostaje sensowny pickupDate default, GK dobierze/odrzuci.
+    try {
+      const nearest = await findNearestPickupDate(selectedOffer.productId, {
         ...quote.quoteParams,
         receiverCity: (quote.receiver && quote.receiver.city) || '',
         date: pickupDate,
-      });
-      let pickupList = extractPickupList(pickupData);
-
-      if (pickupList.length === 0) {
-        pickupDate = nextWorkingDay(pickupDate);
-        const retry = await getPickupTimes(selectedOffer.productId, {
-          ...quote.quoteParams,
-          receiverCity: (quote.receiver && quote.receiver.city) || '',
-          date: pickupDate,
-        });
-        pickupList = extractPickupList(retry);
-      }
-
-      if (pickupList.length > 0) {
-        pickupDate = pickupList[0].date || pickupDate;
-        pickupTimeFrom = pickupList[0].from || pickupTimeFrom;
-        pickupTimeTo = pickupList[0].to || pickupTimeTo;
+      }, 14);
+      if (nearest && nearest.date) {
+        pickupDate = nearest.date;
+        pickupTimeFrom = nearest.timeFrom || pickupTimeFrom;
+        pickupTimeTo = nearest.timeTo || pickupTimeTo;
+        console.log('[glob/order] pickup dobrany:', pickupDate, pickupTimeFrom, '-', pickupTimeTo);
+      } else {
+        console.log('[glob/order] brak slotow pickup — zostawiam default', pickupDate);
       }
     } catch (err) {
-      console.log('[glob/order] getPickupTimes failed:', err.message);
-    }
+      console.log('[glob/order] pickupTimeRanges niedostepne:', err.message, '— zamawiam z default pickupDate', pickupDate);
     }
 
     let requiredAddons = [];
