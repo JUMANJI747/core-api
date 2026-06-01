@@ -852,7 +852,9 @@ router.post('/glob/quote', async (req, res) => {
     // trafia na dzis/jutro od razu. JEDYNY problem to gdy GK pickupTimeRanges
     // nie odpowiada — wtedy NIE czekamy pelnych 25s, tylko krotki budzet 8s na
     // wywolanie, zeby wycena nie wisiala. Ceny i tak pokazujemy.
-    const PICKUP_PROBE_TIMEOUT_MS = parseInt(process.env.PICKUP_PROBE_TIMEOUT_MS || '8000', 10);
+    // Realne odpowiedzi pickupTimeRanges wracaja w <2s; pojedynczy productId
+    // potrafi wisiec. 6s budzet: zdrowe oferty zdazaja, wiszacy ucinamy szybko.
+    const PICKUP_PROBE_TIMEOUT_MS = parseInt(process.env.PICKUP_PROBE_TIMEOUT_MS || '6000', 10);
     let pickupApiDown = false;
     await Promise.all(offers.slice(0, TOP_OFFERS_TO_PROBE).map(async (o) => {
       try {

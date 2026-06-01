@@ -243,7 +243,7 @@ async function getPickupTimes(productId, params, timeoutMs) {
   const t0 = Date.now();
   console.log(`[glob-client] pickupTimeRanges GET ${url}`);
   try {
-    const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' }, timeoutMs);
+    const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' }, null, timeoutMs);
     const sample = typeof resp.body === 'string' ? resp.body.slice(0, 300) : JSON.stringify(resp.body || {}).slice(0, 300);
     console.log(`[glob-client] pickupTimeRanges → ${Date.now() - t0}ms status=${resp.status} body=${sample}`);
     return resp.body;
