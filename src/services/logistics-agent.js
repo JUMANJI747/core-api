@@ -259,6 +259,13 @@ const executeTool = buildExecuteTool({
 // / "wyślij paczkę" are still quote intents because they require pricing first.
 const QUOTE_INTENT = /\b(wyce[nń]|wycena|ile kosztuje|policz|sprawd[zź] cen[eę]|wy[sś]lij paczk|zam[oó]w paczk|zam[oó]w wysy[lł]k|zam[oó]w kurier)/iu;
 const ORDER_INTENT = /^\s*(tak|ok|potwierd|akceptu|zgadzam|jasne|dobra)|\bzam[oó]w (t[ąa] |t[eę] |najta[nń]sz|drug|trzeci|konkretn|inn[ąa]|innego|dpd|fedex|ups|gls|inpost|dhl)/iu;
+// Wybór KONKRETNEGO kuriera po wycenie = zamówienie, nie nowa wycena. Master
+// (n8n) przepisuje "Zamów FedEx" na "Zamów paczkę FedEx Regional Economy dla X"
+// — nazwa kuriera bywa NIE tuż po "zamów" (jest "paczkę"/"kuriera" pomiędzy), co
+// gubilo ORDER_INTENT i wpadalo w QUOTE ("zamów paczk") -> petla re-quote.
+// Łapiemy nazwe kuriera GDZIEKOLWIEK, o ile to nie swieze pytanie o cene.
+const CARRIER_NAME_RE = /\b(fedex|dpd|ups|gls|inpost|dhl|ambro|pocztex|poczta\s*polska)\b/iu;
+const FRESH_PRICE_RE = /\b(wyce[nń]|wycena|ile kosztuje|policz|sprawd[zź] cen)/iu;
 const SEARCH_INTENT = /\b(co z paczk|status|gdzie jest|tracking|track|lista paczek|pokaż wysy[lł]k)/iu;
 // "Daj list do X" / "daj cmr X" → list przewozowy PDF na Telegrama (NIE
 // listę paczek). User feedback: "daj" zawsze = "wyślij PDF tu na Telegram".
@@ -305,6 +312,9 @@ async function processLogisticsQuery(query, ctx = {}) {
     if (ADDRESS_FROM_EMAILS_INTENT.test(text)) return 'find_delivery_address_in_emails';
     if (SEARCH_INTENT.test(text)) return 'search_shipments';
     if (ORDER_INTENT.test(text)) return 'order_shipping';
+    // "zamów" + nazwa kuriera GDZIEKOLWIEK (np. "zamów paczkę FedEx... dla X")
+    // = wybór oferty -> order, NIE nowa wycena. Wyjątek: jawne "wyceń".
+    if (/\bzam[oó]w\b/iu.test(text) && CARRIER_NAME_RE.test(text) && !FRESH_PRICE_RE.test(text)) return 'order_shipping';
     if (QUOTE_INTENT.test(text)) return 'quote_shipping';
     return null;
   };

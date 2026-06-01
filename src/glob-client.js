@@ -198,14 +198,19 @@ async function getAddons(productId, params) {
   return resp.body;
 }
 
-// Try several known shapes returned by GK pickupTimeRanges. The OpenAPI
-// example shows {} so we don't know the exact key — observed in the wild:
-// top-level array, `results`, `items`, `data`, `pickupRanges`, `ranges`,
-// `slots`. Cover all so a working API response isn't dropped on the floor.
+// Parse GK pickupTimeRanges response. Z dzialajacego workflow n8n wiadomo, ze
+// pola sloty to: date, timeFrom, timeTo. Odpowiedz bywa:
+//  - pojedynczy obiekt {date, timeFrom, timeTo}  (czytane w n8n jako .json.date)
+//  - tablica takich obiektow
+//  - obiekt-kontener z tablica pod jednym z kluczy (results/items/...)
+// Obejmujemy wszystkie, ale priorytetem jest realny ksztalt z n8n.
 function extractPickupSlots(data) {
   if (!data) return [];
   if (Array.isArray(data)) return data;
-  return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
+  // Goly obiekt slotu (najczestszy wg n8n) — owijamy w tablice.
+  if (data.timeFrom || data.date) return [data];
+  const container = data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
+  return Array.isArray(container) ? container : [];
 }
 
 async function getPickupTimes(productId, params, timeoutMs) {
@@ -257,8 +262,8 @@ async function findNearestPickupDate(productId, params, maxDays = 10, timeoutMs)
     const daysAhead = Math.max(0, Math.round((new Date(resolvedDate) - start) / 86400000));
     return {
       date: resolvedDate,
-      timeFrom: slot.from || slot.timeFrom || null,
-      timeTo: slot.to || slot.timeTo || null,
+      timeFrom: slot.timeFrom || slot.from || null,
+      timeTo: slot.timeTo || slot.to || null,
       daysAhead,
     };
   };
