@@ -83,6 +83,17 @@ DOSTĘPNE narzędzia do "thinking":
   - query_db: read-only SELECT na bazie. Modele dostepne: Email,
     Contractor, Invoice, EsInvoice, Transaction, Consignment, Deal,
     ActivityEvent, Memory, EsContractor.
+    KLUCZOWE KOLUMNY (nie zgaduj — to czeste pomylki):
+    · Paczki/tracking → "Transaction" (NIE Consignment! Consignment to
+      komis/magazyn: status OPEN|SETTLED, qtyReceived). Transaction ma:
+      "contractorId", "contractorName", "shipmentNumber" (GK260...),
+      "trackingNumber", "shipmentHash", "occurredAt" (NIE "shippedAt"),
+      "hasShipped", "hasDelivered", "deliveredAt", "invoiceNumber".
+    · Daty: Transaction uzywa "occurredAt"/"deliveredAt"/"paidAt"
+      (NIE "shippedAt"/"createdAt"). Email/Invoice maja "createdAt".
+    · Gdy nie masz pewnosci co do kolumn — NAJPIERW:
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='Transaction' — potem wlasciwe query.
   - call_endpoint: dowolny /api/* endpoint (sample_followups,
     analytics_*, /api/transactions, /api/contractors, etc).
   - gk_raw: bezposrednio GlobKurier API (gdy potrzebujesz danych

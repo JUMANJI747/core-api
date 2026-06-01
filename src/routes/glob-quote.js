@@ -1770,6 +1770,25 @@ router.post('/glob/order', async (req, res) => {
             const trackingUrl = buildTrackingUrl(carrierName, trackingNumber, resolvedCountry);
             const { subject, text } = compose({ country: resolvedCountry, trackingNumber, carrier: carrierName, trackingUrl });
 
+            // Zapisz trackingNumber TRWALE do Transaction (po shipmentHash/Number).
+            // Wczesniej number ladowal tylko w extras draftu — gdy draft wygasl
+            // (30 min) albo zostal wyslany, number przepadal i "wyslij tracking"
+            // go nie znajdowal, mimo ze "byl w drafcie". Teraz zostaje w bazie.
+            try {
+              const upd = await prisma.transaction.updateMany({
+                where: {
+                  OR: [
+                    orderHash ? { shipmentHash: orderHash } : undefined,
+                    result.number ? { shipmentNumber: String(result.number) } : undefined,
+                  ].filter(Boolean),
+                },
+                data: { trackingNumber, hasShipped: true },
+              });
+              console.log(`[glob/order] trackingNumber ${trackingNumber} zapisany do Transaction (${upd.count} wiersz)`);
+            } catch (e) {
+              console.error('[glob/order] zapis trackingNumber do Transaction nieudany:', e.message);
+            }
+
             // Save as DRAFT so the existing /send-email/confirm-latest tool
             // can pick it up when the user says "tak". 30-minute window
             // matches what that endpoint expects.
