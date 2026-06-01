@@ -1057,20 +1057,6 @@ router.post('/glob/order', async (req, res) => {
     let pickupTimeFrom = '09:00';
     let pickupTimeTo = '17:00';
 
-    function nextWorkingDay(dateStr) {
-      const d = new Date(dateStr);
-      d.setDate(d.getDate() + 1);
-      if (d.getDay() === 0) d.setDate(d.getDate() + 1);
-      if (d.getDay() === 6) d.setDate(d.getDate() + 2);
-      return d.toISOString().split('T')[0];
-    }
-
-    function extractPickupList(data) {
-      if (!data) return [];
-      if (Array.isArray(data)) return data;
-      return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
-    }
-
     // Prefer the pickup slot already resolved by quote_shipping for this
     // offer — saves an API roundtrip and guarantees we use a date the
     // carrier actually accepts. Fall back to live lookup only when the
@@ -1081,32 +1067,43 @@ router.post('/glob/order', async (req, res) => {
       pickupTimeTo = selectedOffer.nearestPickup.timeTo || pickupTimeTo;
       console.log('[glob/order] Using pre-resolved pickup from quote:', pickupDate, pickupTimeFrom, '-', pickupTimeTo);
     } else {
-     try {
-      const pickupData = await getPickupTimes(selectedOffer.productId, {
-        ...quote.quoteParams,
-        receiverCity: (quote.receiver && quote.receiver.city) || '',
-        date: pickupDate,
-      });
-      let pickupList = extractPickupList(pickupData);
-
-      if (pickupList.length === 0) {
-        pickupDate = nextWorkingDay(pickupDate);
-        const retry = await getPickupTimes(selectedOffer.productId, {
+      // Brak pre-resolved terminu (pickupTimeRanges padl przy wycenie). Sprobuj
+      // raz jeszcze przez findNearestPickupDate (GK sam podaje nearest w .date).
+      let resolved = false;
+      try {
+        const nearest = await findNearestPickupDate(selectedOffer.productId, {
           ...quote.quoteParams,
           receiverCity: (quote.receiver && quote.receiver.city) || '',
           date: pickupDate,
-        });
-        pickupList = extractPickupList(retry);
+        }, 14, 8000);
+        if (nearest && nearest.date) {
+          pickupDate = nearest.date;
+          pickupTimeFrom = nearest.timeFrom || pickupTimeFrom;
+          pickupTimeTo = nearest.timeTo || pickupTimeTo;
+          resolved = true;
+          console.log('[glob/order] pickup dobrany:', pickupDate, pickupTimeFrom, '-', pickupTimeTo);
+        }
+      } catch (err) {
+        console.log('[glob/order] pickupTimeRanges niedostepne:', err.message);
       }
-
-      if (pickupList.length > 0) {
-        pickupDate = pickupList[0].date || pickupDate;
-        pickupTimeFrom = pickupList[0].from || pickupTimeFrom;
-        pickupTimeTo = pickupList[0].to || pickupTimeTo;
+      // Gdy API odbioru nie dziala — NIE blokuj. Wstaw dzis -> jutro -> pojutrze
+      // (dni robocze) z domyslnym oknem 09:00-17:00 i niech GK przyjmie albo
+      // odrzuci konkretna date (obsluga pickup[date] retry nizej dobierze inna).
+      if (!resolved) {
+        const base = new Date(pickupDate);
+        const candidates = [];
+        for (let off = 0; candidates.length < 3 && off < 7; off++) {
+          const d = new Date(base);
+          d.setDate(d.getDate() + off);
+          const dow = d.getDay();
+          if (dow === 0 || dow === 6) continue; // pomijamy weekend
+          candidates.push(d.toISOString().split('T')[0]);
+        }
+        pickupDate = candidates[0] || pickupDate;
+        pickupTimeFrom = pickupTimeFrom || '09:00';
+        pickupTimeTo = pickupTimeTo || '17:00';
+        console.log(`[glob/order] termin niedostepny z API — proboje daty ${candidates.join(', ')} (start ${pickupDate} ${pickupTimeFrom}-${pickupTimeTo}); GK dobierze przy zleceniu`);
       }
-    } catch (err) {
-      console.log('[glob/order] getPickupTimes failed:', err.message);
-    }
     }
 
     let requiredAddons = [];
