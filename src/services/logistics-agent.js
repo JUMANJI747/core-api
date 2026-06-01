@@ -87,7 +87,10 @@ zarezerwowany przez backend: {date, timeFrom, timeTo, daysAhead}.
 - nearestPickup === null → ta oferta NIE MA terminów w 7 dni; nie proponuj jej.
 
 ORDER_SHIPPING — JEDNA PRÓBA, BEZ PĘTLI:
-- Wywołaj order_shipping raz z quoteId + productId wybranej oferty.
+- Wywołaj order_shipping raz z productId (lub nazwą) wybranej oferty.
+- quoteId: jeśli znasz z poprzedniej tury — podaj; jeśli NIE — wyślij "latest"
+  (backend weźmie najnowszą wycenę). NIGDY nie wołaj quote_shipping ponownie gdy
+  user wybral kuriera ("zamów DPD", "zamów FedEx") — to zamówienie, nie wycena.
 
 PO ORDER_SHIPPING — KRÓTKA ODPOWIEDŹ:
 ⚠ DOWÓD ZANIM POWIESZ "ZAMÓWIONE": potwierdzaj zamówienie TYLKO gdy
@@ -173,14 +176,14 @@ const tools = [
   },
   {
     name: 'order_shipping',
-    description: 'Realizuje zamówienie kurierskie po wycenie. WYMAGA quoteId z quote_shipping. Tylko po potwierdzeniu user "tak"/"zamów".',
+    description: 'Realizuje zamówienie kurierskie po wycenie. Tylko po potwierdzeniu user "tak"/"zamów <kurier>". Gdy nie znasz quoteId — wyślij quoteId:"latest" (backend weźmie najnowszą wycenę).',
     input_schema: {
       type: 'object',
       properties: {
-        quoteId: { type: 'string', description: 'quoteId z poprzedniej quote_shipping' },
-        productId: { description: 'productId konkretnej oferty (opcjonalne — domyślnie najtańsza)' },
+        quoteId: { type: 'string', description: 'quoteId z poprzedniej quote_shipping. Gdy nieznany → "latest".' },
+        productId: { description: 'productId lub nazwa kuriera wybranej oferty (np. "DPD", "fedex_regional_economy")' },
       },
-      required: ['quoteId'],
+      required: [],
     },
   },
   {
