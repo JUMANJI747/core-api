@@ -918,7 +918,11 @@ router.post('/glob/quote', async (req, res) => {
       console.warn('[glob/quote] durable persist failed:', e.message);
     }
 
-    if (pickupApiDown) {
+    // Ostrzezenie tylko gdy ZADNA oferta nie ma terminu. Gdy czesc productId
+    // odpowiada (typowe — niektore wisza po stronie GK), nie strasz usera —
+    // oferty z terminem pokaza date, a wybor i tak resolvuje termin przy order.
+    const anyPickupResolved = offers.slice(0, TOP_OFFERS_TO_PROBE).some(o => o.nearestPickup && o.nearestPickup.date);
+    if (pickupApiDown && !anyPickupResolved) {
       warnings.push('Terminy odbioru chwilowo niedostępne (GlobKurier pickupTimeRanges nie odpowiada) — ceny są aktualne, termin odbioru dobierze się przy zamawianiu.');
     }
 
