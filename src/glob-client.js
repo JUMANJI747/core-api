@@ -5,7 +5,7 @@ const https = require('https');
 let cachedToken = null;
 let tokenExpiry = 0;
 
-function httpsRequest(url, method, headers, body) {
+function httpsRequest(url, method, headers, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const data = body ? JSON.stringify(body) : null;
@@ -33,7 +33,7 @@ function httpsRequest(url, method, headers, body) {
     // bylo zrodlo "czekam minute". Twardy timeout: zrywamy po 25s zamiast wisiec
     // do upadku ich gatewaya. selfCall/handler dostaje czysty blad i moze
     // zaraportowac "GK nie odpowiada" zamiast halucynowac sukces.
-    const GK_TIMEOUT_MS = parseInt(process.env.GLOBKURIER_TIMEOUT_MS || '25000', 10);
+    const GK_TIMEOUT_MS = timeoutMs || parseInt(process.env.GLOBKURIER_TIMEOUT_MS || '25000', 10);
     req.setTimeout(GK_TIMEOUT_MS, () => {
       req.destroy(new Error(`GlobKurier timeout po ${GK_TIMEOUT_MS}ms (${method} ${parsed.pathname})`));
     });
@@ -208,7 +208,7 @@ function extractPickupSlots(data) {
   return data.results || data.items || data.data || data.pickupRanges || data.ranges || data.slots || data.timeRanges || [];
 }
 
-async function getPickupTimes(productId, params) {
+async function getPickupTimes(productId, params, timeoutMs) {
   const query = new URLSearchParams();
   query.set('productId', String(productId));
   query.set('senderCountryId', String(params.senderCountryId));
@@ -233,7 +233,7 @@ async function getPickupTimes(productId, params) {
   // endpoint anonymously and gets non-empty results; with a token GK has
   // been seen to return empty on cross-border DPD routes (wrong account
   // contract scope?). Fall back to anonymous call.
-  const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' });
+  const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' }, timeoutMs);
   return resp.body;
 }
 
@@ -245,7 +245,7 @@ async function getPickupTimes(productId, params) {
 // budzetem i natychmiastowym przerwaniem gdy API nie odpowiada.
 //
 // Returns: { date, timeFrom, timeTo, daysAhead } or null.
-async function findNearestPickupDate(productId, params, maxDays = 10) {
+async function findNearestPickupDate(productId, params, maxDays = 10, timeoutMs) {
   const start = params.date ? new Date(params.date) : new Date();
   const deadline = Date.now() + 20000;
 
@@ -267,7 +267,7 @@ async function findNearestPickupDate(productId, params, maxDays = 10) {
   const startStr = start.toISOString().split('T')[0];
   let firstResp;
   try {
-    firstResp = await getPickupTimes(productId, { ...params, date: startStr });
+    firstResp = await getPickupTimes(productId, { ...params, date: startStr }, timeoutMs);
   } catch (e) {
     console.log('[glob-client] findNearestPickupDate', startStr, 'error:', e.message, '— API odbioru nie odpowiada');
     const err = new Error(`pickupTimeRanges unavailable: ${e.message}`);
@@ -289,7 +289,7 @@ async function findNearestPickupDate(productId, params, maxDays = 10) {
     const dateStr = d.toISOString().split('T')[0];
     let resp;
     try {
-      resp = await getPickupTimes(productId, { ...params, date: dateStr });
+      resp = await getPickupTimes(productId, { ...params, date: dateStr }, timeoutMs);
     } catch (e) {
       const err = new Error(`pickupTimeRanges unavailable: ${e.message}`);
       err.pickupApiDown = true;
