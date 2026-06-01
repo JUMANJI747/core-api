@@ -323,6 +323,22 @@ router.post('/confirm-latest', async (req, res) => {
         newestQuoteOffers = q.offers || [];
       }
     }
+    // DB fallback — pamiec procesu (quoteStore) gubiona przy restarcie/redeployu,
+    // przez co "tak" po wycenie nie znajdowalo zamowienia (Master wpadal w petle).
+    // Wycena jest trwale w tabeli Quote — bierzemy najnowsza w oknie 30 min.
+    if (!quoteTimestamp) {
+      try {
+        const row = await prisma.quote.findFirst({
+          where: { createdAt: { gte: new Date(now - thirtyMin) } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (row && row.data) {
+          quoteTimestamp = new Date(row.createdAt).getTime();
+          newestQuoteId = row.id;
+          newestQuoteOffers = row.data.offers || [];
+        }
+      } catch (e) { console.error('[confirm-latest] quote DB fallback error:', e.message); }
+    }
 
     if (!invoiceTimestamp && !emailTimestamp && !quoteTimestamp) {
       const lastAction = agentCtx && agentCtx.data && agentCtx.data.lastAction;
