@@ -992,6 +992,32 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
+    // Last-resort fallback: an EXPLICIT quoteId was given but resolved nowhere
+    // (memory empty + not in DB — typically a STALE id from an earlier
+    // conversation, made before the durable store existed). The user just made
+    // a fresh quote though, so order against the most recent one instead of
+    // aborting → which would bounce the agent into a re-quote loop.
+    if (!quote) {
+      const memKeys = Object.keys(quoteStore).sort((a, b) => b - a);
+      if (memKeys.length) {
+        quoteId = memKeys[0];
+        quote = quoteStore[quoteId];
+        console.log(`[glob/order] stale/unknown quoteId → using latest in memory: ${quoteId}`);
+      } else {
+        try {
+          const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+          const row = await prisma.quote.findFirst({ where: { createdAt: { gte: cutoff } }, orderBy: { createdAt: 'desc' } });
+          if (row) {
+            quote = row.data;
+            quoteId = row.id;
+            console.log(`[glob/order] stale/unknown quoteId → using latest in DB: ${quoteId}`);
+          }
+        } catch (e) {
+          console.warn('[glob/order] latest-quote fallback failed:', e.message);
+        }
+      }
+    }
+
     if (!quote) {
       console.log(`[glob/order] Quote unresolved (id=${quoteId}) — abort`);
       return res.status(200).json({ ok: false, error: 'Quote wygasł. Pobierz nowy: POST /api/glob/quote' });
