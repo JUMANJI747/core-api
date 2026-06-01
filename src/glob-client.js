@@ -238,8 +238,19 @@ async function getPickupTimes(productId, params, timeoutMs) {
   // endpoint anonymously and gets non-empty results; with a token GK has
   // been seen to return empty on cross-border DPD routes (wrong account
   // contract scope?). Fall back to anonymous call.
-  const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' }, timeoutMs);
-  return resp.body;
+  // DIAGNOSTYKA: logujemy pelny URL + czas + status/body, zeby porownac 1:1 z
+  // dzialajacym n8n (ktory wola anonimowo, tylko Accept-Language: pl).
+  const t0 = Date.now();
+  console.log(`[glob-client] pickupTimeRanges GET ${url}`);
+  try {
+    const resp = await httpsRequest(url, 'GET', { 'Accept-Language': 'pl' }, timeoutMs);
+    const sample = typeof resp.body === 'string' ? resp.body.slice(0, 300) : JSON.stringify(resp.body || {}).slice(0, 300);
+    console.log(`[glob-client] pickupTimeRanges → ${Date.now() - t0}ms status=${resp.status} body=${sample}`);
+    return resp.body;
+  } catch (e) {
+    console.log(`[glob-client] pickupTimeRanges → ${Date.now() - t0}ms BLAD: ${e.message}`);
+    throw e;
+  }
 }
 
 // Find the nearest bookable pickup window. GK's pickupTimeRanges, gdy
