@@ -1567,18 +1567,34 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     if (!trackingNumber) {
       const orderNumber = shipment.number || shipment.orderNumber;
       if (orderNumber) {
-        try {
-          const { getOrderTracking } = require('../glob-client');
-          const t = await getOrderTracking(orderNumber);
-          const candidate = t && (t.trackingNumber || t.tracking
-            || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
-            || (Array.isArray(t) && t[0] && t[0].trackingNumber));
-          if (candidate && String(candidate).trim()) {
-            trackingNumber = String(candidate).trim();
-            console.log(`[send-tracking-email] fetched tracking for ${orderNumber}: ${trackingNumber}`);
+        // Number kuriera bywa nadawany z opoznieniem — krotki polling (3×) na
+        // zywo z GK zamiast jednej proby. Tak agent zawsze dostaje SWIEZY number
+        // bezposrednio z GK, nie polega na tym co bylo zapisane w drafcie.
+        const { getOrderTracking } = require('../glob-client');
+        for (let i = 0; i < 3 && !trackingNumber; i++) {
+          if (i > 0) await new Promise(r => setTimeout(r, 2000));
+          try {
+            const t = await getOrderTracking(orderNumber);
+            const candidate = t && (t.trackingNumber || t.tracking
+              || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+              || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+            if (candidate && String(candidate).trim()) {
+              trackingNumber = String(candidate).trim();
+              console.log(`[send-tracking-email] fetched tracking for ${orderNumber} (proba ${i + 1}): ${trackingNumber}`);
+            }
+          } catch (e) {
+            console.error(`[send-tracking-email] getOrderTracking proba ${i + 1} failed:`, e.message);
           }
-        } catch (e) {
-          console.error('[send-tracking-email] getOrderTracking lookup failed:', e.message);
+        }
+        // Świeży number z GK — zapisz trwale do Transaction, by kolejne
+        // wywolania mialy go od reki.
+        if (trackingNumber) {
+          try {
+            await prisma.transaction.updateMany({
+              where: { OR: [{ shipmentNumber: String(orderNumber) }, { shipmentHash: shipment.hash || '__none__' }] },
+              data: { trackingNumber, hasShipped: true },
+            });
+          } catch (e) { console.error('[send-tracking-email] zapis trackingNumber do Transaction nieudany:', e.message); }
         }
       }
     }
