@@ -32,6 +32,8 @@ const BLOCKED_FROM_KEYWORDS = [
   'mailer-daemon', 'postmaster', 'noreply', 'no-reply',
   'donotreply', 'bounce', 'bounced', 'daemon', 'returned',
   'notification@', 'alert@', 'system@',
+  // PGF Master Data — automatyczne "Zgłoszenie od dostawcy" zalewające skrzynkę.
+  'mailer.ckt@pgf.com.pl',
 ];
 
 const BLOCKED_SUBJECT_KEYWORDS = [
