@@ -612,7 +612,18 @@ router.post('/send-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     console.log(`[send-email] req.body keys: ${Object.keys(req.body || {}).join(',')} bodyLen: ${String(req.body && req.body.body || '').length} draft: ${req.body && req.body.draft}`);
-    let { from, to, subject, body, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+    let { from, to, subject, body, html, attachments, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+
+    // Zalaczniki z frontu: [{ filename, contentBase64, contentType, cid? }].
+    // Inline obrazki (wklejone w tresc) maja cid -> <img src="cid:..."> w html.
+    const mailAttachments = Array.isArray(attachments) ? attachments
+      .filter(a => a && a.contentBase64 && a.filename)
+      .map(a => ({
+        filename: String(a.filename),
+        content: Buffer.from(a.contentBase64, 'base64'),
+        contentType: a.contentType || 'application/octet-stream',
+        ...(a.cid ? { cid: String(a.cid) } : {}),
+      })) : [];
 
     // Reply-in-thread: resolve from/to/subject from original email
     let inReplyTo = null;
@@ -721,7 +732,12 @@ router.post('/send-email', async (req, res) => {
       return res.json({ ok: true, deduplicated: true, message: 'Identical email sent in last 2 minutes, skipped to prevent duplicate' });
     }
 
-    const saved = await sendMail({ from, to, subject, body, inReplyTo, references });
+    const saved = await sendMail({
+      from, to, subject, body,
+      ...(html ? { html } : {}),
+      ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
+      inReplyTo, references,
+    });
     return res.json({ ok: true, sent: true, emailId: saved.id, replyToThread: !!inReplyTo });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;

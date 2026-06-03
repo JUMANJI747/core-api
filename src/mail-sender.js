@@ -96,7 +96,13 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
     ...(body ? { text: body } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(inReplyTo ? { inReplyTo, references: references || inReplyTo } : {}),
-    ...(attachments && attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })) } : {}),
+    ...(attachments && attachments.length ? { attachments: attachments.map(a => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+      // Obrazki wklejone w tresc: cid + inline -> <img src="cid:..."> w HTML.
+      ...(a.cid ? { cid: a.cid, contentDisposition: 'inline' } : {}),
+    })) } : {}),
   };
   console.log(`[mail-sender] mailOptions: hasText=${!!mailOptions.text} hasHtml=${!!mailOptions.html} textLen=${(mailOptions.text || '').length}`);
 
