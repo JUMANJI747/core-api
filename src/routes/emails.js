@@ -996,9 +996,19 @@ router.post('/send-offer', async (req, res) => {
     }
     if (!to) return res.status(400).json({ error: 'to is required (or contractorSearch must match a contractor with email)' });
 
-    // Resolve language
-    if (!language && contractor && contractor.country) {
-      language = COUNTRY_TO_LANG[contractor.country.toUpperCase()] || 'EN';
+    // Resolve language. Priorytet: jawnie podany > kraj kontrahenta (z search
+    // LUB dopasowanego PO ADRESIE e-mail) > EN. Wczesniej przy podanym `to`
+    // (bez contractorSearch) jezyk nie byl wykrywany -> oferta szla po angielsku.
+    if (!language) {
+      if (!contractor && to) {
+        contractor = await prisma.contractor.findFirst({
+          where: { email: { equals: to, mode: 'insensitive' } },
+          select: { id: true, name: true, country: true },
+        }).catch(() => null);
+      }
+      if (contractor && contractor.country) {
+        language = COUNTRY_TO_LANG[contractor.country.toUpperCase()] || null;
+      }
     }
     language = (language || 'EN').toUpperCase();
     if (!OFFER_TEMPLATES[language]) language = 'EN';

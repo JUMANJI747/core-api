@@ -95,7 +95,9 @@ NOWY MAIL (nie odpowiedź):
 - Domyślnie PL, zagraniczny adres → EN.
 
 OFERTY:
-- "wyślij ofertę do X" → send_offer (contractorSearch + opcjonalnie language).
+- "wyślij ofertę do X" → send_offer. Gdy user podał ADRES e-mail → ustaw pole "to" (NIE contractorSearch). Gdy podał nazwę firmy → contractorSearch.
+- Jezyk: jesli user napisal jawnie ("francuską", "po angielsku") → ustaw "language" (FR/PT/ES/EN/PL). Inaczej system dobierze z kraju kontrahenta.
+- W potwierdzeniu raportuj DOKŁADNIE "to" i "language" z WYNIKU narzędzia. NIE dopisuj nazwy kontrahenta, której nie ma w wyniku (nie zgaduj z kontekstu rozmowy).
 
 WYSYŁKA FAKTURY — DWA PRZYPADKI:
 A) SAMA faktura, bez własnej treści ("wyślij fakturę N do klienta", "wyślij FV mailem do X")
@@ -357,6 +359,19 @@ const CHECK_SENT_INTENT = /\bczy (fakt|fv).{0,40}(wysy[lł]ana|wys[lł]aliśmy|b
 // inaczej "wyślij fakturę..." / "wyślij ofertę..." byłyby błędnie brane za confirm.
 const CONFIRM_INTENT = /^\s*(?:(?:tak|ok|potwierd|akceptu)\b|wy[sś]lij(?: go| j[ąa])?\s*$)/iu;
 
+// Jawny jezyk oferty w poleceniu usera ("francuską", "po angielsku", ...).
+// Intencja usera wygrywa nad tym, co wypelni LLM (czasem gubi language).
+// Wspierane szablony: FR/PT/ES/EN/PL.
+function detectOfferLang(q) {
+  const s = (q || '').toLowerCase();
+  if (/francu[sz]|french|fran[cç]ai|po\s*francusku/.test(s)) return 'FR';
+  if (/hiszpa|espa[nñ]|spanish|po\s*hiszpa/.test(s)) return 'ES';
+  if (/portug|po\s*portugal/.test(s)) return 'PT';
+  if (/\bpolsk|po\s*polsku|polish/.test(s)) return 'PL';
+  if (/angiel|english|po\s*angielsku/.test(s)) return 'EN';
+  return null;
+}
+
 async function processCommunicationQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
@@ -410,6 +425,11 @@ async function processCommunicationQuery(query, ctx = {}) {
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
+      // Wymus jezyk oferty z polecenia usera, jesli podany jawnie (LLM bywa gubi).
+      if (tu.name === 'send_offer') {
+        const wantLang = detectOfferLang(query);
+        if (wantLang) tu.input = { ...tu.input, language: wantLang };
+      }
       console.log(`[communication-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
       toolResultBlocks.push({
