@@ -401,6 +401,67 @@ router.post('/emails/bulk-action', async (req, res) => {
 
 // ============ EMAIL DETAIL WITH ATTACHMENTS ============
 
+// Caly watek konwersacji (odebrane + nasze odpowiedzi) dla danego maila.
+// Grupowanie spojne z lista po stronie klienta: stripped(subject) + (contractorId
+// LUB email partnera). Zwraca najnowsze NA GORZE — zeby od razu bylo widac
+// ostatnia odpowiedz ("odpowiedziane").
+router.get('/emails/:id/thread', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const seed = await prisma.email.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, subject: true, direction: true, fromEmail: true, toEmail: true, contractorId: true },
+    });
+    if (!seed) return res.status(404).json({ error: 'Email not found' });
+
+    const strip = (s) => {
+      let x = (s || '').trim();
+      while (/^(re|fwd|fw|odp|wg|aw):\s*/i.test(x)) x = x.replace(/^(re|fwd|fw|odp|wg|aw):\s*/i, '').trim();
+      return x.toLowerCase();
+    };
+    const subjKey = strip(seed.subject);
+    const partner = ((seed.direction === 'INBOUND' ? seed.fromEmail : seed.toEmail) || '').toLowerCase();
+
+    // Bez tematu => mail solo (nie da sie sensownie zgrupowac).
+    if (!subjKey) {
+      const solo = await prisma.email.findUnique({
+        where: { id: seed.id },
+        include: { contractor: true, attachments: { select: { id: true, filename: true, contentType: true, size: true, cid: true } } },
+      });
+      return res.json([solo]);
+    }
+
+    // Krok 1: lekko — kandydaci po partnerze/kontrahencie, tylko pola do filtra.
+    const or = [];
+    if (partner) {
+      or.push({ fromEmail: { equals: partner, mode: 'insensitive' } });
+      or.push({ toEmail: { equals: partner, mode: 'insensitive' } });
+    }
+    if (seed.contractorId) or.push({ contractorId: seed.contractorId });
+    const candidates = await prisma.email.findMany({
+      where: or.length ? { OR: or } : { id: seed.id },
+      select: { id: true, subject: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 400,
+    });
+
+    // Krok 2: te z pasujacym (po zdjeciu prefiksow) tematem; max 50 najnowszych.
+    const ids = candidates.filter(c => strip(c.subject) === subjKey).map(c => c.id);
+    if (!ids.includes(seed.id)) ids.push(seed.id);
+    const limited = ids.slice(0, 50);
+
+    // Krok 3: pelne dane tylko dla czlonkow watku.
+    const thread = await prisma.email.findMany({
+      where: { id: { in: limited } },
+      include: { contractor: true, attachments: { select: { id: true, filename: true, contentType: true, size: true, cid: true } } },
+      orderBy: { createdAt: 'desc' }, // najnowsze na gorze
+    });
+    return res.json(thread);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/emails/:id', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
