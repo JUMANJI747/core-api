@@ -176,12 +176,36 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
       subject: subject || null,
       bodyPreview: (body || html || '').replace(/<[^>]*>/g, '').slice(0, 300),
       bodyFull: (body || html || '').slice(0, 2000),
+      bodyHtml: html || null,
       messageId: sentMessageId,
       inReplyTo: inReplyTo || null,
       references: references || null,
       contractorId,
     },
   });
+
+  // Utrwal zalaczniki (w tym obrazki inline z cid) zeby CRM mogl je
+  // wyswietlic w wyslanych mailach. Wczesniej outbound nie zapisywal ich wcale.
+  if (attachments && attachments.length) {
+    for (const a of attachments) {
+      if (!a || !a.content || !a.filename) continue;
+      const buf = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content);
+      try {
+        await prisma.emailAttachment.create({
+          data: {
+            emailId: saved.id,
+            filename: a.filename,
+            contentType: a.contentType || 'application/octet-stream',
+            size: buf.length,
+            data: buf,
+            cid: a.cid || null,
+          },
+        });
+      } catch (e) {
+        console.error('[mail-sender] zapis zalacznika nieudany:', e.message);
+      }
+    }
+  }
 
   // CRM v2 Etap 4.4 — activity event. setImmediate w helperze, nie blokuje.
   try {

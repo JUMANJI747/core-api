@@ -408,7 +408,7 @@ router.get('/emails/:id', async (req, res) => {
       where: { id: req.params.id },
       include: {
         contractor: true,
-        attachments: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } },
+        attachments: { select: { id: true, filename: true, contentType: true, size: true, cid: true, createdAt: true } },
       },
     });
     if (!email) return res.status(404).json({ error: 'Email not found' });
@@ -427,7 +427,7 @@ router.get('/emails/:id', async (req, res) => {
           subject: email.subject,
           id: { not: email.id },
         },
-        select: { id: true, bodyFull: true, messageId: true, createdAt: true },
+        select: { id: true, bodyFull: true, bodyHtml: true, messageId: true, createdAt: true },
         take: 5,
       });
       if (dupes.length) {
@@ -442,6 +442,7 @@ router.get('/emails/:id', async (req, res) => {
           if (withBody) {
             email.bodyFull = withBody.bodyFull;
             email.bodyPreview = (withBody.bodyFull || '').replace(/<[^>]*>/g, '').slice(0, 300);
+            if (!email.bodyHtml && withBody.bodyHtml) email.bodyHtml = withBody.bodyHtml;
             console.log(`[emails/:id] body recovered from duplicate ${withBody.id}`);
           }
         }

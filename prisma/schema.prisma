@@ -258,6 +258,7 @@ model Email {
   subject     String?
   bodyPreview String?
   bodyFull    String?
+  bodyHtml    String? // sanitized-na-froncie HTML treci (obrazki inline przez cid)
   messageId   String? @unique
   inReplyTo   String? // threading
   references  String? // full thread chain
@@ -285,6 +286,7 @@ model EmailAttachment {
   contentType String
   size        Int
   data        Bytes
+  cid         String? // Content-ID dla obrazkow inline (<img src="cid:...">)
   createdAt   DateTime @default(now())
 
   @@index([emailId])

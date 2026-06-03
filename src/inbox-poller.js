@@ -248,11 +248,18 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
                 }
                 console.log(`[inbox-poller] body source: ${bodySource}`);
 
+                // Zachowaj oryginalny HTML zeby CRM mogl pokazac obrazki inline.
+                // Cap 1MB — niektore newslettery maja olbrzymie data: URI w srodku.
+                const rawHtml = parsed.html && parsed.html.trim() ? parsed.html : '';
+                const bodyHtml = rawHtml && rawHtml.length <= 1024 * 1024 ? rawHtml : null;
+
                 const attachments = (parsed.attachments || []).map(a => ({
                   filename: a.filename || 'attachment',
                   contentType: a.contentType || 'application/octet-stream',
                   size: a.size || (a.content ? a.content.length : 0),
                   buffer: (a.content && a.content.length <= 10 * 1024 * 1024) ? a.content : null,
+                  // cid -> dopasowanie <img src="cid:..."> w HTML do zalacznika.
+                  cid: a.cid || a.contentId || null,
                 }));
 
                 const autoSubmitted = parsed.headers && parsed.headers.get
@@ -270,6 +277,7 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
                   toEmail,
                   subject: parsed.subject || '',
                   bodyText,
+                  bodyHtml,
                   messageId: parsed.messageId || null,
                   inReplyTo: parsed.inReplyTo || null,
                   references: Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || null),
@@ -1011,6 +1019,7 @@ async function processAccount(account) {
             subject: mail.subject || null,
             bodyPreview,
             bodyFull,
+            bodyHtml: mail.bodyHtml || null,
             messageId: mail.messageId || null,
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
@@ -1054,6 +1063,7 @@ async function processAccount(account) {
                   contentType: att.contentType || 'application/octet-stream',
                   size: att.size || att.buffer.length,
                   data: att.buffer,
+                  cid: att.cid || null,
                 },
               });
               console.log(`[inbox-poller] Saved attachment: ${att.filename} (${Math.round(att.size / 1024)} KB)`);
