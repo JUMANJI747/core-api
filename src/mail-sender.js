@@ -1,6 +1,7 @@
 'use strict';
 
 const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const prisma = require('./db');
 const { appendToSent } = require('./imap-sent');
 
@@ -88,10 +89,17 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
     },
   });
 
+  // Jeden wspolny Message-ID dla OBU transportow (raw->Sent i realny SMTP).
+  // Bez tego nodemailer generowal inny ID dla kazdego wywolania => kopia w
+  // folderze Sent miala inny ID niz zapisany w bazie => dedup pollera Sent
+  // nie lapal jej i tworzyl PUSTY duplikat OUTBOUND. Wspolny ID = dedup dziala.
+  const fixedMessageId = `<${crypto.randomUUID()}@${(String(from).split('@')[1] || 'mail.local').trim()}>`;
+
   const mailOptions = {
     from,
     to,
     subject,
+    messageId: fixedMessageId,
     ...(html ? { html } : {}),
     ...(body ? { text: body } : {}),
     ...(replyTo ? { replyTo } : {}),
@@ -120,7 +128,7 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
   }
 
   const result = await transporter.sendMail(mailOptions);
-  const sentMessageId = result.messageId || null;
+  const sentMessageId = result.messageId || fixedMessageId;
   // SMTP server accepted the message AND returned a Message-ID. Bez tego
   // nie mamy 100% pewności że trafił — zapisujemy jako FAILED i rzucamy
   // tak żeby caller mógł powiadomić użytkownika.

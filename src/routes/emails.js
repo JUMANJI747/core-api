@@ -456,7 +456,16 @@ router.get('/emails/:id/thread', async (req, res) => {
       include: { contractor: true, attachments: { select: { id: true, filename: true, contentType: true, size: true, cid: true } } },
       orderBy: { createdAt: 'desc' }, // najnowsze na gorze
     });
-    return res.json(thread);
+
+    // Odfiltruj PUSTE kikuty OUTBOUND/DRAFT (artefakt synchronizacji folderu
+    // Sent z innym Message-ID — duplikat bez tresci). INBOUND zostawiamy zawsze.
+    const hasContent = (e) =>
+      (e.bodyFull && e.bodyFull.trim()) ||
+      (e.bodyHtml && e.bodyHtml.trim()) ||
+      (e.bodyPreview && e.bodyPreview.trim()) ||
+      (e.attachments && e.attachments.length);
+    const cleaned = thread.filter(e => e.direction === 'INBOUND' || hasContent(e));
+    return res.json(cleaned.length ? cleaned : thread);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
