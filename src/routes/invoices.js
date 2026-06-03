@@ -12,6 +12,7 @@ const { scoreContractor } = require('../services/contractor-match');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/invoice-lines-backfill');
 const { fetchWithTimeout } = require('../http');
+const { verifyVat } = require('../vies');
 
 // Sync write: po Invoice.create budujemy InvoiceLineItem z preview pozycji.
 // Tym samym builderem co backfill — jeden zrodlo prawdy. Best-effort, nie
@@ -360,20 +361,24 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const waluta = effectiveCountry === 'PL' ? 'PLN' : 'EUR';
     const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
 
-    // VIES fresh check przed WDT — blokuje jesli NIP nieaktywny w VIES
+    // VIES fresh check przed WDT — blokuje TYLKO gdy NIP na pewno nieaktywny.
+    // Gdy VIES niedostepny/limit (status 'unknown') NIE blokujemy — to czesty
+    // falszywy negatyw (zwlaszcza FR/ES) i blokowalby waznych klientow.
     if (rodzaj === 'wdt' && contractor.nip) {
       try {
         const nip = contractor.nip.replace(/[\s-]/g, '').toUpperCase();
         const cc = nip.slice(0, 2);
         const num = nip.slice(2);
         if (cc.length === 2 && /^[A-Z]{2}$/.test(cc)) {
-          const { httpsPost: hp } = require('../http');
-          const viesData = await hp('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {}, { countryCode: cc, vatNumber: num });
-          if (viesData.valid !== true) {
+          const vies = await verifyVat(cc, num);
+          if (vies.status === 'invalid') {
             return res.status(400).json({
-              error: `VIES: NIP ${nip} nieaktywny (${viesData.valid === false ? 'invalid' : 'brak odpowiedzi'}). Nie mozna wystawic WDT 0%. Sprawdz NIP kontrahenta.`,
-              vies: { vatNumber: nip, valid: false, name: viesData.name || null },
+              error: `VIES: NIP ${nip} nieaktywny w VIES. Nie mozna wystawic WDT 0%. Sprawdz NIP kontrahenta.`,
+              vies: { vatNumber: nip, valid: false, name: vies.name || null },
             });
+          }
+          if (vies.status === 'unknown') {
+            console.warn(`[invoice-preview] VIES niedostepny dla ${nip} (${vies.userError}) — nie blokuje WDT`);
           }
         }
       } catch (viesErr) {

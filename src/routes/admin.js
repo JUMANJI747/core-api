@@ -810,13 +810,9 @@ router.post('/admin/vies-check', async (req, res) => {
   const countryCode = vatNumber.slice(0, 2);
   const number = vatNumber.slice(2);
   try {
-    const { httpsPost } = require('../http');
-    const data = await httpsPost(
-      'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number',
-      {},
-      { countryCode, vatNumber: number }
-    );
-    res.json({ ok: true, vatNumber, countryCode, valid: data.valid === true, name: data.name || null, address: data.address || null, raw: data });
+    const { verifyVat } = require('../vies');
+    const v = await verifyVat(countryCode, number);
+    res.json({ ok: true, vatNumber, countryCode, status: v.status, valid: v.valid, name: v.name, address: v.address, userError: v.userError });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

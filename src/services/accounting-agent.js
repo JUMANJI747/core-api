@@ -309,7 +309,7 @@ const tools = [
   },
   {
     name: 'verify_nip',
-    description: 'Sprawdz NIP w GUS/VIES (zwraca status czynny + nazwa firmy + adres). Uzyj przed upsert_contractor gdy user podal NIP nowego klienta.',
+    description: 'Sprawdz NIP w GUS/VIES (zwraca status czynny + nazwa firmy + adres). Uzyj przed upsert_contractor gdy user podal NIP nowego klienta. WAZNE: pole status = "valid" (aktywny), "invalid" (NA PEWNO nieaktywny) albo "unknown"/valid=null (VIES kraju chwilowo niedostepny lub limit — to NIE znaczy ze NIP jest bledny). Przy "unknown" NIE pisz ze NIP nieaktywny: przekaz tresc pola message i zaproponuj zapis mimo to lub ponowienie.',
     input_schema: {
       type: 'object',
       properties: {

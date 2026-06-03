@@ -3,6 +3,7 @@
 const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
+const { verifyVat } = require('../vies');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
@@ -601,18 +602,25 @@ router.post('/verify-nip', async (req, res) => {
       const countryCode = nip.slice(0, 2);
       const vatNumber = nip.slice(2);
 
-      const viesRes = await fetchWithTimeout('https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ countryCode, vatNumber }),
-      }, 20000);
+      const v = await verifyVat(countryCode, vatNumber);
+      console.log(`[verify-nip] VIES ${nip}: status=${v.status} valid=${v.valid} userError=${v.userError || '-'}`);
 
-      if (!viesRes.ok) return res.status(502).json({ error: 'VIES API error', status: viesRes.status });
-      const data = await viesRes.json();
+      // Usluga VIES nie zdolala zweryfikowac (kraj niedostepny / limit / timeout).
+      // NIE raportuj jako "nieaktywny" — to falszywy negatyw.
+      if (v.status === 'unknown') {
+        return res.json({
+          source: 'VIES',
+          nip, countryCode, vatNumber,
+          valid: null,
+          status: 'unknown',
+          verifiable: false,
+          name: v.name, address: v.address, requestDate: v.requestDate,
+          userError: v.userError,
+          message: `VIES nie mógł teraz zweryfikować ${nip} — usługa VIES kraju ${countryCode} jest chwilowo niedostępna lub przekroczono limit (${v.userError || 'brak odpowiedzi'}). To NIE oznacza, że NIP jest błędny. Spróbuj ponownie za chwilę albo sprawdź ręcznie na stronie VIES. Kontrahenta można zapisać mimo to.`,
+        });
+      }
 
-      console.log(`[verify-nip] VIES response: valid=${data.valid}, name=${data.name}`);
-
-      return res.json({ source: 'VIES', nip, countryCode, vatNumber, valid: data.valid === true, name: data.name, address: data.address, requestDate: data.requestDate });
+      return res.json({ source: 'VIES', nip, countryCode, vatNumber, valid: v.valid, status: v.status, name: v.name, address: v.address, requestDate: v.requestDate });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });

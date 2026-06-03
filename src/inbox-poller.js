@@ -7,6 +7,7 @@ const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const { parseOrderWithLLM } = require('./order-llm-parser');
 const { fetchWithTimeout } = require('./http');
+const { verifyVat } = require('./vies');
 
 // ============ CONFIG ============
 
@@ -492,11 +493,11 @@ Return "UNKNOWN" only if none of the above apply.`;
 async function checkVat(rawVat) {
   const vatNumber = rawVat.trim().replace(/[\s\-]/g, '').toUpperCase();
 
-  // Cache check
+  // Cache check (cache'ujemy tylko WYNIKI PEWNE — valid/invalid, nie 'unknown')
   const cached = vatCache.get(vatNumber);
   if (cached && Date.now() - cached.timestamp < VAT_CACHE_TTL_MS) {
     console.log(`[inbox-poller] VAT cache hit: ${vatNumber} ${cached.valid ? 'valid' : 'invalid'}`);
-    return { vatNumber, valid: cached.valid, name: cached.name };
+    return { vatNumber, valid: cached.valid, status: cached.valid ? 'valid' : 'invalid', name: cached.name };
   }
 
   const countryCode = vatNumber.slice(0, 2);
@@ -514,17 +515,15 @@ async function checkVat(rawVat) {
     const valid = s.statusVat === 'Czynny';
     console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
     vatCache.set(vatNumber, { valid, name: s.name || null, timestamp: Date.now() });
-    return { vatNumber, valid, name: s.name || null };
+    return { vatNumber, valid, status: valid ? 'valid' : 'invalid', name: s.name || null };
   } else {
-    const data = await httpsPost(
-      'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number',
-      {},
-      { countryCode, vatNumber: number }
-    );
-    const valid = data.valid === true;
-    console.log(`[inbox-poller] VAT check: ${vatNumber} → ${valid ? 'valid' : 'invalid'}`);
-    vatCache.set(vatNumber, { valid, name: data.name || null, timestamp: Date.now() });
-    return { vatNumber, valid, name: data.name || null };
+    const v = await verifyVat(countryCode, number);
+    console.log(`[inbox-poller] VAT check: ${vatNumber} → ${v.status}${v.userError ? ` (${v.userError})` : ''}`);
+    // 'unknown' (VIES niedostepny/limit) NIE cache'ujemy — chcemy ponowic.
+    if (v.status !== 'unknown') {
+      vatCache.set(vatNumber, { valid: v.valid, name: v.name || null, timestamp: Date.now() });
+    }
+    return { vatNumber, valid: v.valid, status: v.status, name: v.name || null };
   }
 }
 
@@ -615,7 +614,7 @@ function parseWebOrder(body) {
 }
 
 async function processWebOrder(prisma, savedEmail, parsed) {
-  const result = { parsed, viesValid: null, viesName: null, viesAddress: null, contractor: null, isNew: false, idType: null };
+  const result = { parsed, viesValid: null, viesStatus: null, viesName: null, viesAddress: null, contractor: null, isNew: false, idType: null };
 
   const parsedId = parsed.nipRaw ? parseSpanishId(parsed.nipRaw) : { type: 'NONE' };
   result.idType = parsedId.type;
@@ -626,18 +625,14 @@ async function processWebOrder(prisma, savedEmail, parsed) {
     const m = clean.match(/^([A-Z]{2})([A-Z0-9]+)$/);
     if (m && m[1] !== 'PL') {
       try {
-        const viesUrl = 'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number';
-        const viesRes = await fetchWithTimeout(viesUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ countryCode: m[1], vatNumber: m[2] }),
-        }, 20000);
-        const viesData = await viesRes.json();
-        result.viesValid = viesData.valid === true;
-        result.viesName = viesData.name || null;
-        result.viesAddress = viesData.address || null;
+        const vies = await verifyVat(m[1], m[2]);
+        result.viesStatus = vies.status;          // 'valid' | 'invalid' | 'unknown'
+        result.viesValid = vies.valid;            // true | false | null (unknown)
+        result.viesName = vies.name || null;
+        result.viesAddress = vies.address || null;
       } catch (err) {
         console.log('[web-order] VIES check failed:', err.message);
+        result.viesStatus = 'unknown';
       }
     }
   }
@@ -725,6 +720,8 @@ function buildWebOrderTelegram(savedEmail, parsed, orderResult, lang) {
       if (orderResult.viesName) nipLine += ` (${orderResult.viesName})`;
     } else if (orderResult.viesValid === false) {
       nipLine += ' ⚠️ NIEWAŻNY w VIES';
+    } else if (orderResult.viesStatus === 'unknown') {
+      nipLine += ' ❓ VIES niedostępny (nie potwierdzono — spróbuj później)';
     } else if (orderResult.idType === 'UNKNOWN') {
       nipLine += ' ⚠️ nieprawidłowy format';
     }
@@ -1080,9 +1077,11 @@ async function processAccount(account) {
           for (const vat of vat_numbers) {
             try {
               const result = await checkVat(vat);
-              const label = result.valid
+              const label = result.status === 'valid'
                 ? `aktywny${result.name ? ` (${result.name})` : ''}`
-                : 'NIEWAŻNY';
+                : result.status === 'invalid'
+                  ? 'NIEWAŻNY'
+                  : 'nie zweryfikowano (VIES chwilowo niedostępny)';
               vatResults.push(`VAT ${result.vatNumber}: ${label}`);
             } catch (vatErr) {
               console.error(`[inbox-poller] VAT check error for ${vat}:`, vatErr.message);
