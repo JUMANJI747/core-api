@@ -1848,6 +1848,26 @@ router.post('/ifirma/_diag-month', async (req, res) => {
 // ============ LIST LOCAL INVOICES (Invoice table) ============
 // GET /api/invoices?search=&country=&status=&fromDate=&toDate=&limit=&ifirmaOnly=1
 // Returns local Invoice rows ordered by issueDate desc. Used by CRM frontend.
+// PDF faktury z iFirmy — otwierany guzikiem w zakladce Faktury (jak listy w wysylce).
+router.get('/invoices/:invoiceId/pdf', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const inv = await prisma.invoice.findUnique({ where: { id: req.params.invoiceId } });
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    // rodzaj decyduje o endpoincie iFirmy (krajowa/wdt/eksport/proforma).
+    // Lokalnie zapisujemy 'wdt'/'krajowa' w type; synced maja ifirmaType.
+    const rodzaj = inv.ifirmaType || inv.type || 'krajowa';
+    const pdf = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
+    res.setHeader('Content-Type', 'application/pdf');
+    // inline (nie attachment) — iOS pokazuje PDF w wbudowanym viewerze z share.
+    res.setHeader('Content-Disposition', `inline; filename="faktura_${(inv.number || 'faktura').replace(/\//g, '_')}.pdf"`);
+    res.send(pdf);
+  } catch (e) {
+    console.error('[invoices/:id/pdf]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/invoices', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
