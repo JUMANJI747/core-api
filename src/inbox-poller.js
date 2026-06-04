@@ -443,7 +443,7 @@ Return JSON:
   "country": "ISO 3166-1 alpha-2 or best guess",
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
-  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie.",
+  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. MUSI być w 100% po polsku — NIGDY nie zostawiaj oryginalnego języka (nawet krótkich/grzecznościowych zwrotów typu 'Bonne réception'). Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie.",
   "vat_numbers": ["lista numerów VAT/NIP/NIF znalezionych w mailu, format: kod_kraju + numer, np. PT504641263, FR0786403769. Jeśli brak — pusta tablica. WAŻNE: wyciągaj numery VAT TYLKO z nowej wiadomości nadawcy. Ignoruj cytowane odpowiedzi (tekst po znakach >, po 'wrote:', po 'escribió:', po 'a écrit:', po liniach '---' lub '___'). Jeśli cały mail to tylko cytowana historia — vat_numbers zostaw pustą tablicę."]
 }
 
@@ -470,7 +470,7 @@ Return "UNKNOWN" only if none of the above apply.`;
     },
     {
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
+      max_tokens: 1200,
       temperature: 0,
       messages: [{ role: 'user', content: prompt }],
     }
@@ -486,6 +486,38 @@ Return "UNKNOWN" only if none of the above apply.`;
   if (!jsonMatch) throw new Error('No JSON in AI response: ' + text.slice(0, 200));
 
   return JSON.parse(jsonMatch[0]);
+}
+
+// Heurystyka: czy summary_pl zostalo NIEprzetlumaczone (model oddal oryginal).
+// Liczy ile slow z summary wystepuje doslownie w oryginale; >60% = ten sam tekst.
+function looksUntranslated(summary, original) {
+  if (!summary || !original) return false;
+  const norm = s => s.toLowerCase().replace(/[^\p{L}\s]/gu, ' ').split(/\s+/).filter(w => w.length > 2);
+  const sumWords = norm(summary);
+  if (sumWords.length < 4) return false;
+  const origSet = new Set(norm(original));
+  let overlap = 0;
+  for (const w of sumWords) if (origSet.has(w)) overlap++;
+  return (overlap / sumWords.length) > 0.6;
+}
+
+// Dedykowane tlumaczenie na PL (fallback gdy klasyfikator oddal oryginalny jezyk).
+async function translateToPl(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !text || !text.trim()) return null;
+  const clean = stripLinks(text).slice(0, 2000);
+  const resp = await httpsPost(
+    'https://api.anthropic.com/v1/messages',
+    { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    {
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1500,
+      temperature: 0,
+      messages: [{ role: 'user', content: `Przetłumacz poniższą treść maila na język polski. Tłumacz dosłownie jak translator. Zwróć TYLKO tłumaczenie, bez komentarzy i bez żadnych tagów. Jeśli tekst już jest po polsku, przepisz bez zmian.\n\n---\n${clean}` }],
+    }
+  );
+  const out = (resp.content && resp.content[0] && resp.content[0].text) || '';
+  return out.trim() || null;
 }
 
 // ============ VAT VERIFICATION ============
@@ -941,6 +973,21 @@ async function processAccount(account) {
         const { category, country, language, subject_pl, summary_pl, vat_numbers } = classification;
         console.log(`[inbox-poller] ${inbox}: uid=${mail.uid} category=${category}`);
 
+        // Fallback tlumaczenia: czasem Haiku oddaje summary_pl w oryginalnym
+        // jezyku (np. krotkie FR "Bonne réception"). Wykryj i przetlumacz na PL.
+        let summaryPlOut = summary_pl;
+        if (language && String(language).toLowerCase() !== 'pl' && looksUntranslated(summary_pl, mail.bodyText)) {
+          try {
+            const retrans = await translateToPl(mail.bodyText);
+            if (retrans && !looksUntranslated(retrans, mail.bodyText)) {
+              summaryPlOut = retrans;
+              console.log(`[inbox-poller] ${inbox}: summary_pl docelowo przetlumaczony (model oddal ${language})`);
+            }
+          } catch (e) {
+            console.error(`[inbox-poller] ${inbox}: fallback translate failed:`, e.message);
+          }
+        }
+
         // Context inheritance: fill in UNKNOWN country/language from previous mail by same sender
         let effectiveCountry = country;
         let effectiveLanguage = language;
@@ -1178,7 +1225,7 @@ async function processAccount(account) {
             ? `\nKontrahent: ${contractorName}`
             : `\nNowy adres - napisz 'dodaj kontrahenta' lub 'połącz z [nazwa]'`;
           const ctxLine = `\n\n[ctx: emailId=${savedEmail.id}, from=${savedEmail.fromEmail || ''}, lang=${effectiveLanguage || 'en'}]`;
-          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summary_pl}${vatLines}${contractorLine}${attachmentInfo}${ctxLine}`;
+          let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summaryPlOut}${vatLines}${contractorLine}${attachmentInfo}${ctxLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, msg);
