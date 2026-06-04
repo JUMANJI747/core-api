@@ -1862,14 +1862,28 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
       inv = await prisma.invoice.findFirst({ where: { number: key } }).catch(() => null);
     }
     if (!inv) return res.status(404).json({ error: `Nie znaleziono faktury (key=${key})` });
-    if (!inv.ifirmaId && !inv.number) return res.status(404).json({ error: 'Faktura bez identyfikatora iFirmy (brak PDF)' });
-    // rodzaj decyduje o endpoincie iFirmy; fetchInvoicePdf i tak probuje kilku.
-    const rodzaj = inv.ifirmaType || inv.type || (inv.currency === 'EUR' ? 'wdt' : 'krajowa');
-    console.log(`[invoices/:id/pdf] key=${key} -> id=${inv.id} num=${inv.number} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
-    const pdf = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
+
+    // Odzyskaj prawdziwy numer z iFirmy gdy lokalnie pusty/UNKNOWN (jak bot
+    // resend-pdf-telegram) — niektore PDF-y iFirmy dzialaja tylko po numerze.
+    let realNumber = inv.number;
+    if ((!realNumber || realNumber === 'UNKNOWN') && inv.ifirmaId) {
+      try {
+        const details = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type || 'wdt');
+        const fromDetails = details && (details.PelnyNumer || details.Numer || (details.Wynik && (details.Wynik.PelnyNumer || details.Wynik.Numer)));
+        if (fromDetails) realNumber = fromDetails;
+      } catch (e) {
+        console.error('[invoices/:id/pdf] fetchInvoiceDetails:', e.message);
+      }
+    }
+    if (!realNumber && !inv.ifirmaId) return res.status(404).json({ error: 'Faktura bez identyfikatora iFirmy (brak PDF)' });
+
+    // Tak samo jak dzialajacy bot: rodzaj = ifirmaType || type || 'wdt'.
+    const rodzaj = inv.ifirmaType || inv.type || 'wdt';
+    console.log(`[invoices/:id/pdf] key=${key} -> id=${inv.id} num=${realNumber} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
+    const pdf = await fetchInvoicePdf(realNumber, rodzaj, inv.ifirmaId);
     res.setHeader('Content-Type', 'application/pdf');
     // inline (nie attachment) — iOS pokazuje PDF w wbudowanym viewerze z share.
-    res.setHeader('Content-Disposition', `inline; filename="faktura_${(inv.number || 'faktura').replace(/\//g, '_')}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="faktura_${(realNumber || inv.number || 'faktura').replace(/\//g, '_')}.pdf"`);
     res.send(pdf);
   } catch (e) {
     console.error('[invoices/:id/pdf]', e.message);
