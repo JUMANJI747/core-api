@@ -1854,9 +1854,11 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
   try {
     const inv = await prisma.invoice.findUnique({ where: { id: req.params.invoiceId } });
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!inv.ifirmaId && !inv.number) return res.status(404).json({ error: 'Faktura bez identyfikatora iFirmy (brak PDF)' });
     // rodzaj decyduje o endpoincie iFirmy (krajowa/wdt/eksport/proforma).
-    // Lokalnie zapisujemy 'wdt'/'krajowa' w type; synced maja ifirmaType.
-    const rodzaj = inv.ifirmaType || inv.type || 'krajowa';
+    // fetchInvoicePdf i tak probuje kilku endpointow/identyfikatorow.
+    const rodzaj = inv.ifirmaType || inv.type || (inv.currency === 'EUR' ? 'wdt' : 'krajowa');
+    console.log(`[invoices/:id/pdf] id=${inv.id} num=${inv.number} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
     const pdf = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
     res.setHeader('Content-Type', 'application/pdf');
     // inline (nie attachment) — iOS pokazuje PDF w wbudowanym viewerze z share.
@@ -1864,7 +1866,7 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
     res.send(pdf);
   } catch (e) {
     console.error('[invoices/:id/pdf]', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(502).json({ error: e.message });
   }
 });
 

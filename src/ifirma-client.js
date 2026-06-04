@@ -651,37 +651,44 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const r = (rodzaj || '').toLowerCase();
-  let endpoint;
-  if (r === 'prz_eksport_towarow' || r === 'eksport') {
-    endpoint = 'fakturaeksporttowarow';
-  } else if (r === 'prz_faktura_proforma') {
-    endpoint = 'fakturaproforma';
-  } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt') {
-    endpoint = 'fakturawdt';
+  let primary;
+  if (r === 'prz_eksport_towarow' || r === 'eksport' || r.includes('eksport')) {
+    primary = 'fakturaeksporttowarow';
+  } else if (r === 'prz_faktura_proforma' || r.includes('proforma')) {
+    primary = 'fakturaproforma';
+  } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt' || r.includes('dostawa_ue') || r.includes('wdt')) {
+    primary = 'fakturawdt';
   } else {
-    endpoint = 'fakturakraj';
+    primary = 'fakturakraj';
   }
 
   const numerUrl = (pelnyNumer && pelnyNumer !== 'UNKNOWN') ? pelnyNumer.replace(/\//g, '_') : null;
 
-  // iFirma akceptuje w URL .pdf FakturaId LUB numer faktury, ale ktory dziala
-  // zalezy od typu dokumentu (WDT bywa dostepne po NUMERZE, nie po FakturaId —
-  // stad HTTP 404 dla faktur WDT). Probujemy obu i bierzemy pierwszy z 200.
-  const candidates = [...new Set([fakturaId, numerUrl].filter(Boolean).map(String))];
-  if (!candidates.length) throw new Error('iFirma PDF: brak identyfikatora (FakturaId/numer)');
+  // Typ dokumentu z metadanych (ifirmaType/type) bywa niepewny po synchronizacji,
+  // a iFirma w URL .pdf akceptuje raz FakturaId, raz numer — zaleznie od typu.
+  // Probujemy roznych ENDPOINTOW x IDENTYFIKATOROW i bierzemy pierwszy, ktory
+  // zwroci PRAWDZIWY pdf (magia %PDF — iFirma na blad potrafi oddac 200+JSON).
+  const endpoints = [...new Set([primary, 'fakturawdt', 'fakturakraj', 'fakturaeksporttowarow'])];
+  const ids = [...new Set([fakturaId, numerUrl].filter(Boolean).map(String))];
+  if (!ids.length) throw new Error('iFirma PDF: brak identyfikatora (FakturaId/numer)');
 
-  let lastErr = null;
-  for (const id of candidates) {
-    const url = `https://www.ifirma.pl/iapi/${endpoint}/${id}.pdf`;
-    const auth = generateAuth(url, '', login, keyHex);
-    console.log('[ifirma] PDF download URL:', url);
-    const { status, body } = await httpsGetRaw(url, {
-      Authentication: auth,
-      Accept: 'application/pdf',
-    });
-    if (status === 200) return body;
-    lastErr = `status ${status} — ${body.toString().slice(0, 200)}`;
-    console.log(`[ifirma] PDF id=${id} -> ${status}, probuje kolejny identyfikator`);
+  let lastErr = 'brak prob';
+  for (const ep of endpoints) {
+    for (const id of ids) {
+      const url = `https://www.ifirma.pl/iapi/${ep}/${id}.pdf`;
+      const auth = generateAuth(url, '', login, keyHex);
+      const { status, body } = await httpsGetRaw(url, {
+        Authentication: auth,
+        Accept: 'application/pdf',
+      });
+      const isPdf = status === 200 && body && body.slice(0, 5).toString('latin1').startsWith('%PDF');
+      if (isPdf) {
+        console.log(`[ifirma] PDF OK: ${ep}/${id}`);
+        return body;
+      }
+      lastErr = `${ep}/${id} -> status ${status}${status === 200 ? ' (nie-PDF)' : ''}`;
+      console.log(`[ifirma] PDF proba ${lastErr}`);
+    }
   }
   throw new Error('iFirma PDF error: ' + lastErr);
 }
