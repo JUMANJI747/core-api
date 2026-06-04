@@ -663,24 +663,27 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   }
 
   const numerUrl = (pelnyNumer && pelnyNumer !== 'UNKNOWN') ? pelnyNumer.replace(/\//g, '_') : null;
-  const identyfikator = fakturaId || numerUrl;
 
-  const url = `https://www.ifirma.pl/iapi/${endpoint}/${identyfikator}.pdf`;
-  const auth = generateAuth(url, '', login, keyHex);
+  // iFirma akceptuje w URL .pdf FakturaId LUB numer faktury, ale ktory dziala
+  // zalezy od typu dokumentu (WDT bywa dostepne po NUMERZE, nie po FakturaId —
+  // stad HTTP 404 dla faktur WDT). Probujemy obu i bierzemy pierwszy z 200.
+  const candidates = [...new Set([fakturaId, numerUrl].filter(Boolean).map(String))];
+  if (!candidates.length) throw new Error('iFirma PDF: brak identyfikatora (FakturaId/numer)');
 
-  console.log('[ifirma] PDF download URL:', url);
-
-  const { status, body } = await httpsGetRaw(url, {
-    Authentication: auth,
-    Accept: 'application/pdf',
-  });
-
-  if (status !== 200) {
-    const bodyText = body.toString();
-    console.log('[ifirma] API error (PDF):', JSON.stringify({ status, body: bodyText }));
-    throw new Error('iFirma PDF error: status ' + status + ' — ' + bodyText);
+  let lastErr = null;
+  for (const id of candidates) {
+    const url = `https://www.ifirma.pl/iapi/${endpoint}/${id}.pdf`;
+    const auth = generateAuth(url, '', login, keyHex);
+    console.log('[ifirma] PDF download URL:', url);
+    const { status, body } = await httpsGetRaw(url, {
+      Authentication: auth,
+      Accept: 'application/pdf',
+    });
+    if (status === 200) return body;
+    lastErr = `status ${status} — ${body.toString().slice(0, 200)}`;
+    console.log(`[ifirma] PDF id=${id} -> ${status}, probuje kolejny identyfikator`);
   }
-  return body;
+  throw new Error('iFirma PDF error: ' + lastErr);
 }
 
 async function fetchInvoiceDetails(fakturaId, rodzaj) {
