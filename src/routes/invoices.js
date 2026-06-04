@@ -1852,13 +1852,20 @@ router.post('/ifirma/_diag-month', async (req, res) => {
 router.get('/invoices/:invoiceId/pdf', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const inv = await prisma.invoice.findUnique({ where: { id: req.params.invoiceId } });
-    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    const key = String(req.params.invoiceId || '');
+    // Odporny lookup — przyjmij prismowe id (UUID), ifirmaId (liczba) lub numer.
+    let inv = await prisma.invoice.findUnique({ where: { id: key } }).catch(() => null);
+    if (!inv && /^\d+$/.test(key)) {
+      inv = await prisma.invoice.findUnique({ where: { ifirmaId: parseInt(key, 10) } }).catch(() => null);
+    }
+    if (!inv) {
+      inv = await prisma.invoice.findFirst({ where: { number: key } }).catch(() => null);
+    }
+    if (!inv) return res.status(404).json({ error: `Nie znaleziono faktury (key=${key})` });
     if (!inv.ifirmaId && !inv.number) return res.status(404).json({ error: 'Faktura bez identyfikatora iFirmy (brak PDF)' });
-    // rodzaj decyduje o endpoincie iFirmy (krajowa/wdt/eksport/proforma).
-    // fetchInvoicePdf i tak probuje kilku endpointow/identyfikatorow.
+    // rodzaj decyduje o endpoincie iFirmy; fetchInvoicePdf i tak probuje kilku.
     const rodzaj = inv.ifirmaType || inv.type || (inv.currency === 'EUR' ? 'wdt' : 'krajowa');
-    console.log(`[invoices/:id/pdf] id=${inv.id} num=${inv.number} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
+    console.log(`[invoices/:id/pdf] key=${key} -> id=${inv.id} num=${inv.number} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
     const pdf = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
     res.setHeader('Content-Type', 'application/pdf');
     // inline (nie attachment) — iOS pokazuje PDF w wbudowanym viewerze z share.
@@ -1866,7 +1873,7 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
     res.send(pdf);
   } catch (e) {
     console.error('[invoices/:id/pdf]', e.message);
-    res.status(502).json({ error: e.message });
+    res.status(502).json({ error: 'iFirma: ' + e.message });
   }
 });
 
