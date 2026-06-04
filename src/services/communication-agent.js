@@ -97,7 +97,7 @@ NOWY MAIL (nie odpowiedź):
 OFERTY:
 - "wyślij ofertę do X" → send_offer. Gdy user podał ADRES e-mail → ustaw pole "to" (NIE contractorSearch). Gdy podał nazwę firmy → contractorSearch.
 - Jezyk: jesli user napisal jawnie ("francuską", "po angielsku") → ustaw "language" (FR/PT/ES/EN/PL). Inaczej system dobierze z kraju kontrahenta.
-- W potwierdzeniu raportuj DOKŁADNIE "to" i "language" z WYNIKU narzędzia. NIE dopisuj nazwy kontrahenta, której nie ma w wyniku (nie zgaduj z kontekstu rozmowy).
+- W potwierdzeniu raportuj DOKŁADNIE "to" i "language" z WYNIKU narzędzia. Nazwę kontrahenta podaj WYŁĄCZNIE gdy wynik ma pole "contractor" != null; jeśli jest null — napisz sam adres e-mail, NIE zgaduj firmy z kontekstu rozmowy.
 
 WYSYŁKA FAKTURY — DWA PRZYPADKI:
 A) SAMA faktura, bez własnej treści ("wyślij fakturę N do klienta", "wyślij FV mailem do X")

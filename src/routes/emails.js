@@ -996,19 +996,18 @@ router.post('/send-offer', async (req, res) => {
     }
     if (!to) return res.status(400).json({ error: 'to is required (or contractorSearch must match a contractor with email)' });
 
-    // Resolve language. Priorytet: jawnie podany > kraj kontrahenta (z search
-    // LUB dopasowanego PO ADRESIE e-mail) > EN. Wczesniej przy podanym `to`
-    // (bez contractorSearch) jezyk nie byl wykrywany -> oferta szla po angielsku.
-    if (!language) {
-      if (!contractor && to) {
-        contractor = await prisma.contractor.findFirst({
-          where: { email: { equals: to, mode: 'insensitive' } },
-          select: { id: true, name: true, country: true },
-        }).catch(() => null);
-      }
-      if (contractor && contractor.country) {
-        language = COUNTRY_TO_LANG[contractor.country.toUpperCase()] || null;
-      }
+    // Dopasuj kontrahenta PO ADRESIE tym samym warunkiem co zapis maila
+    // (mail-sender: email contains to). Sluzy do: (a) doboru jezyka,
+    // (b) RZETELNEGO raportu — zeby agent nie dorabial nazwy z kontekstu
+    // rozmowy. Brak dopasowania => contractor=null => raport pokaze sam adres.
+    if (!contractor && to) {
+      contractor = await prisma.contractor.findFirst({
+        where: { email: { contains: to, mode: 'insensitive' } },
+        select: { id: true, name: true, country: true },
+      }).catch(() => null);
+    }
+    if (!language && contractor && contractor.country) {
+      language = COUNTRY_TO_LANG[contractor.country.toUpperCase()] || null;
     }
     language = (language || 'EN').toUpperCase();
     if (!OFFER_TEMPLATES[language]) language = 'EN';
@@ -1029,8 +1028,13 @@ router.post('/send-offer', async (req, res) => {
       attachments: [{ filename: pdf.filename, content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
-    console.log(`[send-offer] sent ${language} offer to ${to}`);
-    return res.json({ ok: true, sent: true, to, language, subject });
+    console.log(`[send-offer] sent ${language} offer to ${to} (contractor=${contractor ? contractor.name : 'BRAK'})`);
+    return res.json({
+      ok: true, sent: true, to, language, subject,
+      // Prawdziwy kontrahent (lub null). Agent ma raportowac TYLKO to — bez
+      // zgadywania nazwy z kontekstu rozmowy.
+      contractor: contractor ? { id: contractor.id, name: contractor.name } : null,
+    });
   } catch (e) {
     const status = e.message.startsWith('Rate limit') ? 429 : 500;
     res.status(status).json({ error: e.message });
