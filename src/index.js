@@ -35,6 +35,20 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// Marker wersji — do weryfikacji ktory commit Railway faktycznie wdrozyl.
+// Jesli /api/core/_version zwraca to JSON => nowy kod jest live; jesli
+// "Cannot GET /api/_version" => serwer dalej na starym kodzie.
+app.get('/api/_version', (req, res) => {
+  res.json({
+    ok: true,
+    marker: 'invoice-pdf-route',
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT || null,
+    branch: process.env.RAILWAY_GIT_BRANCH || null,
+    hasInvoicePdfRoute: true,
+    startedAt: new Date().toISOString(),
+  });
+});
+
 // ============ ROUTES ============
 app.use('/api/contractors', require('./routes/contractors'));
 app.use('/api/deals', require('./routes/deals'));
