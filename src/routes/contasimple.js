@@ -2564,6 +2564,32 @@ router.get('/_period', asyncHandler(async (req, res) => {
   res.json({ date: date.toISOString(), period: cs.dateToPeriod(date) });
 }));
 
+// Cichy, throttlowany sync faktur z Contasimple odpalany przy WEJSCIU na
+// Faktury Kanary. Bez Telegrama (runBackfill nie notyfikuje), throttle 60s.
+// Zawsze 200 — blad nie psuje ladowania strony.
+router.post('/autosync', asyncHandler(async (req, res) => {
+  const KEY = 'autosync:es:lastRunAt';
+  const THROTTLE_MS = 60 * 1000;
+  const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
+  const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
+  if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
+  const nowIso = new Date().toISOString();
+  await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
+  if (!cs.isConfigured()) return res.json({ ok: false, error: 'CONTASIMPLE_API_KEY not configured' });
+  try {
+    const { runBackfill } = require('../services/es-invoices-backfill');
+    const work = runBackfill(prisma, { apply: true, log: () => {} });
+    const result = await Promise.race([
+      work,
+      new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 15000)),
+    ]);
+    res.json({ ok: true, throttled: false, ...result });
+  } catch (e) {
+    console.error('[contasimple/autosync]', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+}));
+
 // ============ LIST LOCAL ES INVOICES (EsInvoice table) ============
 // GET /api/contasimple/local-invoices?search=&status=&fromDate=&toDate=&limit=&contasimpleOnly=1
 // Returns local EsInvoice rows ordered by invoiceDate desc. Used by CRM frontend.

@@ -141,6 +141,38 @@ router.post('/ifirma/sync', async (req, res) => {
   }
 });
 
+// Cichy, throttlowany sync iFirmy odpalany przy WEJSCIU na Faktury (Polska).
+// BEZ powiadomien Telegram (silent), okno 60 dni, throttle 60s (Config) zeby
+// nie bic w iFirme przy kazdym odswiezeniu. Zawsze 200 (blad nie psuje strony).
+router.post('/ifirma/autosync', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const KEY = 'autosync:ifirma:lastRunAt';
+  const THROTTLE_MS = 60 * 1000;
+  try {
+    const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
+    const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
+    if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
+    // Ustaw znacznik OD RAZU, by rownolegle wejscia nie odpalily kilku syncow.
+    const nowIso = new Date().toISOString();
+    await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
+
+    const dataDo = nowIso.slice(0, 10);
+    const dataOd = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const work = (async () => {
+      const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+      return await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });
+    })();
+    const result = await Promise.race([
+      work,
+      new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 15000)),
+    ]);
+    res.json({ ok: true, throttled: false, ...result });
+  } catch (e) {
+    console.error('[ifirma/autosync]', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 router.get('/ifirma/sync/preview', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {

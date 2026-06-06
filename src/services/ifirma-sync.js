@@ -17,7 +17,7 @@ function guessCountryFromInv(inv) {
 }
 
 async function processIfirmaInvoices(invoices, prisma, opts = {}) {
-  const { dataOd, dataDo, dryRun = false } = opts;
+  const { dataOd, dataDo, dryRun = false, silent = false } = opts;
 
   // ============ FAZA 1: KONTRAHENCI ============
   const nipToInv = new Map();
@@ -186,7 +186,7 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
   }
 
   // ============ TELEGRAM ============
-  if (!dryRun && dataOd && dataDo && (invoicesCreated > 0 || invoicesUpdated > 0 || deleted.length > 0)) {
+  if (!silent && !dryRun && dataOd && dataDo && (invoicesCreated > 0 || invoicesUpdated > 0 || deleted.length > 0)) {
     try {
       const { sendTelegram } = require('../telegram-utils');
       const { resolveTelegram } = require('./telegram-helper');
