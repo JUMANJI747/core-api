@@ -103,6 +103,11 @@ WDT vs KRAJOWA:
 - Krajowa (PL kontrahent) — domyślnie BRUTTO w PLN, VAT 23%
 - WDT (UE) — domyślnie NETTO w EUR, VAT 0%
 - System sam dobiera typ na podstawie kontrahenta
+- WYJĄTEK: klient z UE bez aktywnego VIES (np. stowarzyszenie) któremu user chce
+  wystawiać NORMALNĄ FV z VAT 23% mimo Unii. Gdy user to mówi ("to stowarzyszenie",
+  "wystawiaj z VAT 23", "23% mimo UE", "dawaj normalną FV") → najpierw set_vat_mode
+  {contractorSearch lub nip, mode:"domestic"}, POTEM invoice_preview. Od tej pory
+  system sam wystawia mu krajową 23% w EUR. Cofnięcie: set_vat_mode mode:"auto".
 
 KRÓTKIE POLECENIA UŻYTKOWNIKA (tak/ok/wyślij/potwierdź) — bez konkretów:
 Najpierw wywołaj get_context aby zobaczyć ostatnią akcję (lastAction, lastInvoiceId, lastContractorId).
@@ -317,6 +322,20 @@ const tools = [
         country: { type: 'string', description: 'ISO-2, opcjonalne. Bez = PL.' },
       },
       required: ['nip'],
+    },
+  },
+  {
+    name: 'set_vat_mode',
+    description: 'Ustaw tryb VAT kontrahenta. UZYJ gdy user mowi ze klient z UE ma byc fakturowany NORMALNA FV z VAT 23% mimo Unii (np. "to stowarzyszenie", "wystawiaj mu z VAT 23", "nie ma aktywnego VIES, dawaj normalna FV", "23% mimo UE"). mode="domestic" -> zawsze krajowa VAT 23% (w EUR). mode="auto" -> przywroc domyslne (WDT 0% gdy UE + aktywny VIES). Podaj contractorSearch (nazwa) albo nip albo contractorId.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractorSearch: { type: 'string', description: 'Nazwa kontrahenta (lub fragment).' },
+        nip: { type: 'string', description: 'NIP/VAT kontrahenta (alternatywa).' },
+        contractorId: { type: 'string', description: 'UUID kontrahenta (alternatywa).' },
+        mode: { type: 'string', description: '"domestic" (zawsze 23% VAT) albo "auto" (domyslne WDT 0% dla UE).' },
+      },
+      required: ['mode'],
     },
   },
   {
@@ -585,6 +604,7 @@ const ENDPOINT_MAP = {
   find_contractor: ['GET', '/api/contractors'],
   verify_nip: ['POST', '/api/contractors/verify-nip'],
   upsert_contractor: ['POST', '/api/contractors/upsert'],
+  set_vat_mode: ['POST', '/api/contractors/vat-mode'],
   ifirma_contractor_get: ['GET', '/api/ifirma/contractors/:nip'],
   ifirma_contractor_sync: ['POST', '/api/ifirma/contractors/sync/:contractorId'],
   analytics_products_sold: ['GET', '/api/analytics/products-sold'],

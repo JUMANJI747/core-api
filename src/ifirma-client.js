@@ -454,10 +454,13 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
-async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode, paymentDays = 7 }) {
+async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, paymentDays = 7 }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const isWdt = rodzaj === 'wdt';
+  // Krajowa w EUR (np. klient z UE bez aktywnego VIES / stowarzyszenie — VAT 23%
+  // ale rozliczane w EUR). Wtedy mimo fakturakraj dokladamy Waluta + kurs NBP.
+  const isEur = String(waluta || '').toUpperCase() === 'EUR';
   const url = isWdt
     ? 'https://www.ifirma.pl/iapi/fakturawdt.json'
     : 'https://www.ifirma.pl/iapi/fakturakraj.json';
@@ -506,6 +509,8 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode, paymentDa
     ...(_ulica ? { Ulica: _ulica } : {}),
     ...(_kod ? { KodPocztowy: _kod } : {}),
     ...(_miasto ? { Miejscowosc: _miasto } : {}),
+    // fakturakraj (tez w EUR) trzyma Kraj 'Polska' — bezpieczne dla iFirmy.
+    // Tylko WDT (osobny endpoint) uzywa prawdziwego kraju kontrahenta.
     Kraj: isWdt ? (_country || '') : 'Polska',
   };
 
@@ -529,7 +534,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, priceMode, paymentDa
     NumerKontaBankowego: isWdt ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
     Kontrahent,
     Pozycje,
-    ...(isWdt ? {
+    ...((isWdt || isEur) ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
     } : {}),

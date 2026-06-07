@@ -391,7 +391,16 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const derived = await deriveCountry(contractor);
     const effectiveCountry = derived.country || 'PL';
     const waluta = effectiveCountry === 'PL' ? 'PLN' : 'EUR';
-    const rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
+    let rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
+
+    // Per-kontrahent override: klient z UE bez aktywnego VIES (np. stowarzyszenie)
+    // — na zyczenie usera wystawiamy NORMALNA FV z VAT 23% (krajowa), nie WDT 0%.
+    // Flaga: contractor.extras.vatMode === 'domestic'. Waluta zostaje EUR.
+    const _cExtras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
+    if (_cExtras.vatMode === 'domestic' && rodzaj === 'wdt') {
+      rodzaj = 'krajowa';
+      console.log(`[invoice-preview] vatMode=domestic → wymuszam krajowa VAT 23% (waluta ${waluta}) dla ${contractor.name}`);
+    }
 
     // VIES fresh check przed WDT — blokuje TYLKO gdy NIP na pewno nieaktywny.
     // Gdy VIES niedostepny/limit (status 'unknown') NIE blokujemy — to czesty
@@ -659,6 +668,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       ifirmaResult = await createInvoice({
         kontrahent: kontrahentPayload,
         pozycje,
+        waluta,
         rodzaj,
         priceMode,
         paymentDays,

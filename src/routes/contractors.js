@@ -627,6 +627,52 @@ router.post('/verify-nip', async (req, res) => {
   }
 });
 
+// Ustaw tryb VAT kontrahenta.
+//  - mode='domestic' -> zawsze NORMALNA FV z VAT 23% (krajowa), nawet gdy klient
+//    z UE i VIES nieaktywny (np. stowarzyszenie). Zapis: extras.vatMode='domestic'.
+//  - mode='auto' (lub 'wdt') -> usun override (domyslnie WDT 0% gdy UE+aktywny VIES).
+router.post('/vat-mode', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    let { contractorId, nip, search, contractorSearch, mode } = req.body || {};
+    search = search || contractorSearch;
+    mode = String(mode || '').toLowerCase();
+    if (mode === 'wdt') mode = 'auto';
+    if (!['domestic', 'auto'].includes(mode)) {
+      return res.status(400).json({ error: "mode musi byc 'domestic' albo 'auto'" });
+    }
+
+    let contractor = null;
+    if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: contractorId } }).catch(() => null);
+    if (!contractor && nip) {
+      const n = String(nip).replace(/[\s-]/g, '');
+      contractor = await prisma.contractor.findFirst({ where: { nip: { contains: n, mode: 'insensitive' } } }).catch(() => null);
+    }
+    if (!contractor && search) {
+      contractor = await prisma.contractor.findFirst({ where: { name: { contains: String(search), mode: 'insensitive' } }, orderBy: { updatedAt: 'desc' } }).catch(() => null);
+    }
+    if (!contractor) return res.status(404).json({ error: 'Nie znaleziono kontrahenta (podaj contractorId, nip albo search/contractorSearch)' });
+
+    const extras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
+    const newExtras = { ...extras };
+    if (mode === 'domestic') newExtras.vatMode = 'domestic';
+    else delete newExtras.vatMode;
+    await prisma.contractor.update({ where: { id: contractor.id }, data: { extras: newExtras } });
+
+    return res.json({
+      ok: true,
+      contractorId: contractor.id,
+      name: contractor.name,
+      vatMode: newExtras.vatMode || 'auto',
+      message: mode === 'domestic'
+        ? `Ustawiono: ${contractor.name} bedzie fakturowany NORMALNA FV z VAT 23% (krajowa, waluta EUR), mimo UE.`
+        : `Przywrocono automatyczny tryb VAT dla ${contractor.name} (WDT 0% gdy UE + aktywny VIES).`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { search, country, tag, limit } = req.query;
