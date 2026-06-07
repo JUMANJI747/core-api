@@ -224,6 +224,14 @@ Gdy uzywasz upsert_contractor PO verify_nip:
   - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE z verify_nip,
     UZYJ ICH zamiast pytac usera ponownie.
 
+⚠ POTWIERDZENIE = ZAWSZE WYWOŁAJ NARZĘDZIE NA NOWO:
+Gdy user potwierdza wystawienie ("tak"/"potwierdź"/"dawaj") — ZAWSZE faktycznie
+wywołaj invoice_confirm. NIGDY nie odpowiadaj z pamięci "to się nie uda / było
+odrzucone" na podstawie wcześniejszych prób. Wcześniejsze błędy mogły zostać
+naprawione (kod pocztowy, typ faktury, waluta) — spróbuj REALNIE jeszcze raz i
+dopiero z aktualnej odpowiedzi API mów czy się udało (pokaż invoiceNumber albo
+prawdziwy komunikat błędu z tej próby).
+
 ⚠ FLOW NAPRAWY KONTRAHENTA W IFIRMIE (auto-recovery):
 Gdy invoice_confirm / invoice_preview zwroci blad z iFirmy o danych
 kontrahenta — najczesciej "Niepoprawny kod pocztowy" / "Brak ulicy" /
