@@ -6,12 +6,21 @@
 //  - services/ifirma-payload.js mial fallback regex jako ostatnia deska
 //    ratunku przy budowie payloadu do iFirmy
 
-// Wyciaga PL kod pocztowy (\d{2}-\d{3}) z tekstu.
-// np. "ul. Jagielly 1A, 11-500 Gizycko" -> "11-500".
+// Wyciaga kod pocztowy z tekstu — PL i zagraniczne.
+//  - PL:  NN-NNN        "11-500 Gizycko" -> "11-500"
+//  - PT:  NNNN-NNN      "1990-096 Lisboa" -> "1990-096"
+//  - ES/DE/FR/IT/...: 5 cyfr  "Zubiaurre 121, 3B, 20015" -> "20015"
+// Dla formy 5-cyfrowej bierzemy OSTATNIE wystapienie (kod zwykle na koncu
+// adresu, po numerze budynku), zeby nie zlapac numeru domu.
 function extractPostCode(text) {
   if (!text || typeof text !== 'string') return null;
-  const m = text.match(/\b(\d{2}-\d{3})\b/);
-  return m ? m[1] : null;
+  let m = text.match(/\b(\d{2}-\d{3})\b/);   // PL
+  if (m) return m[1];
+  m = text.match(/\b(\d{4}-\d{3})\b/);        // PT
+  if (m) return m[1];
+  const five = text.match(/\b\d{5}\b/g);       // ES/DE/FR/IT/NL itd.
+  if (five && five.length) return five[five.length - 1];
+  return null;
 }
 
 // Wyciaga miasto po kodzie pocztowym ("11-500 Gizycko" -> "Gizycko").

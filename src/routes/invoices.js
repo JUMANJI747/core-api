@@ -652,6 +652,21 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     try {
       const kontrahentPayload = await buildIfirmaContractorPayload(prisma, contractor);
       console.log(`[invoice-confirm] kontrahent fields: nip=${kontrahentPayload.nip} addr="${kontrahentPayload.address}" city="${kontrahentPayload.city}" postCode="${kontrahentPayload.postCode}" ifirmaId=${kontrahentPayload.ifirmaId}`);
+      // Pre-check: iFirma wymaga kodu pocztowego. Lepiej jasny komunikat TERAZ
+      // niz kryptyczny blad iFirmy. (postCode jest auto-wyciagany z adresu w
+      // buildIfirmaContractorPayload — tu lapiemy przypadek gdy naprawde brak.)
+      if (!kontrahentPayload.postCode) {
+        return res.status(400).json({
+          error: `Brak kodu pocztowego dla „${contractor.name}". iFirma nie wystawi faktury bez kodu pocztowego. Podaj kod, np. napisz: „ustaw kod pocztowy XXXXX dla ${contractor.name}", i spróbuj ponownie.`,
+          missingField: 'postCode',
+          contractor: contractor.name,
+        });
+      }
+      // Utrwal wyciagniety kod na kontrahencie (czesto wklejony w adresie, ale
+      // nie zapisany w polu postCode) — zeby kolejne FV juz go mialy.
+      if (kontrahentPayload.postCode && !contractor.postCode) {
+        prisma.contractor.update({ where: { id: contractor.id }, data: { postCode: kontrahentPayload.postCode } }).catch(() => {});
+      }
       // Push aktualnych danych do iFirmy ZANIM wystawimy FV — bez tego iFirma
       // siga do swojej (potencjalnie stale) kopii rekordu i ignoruje inline
       // Kontrahent (skutek: korekta np. kodu pocztowego u nas nigdy nie dociera
@@ -862,6 +877,16 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     const kontrahentPayload2 = await buildIfirmaContractorPayload(prisma, contractor);
     console.log(`[invoice-confirm/${previewId}] kontrahent fields: nip=${kontrahentPayload2.nip} addr="${kontrahentPayload2.address}" city="${kontrahentPayload2.city}" postCode="${kontrahentPayload2.postCode}" ifirmaId=${kontrahentPayload2.ifirmaId}`);
+    if (!kontrahentPayload2.postCode) {
+      return res.status(400).json({
+        error: `Brak kodu pocztowego dla „${contractor.name}". iFirma nie wystawi faktury bez kodu pocztowego. Podaj kod, np. „ustaw kod pocztowy XXXXX dla ${contractor.name}", i spróbuj ponownie.`,
+        missingField: 'postCode',
+        contractor: contractor.name,
+      });
+    }
+    if (kontrahentPayload2.postCode && contractor.id && !contractor.postCode) {
+      prisma.contractor.update({ where: { id: contractor.id }, data: { postCode: kontrahentPayload2.postCode } }).catch(() => {});
+    }
     // Push aktualnych danych do iFirmy zanim wystawimy FV (patrz invoice-confirm-latest powyzej).
     if (kontrahentPayload2.nip && rodzaj !== 'wdt') {
       try {
