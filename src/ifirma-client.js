@@ -534,9 +534,10 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     NazwaSeriiNumeracji: 'default',
     RodzajPodpisuOdbiorcy: 'BWO',
     // Jezyk: WDT -> en (+ prefiks UE). fakturawaluta (krajowa w EUR) tez wymaga
-    // Jezyk -> dajemy 'pl' (dokument krajowy; PL/EN dwujezyczny dawalby 'en').
+    // Jezyk i ODRZUCA 'pl' (to dokument dla zagranicznego klienta) -> 'en'
+    // (dwujezyczny PL/EN), tak jak WDT.
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() }
-      : isEur ? { Jezyk: 'pl' } : {}),
+      : isEur ? { Jezyk: 'en' } : {}),
     NumerKontaBankowego: isWdt ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
     Kontrahent,
     Pozycje,
