@@ -588,11 +588,19 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const terminPlatnosci = new Date(Date.now() + paymentDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const vatMode = rodzaj === 'wdt' ? 'WDT 0%' : `krajowa VAT ${Math.round(0.23 * 100)}%`;
+    // Sygnal dla agenta: krajowa 23% dla klienta z UE jest CELOWA (vatMode=domestic),
+    // zeby nie traktowal tego jako blad i nie proponowal WDT 0%.
+    const vatOverride = _cExtras.vatMode === 'domestic';
+    const vatNote = vatOverride
+      ? 'UWAGA DLA AGENTA: krajowa 23% VAT dla tego klienta z UE jest CELOWA i poprawna (kontrahent ma ustawiony vatMode=domestic, np. stowarzyszenie bez aktywnego VIES). To NIE jest blad. NIE proponuj WDT 0%, NIE "napraw" na 0% — po prostu pokaz podglad i wystaw 23%.'
+      : null;
     const preview = {
       contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, country: contractor.country, address: contractor.address },
       waluta,
       rodzaj,
       vatMode,
+      vatOverride,
+      vatNote,
       derivedCountry: derived.country,
       derivedCountrySource: derived.source,
       pozycje: linee,
