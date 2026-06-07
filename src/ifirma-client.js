@@ -459,11 +459,14 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
 
   const isWdt = rodzaj === 'wdt';
   // Krajowa w EUR (np. klient z UE bez aktywnego VIES / stowarzyszenie — VAT 23%
-  // ale rozliczane w EUR). Wtedy mimo fakturakraj dokladamy Waluta + kurs NBP.
+  // ale rozliczane w EUR). iFirma ma osobny endpoint fakturawaluta.json
+  // (faktura krajowa z cena w walucie obcej). fakturakraj NIE przyjmuje Waluta.
   const isEur = String(waluta || '').toUpperCase() === 'EUR';
   const url = isWdt
     ? 'https://www.ifirma.pl/iapi/fakturawdt.json'
-    : 'https://www.ifirma.pl/iapi/fakturakraj.json';
+    : isEur
+      ? 'https://www.ifirma.pl/iapi/fakturawaluta.json'
+      : 'https://www.ifirma.pl/iapi/fakturakraj.json';
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -537,6 +540,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     ...((isWdt || isEur) ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
+      ...(isEur && !isWdt ? { KursWalutyWidoczny: true } : {}),
     } : {}),
   };
 
@@ -673,7 +677,7 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   // a iFirma w URL .pdf akceptuje raz FakturaId, raz numer — zaleznie od typu.
   // Probujemy roznych ENDPOINTOW x IDENTYFIKATOROW i bierzemy pierwszy, ktory
   // zwroci PRAWDZIWY pdf (magia %PDF — iFirma na blad potrafi oddac 200+JSON).
-  const endpoints = [...new Set([primary, 'fakturawdt', 'fakturakraj', 'fakturaeksporttowarow'])];
+  const endpoints = [...new Set([primary, 'fakturawaluta', 'fakturawdt', 'fakturakraj', 'fakturaeksporttowarow'])];
   const ids = [...new Set([fakturaId, numerUrl].filter(Boolean).map(String))];
   if (!ids.length) throw new Error('iFirma PDF: brak identyfikatora (FakturaId/numer)');
 
