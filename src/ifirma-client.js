@@ -540,7 +540,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     ...((isWdt || isEur) ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
-      ...(isEur && !isWdt ? { KursWalutyWidoczny: true } : {}),
+      // fakturawaluta obsluguje 2 typy (WYSYLKOWA / KRAJOWA) — dla nas krajowa
+      // z cena w walucie obcej. To pole jest WYMAGANE na tym endpoincie.
+      ...(isEur && !isWdt ? { KursWalutyWidoczny: true, TypSprzedazy: 'KRAJOWA' } : {}),
     } : {}),
   };
 
