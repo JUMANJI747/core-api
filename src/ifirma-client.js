@@ -673,6 +673,9 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
     primary = 'fakturaproforma';
   } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt' || r.includes('dostawa_ue') || r.includes('wdt')) {
     primary = 'fakturawdt';
+  } else if (r.includes('wys_ter') || r.includes('waluta')) {
+    // faktura krajowa w walucie obcej (rodzaj iFirma: prz_faktura_wys_ter_kraj)
+    primary = 'fakturawaluta';
   } else {
     primary = 'fakturakraj';
   }
@@ -687,7 +690,12 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
   const ids = [...new Set([fakturaId, numerUrl].filter(Boolean).map(String))];
   if (!ids.length) throw new Error('iFirma PDF: brak identyfikatora (FakturaId/numer)');
 
+  // iFirma na zly endpoint/numer zwraca PDF Z TRESCIA BLEDU ("faktura nie
+  // istnieje") — tez zaczyna sie od %PDF, ale jest malutki. Bierzemy pierwszy
+  // PDF wiekszy niz prog (prawdziwa faktura); maly trzymamy jako ostatecznosc.
+  const MIN_REAL_PDF = 3000;
   let lastErr = 'brak prob';
+  let fallbackPdf = null;
   for (const ep of endpoints) {
     for (const id of ids) {
       const url = `https://www.ifirma.pl/iapi/${ep}/${id}.pdf`;
@@ -698,12 +706,22 @@ async function fetchInvoicePdf(pelnyNumer, rodzaj, fakturaId) {
       });
       const isPdf = status === 200 && body && body.slice(0, 5).toString('latin1').startsWith('%PDF');
       if (isPdf) {
-        console.log(`[ifirma] PDF OK: ${ep}/${id}`);
-        return body;
+        if (body.length >= MIN_REAL_PDF) {
+          console.log(`[ifirma] PDF OK: ${ep}/${id} (${body.length}B)`);
+          return body;
+        }
+        if (!fallbackPdf) fallbackPdf = body; // prawdopodobnie PDF bledu — odlozony
+        lastErr = `${ep}/${id} -> maly PDF ${body.length}B (prawdopod. blad iFirmy), probuje dalej`;
+        console.log(`[ifirma] PDF ${lastErr}`);
+        continue;
       }
       lastErr = `${ep}/${id} -> status ${status}${status === 200 ? ' (nie-PDF)' : ''}`;
       console.log(`[ifirma] PDF proba ${lastErr}`);
     }
+  }
+  if (fallbackPdf) {
+    console.log('[ifirma] PDF: brak duzego PDF, zwracam maly jako ostatecznosc');
+    return fallbackPdf;
   }
   throw new Error('iFirma PDF error: ' + lastErr);
 }

@@ -1953,7 +1953,12 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
     if (!realNumber && !inv.ifirmaId) return res.status(404).json({ error: 'Faktura bez identyfikatora iFirmy (brak PDF)' });
 
     // Tak samo jak dzialajacy bot: rodzaj = ifirmaType || type || 'wdt'.
-    const rodzaj = inv.ifirmaType || inv.type || 'wdt';
+    let rodzaj = inv.ifirmaType || inv.type || 'wdt';
+    // Krajowa w EUR = iFirma 'fakturawaluta'. Dla swiezych faktur type bywa
+    // 'krajowa' (przed sync) — wymus wlasciwy endpoint na podstawie waluty.
+    if (String(inv.currency || '').toUpperCase() === 'EUR' && !/wdt|dostawa_ue|eksport/i.test(rodzaj)) {
+      rodzaj = 'prz_faktura_wys_ter_kraj';
+    }
     console.log(`[invoices/:id/pdf] key=${key} -> id=${inv.id} num=${realNumber} ifirmaId=${inv.ifirmaId} rodzaj=${rodzaj}`);
     const pdf = await fetchInvoicePdf(realNumber, rodzaj, inv.ifirmaId);
     res.setHeader('Content-Type', 'application/pdf');
