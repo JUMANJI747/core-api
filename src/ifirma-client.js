@@ -538,7 +538,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     // (dwujezyczny PL/EN), tak jak WDT.
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() }
       : isEur ? { Jezyk: 'en' } : {}),
-    NumerKontaBankowego: isWdt ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
+    // Konto bankowe: faktury w EUR (WDT oraz krajowa-walutowa) -> konto EUR;
+    // krajowa w PLN -> konto zlotowkowe.
+    NumerKontaBankowego: (isWdt || isEur) ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
     Kontrahent,
     Pozycje,
     ...((isWdt || isEur) ? {
