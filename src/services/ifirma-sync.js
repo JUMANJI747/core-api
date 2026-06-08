@@ -89,7 +89,14 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
     const existing = await prisma.invoice.findUnique({ where: { ifirmaId } });
     if (existing) {
       if (!dryRun) {
-        const updateData = { paidAmount, status };
+        // iFirma = zrodlo prawdy. Aktualizujemy tez grossAmount/currency (gdy
+        // lista podaje Brutto), bo inaczej zawyzona/stara kwota z momentu
+        // tworzenia nigdy sie nie poprawia, a status liczyl sie wzgledem niej
+        // (efekt: "paid" mimo ze zapl. < kwoty, albo zawyzona kwota).
+        const effGross = grossAmount > 0 ? grossAmount : parseFloat(existing.grossAmount || 0);
+        const effStatus = paidAmount >= effGross ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid';
+        const updateData = { paidAmount, status: effStatus };
+        if (grossAmount > 0) { updateData.grossAmount = grossAmount; updateData.currency = currency; }
         if (!existing.ifirmaType && inv.Rodzaj) updateData.ifirmaType = inv.Rodzaj;
         // Backfill missing/placeholder number from iFirma (covers cases where
         // invoice-confirm parsed iFirma response into 'UNKNOWN' fallback).
