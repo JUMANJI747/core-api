@@ -4,7 +4,11 @@ const express = require('express');
 const prisma = require('./db');
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+// Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
+// (base64 zwieksza rozmiar o ~33%). UI dopuszcza ~20 MB realnych plikow ->
+// po zakodowaniu ~27 MB, wiec backend musi przyjac wiekszy body. Wczesniej '5mb'
+// odrzucal maile z zalacznikami juz od ~3.7 MB plikow (HTTP 413).
+app.use(express.json({ limit: '32mb' }));
 
 app.locals.prisma = prisma;
 
