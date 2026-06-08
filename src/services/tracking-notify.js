@@ -129,8 +129,10 @@ function escapeHtml(s) {
   }[c]));
 }
 
-function compose({ country, trackingNumber, carrier, trackingUrl }) {
-  const t = TEMPLATES[pickLang(country)] || TEMPLATES.en;
+function compose({ country, lang, trackingNumber, carrier, trackingUrl }) {
+  // lang ma pierwszenstwo (np. wykryty z maili kontrahenta), inaczej z kraju.
+  const chosen = (lang && TEMPLATES[String(lang).toLowerCase()]) ? String(lang).toLowerCase() : pickLang(country);
+  const t = TEMPLATES[chosen] || TEMPLATES.en;
   const linkOrFallback = trackingUrl || '(tracking link unavailable)';
   const text = [
     t.intro,
@@ -163,12 +165,12 @@ function compose({ country, trackingNumber, carrier, trackingUrl }) {
 // confirmation that includes the active link, so we can see exactly what
 // went out. Best-effort — caller doesn't need to await unless it cares.
 async function sendTrackingNotification({
-  toEmail, country, trackingNumber, carrier, from, prisma, reqChatId,
+  toEmail, country, lang, trackingNumber, carrier, from, prisma, reqChatId,
 }) {
   if (!toEmail) return { ok: false, error: 'no recipient email' };
   if (!trackingNumber) return { ok: false, error: 'no tracking number' };
   const trackingUrl = buildTrackingUrl(carrier, trackingNumber, country);
-  const { subject, text, html } = compose({ country, trackingNumber, carrier, trackingUrl });
+  const { subject, text, html } = compose({ country, lang, trackingNumber, carrier, trackingUrl });
 
   let fromEmail = from || DEFAULT_FROM;
   if (!findAccount(fromEmail)) {

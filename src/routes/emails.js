@@ -7,7 +7,7 @@ const { sendMail, findAccount, extractInbox, getAccounts } = require('../mail-se
 const { appendToSent } = require('../imap-sent');
 const nodemailer = require('nodemailer');
 const { buildTrackingUrl } = require('../services/tracking-urls');
-const { sendTrackingNotification, validateShipmentReady } = require('../services/tracking-notify');
+const { sendTrackingNotification, validateShipmentReady, pickLang: pickTrackingLang } = require('../services/tracking-notify');
 const { getOrders } = require('../glob-client');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
@@ -1523,6 +1523,28 @@ function tldToIso(email) {
 // Dobor kraju (=> jezyk maila) odbiorcy — to samo co robil "stary" system doboru
 // jezyka: kraj kontrahenta (znormalizowany do ISO) -> kraj odbiorcy z GK ->
 // prefiks NIP UE -> forma prawna w nazwie (LDA->PT, GmbH->DE) -> ccTLD e-maila.
+// Jezyk maila trackingowego. Kraj daje pewny jezyk (PT->pt). Gdy kraj pusty lub
+// nieznany (=> en), wykryj jezyk z OSTATNIEGO maila OD kontrahenta (klient pisal
+// w swoim jezyku) — extras.language albo tag 'xx'. Zwraca kod jezyka albo null.
+async function resolveTrackingLang(prisma, contractor, country) {
+  try {
+    if (country && pickTrackingLang(country) !== 'en') return null; // kraj wystarczy
+    if (!contractor || !contractor.id) return null;
+    const lastIn = await prisma.email.findFirst({
+      where: { contractorId: contractor.id, direction: 'INBOUND' },
+      orderBy: { createdAt: 'desc' },
+      select: { extras: true, tags: true },
+    });
+    if (!lastIn) return null;
+    let el = (lastIn.extras && lastIn.extras.language) || null;
+    if (!el && Array.isArray(lastIn.tags)) {
+      const t = lastIn.tags.find(x => typeof x === 'string' && /^[a-z]{2}$/i.test(x) && x.length === 2);
+      if (t) el = t.toLowerCase();
+    }
+    return el || null;
+  } catch { return null; }
+}
+
 function resolveTrackingCountry({ contractor, recvCountry, recvName, email }) {
   const { normalizeIso, nipPrefixToCountry, legalFormToCountry } = require('../services/country-helper');
   return (
@@ -1770,9 +1792,11 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
     //    automatic post-createOrder hook uses, so the brand voice is
     //    consistent whether it's auto or user-triggered.
     const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
+    const lang = await resolveTrackingLang(prisma, resolvedContractor, country);
     const r = await sendTrackingNotification({
       toEmail,
       country,
+      lang,
       trackingNumber,
       carrier: carrierName,
       from: fromOverride,
@@ -1840,7 +1864,8 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     if (!toEmail) return res.json({ ok: false, error: 'recipient email not found', shipment: { trackingNumber, name: recv.name } });
 
     const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
-    const msg = compose({ country, trackingNumber, carrier: carrierName, trackingUrl });
+    const lang = await resolveTrackingLang(prisma, resolvedContractor, country);
+    const msg = compose({ country, lang, trackingNumber, carrier: carrierName, trackingUrl });
 
     // Check if already sent
     const alreadySent = await prisma.email.findFirst({
