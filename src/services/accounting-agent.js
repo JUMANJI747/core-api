@@ -352,7 +352,7 @@ const tools = [
   },
   {
     name: 'upsert_contractor',
-    description: 'Dodaj nowego kontrahenta do bazy (lub zaktualizuj jak NIP juz istnieje). Wywoluj PO verify_nip albo jak user podaje pelne dane (nazwa+NIP+adres+kod pocztowy). Po zapisie backend auto-pushuje dane do iFirmy (fire-and-forget) - czyli FV bedzie miala wszystko od razu. Zwraca contractor.id.',
+    description: 'Dodaj/zaktualizuj kontrahenta (po NIP lub nazwie). Wywoluj PO verify_nip albo gdy user podaje dane. Sluzy TEZ do: dopisania emaila do istniejacego kontrahenta oraz skojarzenia DOMENY firmowej (gdy user mowi "dodaj adres X i domene" / "maile z tej domeny lacz z tym kontrahentem"). Podaj wtedy name (istniejacego) + email i/lub domain. Domena firmowa (np. euromipe.com) sprawia, ze KAZDY przyszly mail z tej domeny linkuje sie do tego kontrahenta. Gmail/free domeny sa ignorowane (nie kojarzymy). Po zapisie auto-push do iFirmy. Zwraca contractor.id.',
     input_schema: {
       type: 'object',
       properties: {
@@ -363,6 +363,7 @@ const tools = [
         address: { type: 'string', description: 'Ulica + numer (np. "ul. Jagielly 1A")' },
         postCode: { type: 'string', description: 'Kod pocztowy. PL: format "11-500". ES: "35600". WAZNE: ZAWSZE wyciagnij z wiadomosci user-a jak jest podany — bez kodu pocztowego iFirma odrzuca FV (Pole Kontrahent.KodPocztowy jest wymagane).' },
         email: { type: 'string' }, phone: { type: 'string' },
+        domain: { type: 'string', description: 'OPCJONALNE: domena firmowa do skojarzenia (np. "euromipe.com"). Maile z tej domeny beda linkowane do tego kontrahenta. Mozna podac sam adres email — domena zostanie wyciagnieta. Gmail/free sa ignorowane.' },
       },
       required: ['name'],
     },

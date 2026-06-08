@@ -4,6 +4,7 @@ const router = require('express').Router();
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
+const { companyDomain } = require('../utils/email-domain');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
@@ -56,6 +57,20 @@ router.post('/upsert', async (req, res) => {
     };
 
     if (!n.name) return res.status(400).json({ error: 'name required' });
+
+    // Domeny firmowe do skojarzenia: z body.domain/domains ORAZ auto z emaila.
+    // Tylko domeny firmowe (nie gmail/free) — wtedy kolejne maile z tej domeny
+    // linkuja sie do tego kontrahenta (inbox-poller dopasowuje po extras.domains).
+    const normDomain = (raw) => {
+      if (!raw) return null;
+      const s = String(raw).trim().toLowerCase().replace(/^@/, '');
+      return companyDomain(s.includes('@') ? s : ('x@' + s));
+    };
+    const domainsToAdd = Array.from(new Set([
+      normDomain(body.domain),
+      ...(Array.isArray(body.domains) ? body.domains.map(normDomain) : []),
+      companyDomain(n.email),
+    ].filter(Boolean)));
 
     // Auto-extract postCode + city z address jak agent wkleil caly adres
     // jako jeden string (np. "ul. Jagielly 1A, 11-500 Gizycko"). Helpers
@@ -172,6 +187,9 @@ router.post('/upsert', async (req, res) => {
       if (n.email && existing.email && n.email.toLowerCase() !== existing.email.toLowerCase()) {
         mergedExtras.emailList = Array.from(new Set([existing.email, n.email, ...(mergedExtras.emailList || [])]));
       }
+      if (domainsToAdd.length) {
+        mergedExtras.domains = Array.from(new Set([...(Array.isArray(mergedExtras.domains) ? mergedExtras.domains : []), ...domainsToAdd]));
+      }
 
       if (deliveryAddress) {
         const { list, added } = appendLocation(mergedExtras.locations, deliveryAddress, n.country || existing.country);
@@ -202,6 +220,9 @@ router.post('/upsert', async (req, res) => {
       const createExtras = { ...n.extras };
       const newBilling = buildBillingAddress(createExtras.billingAddress);
       if (newBilling) createExtras.billingAddress = newBilling;
+      if (domainsToAdd.length) {
+        createExtras.domains = Array.from(new Set([...(Array.isArray(createExtras.domains) ? createExtras.domains : []), ...domainsToAdd]));
+      }
       if (deliveryAddress) {
         const { list, added } = appendLocation(createExtras.locations, deliveryAddress, n.country);
         createExtras.locations = list;

@@ -1046,6 +1046,38 @@ async function processAccount(account) {
               if (contact) contractor = await prisma.contractor.findUnique({ where: { id: contact.contractorId } });
             } catch (_) {}
           }
+          // Dopasowanie po DOMENIE firmowej (nie gmail/free): inny pracownik z
+          // tej samej firmy tez linkuje sie do kontrahenta. Szukamy po:
+          //  - jawnie zapisanej liscie extras.domains[],
+          //  - istniejacych firmowych mailach kontrahenta (email/primaryEmail),
+          //  - mailach w ContractorContact (endsWith @domena).
+          if (!contractor) {
+            try {
+              const { companyDomain } = require('./utils/email-domain');
+              const dom = companyDomain(fe);
+              if (dom) {
+                const at = '@' + dom;
+                contractor = await prisma.contractor.findFirst({
+                  where: {
+                    OR: [
+                      { extras: { path: ['domains'], array_contains: dom } },
+                      { email: { endsWith: at, mode: 'insensitive' } },
+                      { primaryEmail: { endsWith: at } },
+                    ],
+                  },
+                  orderBy: { updatedAt: 'desc' },
+                });
+                if (!contractor) {
+                  const c = await prisma.contractorContact.findFirst({
+                    where: { type: 'email', value: { endsWith: at, mode: 'insensitive' } },
+                    select: { contractorId: true },
+                  }).catch(() => null);
+                  if (c) contractor = await prisma.contractor.findUnique({ where: { id: c.contractorId } });
+                }
+                if (contractor) console.log(`[inbox-poller] linked by DOMAIN @${dom} → ${contractor.name}`);
+              }
+            } catch (e) { console.error('[inbox-poller] domain match error:', e.message); }
+          }
           if (contractor) {
             contractorId = contractor.id;
             contractorName = contractor.name;
