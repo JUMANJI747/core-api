@@ -78,9 +78,16 @@ const BLOCKED_FROM_KEYWORDS = [
   'mailer-daemon', 'postmaster', 'noreply', 'no-reply',
   'donotreply', 'bounce', 'bounced', 'daemon', 'returned',
   'notification@', 'alert@', 'system@',
-  // PGF Master Data — automatyczne "Zgłoszenie od dostawcy" zalewające skrzynkę.
-  'mailer.ckt@pgf.com.pl',
 ];
+
+// PGF Master Data — automatyczne "Zgłoszenie od dostawcy" zalewające michal@.
+// NIE dropujemy ich (decyzja użytkownika) — wpadają do CRM oznaczone tagiem
+// 'pgf', ale jako przeczytane i bez powiadomienia na Telegram, żeby nie
+// zaśmiecały głównego widoku ani licznika nieprzeczytanych. Obsługa idzie
+// osobną, lekką ścieżką (bez klasyfikacji AI — to setki maili miesięcznie).
+function isPgfMail(mail) {
+  return /@pgf\.com\.pl\b/i.test(String(mail.fromEmail || ''));
+}
 
 const BLOCKED_SUBJECT_KEYWORDS = [
   'mail delivery', 'undelivered', 'delivery failed', 'failure notice',
@@ -979,6 +986,36 @@ async function processAccount(account) {
         // tylko psuł — np. force-poll na żądanie nigdy nie nadrobiłby maili
         // od rana. Usunięte.)
 
+        // PGF Master Data — osobna lekka ścieżka: zapis do CRM z tagiem 'pgf',
+        // jako przeczytane, bez AI i bez Telegrama. Przed hardFilter, bo te
+        // maile są auto-generated i hardFilter (Auto-Submitted) by je uciął.
+        if (isPgfMail(mail)) {
+          if (mail.messageId) {
+            const exists = await prisma.email.findUnique({ where: { messageId: mail.messageId } });
+            if (exists) continue;
+          }
+          await prisma.email.create({
+            data: {
+              direction: 'INBOUND',
+              inbox,
+              fromEmail: mail.fromEmail,
+              fromName: mail.fromName || null,
+              toEmail: mail.toEmail || `${inbox}@surfstickbell.com`,
+              subject: mail.subject || null,
+              bodyPreview: (mail.bodyText || '').slice(0, 300),
+              bodyFull: (mail.bodyText || '').slice(0, 2000),
+              bodyHtml: mail.bodyHtml || null,
+              messageId: mail.messageId || null,
+              inReplyTo: mail.inReplyTo || null,
+              references: mail.references || null,
+              tags: ['pgf', 'SUPPLIER'],
+              isRead: true,
+            },
+          });
+          console.log(`[inbox-poller] ${inbox}: PGF uid=${mail.uid} zapisany (tag pgf, read, no tg)`);
+          continue;
+        }
+
         // Hard filter
         if (!hardFilter(mail)) {
           console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
@@ -1718,6 +1755,8 @@ async function rescanInboxSince(inbox, daysBack = 3) {
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
             contractorId,
+            // PGF Master Data: tag 'pgf' + jako przeczytane (jak w głównym pollerze).
+            ...(isPgfMail(mail) ? { tags: ['pgf', 'SUPPLIER'], isRead: true } : {}),
             // Daty: jak header ma valid date, uzyj. Inaczej Prisma default = NOW()
             ...(mail.date instanceof Date && !isNaN(mail.date.getTime()) ? { createdAt: mail.date } : {}),
           },

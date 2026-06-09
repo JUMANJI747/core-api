@@ -180,9 +180,13 @@ router.get('/emails', async (req, res) => {
     where.tags = { has: 'trash' };
   } else if (folder === 'archived') {
     where.tags = { has: 'archived' };
+  } else if (folder === 'pgf') {
+    // Folder PGF — automaty "Zgłoszenie od dostawcy" (PGF Master Data).
+    where.tags = { has: 'pgf' };
   } else if (!folder || folder === 'inbox') {
-    // domyslnie ukrywamy archived i trash
-    where.NOT = { tags: { hasSome: ['archived', 'trash'] } };
+    // domyslnie ukrywamy archived, trash ORAZ pgf (zalew od dostawcy —
+    // dostepny tylko w osobnym folderze 'pgf', nie zasmieca glownego widoku).
+    where.NOT = { tags: { hasSome: ['archived', 'trash', 'pgf'] } };
   }
   if (search) {
     const s = String(search).trim();
