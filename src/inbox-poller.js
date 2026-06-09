@@ -13,6 +13,51 @@ const { verifyVat } = require('./vies');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
+// ============ HEALTH / ALERTING ============
+// Gdy skrzynka przestaje odpowiadac (np. zmienione haslo IMAP, blad polaczenia)
+// proces leci dalej i tylko loguje blad do Railply — czyli po cichu, przez wiele
+// dni nikt nie wie ze np. michal@ nie pobiera maili. Trzymamy w pamieci licznik
+// nieudanych cykli per skrzynka i alarmujemy na Telegram (z throttlingiem), oraz
+// dajemy znac gdy skrzynka wroci do zycia. In-memory (reset po redeployu) — bez
+// migracji DB; wystarczy zeby czlowiek dostal sygnal w ciagu kilku minut.
+const inboxHealth = new Map(); // inbox -> { fails: number, alertedAt: number|null }
+const INBOX_FAIL_ALERT_THRESHOLD = 2;            // alert po 2 nieudanych cyklach z rzedu (~10 min)
+const INBOX_ALERT_THROTTLE_MS = 60 * 60 * 1000;  // ponawiaj alert max raz/godzine
+
+async function sendInboxAlert(text) {
+  try {
+    const { resolveTelegram } = require('./services/telegram-helper');
+    const { token, chatId } = await resolveTelegram(prisma, { scope: 'pl' });
+    if (token && chatId) await sendTelegram(token, chatId, text);
+  } catch (e) {
+    console.error('[inbox-poller] health alert send failed:', e.message);
+  }
+}
+
+async function markInboxOk(inbox) {
+  const h = inboxHealth.get(inbox);
+  if (h && h.alertedAt) {
+    await sendInboxAlert(`✅ Skrzynka ${inbox}@ znów pobiera maile — połączenie wróciło.`);
+  }
+  inboxHealth.delete(inbox);
+}
+
+async function markInboxFail(inbox, errMsg) {
+  const h = inboxHealth.get(inbox) || { fails: 0, alertedAt: null };
+  h.fails += 1;
+  const now = Date.now();
+  const due = !h.alertedAt || (now - h.alertedAt) > INBOX_ALERT_THROTTLE_MS;
+  if (h.fails >= INBOX_FAIL_ALERT_THRESHOLD && due) {
+    h.alertedAt = now;
+    await sendInboxAlert(
+      `⚠️ Skrzynka ${inbox}@ NIE pobiera maili — ${h.fails} nieudane cykle z rzędu.\n` +
+      `Błąd: ${errMsg}\n` +
+      `Sprawdź hasło IMAP tej skrzynki w IMAP_ACCOUNTS (Railway → Variables) lub połączenie z serwerem poczty.`
+    );
+  }
+  inboxHealth.set(inbox, h);
+}
+
 function getAccounts() {
   try {
     return JSON.parse(process.env.IMAP_ACCOUNTS || '[]');
@@ -908,6 +953,7 @@ async function processAccount(account) {
 
     if (mails.length === 0) {
       console.log(`[inbox-poller] ${inbox}: no new mails`);
+      await markInboxOk(inbox); // połączenie OK, choć brak nowych
       return;
     }
 
@@ -1330,8 +1376,11 @@ async function processAccount(account) {
       console.log(`[inbox-poller] ${inbox}: updated lastUid=${maxUid}`);
     }
 
+    await markInboxOk(inbox); // cykl zakończony bez błędu połączenia
+
   } catch (err) {
     console.error(`[inbox-poller] Error for ${inbox}:`, err.message);
+    await markInboxFail(inbox, err.message);
     if (imap) {
       try { imap.end(); } catch (_) {}
     }
@@ -1528,9 +1577,11 @@ async function processSentItems(account) {
 // ============ MAIN LOOP ============
 
 // Licznik cykli — co 12 cykli (pollInterval=5min × 12 = ~60 min) odpalamy
-// rescanInboxSince(inbox, 0.5) na każdej skrzynce. UID-based fetch może
-// pominąć maile gdy UIDy nie są strict-rosnąco; godzinny SINCE-rescan
-// naprawia to automatycznie. Dedup po messageId więc bez duplikatów.
+// rescanInboxSince(inbox, 2) na każdej skrzynce. UID-based fetch może pominąć
+// maile gdy UIDy nie są strict-rosnąco albo skrzynka chwilowo nie odpowiadała;
+// godzinny SINCE-rescan (2 dni wstecz) nadrabia to automatycznie. Dedup po
+// messageId więc bez duplikatów. Okno 2 dni (zamiast 12h) — krótka przerwa w
+// połączeniu z jedną skrzynką sama się zaleczy bez ręcznego rescanu.
 let pollCycleCount = 0;
 const RESCAN_EVERY_N_CYCLES = 12;
 
@@ -1552,7 +1603,7 @@ async function pollAll() {
     }
     if (shouldRescan) {
       try {
-        const r = await rescanInboxSince(account.inbox, 0.5);
+        const r = await rescanInboxSince(account.inbox, 2);
         if (r.added > 0) {
           console.log(`[inbox-poller] AUTO-RESCAN ${account.inbox}: nadrobiono ${r.added} mail(i) (cycle ${pollCycleCount})`);
         }
