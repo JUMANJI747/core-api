@@ -119,6 +119,22 @@ function getLatestEsAlbaranPreview() {
   return { id: bestId, data: esAlbaranPreviews.get(bestId).data };
 }
 
+// Aktywny sweep wygaslych podgladow ze wszystkich trzech map. Lazy-eviction
+// (przy odczycie) nie wystarcza: porzucony preview albo wpis nigdy niebedacy
+// "latest" zostaje na zawsze. getLatest* tylko pomija wygasle, nie kasuje ich.
+// Sweep kasuje wylacznie juz-wygasle wpisy → zero zmian w zachowaniu.
+function sweepEsExpired(now = Date.now()) {
+  for (const map of [esInvoicePreviews, esDeletePreviews, esAlbaranPreviews]) {
+    for (const [id, entry] of map) {
+      if (now > entry.expiresAt) map.delete(id);
+    }
+  }
+}
+
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+const _esSweepTimer = setInterval(sweepEsExpired, SWEEP_INTERVAL_MS);
+if (_esSweepTimer.unref) _esSweepTimer.unref();
+
 module.exports = {
   esInvoicePreviews,
   saveEsPreview,
@@ -135,4 +151,5 @@ module.exports = {
   getEsAlbaranPreview,
   deleteEsAlbaranPreview,
   getLatestEsAlbaranPreview,
+  sweepEsExpired,
 };

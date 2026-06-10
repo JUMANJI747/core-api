@@ -14,4 +14,17 @@ function getPreview(id) {
   return entry.data;
 }
 
-module.exports = { invoicePreviews, savePreview, getPreview };
+// Aktywny sweep wygaslych podgladow. Bez tego porzucony preview (nigdy juz
+// nieodczytany) zostaje w mapie na zawsze — powolny wyciek w dlugo zyjacym
+// procesie. Kasuje tylko juz-wygasle wpisy, wiec zero zmian w zachowaniu.
+function sweepExpired(now = Date.now()) {
+  for (const [id, entry] of invoicePreviews) {
+    if (now > entry.expiresAt) invoicePreviews.delete(id);
+  }
+}
+
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+const _sweepTimer = setInterval(sweepExpired, SWEEP_INTERVAL_MS);
+if (_sweepTimer.unref) _sweepTimer.unref();
+
+module.exports = { invoicePreviews, savePreview, getPreview, sweepExpired };
