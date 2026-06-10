@@ -8,7 +8,7 @@ const { sendMail, getAccounts } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
-const { scoreContractor } = require('../services/contractor-match');
+const { findBestContractors } = require('../services/contractor-match');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/invoice-lines-backfill');
 const { fetchWithTimeout } = require('../http');
@@ -292,13 +292,7 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     if (contractorId) {
       contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
     } else if (contractorSearch) {
-      const all = await prisma.contractor.findMany({
-        select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
-      });
-      const scored = all
-        .map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
-        .filter(x => x.score > 0)
-        .sort((a, b) => b.score - a.score);
+      const scored = await findBestContractors(prisma, contractorSearch);
 
       const best = scored[0];
       console.log(`[invoice-preview] contractor match: "${contractorSearch}" → "${best ? best.contractor.name : 'none'}" (score: ${best ? best.score : 0})`);
@@ -1456,10 +1450,9 @@ router.post('/invoices/delete-search', async (req, res) => {
     const { contractorSearch, dateFrom, dateTo, limit } = req.body;
     if (!contractorSearch) return res.status(400).json({ error: 'contractorSearch required' });
 
-    const all = await prisma.contractor.findMany({ select: { id: true, name: true, nip: true, country: true, email: true, extras: true } });
-    const scored = all.map(c => ({ c, score: scoreContractor(c, contractorSearch) })).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+    const scored = await findBestContractors(prisma, contractorSearch);
     if (!scored.length) return res.status(404).json({ error: 'Nie znaleziono kontrahenta: ' + contractorSearch });
-    const contractor = scored[0].c;
+    const contractor = scored[0].contractor;
 
     const today = new Date().toISOString().slice(0, 10);
     const where = {
@@ -1552,13 +1545,7 @@ router.post('/payments/match', async (req, res) => {
     const tgChat = tg.chatId;
 
     // Find contractor by sender
-    const all = await prisma.contractor.findMany({
-      select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true },
-    });
-    const scored = all
-      .map(c => ({ contractor: c, score: scoreContractor(c, sender) }))
-      .filter(x => x.score >= 40)
-      .sort((a, b) => b.score - a.score);
+    const scored = await findBestContractors(prisma, sender, { minScore: 40 });
 
     if (!scored.length) {
       const msg = `WPŁATA: ${amount} ${currency} od ${sender} → nieznany nadawca`;
@@ -1755,12 +1742,8 @@ router.get('/find-contractor-email/:idOrSearch', async (req, res) => {
     if (isUuid) {
       contractor = await prisma.contractor.findUnique({ where: { id: idOrSearch } });
     } else {
-      const all = await prisma.contractor.findMany({
-        select: { id: true, name: true, nip: true, country: true, email: true },
-      });
-      const scored = all.map(c => ({ c, s: scoreContractor(c, idOrSearch) }))
-        .filter(x => x.s >= 50).sort((a, b) => b.s - a.s);
-      if (scored.length) contractor = scored[0].c;
+      const scored = await findBestContractors(prisma, idOrSearch, { minScore: 50 });
+      if (scored.length) contractor = scored[0].contractor;
     }
     if (!contractor) return res.status(404).json({ error: 'contractor not found' });
     const result = { contractor: { id: contractor.id, name: contractor.name, nip: contractor.nip, currentEmail: contractor.email } };

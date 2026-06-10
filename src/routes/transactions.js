@@ -158,10 +158,8 @@ router.post('/transactions/manual', async (req, res) => {
     let contractor = null;
     if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
     if (!contractor && contractorSearch) {
-      const { scoreContractor } = require('../services/contractor-match');
-      const all = await prisma.contractor.findMany({ select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true } });
-      const scored = all.map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
-        .filter(x => x.score >= 50).sort((a, b) => b.score - a.score);
+      const { findBestContractors } = require('../services/contractor-match');
+      const scored = await findBestContractors(prisma, contractorSearch, { minScore: 50 });
       if (scored.length > 0) contractor = await prisma.contractor.findUnique({ where: { id: scored[0].contractor.id } });
     }
     if (!contractor && (contractorSearch || contractorId)) {
@@ -200,10 +198,8 @@ router.post('/transactions/commission', async (req, res) => {
     let contractor = null;
     if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: contractorId } });
     if (!contractor && contractorSearch) {
-      const { scoreContractor } = require('../services/contractor-match');
-      const all = await prisma.contractor.findMany({ select: { id: true, name: true, nip: true, country: true, email: true, address: true, city: true, extras: true } });
-      const scored = all.map(c => ({ contractor: c, score: scoreContractor(c, contractorSearch) }))
-        .filter(x => x.score >= 50).sort((a, b) => b.score - a.score);
+      const { findBestContractors } = require('../services/contractor-match');
+      const scored = await findBestContractors(prisma, contractorSearch, { minScore: 50 });
       if (scored.length > 0) contractor = await prisma.contractor.findUnique({ where: { id: scored[0].contractor.id } });
     }
     if (!contractor) return res.status(404).json({ ok: false, error: 'Contractor not found by search/id' });
