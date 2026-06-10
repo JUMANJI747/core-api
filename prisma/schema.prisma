@@ -276,6 +276,8 @@ model Email {
   @@index([inbox])
   @@index([isRead])
   @@index([direction])
+  @@index([fromEmail])
+  @@index([createdAt])
 }
 
 model EmailAttachment {

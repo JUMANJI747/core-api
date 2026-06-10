@@ -380,25 +380,22 @@ router.post('/emails/bulk-action', async (req, res) => {
   if (!['archive', 'trash', 'read', 'unread', 'unarchive', 'untrash'].includes(action)) {
     return res.status(400).json({ error: 'action must be one of: archive, trash, read, unread, unarchive, untrash' });
   }
+  // Jedno zapytanie zamiast 2×N sekwencyjnych update'ów (było N+1 na 100+ maili).
   let affected = 0;
-  for (const id of ids) {
-    try {
-      if (action === 'read') {
-        await prisma.email.update({ where: { id }, data: { isRead: true } });
-      } else if (action === 'unread') {
-        await prisma.email.update({ where: { id }, data: { isRead: false } });
-      } else {
-        const email = await prisma.email.findUnique({ where: { id }, select: { tags: true } });
-        if (!email) continue;
-        let tags = email.tags || [];
-        if (action === 'archive') { if (!tags.includes('archived')) tags = [...tags, 'archived']; }
-        else if (action === 'unarchive') { tags = tags.filter(t => t !== 'archived'); }
-        else if (action === 'trash') { if (!tags.includes('trash')) tags = [...tags, 'trash']; }
-        else if (action === 'untrash') { tags = tags.filter(t => t !== 'trash'); }
-        await prisma.email.update({ where: { id }, data: { tags } });
-      }
-      affected++;
-    } catch (_) { /* skip missing */ }
+  if (action === 'read' || action === 'unread') {
+    const r = await prisma.email.updateMany({ where: { id: { in: ids } }, data: { isRead: action === 'read' } });
+    affected = r.count;
+  } else {
+    // Tagi to text[] — Prisma updateMany nie umie append/remove per-wiersz,
+    // więc robimy to jednym UPDATE-em z array_append/array_remove.
+    const tag = (action === 'archive' || action === 'unarchive') ? 'archived' : 'trash';
+    const adding = (action === 'archive' || action === 'trash');
+    if (adding) {
+      // dodaj tag tylko tam, gdzie jeszcze go nie ma (bez duplikatów)
+      affected = await prisma.$executeRaw`UPDATE "Email" SET tags = array_append(tags, ${tag}) WHERE id = ANY(${ids}) AND NOT (${tag} = ANY(tags))`;
+    } else {
+      affected = await prisma.$executeRaw`UPDATE "Email" SET tags = array_remove(tags, ${tag}) WHERE id = ANY(${ids})`;
+    }
   }
   res.json({ ok: true, action, affected });
 });

@@ -1202,13 +1202,8 @@ async function processAccount(account) {
           });
         } catch (_) {}
 
-        // Link email to contractor
-        if (contractorId) {
-          await prisma.email.update({
-            where: { id: savedEmail.id },
-            data: { contractorId },
-          });
-        }
+        // (Usunięto zbędny email.update z contractorId — jest już ustawiony
+        //  w email.create powyżej, był to czysty double-write na każdy mail.)
 
         // Save attachments
         if (mail.attachments && mail.attachments.length > 0) {

@@ -420,8 +420,9 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
   const allInvoices = [];
   let page = 1;
+  const MAX_PAGES = 500; // bezpiecznik: 500×200 = 100k FV; chroni przed nieskończoną pętlą, gdyby API zwracało pełną stronę w kółko
 
-  while (true) {
+  while (page <= MAX_PAGES) {
     const params = new URLSearchParams(baseParams);
     params.set('strona', String(page));
     const fullUrl = urlBase + '?' + params.toString();
@@ -448,6 +449,7 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
     if (pageInvoices.length < 200) break;
     page++;
   }
+  if (page > MAX_PAGES) console.warn(`[ifirma] osiągnięto limit ${MAX_PAGES} stron — przerwano paginację (możliwe niekompletne wyniki)`);
 
   return allInvoices;
 }
