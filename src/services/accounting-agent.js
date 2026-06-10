@@ -1,7 +1,8 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { buildExecuteTool } = require('./agent-runtime');
+const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -672,48 +673,17 @@ async function processAccountingQuery(query, ctx = {}) {
   else if (ANALYTICS_INTENT.test(query)) forcedTool = 'analytics';
   else if (PREVIEW_INTENT.test(query)) forcedTool = 'invoice_preview';
 
-  let response = await anthropic.messages.create({
+  return runAgentLoop({
+    anthropic,
     model: MODEL,
-    max_tokens: 2048,
-    system: buildSystemPrompt(),
-    tools: buildTools(),
-    tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
+    getSystem: buildSystemPrompt,
+    getTools: buildTools,
+    firstToolChoice: forcedTool,
+    executeTool,
+    ctx,
+    logPrefix: '[accounting-agent]',
   });
-
-  let iterations = 0;
-  const MAX_ITER = 5;
-  while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
-    iterations++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
-      console.log(`[accounting-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input, ctx);
-      toolResultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(result),
-      });
-    }
-    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
-    messages.push({ role: 'user', content: toolResultBlocks });
-
-    response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: buildSystemPrompt(),
-      tools: buildTools(),
-      messages,
-    });
-  }
-
-  const textBlock = response.content.find(b => b.type === 'text');
-  return {
-    text: textBlock ? textBlock.text : '',
-    iterations,
-    stopReason: response.stop_reason,
-  };
 }
 
 module.exports = { processAccountingQuery };

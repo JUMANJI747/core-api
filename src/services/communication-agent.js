@@ -1,7 +1,8 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { buildExecuteTool } = require('./agent-runtime');
+const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.COMMUNICATION_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -409,53 +410,26 @@ async function processCommunicationQuery(query, ctx = {}) {
   else if (REPLY_INTENT.test(query) || NEW_MAIL_INTENT.test(query)) forcedTool = 'send_email';
   else if (SEARCH_INTENT.test(query)) forcedTool = 'recent_emails';
 
-  let response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    tools,
-    tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
-    messages,
-  });
-
-  let iterations = 0;
-  const MAX_ITER = 5;
-  while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
-    iterations++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
-      // Wymus jezyk oferty z polecenia usera, jesli podany jawnie (LLM bywa gubi).
-      if (tu.name === 'send_offer') {
-        const wantLang = detectOfferLang(query);
-        if (wantLang) tu.input = { ...tu.input, language: wantLang };
-      }
-      console.log(`[communication-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input, ctx);
-      toolResultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(result),
-      });
+  // Wymus jezyk oferty z polecenia usera, jesli podany jawnie (LLM bywa gubi).
+  const onToolUse = (tu) => {
+    if (tu.name === 'send_offer') {
+      const wantLang = detectOfferLang(query);
+      if (wantLang) tu.input = { ...tu.input, language: wantLang };
     }
-    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
-    messages.push({ role: 'user', content: toolResultBlocks });
-
-    response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      tools,
-      messages,
-    });
-  }
-
-  const textBlock = response.content.find(b => b.type === 'text');
-  return {
-    text: textBlock ? textBlock.text : '',
-    iterations,
-    stopReason: response.stop_reason,
   };
+
+  return runAgentLoop({
+    anthropic,
+    model: MODEL,
+    messages,
+    getSystem: () => SYSTEM_PROMPT,
+    getTools: () => tools,
+    firstToolChoice: forcedTool,
+    executeTool,
+    ctx,
+    logPrefix: '[communication-agent]',
+    onToolUse,
+  });
 }
 
 module.exports = { processCommunicationQuery };

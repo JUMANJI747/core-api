@@ -8,7 +8,8 @@
 // POST /api/agent/accounting-es.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { buildExecuteTool } = require('./agent-runtime');
+const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL =
@@ -524,67 +525,34 @@ async function processAccountingEsQuery(query, opts = {}) {
     forcedTool = 'cs_invoice_preview';
   }
 
-  let response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: buildSystemPrompt(),
-    tools: buildTools(),
-    tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
-    messages,
-  });
-
-  let iterations = 0;
-  const MAX_ITER = 5;
-  // Tool wymuszony na NASTEPNEj iteracji (np. confirm po sprawdzeniu kontekstu).
-  let nextForcedTool = null;
-  while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
-    iterations++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    nextForcedTool = null;
-    for (const tu of toolUseBlocks) {
-      console.log(`[accounting-agent-es] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
-      const result = await executeTool(tu.name, tu.input, ctx);
-      console.log(`[accounting-agent-es] tool_result ${tu.name}:`, JSON.stringify(result).slice(0, 400));
-      // ROOT-CAUSE FIX: po cs_get_context przy czystej intencji potwierdzenia,
-      // jesli ostatnia akcja to swiezy 'preview' → wymus cs_invoice_confirm na
-      // nastepnej iteracji (LLM inaczej czasem pyta "co potwierdzasz?").
-      // Jesli lastAction='confirmed' → NIE wymuszaj nic (anti-duplikat: prompt
-      // + backend 409 zatrzymaja kolejna FV).
-      if (pureConfirmIntent && tu.name === 'cs_get_context' && result && typeof result === 'object') {
-        const FRESH_MS = 10 * 60 * 1000;
-        const fresh = result.timestamp ? (Date.now() - Number(result.timestamp) < FRESH_MS) : true;
-        if (result.lastAction === 'preview' && fresh) {
-          nextForcedTool = 'cs_invoice_confirm';
-        } else if (result.lastAction === 'delete-preview' && fresh) {
-          nextForcedTool = 'cs_delete_confirm';
-        }
-      }
-      toolResultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(result),
-      });
+  // ROOT-CAUSE FIX: po cs_get_context przy czystej intencji potwierdzenia,
+  // jesli ostatnia akcja to swiezy 'preview' → wymus cs_invoice_confirm na
+  // nastepnej iteracji (LLM inaczej czasem pyta "co potwierdzasz?").
+  // Jesli lastAction='confirmed' → NIE wymuszaj nic (anti-duplikat: prompt
+  // + backend 409 zatrzymaja kolejna FV).
+  const onToolResult = (name, result) => {
+    if (pureConfirmIntent && name === 'cs_get_context' && result && typeof result === 'object') {
+      const FRESH_MS = 10 * 60 * 1000;
+      const fresh = result.timestamp ? (Date.now() - Number(result.timestamp) < FRESH_MS) : true;
+      if (result.lastAction === 'preview' && fresh) return 'cs_invoice_confirm';
+      if (result.lastAction === 'delete-preview' && fresh) return 'cs_delete_confirm';
     }
-    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
-    messages.push({ role: 'user', content: toolResultBlocks });
-
-    response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: buildSystemPrompt(),
-      tools: buildTools(),
-      tool_choice: nextForcedTool ? { type: 'tool', name: nextForcedTool } : { type: 'auto' },
-      messages,
-    });
-  }
-
-  const textBlock = response.content.find(b => b.type === 'text');
-  return {
-    text: textBlock ? textBlock.text : '',
-    iterations,
-    stopReason: response.stop_reason,
+    return null;
   };
+
+  return runAgentLoop({
+    anthropic,
+    model: MODEL,
+    messages,
+    getSystem: buildSystemPrompt,
+    getTools: buildTools,
+    firstToolChoice: forcedTool,
+    executeTool,
+    ctx,
+    logPrefix: '[accounting-agent-es]',
+    logResult: true,
+    onToolResult,
+  });
 }
 
 module.exports = { processAccountingEsQuery };
