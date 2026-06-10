@@ -16,6 +16,11 @@ const BASE_URL = (process.env.CONTASIMPLE_BASE_URL || 'https://api.contasimple.c
   .replace(/\/$/, '');
 const API_KEY = (process.env.CONTASIMPLE_API_KEY || '').trim();
 
+// Ceiling na zewnetrzne HTTP. Bez tego wisiace polaczenie (TCP zestawione,
+// brak odpowiedzi) nigdy nie rozwiazuje promise -> flow agenta ES wisi.
+// Timeout zamienia hang na reject, ktory callerzy juz propaguja.
+const HTTP_TIMEOUT_MS = Number(process.env.CONTASIMPLE_HTTP_TIMEOUT_MS) || 30000;
+
 let tokenCache = { accessToken: null, expiresAt: 0 };
 
 // Default headers attached to every request. The User-Agent is required —
@@ -36,6 +41,7 @@ function httpsRequest(method, urlStr, headers, body) {
       port: parsed.port || 443,
       path: parsed.pathname + parsed.search,
       method,
+      timeout: HTTP_TIMEOUT_MS,
       headers: { ...DEFAULT_HEADERS, ...headers },
     };
     if (body !== null && body !== undefined) {
@@ -52,6 +58,7 @@ function httpsRequest(method, urlStr, headers, body) {
         });
       });
     });
+    req.on('timeout', () => req.destroy(new Error(`Contasimple ${method} timeout po ${HTTP_TIMEOUT_MS}ms: ${parsed.hostname}`)));
     req.on('error', reject);
     if (body !== null && body !== undefined) req.write(body);
     req.end();

@@ -9,6 +9,12 @@ const keyHex = (process.env.IFIRMA_API_KEY || '').trim();
 // Fallback na klucz fakturowy, gdyby user wpisał ten sam klucz pod oba env-vary.
 const keyHexAbonent = (process.env.IFIRMA_API_KEY_ABONENT || process.env.IFIRMA_API_KEY || '').trim();
 
+// Ceiling na zewnetrzne HTTP (iFirma/NBP). Bez tego wisiace polaczenie (TCP
+// zestawione, brak odpowiedzi) nigdy nie rozwiazuje promise -> flow agenta
+// wisi w nieskonczonosc. Timeout zamienia hang na reject, ktory callerzy
+// juz obsluguja (fetchNbpRate retry, search/upsert propagacja bledu).
+const HTTP_TIMEOUT_MS = Number(process.env.IFIRMA_HTTP_TIMEOUT_MS) || 30000;
+
 // ============ HELPERS ============
 
 function hmacSig(msg, keyHex) {
@@ -112,15 +118,17 @@ async function setAccountingMonth(targetMiesiac, targetRok) {
   return { ok: true, message: `Przestawiono z ${curR}-${String(curM).padStart(2,'0')} na ${y}-${String(m).padStart(2,'0')}` };
 }
 
-function httpsGetRaw(url, headers) {
+function httpsGetRaw(url, headers, timeoutMs = HTTP_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers };
-    https.get(options, res => {
+    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers, timeout: timeoutMs };
+    const req = https.get(options, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
-    }).on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error(`iFirma GET timeout po ${timeoutMs}ms: ${parsed.hostname}`)));
+    req.on('error', reject);
   });
 }
 
@@ -132,6 +140,7 @@ function httpsPostJson(url, headers, bodyObj) {
       hostname: parsed.hostname,
       path: parsed.pathname,
       method: 'POST',
+      timeout: HTTP_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(data, 'utf8'),
@@ -147,6 +156,7 @@ function httpsPostJson(url, headers, bodyObj) {
         catch (e) { reject(new Error('iFirma invalid JSON: ' + text.slice(0, 300))); }
       });
     });
+    req.on('timeout', () => req.destroy(new Error(`iFirma POST timeout po ${HTTP_TIMEOUT_MS}ms: ${parsed.hostname}`)));
     req.on('error', reject);
     req.write(data);
     req.end();
