@@ -56,8 +56,9 @@ async function findEsContractor(prisma, search) {
   // (lokalne suggestions/null). Znaleziony klient jest zapisywany do lokalnego
   // mirrora (self-healing), bo dalszy flow FV wymaga lokalnego id + contasimpleId.
   try {
-    const remoteHit = await findEsContractorRemote(prisma, search);
-    if (remoteHit) return { contractor: remoteHit, suggestions: [] };
+    const remote = await findEsContractorRemote(prisma, search);
+    if (remote.contractor) return { contractor: remote.contractor, suggestions: [] };
+    if (remote.suggestions.length) return { contractor: null, suggestions: remote.suggestions };
   } catch (e) {
     console.warn('[findEsContractor] Contasimple fallback nieudany:', e.message);
   }
@@ -84,32 +85,52 @@ function remoteCustomerName(c) {
   );
 }
 
-// Szuka klienta po nazwie w API Contasimple, a trafienie zapisuje do lokalnego
-// EsContractor (idempotentnie po contasimpleId). Zwraca zapisany wiersz lub null.
+// Szuka klienta po nazwie w API Contasimple. Pewne trafienie (score>=50)
+// zapisuje do lokalnego EsContractor (idempotentnie po contasimpleId) i zwraca
+// jako { contractor }. Brak pewnego trafienia -> { suggestions } z realnymi
+// nazwami/CIF z Contasimple (user zobaczy kandydatow zamiast samego "podaj NIF").
 async function findEsContractorRemote(prisma, search) {
   const cs = require('../contasimple-client');
-  if (!cs.isConfigured || !cs.isConfigured()) return null;
+  if (!cs.isConfigured || !cs.isConfigured()) return { contractor: null, suggestions: [] };
 
   const resp = await cs.searchCustomers(search);
   const list = (resp && (resp.data || (Array.isArray(resp) ? resp : []))) || [];
-  if (!list.length) return null;
+  // Log diagnostyczny — widoczny w logach Railway, pokazuje co Contasimple
+  // realnie zwrocil dla danej frazy (kluczowe gdy bot mowi "nie znaleziono").
+  console.log(
+    `[findEsContractor] Contasimple search "${search}" -> ${list.length} kandydat(ow): ` +
+    list.slice(0, 8).map(rc => remoteCustomerName(rc)).join(' | ')
+  );
+  if (!list.length) return { contractor: null, suggestions: [] };
 
   const scored = list
     .map(rc => ({ rc, score: scoreContractor({ name: remoteCustomerName(rc), nip: rc.nif, extras: {} }, search) }))
-    .filter(x => x.score >= 50)
     .sort((a, b) => b.score - a.score);
-  const hit = scored[0];
-  if (!hit || !hit.rc.id) return null;
 
-  // Dociagamy pelny rekord (search bywa lekki — bez nif/adresu, ktore sa
-  // potrzebne dalej: B2B wymaga nif, owner liczy sie z adresu).
-  let full = hit.rc;
-  try {
-    const detail = await cs.getCustomer(hit.rc.id);
-    full = (detail && (detail.data || detail)) || hit.rc;
-  } catch (_) { /* zostajemy przy lekkim obiekcie z search */ }
+  const hit = scored.find(x => x.score >= 50 && x.rc.id);
+  if (hit) {
+    // Dociagamy pelny rekord (search bywa lekki — bez nif/adresu, ktore sa
+    // potrzebne dalej: B2B wymaga nif, owner liczy sie z adresu).
+    let full = hit.rc;
+    try {
+      const detail = await cs.getCustomer(hit.rc.id);
+      full = (detail && (detail.data || detail)) || hit.rc;
+    } catch (_) { /* zostajemy przy lekkim obiekcie z search */ }
+    const saved = await upsertEsContractorFromRemote(prisma, full);
+    return { contractor: saved, suggestions: [] };
+  }
 
-  return upsertEsContractorFromRemote(prisma, full);
+  return {
+    contractor: null,
+    suggestions: scored.slice(0, 5).map(x => ({
+      contasimpleId: x.rc.id,
+      name: remoteCustomerName(x.rc),
+      organization: x.rc.organization || null,
+      nif: x.rc.nif || null,
+      score: x.score,
+      source: 'contasimple',
+    })),
+  };
 }
 
 // Mapuje klienta Contasimple -> EsContractor i upsertuje po contasimpleId.
