@@ -43,24 +43,32 @@ async function findEsContractor(prisma, search) {
     .sort((a, b) => b.score - a.score);
 
   const best = scored[0];
-  if (best && best.score >= 50) {
+  // FAST PATH: lokalne trafienie KOMPLETNE (nif + contasimpleId) — uzyj od razu,
+  // bez ruchu do API. To typowy przypadek.
+  if (best && best.score >= 50 && best.contractor.nif && best.contractor.contasimpleId) {
     const full = await prisma.esContractor.findUnique({ where: { id: best.contractor.id } });
     return { contractor: full, suggestions: [] };
   }
 
-  // FALLBACK do API Contasimple. Klient moze istniec w Contasimple, ale byc
-  // nieobecny/nieaktualny w lokalnym mirrorze EsContractor (np. dodany przy
-  // ostatniej FV, a /sync-customers nie przebiegl pozniej). PL (iFirma) ma taki
-  // fallback po API; ES go nie mial -> bot odpowiadal "brak w systemie" mimo ze
-  // klient istnieje. Best-effort: gdy API off lub blad -> zachowanie jak dawniej
-  // (lokalne suggestions/null). Znaleziony klient jest zapisywany do lokalnego
-  // mirrora (self-healing), bo dalszy flow FV wymaga lokalnego id + contasimpleId.
+  // Brak trafienia ALBO trafienie NIEKOMPLETNE (lokalny rekord bez nif/contasimpleId).
+  // To czesta przyczyna "Brak CIF/NIF" mimo ze klient MA CIF w Contasimple: lokalny
+  // mirror jest nieaktualny/niepelny. Fallback do API Contasimple (pelna lista +
+  // fuzzy); znaleziony klient jest zapisywany/aktualizowany lokalnie (self-healing),
+  // bo dalszy flow FV wymaga lokalnego id + nif + contasimpleId. PL (iFirma) ma taki
+  // fallback po API; ES go nie mial. Best-effort: API off/blad -> co mamy lokalnie.
   try {
     const remote = await findEsContractorRemote(prisma, search);
     if (remote.contractor) return { contractor: remote.contractor, suggestions: [] };
     if (remote.suggestions.length) return { contractor: null, suggestions: remote.suggestions };
   } catch (e) {
     console.warn('[findEsContractor] Contasimple fallback nieudany:', e.message);
+  }
+
+  // Fallback nie pomogl — oddaj niekompletne lokalne trafienie jesli jest (route
+  // zwroci czytelny 400 'missing CIF/NIF', co jest lepsze niz gubienie klienta).
+  if (best && best.score >= 50) {
+    const full = await prisma.esContractor.findUnique({ where: { id: best.contractor.id } });
+    return { contractor: full, suggestions: [] };
   }
 
   return {
@@ -85,38 +93,30 @@ function remoteCustomerName(c) {
   );
 }
 
-// Szuka klienta po nazwie w API Contasimple. Pewne trafienie (score>=50)
-// zapisuje do lokalnego EsContractor (idempotentnie po contasimpleId) i zwraca
-// jako { contractor }. Brak pewnego trafienia -> { suggestions } z realnymi
-// nazwami/CIF z Contasimple (user zobaczy kandydatow zamiast samego "podaj NIF").
+// Szuka klienta w API Contasimple (pelna lista klientow + fuzzy po nazwie).
+// Pewne trafienie (score>=50) zapisuje/aktualizuje lokalny EsContractor
+// (self-healing) i zwraca jako { contractor }. Brak pewnego trafienia ->
+// { suggestions } z realnymi nazwami/CIF z Contasimple.
 async function findEsContractorRemote(prisma, search) {
   const cs = require('../contasimple-client');
   if (!cs.isConfigured || !cs.isConfigured()) return { contractor: null, suggestions: [] };
 
-  const resp = await cs.searchCustomers(search);
-  const list = (resp && (resp.data || (Array.isArray(resp) ? resp : []))) || [];
-  // Log diagnostyczny — widoczny w logach Railway, pokazuje co Contasimple
-  // realnie zwrocil dla danej frazy (kluczowe gdy bot mowi "nie znaleziono").
-  console.log(
-    `[findEsContractor] Contasimple search "${search}" -> ${list.length} kandydat(ow): ` +
-    list.slice(0, 8).map(rc => remoteCustomerName(rc)).join(' | ')
-  );
-  if (!list.length) return { contractor: null, suggestions: [] };
-
+  // listAllCustomers — to samo zrodlo co /sync-customers: gwarantuje PELNA liste
+  // i pelne rekordy (organization/nif/adres). Pewniejsze niz /customers/search,
+  // ktorego semantyka dopasowania po nazwie jest niejasna (i moglo byc przyczyna
+  // "nie znaleziono" mimo ze klient istnieje).
+  const resp = await cs.listAllCustomers();
+  const list = (resp && resp.data) || [];
   const scored = list
     .map(rc => ({ rc, score: scoreContractor({ name: remoteCustomerName(rc), nip: rc.nif, extras: {} }, search) }))
     .sort((a, b) => b.score - a.score);
+  // Log diagnostyczny (Railway): pokazuje rozmiar listy i top-dopasowania dla frazy.
+  const top = scored.slice(0, 5).map(x => `${remoteCustomerName(x.rc)}(${x.score})`).join(', ');
+  console.log(`[findEsContractor] Contasimple listAll=${list.length}; fraza "${search}"; top: ${top}`);
 
   const hit = scored.find(x => x.score >= 50 && x.rc.id);
   if (hit) {
-    // Dociagamy pelny rekord (search bywa lekki — bez nif/adresu, ktore sa
-    // potrzebne dalej: B2B wymaga nif, owner liczy sie z adresu).
-    let full = hit.rc;
-    try {
-      const detail = await cs.getCustomer(hit.rc.id);
-      full = (detail && (detail.data || detail)) || hit.rc;
-    } catch (_) { /* zostajemy przy lekkim obiekcie z search */ }
-    const saved = await upsertEsContractorFromRemote(prisma, full);
+    const saved = await upsertEsContractorFromRemote(prisma, hit.rc);
     return { contractor: saved, suggestions: [] };
   }
 
@@ -160,7 +160,10 @@ async function upsertEsContractorFromRemote(prisma, c) {
     notes: c.notes || null,
   };
 
-  const existing = await prisma.esContractor.findUnique({ where: { contasimpleId: c.id } });
+  // Dedup: po contasimpleId, a gdy brak — po nif (chroni przed duplikatem, gdy
+  // istnieje niekompletny rekord lokalny dodany wczesniej bez contasimpleId).
+  let existing = await prisma.esContractor.findUnique({ where: { contasimpleId: c.id } });
+  if (!existing && c.nif) existing = await prisma.esContractor.findFirst({ where: { nif: c.nif } });
   if (existing) {
     return prisma.esContractor.update({ where: { id: existing.id }, data });
   }
