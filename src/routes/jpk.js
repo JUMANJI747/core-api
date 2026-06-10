@@ -279,7 +279,25 @@ async function performWdtMatching(prisma, y, m) {
     include: { contractor: true },
   });
 
-  // Enrich invoices with address data from iFirma
+  // Enrich invoices with address data from iFirma.
+  // Prefetch szczegółów rownolegle (limit wspolbieznosci), zamiast sekwencyjnie
+  // per faktura — przy kilkudziesieciu WDT to byly minuty wiszacego requestu.
+  const ifirmaKontrahentById = new Map();
+  const toFetch = wdtInvoices.filter(inv => inv.ifirmaId);
+  const JPK_FETCH_CONCURRENCY = 5;
+  for (let i = 0; i < toFetch.length; i += JPK_FETCH_CONCURRENCY) {
+    const chunk = toFetch.slice(i, i + JPK_FETCH_CONCURRENCY);
+    await Promise.all(chunk.map(async (inv) => {
+      const rodzaj = inv.ifirmaType || inv.type || 'wdt';
+      try {
+        const details = await fetchInvoiceDetails(inv.ifirmaId, rodzaj);
+        if (details && details.Kontrahent) ifirmaKontrahentById.set(inv.id, details.Kontrahent);
+      } catch (e) {
+        console.error(`[jpk] Failed to fetch details for ${inv.number}:`, e.message);
+      }
+    }));
+  }
+
   const invoiceItems = [];
   for (const inv of wdtInvoices) {
     const contractorName = (inv.contractor && inv.contractor.name)
@@ -295,22 +313,13 @@ async function performWdtMatching(prisma, y, m) {
     let ifirmaCountry = '';
     let ifirmaNip = '';
 
-    if (inv.ifirmaId) {
-      try {
-        const rodzaj = inv.ifirmaType || inv.type || 'wdt';
-        console.log('[jpk] Fetching invoice details from iFirma:', inv.number);
-        const details = await fetchInvoiceDetails(inv.ifirmaId, rodzaj);
-        const k = details && details.Kontrahent;
-        if (k) {
-          ifirmaCity = k.Miejscowosc || '';
-          ifirmaStreet = ((k.Ulica || '') + ' ' + (k.NumerDomu || '')).trim();
-          ifirmaPostCode = k.KodPocztowy || '';
-          ifirmaCountry = k.Kraj || k.KrajKod || '';
-          ifirmaNip = k.NIP || '';
-        }
-      } catch (e) {
-        console.error(`[jpk] Failed to fetch details for ${inv.number}:`, e.message);
-      }
+    const k = ifirmaKontrahentById.get(inv.id);
+    if (k) {
+      ifirmaCity = k.Miejscowosc || '';
+      ifirmaStreet = ((k.Ulica || '') + ' ' + (k.NumerDomu || '')).trim();
+      ifirmaPostCode = k.KodPocztowy || '';
+      ifirmaCountry = k.Kraj || k.KrajKod || '';
+      ifirmaNip = k.NIP || '';
     }
 
     invoiceItems.push({

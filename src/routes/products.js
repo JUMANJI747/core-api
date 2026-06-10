@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
+const { invalidateCatalog } = require('../services/product-catalog');
 
 const SEED_PRODUCTS = [
   {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
@@ -80,6 +81,7 @@ router.post('/seed', asyncHandler(async (req, res) => {
       created++;
     }
   }
+  if (created || updated) invalidateCatalog(); // odswiez cache katalogu po zmianie
   res.json({ ok: true, created, updated, total: SEED_PRODUCTS.length });
 }));
 

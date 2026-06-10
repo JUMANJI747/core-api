@@ -9,6 +9,7 @@ const { sendTelegram } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { findBestContractors } = require('../services/contractor-match');
+const { getActiveCatalog } = require('../services/product-catalog');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/invoice-lines-backfill');
 const { fetchWithTimeout } = require('../http');
@@ -438,8 +439,8 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     }
     console.log(`[invoice-preview] country=${effectiveCountry} (source=${derived.source || 'default_PL'}) → waluta=${waluta} rodzaj=${rodzaj}`);
 
-    // Load product catalog for fuzzy lookup
-    const catalog = await prisma.product.findMany({ where: { active: true } });
+    // Load product catalog for fuzzy lookup (cache z TTL — patrz product-catalog.js)
+    const catalog = await getActiveCatalog(prisma);
 
     const pozycje = [];
     // Match delivery / shipping line items (not in product catalog) so the
