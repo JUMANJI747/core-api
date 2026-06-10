@@ -48,6 +48,20 @@ async function findEsContractor(prisma, search) {
     return { contractor: full, suggestions: [] };
   }
 
+  // FALLBACK do API Contasimple. Klient moze istniec w Contasimple, ale byc
+  // nieobecny/nieaktualny w lokalnym mirrorze EsContractor (np. dodany przy
+  // ostatniej FV, a /sync-customers nie przebiegl pozniej). PL (iFirma) ma taki
+  // fallback po API; ES go nie mial -> bot odpowiadal "brak w systemie" mimo ze
+  // klient istnieje. Best-effort: gdy API off lub blad -> zachowanie jak dawniej
+  // (lokalne suggestions/null). Znaleziony klient jest zapisywany do lokalnego
+  // mirrora (self-healing), bo dalszy flow FV wymaga lokalnego id + contasimpleId.
+  try {
+    const remoteHit = await findEsContractorRemote(prisma, search);
+    if (remoteHit) return { contractor: remoteHit, suggestions: [] };
+  } catch (e) {
+    console.warn('[findEsContractor] Contasimple fallback nieudany:', e.message);
+  }
+
   return {
     contractor: null,
     suggestions: scored.slice(0, 5).map(x => ({
@@ -58,6 +72,79 @@ async function findEsContractor(prisma, search) {
       score: x.score,
     })),
   };
+}
+
+// Zwraca nazwe firmowa kontrahenta Contasimple wg tej samej regs co /sync-customers.
+function remoteCustomerName(c) {
+  return (
+    c.organization ||
+    [c.firstname, c.lastname].filter(Boolean).join(' ').trim() ||
+    c.name ||
+    `Customer ${c.id}`
+  );
+}
+
+// Szuka klienta po nazwie w API Contasimple, a trafienie zapisuje do lokalnego
+// EsContractor (idempotentnie po contasimpleId). Zwraca zapisany wiersz lub null.
+async function findEsContractorRemote(prisma, search) {
+  const cs = require('../contasimple-client');
+  if (!cs.isConfigured || !cs.isConfigured()) return null;
+
+  const resp = await cs.searchCustomers(search);
+  const list = (resp && (resp.data || (Array.isArray(resp) ? resp : []))) || [];
+  if (!list.length) return null;
+
+  const scored = list
+    .map(rc => ({ rc, score: scoreContractor({ name: remoteCustomerName(rc), nip: rc.nif, extras: {} }, search) }))
+    .filter(x => x.score >= 50)
+    .sort((a, b) => b.score - a.score);
+  const hit = scored[0];
+  if (!hit || !hit.rc.id) return null;
+
+  // Dociagamy pelny rekord (search bywa lekki — bez nif/adresu, ktore sa
+  // potrzebne dalej: B2B wymaga nif, owner liczy sie z adresu).
+  let full = hit.rc;
+  try {
+    const detail = await cs.getCustomer(hit.rc.id);
+    full = (detail && (detail.data || detail)) || hit.rc;
+  } catch (_) { /* zostajemy przy lekkim obiekcie z search */ }
+
+  return upsertEsContractorFromRemote(prisma, full);
+}
+
+// Mapuje klienta Contasimple -> EsContractor i upsertuje po contasimpleId.
+// Mirror logiki z routes/contasimple.js POST /sync-customers (pojedynczy wpis).
+async function upsertEsContractorFromRemote(prisma, c) {
+  if (!c || !c.id) return null;
+  const { resolveOwnerFromAddress } = require('./owner-derive');
+
+  const data = {
+    contasimpleId: c.id,
+    type: c.type || 'Issuer',
+    organization: c.organization || null,
+    firstname: c.firstname || null,
+    lastname: c.lastname || null,
+    name: remoteCustomerName(c),
+    nif: c.nif || null,
+    email: c.email || null,
+    phone: c.phone || null,
+    mobile: c.mobile || null,
+    address: c.address || null,
+    city: c.city || null,
+    province: c.province || null,
+    country: c.country || null,
+    countryId: c.countryId || null,
+    postalCode: c.postalCode || null,
+    documentCulture: c.documentCulture || null,
+    notes: c.notes || null,
+  };
+
+  const existing = await prisma.esContractor.findUnique({ where: { contasimpleId: c.id } });
+  if (existing) {
+    return prisma.esContractor.update({ where: { id: existing.id }, data });
+  }
+  const owner = resolveOwnerFromAddress({ postalCode: c.postalCode, city: c.city, province: c.province });
+  return prisma.esContractor.create({ data: { ...data, owner } });
 }
 
 // ============ PRODUCT FUZZY LOOKUP ============
