@@ -386,6 +386,16 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     logistics: processLogisticsQuery,
   };
 
+  // Wyciaga ZAWSZE string z wyniku sub-agenta. r.text bywal pusty (agent skonczyl
+  // po tool-callu bez podsumowania) albo nie-string -> wczesniej leciało jako
+  // obiekt i front renderowal "[object Object]". Tu gwarantujemy string.
+  const pickText = (r) => {
+    if (r && typeof r.text === 'string' && r.text.trim()) return r.text;
+    if (r && r.error != null) return typeof r.error === 'string' ? r.error : JSON.stringify(r.error);
+    if (r && r.text && typeof r.text === 'object') return JSON.stringify(r.text);
+    return r ? JSON.stringify(r).slice(0, 500) : '';
+  };
+
   // EXPLICIT TARGET z quick-action frontu (np. "Dodaj kontrahenta" -> accounting).
   // Pomijamy router: woła wskazanego sub-agenta deterministycznie. Router bywal
   // misroutowal "dodaj kontrahenta przez upsert_contractor" jako 'direct' i
@@ -393,7 +403,8 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   if (target && ALL_PROCESSORS[target]) {
     try {
       const r = await ALL_PROCESSORS[target](buildFullQuery(), { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
-      return res.json({ ok: true, text: r.text || r.error || JSON.stringify(r).slice(0, 500), agents: [target], source: 'target' });
+      console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
+      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target' });
     } catch (e) {
       return res.json({ ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' });
     }
@@ -423,7 +434,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
         const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-8) });
-        return res.json({ ok: true, text: r.text || r.error || JSON.stringify(r).slice(0, 500), agents: [lastAgent], source: 'continue' });
+        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue' });
       } catch (e) {
         return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
       }
@@ -502,7 +513,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
       try {
         const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
         console.log(`[agent/assistant] [timing] agent ${agentName} → ${Date.now() - tAgent}ms (${r.iterations != null ? r.iterations + ' rund' : '?'})`);
-        results.push({ agent: agentName, text: r.text || r.error || JSON.stringify(r).slice(0, 500) });
+        results.push({ agent: agentName, text: pickText(r) });
       } catch (e) {
         console.log(`[agent/assistant] [timing] agent ${agentName} ERROR → ${Date.now() - tAgent}ms`);
         results.push({ agent: agentName, text: `Blad ${agentName}: ${e.message}` });
