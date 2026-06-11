@@ -2033,7 +2033,29 @@ router.get('/invoices', async (req, res) => {
         createdAt: true, updatedAt: true,
       },
     });
-    res.json(list);
+    // Status wysylki per faktura — z dealow (Transaction) zmatchowanych po
+    // invoiceNumber, ktore maja przypieta paczke (shipmentNumber). Dzieki temu
+    // front pokazuje status zamiast guzika "Zamow kuriera" gdy kurier juz byl.
+    const numbers = list.map(i => i.number).filter(Boolean);
+    const shipMap = {};
+    if (numbers.length) {
+      const txs = await prisma.transaction.findMany({
+        where: { invoiceNumber: { in: numbers }, shipmentNumber: { not: null } },
+        select: { invoiceNumber: true, shipmentNumber: true, trackingNumber: true, hasShipped: true, hasDelivered: true, occurredAt: true },
+        orderBy: { occurredAt: 'desc' },
+      });
+      for (const t of txs) {
+        if (t.invoiceNumber && !shipMap[t.invoiceNumber]) {
+          shipMap[t.invoiceNumber] = {
+            shipmentNumber: t.shipmentNumber,
+            trackingNumber: t.trackingNumber,
+            shipped: !!t.hasShipped,
+            delivered: !!t.hasDelivered,
+          };
+        }
+      }
+    }
+    res.json(list.map(i => ({ ...i, shipment: (i.number && shipMap[i.number]) || null })));
   } catch (e) {
     console.error('[GET /invoices] error:', e.message);
     res.status(500).json({ error: e.message });
