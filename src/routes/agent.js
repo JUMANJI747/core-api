@@ -362,8 +362,42 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const { query, context = {}, previousTurns = [], lastAgent = null } = req.body || {};
+  const { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query required' });
+
+  // Buduje query z prefixem kontekstu maila (wspolne dla target-bypass i routera).
+  const buildFullQuery = () => {
+    const ctxLines = [];
+    if (context.contractorId) ctxLines.push(`ContractorId: ${context.contractorId}`);
+    if (context.contractorName) ctxLines.push(`Kontrahent: ${context.contractorName}`);
+    if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
+    if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
+    if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+    const ctxStr = ctxLines.join('\n');
+    return ctxStr ? `${ctxStr}\n\n${query}` : query;
+  };
+
+  const ALL_PROCESSORS = {
+    accounting: processAccountingQuery,
+    'accounting-es': processAccountingEsQuery,
+    communication: processCommunicationQuery,
+    'communication-es': processCommunicationEsQuery,
+    operations: processOperationsQuery,
+    logistics: processLogisticsQuery,
+  };
+
+  // EXPLICIT TARGET z quick-action frontu (np. "Dodaj kontrahenta" -> accounting).
+  // Pomijamy router: woła wskazanego sub-agenta deterministycznie. Router bywal
+  // misroutowal "dodaj kontrahenta przez upsert_contractor" jako 'direct' i
+  // odpowiadal instrukcja "zrob to przyciskiem Edytuj" zamiast wykonac akcje.
+  if (target && ALL_PROCESSORS[target]) {
+    try {
+      const r = await ALL_PROCESSORS[target](buildFullQuery(), { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
+      return res.json({ ok: true, text: r.text || r.error || JSON.stringify(r).slice(0, 500), agents: [target], source: 'target' });
+    } catch (e) {
+      return res.json({ ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' });
+    }
+  }
 
   // Jeśli jest lastAgent i query to krótka odpowiedź (1-2 słowa, numer, "tak/ok/1/2/3")
   // → kontynuuj z tym samym agentem bez pytania routera
@@ -408,7 +442,7 @@ Dostepni agenci:
 - operations: deale, transakcje, matching FV-shipment, Google Sheets
 
 Jesli zapytanie wymaga WIELU agentow, podaj ich w kolejnosci.
-Jesli to prosta edycja danych kontrahenta (NIP, email, adres) — odpowiedz "direct" (bez agenta, frontend zrobi sam).
+"direct" TYLKO gdy user pyta JAK recznie zmienic jedno pole (np. "jak zmienic NIP?"). UWAGA: "dodaj/zapisz/utworz kontrahenta", "wyciagnij dane i dodaj do bazy", "upsert_contractor" = AKCJA agenta "accounting" (NIE direct).
 
 Kontekst: ${JSON.stringify(context).slice(0, 500)}
 
