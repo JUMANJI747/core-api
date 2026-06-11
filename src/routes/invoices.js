@@ -2033,29 +2033,53 @@ router.get('/invoices', async (req, res) => {
         createdAt: true, updatedAt: true,
       },
     });
-    // Status wysylki per faktura — z dealow (Transaction) zmatchowanych po
-    // invoiceNumber, ktore maja przypieta paczke (shipmentNumber). Dzieki temu
-    // front pokazuje status zamiast guzika "Zamow kuriera" gdy kurier juz byl.
-    const numbers = list.map(i => i.number).filter(Boolean);
-    const shipMap = {};
-    if (numbers.length) {
+    // Status wysylki per faktura — NIEZALEZNY od kruchego merge'a dealow.
+    // Bierzemy WSZYSTKIE wysylki (Transaction z shipmentNumber) danego
+    // kontrahenta i przypisujemy 1:1 do jego faktur: najpierw po dokladnym
+    // numerze FV, potem greedy po najblizszej dacie (okno 30 dni). Dzieki temu
+    // faktura pokazuje status nawet gdy matcher nie zmergowal jej z wysylka w
+    // jeden wiersz — a front rzetelnie pokazuje do KTORYCH faktur trzeba jeszcze
+    // zamowic kuriera (te bez przypisanej wysylki).
+    const contractorIds = [...new Set(list.map(i => i.contractorId).filter(Boolean))];
+    const shipByInvoiceId = {};
+    if (contractorIds.length) {
       const txs = await prisma.transaction.findMany({
-        where: { invoiceNumber: { in: numbers }, shipmentNumber: { not: null } },
-        select: { invoiceNumber: true, shipmentNumber: true, trackingNumber: true, hasShipped: true, hasDelivered: true, occurredAt: true },
-        orderBy: { occurredAt: 'desc' },
+        where: { contractorId: { in: contractorIds }, shipmentNumber: { not: null } },
+        select: { contractorId: true, invoiceNumber: true, shipmentNumber: true, trackingNumber: true, hasShipped: true, hasDelivered: true, occurredAt: true },
       });
-      for (const t of txs) {
-        if (t.invoiceNumber && !shipMap[t.invoiceNumber]) {
-          shipMap[t.invoiceNumber] = {
-            shipmentNumber: t.shipmentNumber,
-            trackingNumber: t.trackingNumber,
-            shipped: !!t.hasShipped,
-            delivered: !!t.hasDelivered,
-          };
+      const shipsByContractor = {};
+      for (const t of txs) (shipsByContractor[t.contractorId] ||= []).push({ ...t, used: false });
+      const invsByContractor = {};
+      for (const inv of list) if (inv.contractorId) (invsByContractor[inv.contractorId] ||= []).push(inv);
+
+      const WINDOW_MS = 30 * 86400000;
+      for (const cid of Object.keys(invsByContractor)) {
+        const ships = shipsByContractor[cid] || [];
+        if (!ships.length) continue;
+        const invs = invsByContractor[cid].slice().sort((a, b) => new Date(a.issueDate) - new Date(b.issueDate));
+        // 1) dokladny numer FV (pewny link z matchera)
+        for (const inv of invs) {
+          if (!inv.number) continue;
+          const exact = ships.find(s => !s.used && s.invoiceNumber && s.invoiceNumber === inv.number);
+          if (exact) { exact.used = true; shipByInvoiceId[inv.id] = exact; }
+        }
+        // 2) reszta — greedy po najblizszej dacie w oknie
+        for (const inv of invs) {
+          if (shipByInvoiceId[inv.id]) continue;
+          let best = null, bestDiff = Infinity;
+          for (const s of ships) {
+            if (s.used) continue;
+            const diff = Math.abs(new Date(inv.issueDate) - new Date(s.occurredAt));
+            if (diff <= WINDOW_MS && diff < bestDiff) { bestDiff = diff; best = s; }
+          }
+          if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
         }
       }
     }
-    res.json(list.map(i => ({ ...i, shipment: (i.number && shipMap[i.number]) || null })));
+    res.json(list.map(i => {
+      const s = shipByInvoiceId[i.id];
+      return { ...i, shipment: s ? { shipmentNumber: s.shipmentNumber, trackingNumber: s.trackingNumber, shipped: !!s.hasShipped, delivered: !!s.hasDelivered } : null };
+    }));
   } catch (e) {
     console.error('[GET /invoices] error:', e.message);
     res.status(500).json({ error: e.message });
