@@ -19,9 +19,57 @@ async function parseIfirmaPdfItems(pdfBytes) {
   const text = (result && result.text) || '';
 
   let items = parseFormatA(text);
-  if (items.length === 0) items = parseFormatB(text);
+  let source = 'regex-A';
+  if (items.length === 0) { items = parseFormatB(text); source = 'regex-B'; }
+  // Fallback LLM — regexy sa pod konkretne uklady iFirmy; FV wystawione recznie
+  // / innym szablonem ich nie pasuja. Generowany PDF ma czysty tekst, wiec model
+  // niezawodnie wyciaga pozycje niezaleznie od ukladu.
+  if (items.length === 0 && text.trim().length > 20) {
+    try {
+      items = await parseItemsWithLLM(text);
+      source = 'llm';
+      console.log(`[ifirma-pdf-parser] regex 0 pozycji -> LLM fallback: ${items.length} pozycji`);
+    } catch (e) {
+      console.error('[ifirma-pdf-parser] LLM fallback error:', e.message);
+    }
+  }
 
-  return { items, rawText: text };
+  return { items, rawText: text, source };
+}
+
+// Wyciaga pozycje z tekstu faktury modelem (gdy regex zawiedzie). Zwraca
+// [{name, qty, priceNetto, currency, vatRate}]. Best-effort: brak klucza/blad -> [].
+async function parseItemsWithLLM(text) {
+  if (!process.env.ANTHROPIC_API_KEY) return [];
+  const Anthropic = require('@anthropic-ai/sdk');
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const resp = await anthropic.messages.create({
+    model: process.env.PDF_PARSE_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929',
+    max_tokens: 1500,
+    system:
+      'Wyciagasz POZYCJE z tekstu faktury (wygenerowany PDF, czysty tekst). ' +
+      'Zwroc TYLKO JSON: {"items":[{"name":string,"qty":number,"priceNetto":number,"currency":string,"vatRate":number}]}. ' +
+      'name=nazwa towaru/uslugi, qty=ilosc (liczba), priceNetto=cena JEDNOSTKOWA netto (liczba), ' +
+      'currency=waluta (PLN/EUR/USD...), vatRate=stawka VAT jako liczba (23,8,5,0; "zw"/"np"->0). ' +
+      'POMIJAJ wiersze podsumowania (Razem/Total/netto/VAT/brutto/Do zaplaty) i dane nabywcy/sprzedawcy. ' +
+      'Jesli nie ma pozycji -> {"items":[]}.',
+    messages: [{ role: 'user', content: `Tekst faktury:\n${text.slice(0, 12000)}` }],
+  });
+  const out = resp.content.map(b => b.text || '').join('');
+  const mm = out.match(/\{[\s\S]*\}/);
+  if (!mm) return [];
+  let parsed;
+  try { parsed = JSON.parse(mm[0]); } catch { return []; }
+  if (!parsed || !Array.isArray(parsed.items)) return [];
+  return parsed.items
+    .filter(it => it && it.name && Number(it.qty) > 0)
+    .map(it => ({
+      name: String(it.name).slice(0, 200),
+      qty: Number(it.qty) || 1,
+      priceNetto: Number(it.priceNetto) || 0,
+      currency: String(it.currency || 'PLN').toUpperCase().slice(0, 3),
+      vatRate: it.vatRate != null && !isNaN(parseInt(it.vatRate, 10)) ? parseInt(it.vatRate, 10) : null,
+    }));
 }
 
 function parseFormatA(text) {
@@ -110,4 +158,4 @@ function parseFormatB(text) {
   return items;
 }
 
-module.exports = { parseIfirmaPdfItems };
+module.exports = { parseIfirmaPdfItems, parseItemsWithLLM };
