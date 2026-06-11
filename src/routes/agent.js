@@ -365,15 +365,39 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query required' });
 
-  // Buduje query z prefixem kontekstu maila (wspolne dla target-bypass i routera).
-  const buildFullQuery = () => {
+  // Buduje query z prefixem kontekstu: dane kontrahenta + CALY WATEK rozmowy
+  // (zamowienie bywa w starszym mailu niz otwarty) + historia maili kontrahenta
+  // z bazy (gdy czegos brak w watku — inne watki/zamowienia). Async, bo dociaga
+  // historie z DB.
+  const buildFullQuery = async () => {
     const ctxLines = [];
     if (context.contractorId) ctxLines.push(`ContractorId: ${context.contractorId}`);
     if (context.contractorName) ctxLines.push(`Kontrahent: ${context.contractorName}`);
     if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
     if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
-    if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
-    const ctxStr = ctxLines.join('\n');
+    // Caly watek ma priorytet nad pojedynczym otwartym mailem.
+    if (context.thread) ctxLines.push(`WATEK ROZMOWY (chronologicznie, najstarszy pierwszy):\n${String(context.thread).slice(0, 8000)}`);
+    else if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+    // Historia z bazy — agent ma "szukac w bazie kontrahenta" jak czegos brak.
+    if (context.contractorId) {
+      try {
+        const hist = await prisma.email.findMany({
+          where: { contractorId: context.contractorId },
+          orderBy: { createdAt: 'desc' },
+          take: 8,
+          select: { direction: true, createdAt: true, subject: true, bodyPreview: true, fromEmail: true, toEmail: true },
+        });
+        if (hist.length) {
+          const lines = hist.map(e => {
+            const who = e.direction === 'INBOUND' ? `od ${e.fromEmail}` : `do ${e.toEmail}`;
+            const d = e.createdAt ? new Date(e.createdAt).toISOString().slice(0, 10) : '';
+            return `- [${d}] ${who}: ${e.subject || ''} — ${(e.bodyPreview || '').slice(0, 160)}`;
+          }).join('\n');
+          ctxLines.push(`HISTORIA MAILI KONTRAHENTA (z bazy, ostatnie ${hist.length}):\n${lines}`);
+        }
+      } catch (_) { /* best-effort */ }
+    }
+    const ctxStr = ctxLines.join('\n\n');
     return ctxStr ? `${ctxStr}\n\n${query}` : query;
   };
 
@@ -402,7 +426,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   // odpowiadal instrukcja "zrob to przyciskiem Edytuj" zamiast wykonac akcje.
   if (target && ALL_PROCESSORS[target]) {
     try {
-      const r = await ALL_PROCESSORS[target](buildFullQuery(), { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
+      const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
       console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
       return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target' });
     } catch (e) {
