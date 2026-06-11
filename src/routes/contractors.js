@@ -8,7 +8,7 @@ const { companyDomain } = require('../utils/email-domain');
 const { findAddressInContractorEmails, saveAddressToContractorLocations } = require('../services/address-from-emails');
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
-const { scoreContractor } = require('../services/contractor-match');
+const { scoreContractor, findBestContractors, sameContractorName } = require('../services/contractor-match');
 const { geocodeAndSave } = require('../services/geocode');
 const { geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
@@ -163,11 +163,20 @@ router.post('/upsert', async (req, res) => {
       return { list, added: true };
     }
 
-    // Find existing: by NIP, then by email, then by exact name
+    // Find existing: by NIP, then by email, then by ZNORMALIZOWANA nazwa.
     let existing = null;
     if (n.nip) existing = await prisma.contractor.findUnique({ where: { nip: n.nip } });
     if (!existing && n.email) existing = await prisma.contractor.findFirst({ where: { email: { equals: n.email, mode: 'insensitive' } } });
-    if (!existing && !n.nip) existing = await prisma.contractor.findFirst({ where: { name: { equals: n.name, mode: 'insensitive' } } });
+    // Match po nazwie ZAWSZE gdy nic nie znaleziono (nie tylko gdy brak NIP) —
+    // inaczej request z nowym/blednym NIP tworzyl duplikat istniejacej firmy.
+    // Prefilter fuzzy (90) + symetryczna ROWNOSC zbioru slow (sameContractorName)
+    // => "EUROMIPE" == "EUROMIPE SL" == "Kitewave Store S.A." reuse, ale
+    // "EUROMIPE" != "EUROMIPE TRADING GROUP" (brak falszywego scalenia).
+    if (!existing && n.name) {
+      const cands = await findBestContractors(prisma, n.name, { minScore: 90, limit: 5 });
+      const dup = cands.find(c => sameContractorName(n.name, c.contractor.name));
+      if (dup) existing = await prisma.contractor.findUnique({ where: { id: dup.contractor.id } });
+    }
 
     let contractor;
     let deliveryAddressAdded = false;

@@ -8,6 +8,7 @@ const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const { parseOrderWithLLM } = require('./order-llm-parser');
 const { fetchWithTimeout } = require('./http');
 const { verifyVat } = require('./vies');
+const { findBestContractors, sameContractorName } = require('./services/contractor-match');
 
 // ============ CONFIG ============
 
@@ -721,18 +722,24 @@ async function processWebOrder(prisma, savedEmail, parsed) {
     }
   }
 
-  // Find contractor by email, then by name
-  if (parsed.email) {
+  // Znajdz istniejacego: NIP (exact) -> email -> ZNORMALIZOWANA nazwa.
+  // Wczesniej bylo "pierwsze slowo name contains", co gubilo warianty (np.
+  // "EUROMIPE" vs "EUROMIPE SL") i tworzylo duplikaty. Teraz findBestContractors
+  // z minScore:100 (znormalizowana ROWNOSC nazwy — zdejmuje sufiksy/interpunkcje/
+  // case), wiec dopina do istniejacego bez ryzyka falszywego scalenia.
+  if (parsedId.company && parsed.nipRaw) {
+    result.contractor = await prisma.contractor.findFirst({ where: { nip: parsed.nipRaw } });
+  }
+  if (!result.contractor && parsed.email) {
     result.contractor = await prisma.contractor.findFirst({
       where: { email: { equals: parsed.email, mode: 'insensitive' } },
     });
   }
   if (!result.contractor && parsed.companyName) {
-    const firstWord = parsed.companyName.split(/\s+/)[0];
-    if (firstWord && firstWord.length > 3) {
-      result.contractor = await prisma.contractor.findFirst({
-        where: { name: { contains: firstWord, mode: 'insensitive' } },
-      });
+    const cands = await findBestContractors(prisma, parsed.companyName, { minScore: 90, limit: 5 });
+    const dup = cands.find(c => sameContractorName(parsed.companyName, c.contractor.name));
+    if (dup) {
+      result.contractor = await prisma.contractor.findUnique({ where: { id: dup.contractor.id } });
     }
   }
 

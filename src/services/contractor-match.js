@@ -13,6 +13,25 @@ function normalizeContractorName(s) {
     .trim();
 }
 
+// Zbior "znaczacych" slow nazwy (>=3 znaki po normalizacji). Drobne resztki po
+// scietych sufiksach ("z o o" itp.) i 1-2 literowe tokeny pomijamy.
+function significantWords(name) {
+  return new Set(normalizeContractorName(name).split(/\s+/).filter(w => w.length >= 3));
+}
+
+// Czy dwie nazwy to NA PEWNO ten sam kontrahent — symetryczna ROWNOSC zbioru
+// znaczacych slow. Lapie warianty tej samej firmy ("EUROMIPE" == "EUROMIPE SL"
+// == "Kitewave Store S.A." == "X sp. z o.o.") ale NIE scala roznych
+// ("EUROMIPE" != "EUROMIPE TRADING GROUP", "EURO MIPE" != "EUROMIPE").
+// Uzywane do dedup PRZED utworzeniem kontrahenta (bezpieczne auto-reuse).
+function sameContractorName(a, b) {
+  const sa = significantWords(a);
+  const sb = significantWords(b);
+  if (!sa.size || sa.size !== sb.size) return false;
+  for (const w of sa) if (!sb.has(w)) return false;
+  return true;
+}
+
 function scoreContractor(contractor, search) {
   const normSearch = normalizeContractorName(search);
   const normName = normalizeContractorName(contractor.name);
@@ -105,4 +124,4 @@ async function findBestContractors(prisma, search, opts = {}) {
   return scored.slice(0, limit);
 }
 
-module.exports = { normalizeContractorName, scoreContractor, findBestContractors, DEFAULT_CONTRACTOR_SELECT };
+module.exports = { normalizeContractorName, significantWords, sameContractorName, scoreContractor, findBestContractors, DEFAULT_CONTRACTOR_SELECT };
