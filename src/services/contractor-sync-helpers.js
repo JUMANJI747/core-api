@@ -24,6 +24,21 @@ function normalizePhone(v) {
   return s.length >= 6 ? s : null;
 }
 
+// Nasze wlasne adresy (delivery@/info@/nikodem@ surfstickbell.com) NIE sa
+// kontaktami kontrahenta. Trafialy tu z domyslnych nadawcow przy zamowieniu
+// kuriera (DEFAULT_RECEIVER_EMAIL) i zasmiecaly kafelek Kontakty oraz
+// doklejaly NASZE maile do kontrahenta w widoku 360 (pula matchowania bierze
+// kontakty). Domena konfigurowalna przez OWN_EMAIL_DOMAINS (CSV).
+const OWN_EMAIL_DOMAINS = (process.env.OWN_EMAIL_DOMAINS || 'surfstickbell.com')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+function isOwnEmail(value) {
+  if (!value) return false;
+  const at = String(value).toLowerCase().lastIndexOf('@');
+  if (at < 0) return false;
+  return OWN_EMAIL_DOMAINS.includes(String(value).toLowerCase().slice(at + 1));
+}
+
 // Upsert pojedynczego kontaktu. @@unique([contractorId, type, value])
 // w schemie zalatwia dedup — pierwsza wartosc z danego typu+value zostaje.
 // Aktualizujemy tylko meta-pola (label/personName/source) bo value jest
@@ -34,6 +49,8 @@ async function upsertContact(prisma, contractorId, contact) {
     ? normalizeEmail(contact.value)
     : (['phone', 'mobile', 'fax', 'whatsapp'].includes(contact.type) ? normalizePhone(contact.value) : String(contact.value).trim());
   if (!value) return null;
+  // Nigdy nie zapisuj naszego wlasnego maila jako kontaktu kontrahenta.
+  if (contact.type === 'email' && isOwnEmail(value)) return null;
 
   try {
     return await prisma.contractorContact.upsert({
@@ -199,4 +216,5 @@ module.exports = {
   appendAlias,
   normalizeEmail,
   normalizePhone,
+  isOwnEmail,
 };

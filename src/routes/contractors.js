@@ -14,6 +14,7 @@ const { geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
 const { searchContractor: ifirmaSearchContractor, upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
 const { extractPostCode, extractCityAfterPostCode } = require('../utils/address');
+const { isOwnEmail } = require('../services/contractor-sync-helpers');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
 // Nominatim is slow / down we still return the contractor. The 1 req/sec
@@ -951,6 +952,14 @@ router.get('/:id/360', async (req, res) => {
     });
     if (!contractor) return res.status(404).json({ error: 'not found' });
 
+    // Odfiltruj NASZE wlasne adresy z kontaktow — trafialy tu z domyslnego
+    // nadawcy kuriera (delivery@surfstickbell.com) i (a) smiecily kafelek
+    // Kontakty, (b) doklejaly nasze maile do kontrahenta (pula matchowania
+    // nizej bierze te kontakty). Filtr u gory => pokrywa display i pule.
+    contractor.contacts = (contractor.contacts || []).filter(
+      ct => !(ct.type === 'email' && isOwnEmail(ct.value))
+    );
+
     // Linked Canarias contractor (cross-ref PL <-> ES, jednokierunkowo z PL).
     const linkedEs = contractor.linkedEsContractorId
       ? await prisma.esContractor.findUnique({ where: { id: contractor.linkedEsContractorId } })
@@ -965,8 +974,8 @@ router.get('/:id/360', async (req, res) => {
     for (const ct of contractor.contacts) {
       if (ct.type === 'email' && ct.value) emailValues.add(ct.value.toLowerCase());
     }
-    if (contractor.primaryEmail) emailValues.add(contractor.primaryEmail.toLowerCase());
-    if (contractor.email) emailValues.add(contractor.email.toLowerCase());
+    if (contractor.primaryEmail && !isOwnEmail(contractor.primaryEmail)) emailValues.add(contractor.primaryEmail.toLowerCase());
+    if (contractor.email && !isOwnEmail(contractor.email)) emailValues.add(contractor.email.toLowerCase());
     const emailAddrs = [...emailValues];
 
     const emailWhere = emailAddrs.length
@@ -1124,6 +1133,27 @@ router.get('/:id/360', async (req, res) => {
   } catch (e) {
     console.error('[contractors/:id/360] error:', e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Usuniecie pojedynczego kontaktu (ContractorContact) z kafelka Kontakty w UI.
+// Scoped po contractorId -> nie da sie skasowac cudzego kontaktu podajac samo
+// contactId. Idempotentne: brak rekordu => 404 z ok:false (UI i tak odswiezy).
+router.delete('/:id/contacts/:contactId', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { id, contactId } = req.params;
+  try {
+    const existing = await prisma.contractorContact.findFirst({
+      where: { id: contactId, contractorId: id },
+      select: { id: true },
+    });
+    if (!existing) return res.status(404).json({ ok: false, error: 'contact not found for this contractor' });
+    await prisma.contractorContact.delete({ where: { id: contactId } });
+    console.log(`[contractors/:id/contacts] deleted contact ${contactId} from contractor ${id}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[contractors/:id/contacts] delete error:', e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
