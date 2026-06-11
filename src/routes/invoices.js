@@ -15,6 +15,45 @@ const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
 
+// Status wysylek z GlobKuriera (live) — uzywany na liscie faktur, zeby pokazac
+// DOKLADNIE te same statusy co widok Wysylki (IN_TRANSIT/DELIVERED/CANCELED...).
+// Cache 5 min + odswiezanie W TLE (nigdy nie blokuje strony faktur). Pierwsze
+// ladowanie moze pokazac status pochodny (shipped/delivered), kolejne — realny GK.
+let _gkCache = { at: 0, map: new Map() };
+let _gkRefreshing = false;
+function refreshGkStatusMap() {
+  if (_gkRefreshing) return;
+  _gkRefreshing = true;
+  (async () => {
+    try {
+      const { getOrders } = require('../glob-client');
+      const map = new Map();
+      for (let page = 0; page < 4; page++) {
+        const body = await getOrders({ limit: 100, offset: page * 100 });
+        const arr = Array.isArray(body) ? body : (body && (body.data || body.orders || body.items)) || [];
+        if (!arr.length) break;
+        for (const o of arr) {
+          const num = o.number || o.orderNumber;
+          if (!num) continue;
+          const carrier = (o.carrier && typeof o.carrier === 'object') ? (o.carrier.name || '') : (o.carrier || '');
+          map.set(String(num), { status: o.status || o.statusName || null, carrier });
+        }
+        if (arr.length < 100) break;
+      }
+      _gkCache = { at: Date.now(), map };
+      console.log(`[invoices] GK status map odswiezony: ${map.size} zamowien`);
+    } catch (e) {
+      console.error('[invoices] GK status refresh failed (best-effort):', e.message);
+    } finally {
+      _gkRefreshing = false;
+    }
+  })();
+}
+function gkStatusMap() {
+  if (Date.now() - _gkCache.at > 5 * 60 * 1000) refreshGkStatusMap(); // stale -> odswiez w tle
+  return _gkCache.map;
+}
+
 // Sync write: po Invoice.create budujemy InvoiceLineItem z preview pozycji.
 // Tym samym builderem co backfill — jeden zrodlo prawdy. Best-effort, nie
 // rzucamy bo glowna sciezka (create FV + send Telegram) jest wazniejsza.
@@ -2076,9 +2115,22 @@ router.get('/invoices', async (req, res) => {
         }
       }
     }
+    const gkMap = gkStatusMap();
     res.json(list.map(i => {
       const s = shipByInvoiceId[i.id];
-      return { ...i, shipment: s ? { shipmentNumber: s.shipmentNumber, trackingNumber: s.trackingNumber, shipped: !!s.hasShipped, delivered: !!s.hasDelivered } : null };
+      if (!s) return { ...i, shipment: null };
+      const gk = (gkMap && s.shipmentNumber) ? gkMap.get(String(s.shipmentNumber)) : null;
+      return {
+        ...i,
+        shipment: {
+          shipmentNumber: s.shipmentNumber,
+          trackingNumber: s.trackingNumber,
+          shipped: !!s.hasShipped,
+          delivered: !!s.hasDelivered,
+          status: (gk && gk.status) || null,   // surowy status GK (IN_TRANSIT/DELIVERED/CANCELED...)
+          carrier: (gk && gk.carrier) || null,
+        },
+      };
     }));
   } catch (e) {
     console.error('[GET /invoices] error:', e.message);
