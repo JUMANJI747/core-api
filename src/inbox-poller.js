@@ -496,7 +496,7 @@ Return JSON:
   "country": "ISO 3166-1 alpha-2 or best guess",
   "language": "ISO 639-1",
   "subject_pl": "subject translated to Polish",
-  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. MUSI być w 100% po polsku — NIGDY nie zostawiaj oryginalnego języka (nawet krótkich/grzecznościowych zwrotów typu 'Bonne réception'). Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. Tylko czyste tłumaczenie.",
+  "summary_pl": "dosłowne tłumaczenie treści maila na polski - tłumacz jak translator, nie streszczaj swoimi słowami. MUSI być w 100% po polsku — NIGDY nie zostawiaj oryginalnego języka (nawet krótkich/grzecznościowych zwrotów typu 'Bonne réception'). Jeśli mail jest po polsku, przepisz treść bez zmian. Max 2000 znaków. NIE wstawiaj żadnych tagów ani oznaczeń typu [TREŚĆ], [MAIL] itp. POMIŃ stopki i bałagan: podpisy/dane firmowe nadawcy, linie 'Wysłane z...'/'Sent from...', klauzule RODO/poufności (np. fragmenty o 'ochronie danych osobowych', 'Zgodnie z obowiązującymi przepisami', 'rejestr przetwarzania', 'confidential'), linki wypisu/unsubscribe oraz cytowaną historię odpowiedzi (po '>', 'wrote:', 'escribió:'). Tłumacz TYLKO właściwą, nową treść wiadomości. Tylko czyste tłumaczenie.",
   "vat_numbers": ["lista numerów VAT/NIP/NIF znalezionych w mailu, format: kod_kraju + numer, np. PT504641263, FR0786403769. Jeśli brak — pusta tablica. WAŻNE: wyciągaj numery VAT TYLKO z nowej wiadomości nadawcy. Ignoruj cytowane odpowiedzi (tekst po znakach >, po 'wrote:', po 'escribió:', po 'a écrit:', po liniach '---' lub '___'). Jeśli cały mail to tylko cytowana historia — vat_numbers zostaw pustą tablicę."]
 }
 
@@ -1342,10 +1342,16 @@ async function processAccount(account) {
             ? `\nKontrahent: ${contractorName}`
             : `\nNowy adres - napisz 'dodaj kontrahenta' lub 'połącz z [nazwa]'`;
           const ctxLine = `\n\n[ctx: emailId=${savedEmail.id}, from=${savedEmail.fromEmail || ''}, lang=${effectiveLanguage || 'en'}]`;
+          // Pelna wersja do PAMIECI agenta — master w n8n czyta [ctx:]/[MAIL] zeby
+          // potem 'odpisz mu'. NIE skracac tej wersji.
           let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summaryPlOut}${vatLines}${contractorLine}${attachmentInfo}${ctxLine}`;
+          // Czysta wersja dla usera na Telegram — tylko kto / na jaki mail / temat /
+          // tresc (+ ew. zalaczniki). Bez Kraj/VAT/hintow/[ctx:], realne < >.
+          const tgPrefix = category === 'COURIER_ALERT' ? '🚨 ALERT' : '📧';
+          const tgMsg = `${tgPrefix} ${inbox}@\nOd: ${mail.fromName || ''} <${mail.fromEmail}>\nTemat: ${subject_pl}\n\n${summaryPlOut}${attachmentInfo}`;
 
           try {
-            await sendTelegram(tgToken, tgChat, msg);
+            await sendTelegram(tgToken, tgChat, tgMsg);
             // Oznacz maila tagiem tg_notified — frontend podświetla tylko te maile
             // na niebiesko (dopóki nie przeczytane). Stare maile bez tego taga = brak wyróżnienia.
             await prisma.email.update({
