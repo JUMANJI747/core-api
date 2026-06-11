@@ -15,46 +15,59 @@ const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
 
-// Status wysylek z GlobKuriera (live) — uzywany na liscie faktur, zeby pokazac
-// DOKLADNIE te same statusy co widok Wysylki (IN_TRANSIT/DELIVERED/CANCELED...).
-// Cache 5 min + odswiezanie W TLE (nigdy nie blokuje strony faktur). Pierwsze
-// ladowanie moze pokazac status pochodny (shipped/delivered), kolejne — realny GK.
-let _gkCache = { at: 0, map: new Map() };
-let _gkRefreshing = false;
-function refreshGkStatusMap() {
-  if (_gkRefreshing) return;
-  _gkRefreshing = true;
-  (async () => {
+// Zywe zamowienia z GlobKuriera — zrodlo prawdy dla statusu wysylki na fakturach
+// (matchujemy fakture do zamowienia GK po nazwie odbiorcy + dacie, NIE przez
+// krucha warstwe Transakcji/dealow). Cache 5 min: swieze -> serwuj; przeterminowane
+// -> serwuj stare + odswiez w tle; PUSTE -> zablokuj raz (pierwsze ladowanie),
+// zeby feature dzialal od razu, a nie dopiero po rozgrzaniu.
+let _gkCache = { at: 0, orders: [] };
+let _gkPromise = null;
+function refreshGkOrders() {
+  if (_gkPromise) return _gkPromise;
+  _gkPromise = (async () => {
     try {
       const { getOrders } = require('../glob-client');
-      const map = new Map();
-      for (let page = 0; page < 4; page++) {
+      const orders = [];
+      for (let page = 0; page < 6; page++) {
         const body = await getOrders({ limit: 100, offset: page * 100 });
         const arr = Array.isArray(body) ? body : (body && (body.data || body.orders || body.items)) || [];
         if (!arr.length) break;
         for (const o of arr) {
           const num = o.number || o.orderNumber;
           if (!num) continue;
+          const recv = o.receiverAddress || o.receiver || {};
           const carrier = (o.carrier && typeof o.carrier === 'object') ? (o.carrier.name || '') : (o.carrier || '');
-          map.set(String(num), { status: o.status || o.statusName || null, carrier });
+          orders.push({
+            number: String(num),
+            status: o.status || o.statusName || null,
+            carrier,
+            receiverName: recv.companyName || recv.name || recv.contactPerson || '',
+            date: o.creationDate || o.created_at || o.createdAt || null,
+            tracking: o.trackingNumber || o.tracking || null,
+          });
         }
         if (arr.length < 100) break;
       }
-      _gkCache = { at: Date.now(), map };
-      console.log(`[invoices] GK status map odswiezony: ${map.size} zamowien`);
+      _gkCache = { at: Date.now(), orders };
+      console.log(`[invoices] GK orders odswiezone: ${orders.length}`);
     } catch (e) {
-      console.error('[invoices] GK status refresh failed (best-effort):', e.message);
+      console.error('[invoices] GK orders refresh failed (best-effort):', e.message);
     } finally {
-      _gkRefreshing = false;
+      _gkPromise = null;
     }
   })();
+  return _gkPromise;
 }
-function gkStatusMap() {
-  if (Date.now() - _gkCache.at > 5 * 60 * 1000) refreshGkStatusMap(); // stale -> odswiez w tle
-  return _gkCache.map;
+async function getGkOrders() {
+  const stale = Date.now() - _gkCache.at > 5 * 60 * 1000;
+  if (_gkCache.orders.length && !stale) return _gkCache.orders;
+  if (_gkCache.orders.length && stale) { refreshGkOrders(); return _gkCache.orders; } // serwuj stare, odswiez w tle
+  // pusty cache -> blokuj raz, ale z limitem 8s (GK nie moze zawiesic strony faktur)
+  await Promise.race([refreshGkOrders(), new Promise(r => setTimeout(r, 8000))]);
+  return _gkCache.orders;
 }
-// Rozgrzej cache na starcie procesu, zeby faktury od razu mialy realne statusy GK.
-refreshGkStatusMap();
+// Rozgrzej na starcie procesu.
+refreshGkOrders();
 
 // Sync write: po Invoice.create budujemy InvoiceLineItem z preview pozycji.
 // Tym samym builderem co backfill — jeden zrodlo prawdy. Best-effort, nie
@@ -2074,63 +2087,59 @@ router.get('/invoices', async (req, res) => {
         createdAt: true, updatedAt: true,
       },
     });
-    // Status wysylki per faktura — NIEZALEZNY od kruchego merge'a dealow.
-    // Bierzemy WSZYSTKIE wysylki (Transaction z shipmentNumber) danego
-    // kontrahenta i przypisujemy 1:1 do jego faktur: najpierw po dokladnym
-    // numerze FV, potem greedy po najblizszej dacie (okno 30 dni). Dzieki temu
-    // faktura pokazuje status nawet gdy matcher nie zmergowal jej z wysylka w
-    // jeden wiersz — a front rzetelnie pokazuje do KTORYCH faktur trzeba jeszcze
-    // zamowic kuriera (te bez przypisanej wysylki).
-    const contractorIds = [...new Set(list.map(i => i.contractorId).filter(Boolean))];
+    // Status wysylki per faktura — matchujemy do ZYWYCH zamowien GlobKuriera
+    // (zrodlo prawdy) po nazwie odbiorcy + dacie, 1:1. NIE polegamy na warstwie
+    // Transakcji/dealow (czesto pusta/niezmatchowana) — to byl powod, ze status
+    // sie nie pokazywal. Dzieki temu prawie kazda faktura z wysylka pokazuje
+    // realny status GK, a guzik "Kurier" zostaje tylko przy tych BEZ wysylki.
     const shipByInvoiceId = {};
-    if (contractorIds.length) {
-      const txs = await prisma.transaction.findMany({
-        where: { contractorId: { in: contractorIds }, shipmentNumber: { not: null } },
-        select: { contractorId: true, invoiceNumber: true, shipmentNumber: true, trackingNumber: true, hasShipped: true, hasDelivered: true, occurredAt: true },
-      });
-      const shipsByContractor = {};
-      for (const t of txs) (shipsByContractor[t.contractorId] ||= []).push({ ...t, used: false });
-      const invsByContractor = {};
-      for (const inv of list) if (inv.contractorId) (invsByContractor[inv.contractorId] ||= []).push(inv);
-
-      const WINDOW_MS = 30 * 86400000;
-      for (const cid of Object.keys(invsByContractor)) {
-        const ships = shipsByContractor[cid] || [];
-        if (!ships.length) continue;
-        const invs = invsByContractor[cid].slice().sort((a, b) => new Date(a.issueDate) - new Date(b.issueDate));
-        // 1) dokladny numer FV (pewny link z matchera)
-        for (const inv of invs) {
-          if (!inv.number) continue;
-          const exact = ships.find(s => !s.used && s.invoiceNumber && s.invoiceNumber === inv.number);
-          if (exact) { exact.used = true; shipByInvoiceId[inv.id] = exact; }
+    try {
+      const gkOrders = await getGkOrders();
+      if (gkOrders.length) {
+        const { normalizeContractorName } = require('../services/contractor-match');
+        const gkByName = {};
+        for (const o of gkOrders) {
+          if (!o.receiverName) continue;
+          const k = normalizeContractorName(o.receiverName);
+          if (k) (gkByName[k] ||= []).push({ ...o, used: false });
         }
-        // 2) reszta — greedy po najblizszej dacie w oknie
-        for (const inv of invs) {
-          if (shipByInvoiceId[inv.id]) continue;
-          let best = null, bestDiff = Infinity;
-          for (const s of ships) {
-            if (s.used) continue;
-            const diff = Math.abs(new Date(inv.issueDate) - new Date(s.occurredAt));
-            if (diff <= WINDOW_MS && diff < bestDiff) { bestDiff = diff; best = s; }
+        const invByName = {};
+        for (const inv of list) {
+          const k = inv.contractorName ? normalizeContractorName(inv.contractorName) : '';
+          if (k) (invByName[k] ||= []).push(inv);
+        }
+        const WINDOW_MS = 45 * 86400000; // paczka zwykle do paru tygodni od FV
+        for (const k of Object.keys(invByName)) {
+          const ships = gkByName[k];
+          if (!ships || !ships.length) continue;
+          const invs = invByName[k].slice().sort((a, b) => new Date(a.issueDate) - new Date(b.issueDate));
+          for (const inv of invs) {
+            let best = null, bestDiff = Infinity;
+            for (const s of ships) {
+              if (s.used) continue;
+              const diff = Math.abs(new Date(inv.issueDate) - new Date(s.date));
+              if (diff <= WINDOW_MS && diff < bestDiff) { bestDiff = diff; best = s; }
+            }
+            if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
           }
-          if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
         }
       }
+    } catch (e) {
+      console.error('[GET /invoices] shipment match failed (best-effort):', e.message);
     }
-    const gkMap = gkStatusMap();
     res.json(list.map(i => {
       const s = shipByInvoiceId[i.id];
       if (!s) return { ...i, shipment: null };
-      const gk = (gkMap && s.shipmentNumber) ? gkMap.get(String(s.shipmentNumber)) : null;
+      const st = (s.status || '').toUpperCase();
       return {
         ...i,
         shipment: {
-          shipmentNumber: s.shipmentNumber,
-          trackingNumber: s.trackingNumber,
-          shipped: !!s.hasShipped,
-          delivered: !!s.hasDelivered,
-          status: (gk && gk.status) || null,   // surowy status GK (IN_TRANSIT/DELIVERED/CANCELED...)
-          carrier: (gk && gk.carrier) || null,
+          shipmentNumber: s.number,
+          trackingNumber: s.tracking,
+          status: s.status || null,            // surowy status GK (IN_TRANSIT/DELIVERED/CANCELED...)
+          carrier: s.carrier || null,
+          delivered: st === 'DELIVERED',
+          shipped: !!st && !['NEW', 'CREATED', 'CANCELED', 'CANCELLED'].includes(st),
         },
       };
     }));
