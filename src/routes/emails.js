@@ -168,7 +168,7 @@ router.get('/emails/check-sent', async (req, res) => {
 
 router.get('/emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { inbox, direction, isRead, limit, fromEmail, search, contractorId, folder } = req.query;
+  const { inbox, direction, isRead, limit, fromEmail, search, contractorId, folder, important } = req.query;
   const where = {};
   if (inbox) where.inbox = inbox;
   if (direction) where.direction = direction;
@@ -187,6 +187,12 @@ router.get('/emails', async (req, res) => {
     // domyslnie ukrywamy archived, trash ORAZ pgf (zalew od dostawcy —
     // dostepny tylko w osobnym folderze 'pgf', nie zasmieca glownego widoku).
     where.NOT = { tags: { hasSome: ['archived', 'trash', 'pgf'] } };
+    // important=1 -> tylko maile ktore wywolaly powiadomienie push/Telegram
+    // (tag 'tg_notified' nadawany przez inbox-poller). Ten SAM filtr co notyfikacje
+    // -> odsiewa autorespondery/auto-powiadomienia/bounce.
+    if (important === '1' || important === 'true') {
+      where.tags = { has: 'tg_notified' };
+    }
   }
   if (search) {
     const s = String(search).trim();
