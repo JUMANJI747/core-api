@@ -53,6 +53,8 @@ function gkStatusMap() {
   if (Date.now() - _gkCache.at > 5 * 60 * 1000) refreshGkStatusMap(); // stale -> odswiez w tle
   return _gkCache.map;
 }
+// Rozgrzej cache na starcie procesu, zeby faktury od razu mialy realne statusy GK.
+refreshGkStatusMap();
 
 // Sync write: po Invoice.create budujemy InvoiceLineItem z preview pozycji.
 // Tym samym builderem co backfill — jeden zrodlo prawdy. Best-effort, nie
