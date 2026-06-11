@@ -79,6 +79,10 @@ CENY:
 - User podaje cenę "X po Y netto/brutto" → globalPriceNetto/globalPriceBrutto (jedna cena dla wszystkich)
 - User podaje cenę per pozycja → priceNetto/priceBrutto w items
 - "cena dystrybutorska" / "standardowa" → NIE podawaj — system znajdzie wyjątek
+- ⚠ "ceny jak w fakturze X" / "takie same ceny jak ostatnia FV" / "jak poprzednio" →
+  NAJPIERW wywołaj invoice_lines {number:"X"}, dopasuj produkty po nazwie/EAN i
+  przekaż unitPriceNetto każdej pozycji jako priceNetto w items invoice_preview.
+  NIE zgaduj i NIE bierz cennika domyślnego — masz realne ceny z tamtej FV.
 
 ⚠ NETTO vs BRUTTO — USER EXPLICIT ZAWSZE WYGRYWA:
 Gdy user pisze "po X brutto" / "X brutto" / "X gross" / "X z VAT" →
@@ -456,6 +460,17 @@ const tools = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'invoice_lines',
+    description: 'Pozycje (nazwa, ilość, CENA netto/szt, VAT) z KONKRETNEJ wcześniejszej faktury — po numerze (np. "97/2026" lub samo "97"). UŻYJ ZAWSZE gdy user mówi "ceny jak w fakturze X", "takie same ceny jak ostatnia FV", "jak poprzednio". Zwrócone unitPriceNetto użyj jako priceNetto dla pasujących produktów w invoice_preview.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        number: { type: 'string', description: 'Numer faktury, np. "97/2026" albo "97"' },
+      },
+      required: ['number'],
+    },
+  },
+  {
     name: 'expand_box',
     description: 'Rozwija box (BOX-STICK-30 / BOX-MASCARA-30 / BOX-COLLECTION-30) na pozycje składowe z ilościami. Użyj gdy user pyta "co jest w boxie X".',
     input_schema: {
@@ -608,6 +623,7 @@ const ENDPOINT_MAP = {
   email_draft_with_invoice: ['POST', '/api/emails/draft-with-invoice'],
   email_send_draft: ['POST', '/api/send-email/:draftId/confirm'],
   list_products: ['GET', '/api/products'],
+  invoice_lines: ['GET', '/api/invoice-lines'],
   expand_box: ['GET', '/api/products/expand-box'], // qty/ean as query
   ifirma_sync: ['POST', '/api/ifirma/sync'],
   analytics: ['POST', '/api/analytics'],

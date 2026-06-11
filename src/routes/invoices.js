@@ -1501,6 +1501,48 @@ router.post('/invoices/delete-confirm', async (req, res) => {
   }
 });
 
+// Pozycje konkretnej faktury (po numerze) — ZRODLO CEN gdy user mowi
+// "ceny jak w fakturze X" / "takie same jak ostatnia FV". Numer ma slash
+// (np. "97/2026") wiec idzie jako query param, nie path. Match: exact -> contains.
+router.get('/invoice-lines', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const number = (req.query.number || '').toString().trim();
+  if (!number) return res.status(400).json({ error: 'number required' });
+  try {
+    let invoice = await prisma.invoice.findFirst({
+      where: { number: { equals: number, mode: 'insensitive' } },
+      orderBy: { issueDate: 'desc' },
+    });
+    if (!invoice) {
+      invoice = await prisma.invoice.findFirst({
+        where: { number: { contains: number, mode: 'insensitive' } },
+        orderBy: { issueDate: 'desc' },
+      });
+    }
+    if (!invoice) return res.status(404).json({ error: 'invoice not found', number });
+
+    const lines = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId: invoice.id },
+      orderBy: { position: 'asc' },
+      select: {
+        name: true, ean: true, qty: true, unit: true,
+        unitPriceNetto: true, vatRate: true, currency: true, position: true,
+      },
+    });
+    res.json({
+      number: invoice.number,
+      issueDate: invoice.issueDate,
+      currency: invoice.currency,
+      contractorName: invoice.contractorName,
+      lineCount: lines.length,
+      lines,
+    });
+  } catch (e) {
+    console.error('[invoice-lines] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/invoices/unpaid', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
