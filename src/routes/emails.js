@@ -200,13 +200,29 @@ router.get('/emails', async (req, res) => {
         'bestellung', 'bestell', 'bestelling', // DE/NL
         'ordine',                            // IT
       ];
-      const orConds = [{ tags: { has: 'tg_notified' } }];
+      // Auto-powiadomienia kurierskie ("Potwierdzenie nadania", "List przewozowy
+      // do zamowienia GK...") zawieraja "zamowien" -> falszywie wpadaly do Waznych.
+      // Wykluczamy je z galezi slow kluczowych po nadawcy (domeny kurierskie) i
+      // typowych tematach. Galaz tg_notified zostaje bez zmian (poller i tak nie
+      // notyfikuje kurierow).
+      const COURIER_FROM = ['globkurier', 'dpd', 'dhl', 'inpost', 'gls', 'fedex', 'geis', 'pocztex', 'paczkomat', 'furgonetka', 'apaczka', 'ups.com', 'noreply', 'no-reply'];
+      const NOTIF_SUBJECT = ['potwierdzenie nadania', 'list przewozowy', 'przesyłk', 'przesylk', 'payment reminder', 'przypomnienie o płatności', 'tracking', 'waybill'];
+      const excludeOr = [];
+      for (const d of COURIER_FROM) excludeOr.push({ fromEmail: { contains: d, mode: 'insensitive' } });
+      for (const s of NOTIF_SUBJECT) excludeOr.push({ subject: { contains: s, mode: 'insensitive' } });
+
+      const keywordOr = [];
       for (const kw of ORDER_KW) {
-        orConds.push({ subject: { contains: kw, mode: 'insensitive' } });
-        orConds.push({ bodyPreview: { contains: kw, mode: 'insensitive' } });
-        orConds.push({ bodyFull: { contains: kw, mode: 'insensitive' } });
+        keywordOr.push({ subject: { contains: kw, mode: 'insensitive' } });
+        keywordOr.push({ bodyPreview: { contains: kw, mode: 'insensitive' } });
+        keywordOr.push({ bodyFull: { contains: kw, mode: 'insensitive' } });
       }
-      where.AND = [...(where.AND || []), { OR: orConds }];
+      where.AND = [...(where.AND || []), {
+        OR: [
+          { tags: { has: 'tg_notified' } },
+          { AND: [{ OR: keywordOr }, { NOT: { OR: excludeOr } }] },
+        ],
+      }];
     }
   }
   if (search) {
