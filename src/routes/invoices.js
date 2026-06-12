@@ -1829,7 +1829,16 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
       r.end();
     });
 
-    res.json({ ok: true, sent: true, invoiceNumber: realNumber, invoiceId: invoice.id });
+    res.json({
+      ok: true,
+      sent: true,
+      invoiceNumber: realNumber,
+      invoiceId: invoice.id,
+      // Kontrahent + nota: zeby agent NIE mogl podpisac reprintu cudza nazwa
+      // ani sprzedac go jako "wystawienie nowej FV" (incydent 101/2026).
+      contractorName: invoice.contractorName || null,
+      note: 'REPRINT istniejacej faktury — to NIE jest wystawienie nowej FV.',
+    });
   } catch (e) {
     console.error('[resend-pdf-telegram] error:', e.message);
     res.status(500).json({ error: e.message });

@@ -293,6 +293,10 @@ SŁOWO "DAJ" = "wyślij PDF na Telegrama" (tu, do mnie). To NIE jest listing/sea
   najświeższą z bieżącego roku. Jeśli user wprost chce inną ("daj 65/2025"),
   poda pełen numer.
 - Wysłanie mailem do klienta to email_draft_with_invoice + email_send_draft (2 kroki, z akceptacją) — różne od "daj".
+⛔ ZASADY TWARDE send_invoice_pdf_telegram:
+- invoiceNumber TYLKO z polecenia usera albo z wyniku toola w TEJ rozmowie. NIGDY nie zgaduj numeru — zgadnięty numer trafia w CUDZĄ istniejącą fakturę i jej PDF leci na Telegram.
+- To REPRINT istniejącej FV (response ma note + contractorName). NIGDY nie raportuj go jako "wystawiona faktura". W odpowiedzi podaj kontrahenta Z RESPONSE (nie z historii rozmowy) — jak się nie zgadza z tym o czym mowa, powiedz to wprost.
+- "wystaw fakturę i prześlij PDF" = NAJPIERW invoice_preview → potwierdzenie → invoice_confirm (PDF idzie automatycznie po confirm). NIE send_invoice_pdf_telegram.
 
 ZASADY:
 - ZAWSZE wywołuj tool przy nowym żądaniu — nie kopiuj odpowiedzi z historii
@@ -532,7 +536,7 @@ const tools = [
   },
   {
     name: 'send_invoice_pdf_telegram',
-    description: 'Wyślij PDF faktury na Telegrama. Użyj gdy user prosi "daj mi pdf faktury X na telegram", "wyślij FV X tu", "ponownie pdf 64/2026". Akceptuje invoiceId (UUID), invoiceNumber (np. "64/2026") albo ifirmaId (numer iFirma).',
+    description: 'REPRINT: wyślij PDF ISTNIEJĄCEJ faktury na Telegrama ("daj mi pdf faktury X", "wyślij FV X tu", "ponownie pdf 64/2026"). To NIE wystawia faktury. invoiceNumber MUSI pochodzić z polecenia usera lub wyniku wcześniejszego toola — NIGDY nie zgaduj (zgadnięty numer = PDF cudzej faktury). Do wystawienia NOWEJ FV użyj invoice_preview→invoice_confirm. Akceptuje invoiceId (UUID), invoiceNumber (np. "64/2026") albo ifirmaId.',
     input_schema: {
       type: 'object',
       properties: {
@@ -681,6 +685,13 @@ async function processAccountingQuery(query, ctx = {}) {
   // Order matters: confirm beats preview when both could match (e.g. "tak wystaw fakturę"
   // is rare; but typical "tak" alone is confirm).
   if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query)) forcedTool = 'invoice_confirm';
+  // WYSTAWIENIE bije reprint: "wystaw fakture dla X i przeslij PDF na telegram"
+  // wczesniej wymuszalo send_invoice_pdf_telegram (reprint!) — agent zgadywal
+  // numer, endpoint znajdowal CUDZA istniejaca FV i wysylal jej PDF jako rzekomo
+  // nowa (incydent: 'wystawiona 101/2026' przy realnej numeracji 113, zadna FV
+  // nie powstala). PREVIEW przed PDF_TELEGRAM; "daj fv 65" dalej idzie w reprint
+  // (PREVIEW go nie matchuje).
+  else if (PREVIEW_INTENT.test(query)) forcedTool = 'invoice_preview';
   else if (PDF_TELEGRAM_INTENT_RE.test(query)) forcedTool = 'send_invoice_pdf_telegram';
   // "wyslij FV X mailem" → ZAWSZE krok 1 (draft), nigdy bezposrednia wysylka.
   // User musi zaakceptowac draft osobnym poleceniem -> dopiero wtedy email_send_draft.
