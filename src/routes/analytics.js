@@ -356,7 +356,7 @@ router.get('/analytics/revenue', async (req, res) => {
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
           AND (${plIfirmaOnly}::boolean = false OR "ifirmaId" IS NOT NULL)
-          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "InvoiceLineItem" li WHERE li."invoiceId" = "Invoice".id))
+          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "InvoiceLineItem" li WHERE li."invoiceId" = "Invoice".id AND li."productId" IS NOT NULL))
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
@@ -373,7 +373,7 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
-          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "EsInvoiceLineItem" eli WHERE eli."esInvoiceId" = "EsInvoice".id))
+          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "EsInvoiceLineItem" eli WHERE eli."esInvoiceId" = "EsInvoice".id AND eli."productId" IS NOT NULL))
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
@@ -412,6 +412,10 @@ router.get('/analytics/qty-sold', async (req, res) => {
     const country = req.query.country ? String(req.query.country).toUpperCase() : null;
     const source = req.query.source ? String(req.query.source).toLowerCase() : null;
     const plIfirmaOnly = parseIfirmaOnly(req);
+    // productsOnly=1 -> licz tylko pozycje dopasowane do produktu z katalogu
+    // (productId NOT NULL). Pozycje "nie-markowe" (np. grafika 3D 1szt/3500zl)
+    // nie sa naszym produktem -> nie wchodza do sztuk.
+    const productsOnly = req.query.productsOnly === '1' || req.query.productsOnly === 'true';
 
     const wantPl = !source || source === 'pl';
     const wantEs = !source || source === 'es';
@@ -429,6 +433,7 @@ router.get('/analytics/qty-sold', async (req, res) => {
         WHERE li."issueDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER(li."contractorCountry") = ${country})
           AND (${plIfirmaOnly}::boolean = false OR i."ifirmaId" IS NOT NULL)
+          AND (${productsOnly}::boolean = false OR li."productId" IS NOT NULL)
         GROUP BY 2
         ORDER BY period
       `);
@@ -443,6 +448,7 @@ router.get('/analytics/qty-sold', async (req, res) => {
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          AND (${productsOnly}::boolean = false OR "productId" IS NOT NULL)
         GROUP BY 2
         ORDER BY period
       `);
