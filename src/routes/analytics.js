@@ -333,6 +333,10 @@ router.get('/analytics/revenue', async (req, res) => {
     const currency = req.query.currency ? String(req.query.currency).toUpperCase() : null;
     const source = req.query.source ? String(req.query.source).toLowerCase() : null;
     const plIfirmaOnly = parseIfirmaOnly(req);
+    // requireItems=1 -> licz tylko faktury Z POZYCJAMI. Faktury bez pozycji
+    // (zaliczkowe rozliczeniowe, prywatne "grafiki 3D" itp. — nie nasza marka)
+    // wypadaja z obrotu, zeby kwota i sztuki liczyly sie z tego samego.
+    const requireItems = req.query.requireItems === '1' || req.query.requireItems === 'true';
 
     const wantPl = !source || source === 'pl';
     const wantEs = !source || source === 'es';
@@ -352,6 +356,7 @@ router.get('/analytics/revenue', async (req, res) => {
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
           AND (${plIfirmaOnly}::boolean = false OR "ifirmaId" IS NOT NULL)
+          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "InvoiceLineItem" li WHERE li."invoiceId" = "Invoice".id))
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
@@ -368,6 +373,7 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "EsInvoiceLineItem" eli WHERE eli."esInvoiceId" = "EsInvoice".id))
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
