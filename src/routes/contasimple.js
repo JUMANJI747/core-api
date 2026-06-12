@@ -921,26 +921,41 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   const previewId = crypto.randomUUID();
   saveEsPreview(previewId, { preview, contractor, lines, invoiceDate, paymentDays, body, chatId: body.chatId || null, source: body.source || null });
 
+  // Buduj tekst preview ZAWSZE (ground truth) — wraca w response.previewText,
+  // zeby sub-agent/master mial dokladny blok do pokazania nawet gdyby push na
+  // Telegrama zawiodl. To eliminuje halucynacje "preview gotowy wyzej" gdy
+  // realnie nic sie nie pojawilo (master nie przekazal chatId / push padl).
+  const lineRows = lines.map(l => {
+    const concept = l.name + (l.variant ? ` ${l.variant}` : '');
+    return `- ${l.qty}× ${concept} @ ${Number(l.unitNetto).toFixed(2)} € = ${Number(l.lineNetto).toFixed(2)} € netto`;
+  }).join('\n');
+  const previewText =
+    `🧾 PREVIEW FV (ground truth z backendu)\n` +
+    `Klient: ${contractor.name || contractor.organization}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
+    `Okres: ${preview.period}\n\n` +
+    `${lineRows}\n\n` +
+    `Netto: ${Number(totals.netto).toFixed(2)} €\n` +
+    `IGIC ${IGIC_DEFAULT_PCT}%: ${Number(totals.igic).toFixed(2)} €\n` +
+    `Brutto: ${Number(totals.brutto).toFixed(2)} €\n\n` +
+    `Potwierdzasz? "tak/ok" wystawi.`;
+
   // Telegram-notyfikacja preview — POMIJANA gdy source=frontend (frontend
   // pokazuje preview w UI, Telegram dostaje tylko gdy wywolane z bota/agenta).
+  // telegramPushed = czy push REALNIE poszedl; wraca w response, zeby agent
+  // wiedzial czy musi sam pokazac blok (gdy false).
+  let telegramPushed = false;
   if (body.source !== 'frontend') try {
     const tgChatId = await getEsChatId(prisma, body.chatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (tgToken && tgChatId) {
-      const lineRows = lines.map(l => {
-        const concept = l.name + (l.variant ? ` ${l.variant}` : '');
-        return `- ${l.qty}× ${concept} @ ${Number(l.unitNetto).toFixed(2)} € = ${Number(l.lineNetto).toFixed(2)} € netto`;
-      }).join('\n');
-      const text =
-        `🧾 PREVIEW FV (ground truth z backendu)\n` +
-        `Klient: ${contractor.name || contractor.organization}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
-        `Okres: ${preview.period}\n\n` +
-        `${lineRows}\n\n` +
-        `Netto: ${Number(totals.netto).toFixed(2)} €\n` +
-        `IGIC ${IGIC_DEFAULT_PCT}%: ${Number(totals.igic).toFixed(2)} €\n` +
-        `Brutto: ${Number(totals.brutto).toFixed(2)} €\n\n` +
-        `Potwierdzasz? "tak/ok" wystawi.`;
-      sendTelegram(tgToken, String(tgChatId), text).catch(e => console.error('[cs invoice-preview] tg notify failed:', e.message));
+      try {
+        await sendTelegram(tgToken, String(tgChatId), previewText);
+        telegramPushed = true;
+      } catch (e) {
+        console.error('[cs invoice-preview] tg notify failed:', e.message);
+      }
+    } else {
+      console.error(`[cs invoice-preview] push pominiety — token=${tgToken ? 'ok' : 'BRAK'} chatId=${tgChatId ? 'ok' : 'BRAK'} (reqChatId=${body.chatId || '-'})`);
     }
   } catch (e) {
     console.error('[cs invoice-preview] tg notify outer:', e.message);
@@ -973,7 +988,7 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
     })
     .catch(e => console.error('[cs invoice-preview] AgentContext save error:', e.message));
 
-  res.json({ ok: true, preview, previewId });
+  res.json({ ok: true, preview, previewId, previewText, telegramPushed });
 }));
 
 // ============ INVOICE CONFIRM ============
@@ -2301,20 +2316,30 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
   const previewId = crypto.randomUUID();
   saveEsAlbaranPreview(previewId, { preview, contractor, lines, deliveryNoteDate: date.toISOString(), body, chatId: body.chatId || null });
 
+  // Buduj tekst preview ZAWSZE (ground truth) — wraca w response.previewText.
+  const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
+  const previewText =
+    `📋 PREVIEW ALBARÁN (WZ)\n` +
+    `Klient: ${contractor.organization || contractor.name}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
+    `Data: ${date.toISOString().slice(0, 10)}\n\n` +
+    `${lineRows}\n\n` +
+    `Razem sztuk: ${preview.totalQty}\n\n` +
+    `Potwierdzasz? "tak/ok" wystawi.`;
+
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV.
+  let telegramPushed = false;
   try {
     const tgChatId = await getEsChatId(prisma, body.chatId);
     const tgToken = await getEsTelegramToken(prisma);
     if (tgToken && tgChatId) {
-      const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
-      const text =
-        `📋 PREVIEW ALBARÁN (WZ)\n` +
-        `Klient: ${contractor.organization || contractor.name}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
-        `Data: ${date.toISOString().slice(0, 10)}\n\n` +
-        `${lineRows}\n\n` +
-        `Razem sztuk: ${preview.totalQty}\n\n` +
-        `Potwierdzasz? "tak/ok" wystawi.`;
-      sendTelegram(tgToken, String(tgChatId), text).catch(e => console.error('[cs albaran-preview] tg notify failed:', e.message));
+      try {
+        await sendTelegram(tgToken, String(tgChatId), previewText);
+        telegramPushed = true;
+      } catch (e) {
+        console.error('[cs albaran-preview] tg notify failed:', e.message);
+      }
+    } else {
+      console.error(`[cs albaran-preview] push pominiety — token=${tgToken ? 'ok' : 'BRAK'} chatId=${tgChatId ? 'ok' : 'BRAK'} (reqChatId=${body.chatId || '-'})`);
     }
   } catch (e) {
     console.error('[cs albaran-preview] tg notify outer:', e.message);
@@ -2326,7 +2351,7 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     create: { id: 'ksiegowosc-es', data: { lastAction: 'albaran-preview', albaranPreviewId: previewId, contractor: { name: contractor.name, nif: contractor.nif }, totalQty: preview.totalQty, timestamp: Date.now() } },
   }).catch(e => console.error('[cs albaran-preview] AgentContext save error:', e.message));
 
-  res.json({ ok: true, preview, previewId });
+  res.json({ ok: true, preview, previewId, previewText, telegramPushed });
 }));
 
 router.post('/albaran-confirm-latest', asyncHandler(async (req, res) => {

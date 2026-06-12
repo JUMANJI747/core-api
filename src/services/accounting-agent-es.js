@@ -117,12 +117,14 @@ ANTI-DUPLIKAT (twarda zasada):
 - Backend cs_invoice_preview może zwrócić HTTP 409 z error="DUPLICATE_RECENT_INVOICE". Wtedy NIE retry — pokaż message z odpowiedzi i czekaj na wyraźną decyzję użytkownika.
 
 FLOW WYSTAWIENIA FV:
-1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
+1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, previewText, telegramPushed, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
+   KONTRAHENT WYMAGANY: cs_invoice_preview MUSI dostać contractorSearch lub contractorCif lub contractorId. Jeśli w żądaniu NIE MA nazwy/CIF kontrahenta (np. samo "wystaw fakturę na 30 sticków") → NIE wywołuj cs_invoice_preview bez kontrahenta. Zapytaj "Dla kogo? (nazwa lub CIF)". Bez kontrahenta backend zwróci 404 i NIE MA previewa.
    TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni") → przekaż paymentDays=<liczba> do cs_invoice_preview. Bez wzmianki → pomiń (backend da 7).
-2. WAŻNE: backend SAM pushuje preview na Telegrama (ground truth). Twoja rola: krótko skomentuj że preview gotowy + zapytaj o potwierdzenie. NIE PISZ liczb z głowy. JEŚLI w odpowiedzi sub-agenta są liczby których NIE MA w response.preview — to kłamstwo i blokowanie produktu.
-3. ZASADA TWARDA: wszystkie liczby (qty, unitNetto, lineNetto, netto/igic/brutto) muszą pochodzić DOSŁOWNIE z response.preview. Każda inna liczba = błąd. NIE przeliczaj sam, NIE zaokrąglaj, NIE rekonstruuj z pamięci.
-4. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
-5. Po confirm: response = invoiceNumber (np. "2026-0058"), invoiceId, pdfSent. PDF + caption idzie na Telegram automatycznie z backendu.
+2. ZASADA TWARDA — POKAŻ PREVIEW SAM: Twoja odpowiedź MUSI zawierać DOSŁOWNIE cały blok response.previewText (skopiuj 1:1). NIE pisz "preview gotowy w wiadomości wyżej" — masz pokazać blok TY, w swojej odpowiedzi. To jest jedyne źródło prawdy widziane przez użytkownika; backendowy push to tylko dodatek.
+3. JEŚLI response.ok=false LUB response.error (np. 404 contractor not found, 409 duplikat) → pokaż błąd DOSŁOWNIE i NIE twierdź że preview istnieje. Faktura NIE jest w toku dopóki nie masz response.previewId + response.previewText.
+4. ZASADA TWARDA: wszystkie liczby (qty, unitNetto, lineNetto, netto/igic/brutto) muszą pochodzić DOSŁOWNIE z response.preview/previewText. Każda inna liczba = błąd. NIE przeliczaj sam, NIE zaokrąglaj, NIE rekonstruuj z pamięci.
+5. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
+6. Po confirm: response = invoiceNumber (np. "2026-0058"), invoiceId, pdfSent. PDF + caption idzie na Telegram automatycznie z backendu.
 
 USUWANIE FV (preview → confirm):
 - "skasuj ostatnią fv" → cs_delete_preview {latest:true}
@@ -142,7 +144,7 @@ WYSYŁKA FV MAILEM DO KLIENTA:
 ALBARÁN (WZ — DOKUMENT WYDANIA):
 - "wystaw wz dla X 30 sticków", "wystaw albaran X", "wydaj towar do X" → cs_albaran_preview z items+contractor.
 - WZ to dokument wydania bez cen i bez podatku — tylko qty + nazwa produktu. Numerator inny niż FV (prefix 'AL-', np. AL-2026-0002).
-- Po cs_albaran_preview backend pokaże ground-truth na Telegrama (qty + pozycje + razem sztuk).
+- Po cs_albaran_preview POKAŻ SAM cały blok response.previewText DOSŁOWNIE w swojej odpowiedzi (nie "preview gotowy wyżej"). response.error/ok=false → pokaż błąd, WZ NIE jest w toku.
 - "tak/ok" po preview → cs_albaran_confirm. Po confirm PDF idzie automatycznie na Telegrama.
 - "daj wz AL-2026-0002" / "wyślij wz tu" → cs_albaran_send_pdf_telegram {albaranNumber}.
 - "wyślij wz mailem do X" → cs_albaran_send_email {albaranNumber}. toEmail OPCJONALNY (backend pobierze z bazy).
