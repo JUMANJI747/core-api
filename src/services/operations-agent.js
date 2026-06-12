@@ -39,6 +39,13 @@ const BASE_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, 
 "ostatnio" = 30 dni od {{TODAY}}.
 "w zeszłym tygodniu" = 7-14 dni wstecz od {{TODAY}}.
 
+⛔ ZAKAZ ABSOLUTNY — WYSTAWIANIE FAKTUR:
+NIE wystawiasz faktur i NIE masz do tego narzędzi (iFirma/Contasimple to agent
+KSIĘGOWOŚĆ). Gdy user prosi o wystawienie FV → odpowiedz JEDNYM zdaniem, że to
+zadanie Księgowości i że ŻADNA faktura nie została wystawiona. NIGDY nie podawaj
+numeru faktury, której nie widzisz w wyniku toola. Zmyślony numer FV = krytyczny
+błąd księgowy.
+
 ZASADA #0 — NIGDY NIE LICZ Z GŁOWY:
 Pytania "ile sprzedaliśmy / ile obroty / top klienci / ile sztuk" → ZAWSZE
 wywolaj analytics_* tool. NIGDY nie podawaj liczb bez wczesniejszego call.
@@ -341,6 +348,21 @@ const executeTool = buildExecuteTool({
 async function processOperationsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   if (!query || typeof query !== 'string') return { text: 'Brak query.', error: 'no_query' };
+
+  // TWARDA BLOKADA: OPERACJE nie wystawiaja faktur. Gdy master zle zroutuje
+  // "wystaw fakture" tutaj, agent grzebal w bazie i HALUCYNOWAL numer FV
+  // (np. "wystawilem 101" przy realnej numeracji 113) — zadna FV nie powstala.
+  // Deterministyczny short-circuit: zero LLM, zero tooli, jasny redirect.
+  // Tylko jawne czasowniki wystawiania (z polskimi koncowkami: wystawić itd.).
+  // Samo "faktura dla X" NIE blokuje — to legalny lookup operacji (ostatnia FV).
+  const ISSUE_INVOICE_INTENT = /\b(wystaw|zr[oó]b|przygotuj|wygeneruj)[\wąćęłńóśźż]*\s+(fakt|fv)/i;
+  if (ISSUE_INVOICE_INTENT.test(query)) {
+    return {
+      text: '⛔ OPERACJE nie wystawiają faktur. To zadanie agenta KSIĘGOWOŚĆ (accounting / accounting-es dla Kanarów) — przekaż polecenie tam. NIE wystawiono ŻADNEJ faktury.',
+      iterations: 0,
+      stopReason: 'guard:invoice-intent',
+    };
+  }
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const yearStr = todayStr.slice(0, 4);
