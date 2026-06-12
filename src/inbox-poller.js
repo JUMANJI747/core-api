@@ -1377,7 +1377,7 @@ async function processAccount(account) {
           try {
             await httpsPost(
               'https://exquisite-perception-production.up.railway.app/api/memory',
-              { 'x-api-key': 'sdfnsjd34244ZGFDFD##@$@#CFV213ad' },
+              { 'x-api-key': process.env.API_KEY || '' },
               { role: 'assistant', content: msg }
             );
             console.log('[inbox-poller] saved to memory');
