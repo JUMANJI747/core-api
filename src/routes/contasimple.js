@@ -111,6 +111,43 @@ async function getEsChatId(prismaClient, reqChatId) {
   return r.chatId;
 }
 
+// Resolve kontrahenta ES z {contractorId | contractorCif | contractorSearch}.
+// WAZNE: findEsContractor(prisma, search) przyjmuje STRING (search) i zwraca
+// { contractor, suggestions } — NIE obiekt. Wczesniej albaran-preview wolal go
+// z obiektem co rzucalo "(s||'').toLowerCase is not a function" w scoreContractor.
+// Helper odpowiada bezposrednio na res (404 / suggestions) i zwraca null, albo
+// zwraca pelny rekord kontrahenta. requireCif=true wymusza B2B (FV); albaran
+// (WZ) moze isc bez CIF, ale zawsze potrzebuje contasimpleId.
+async function resolveEsContractor(res, { contractorId, contractorCif, contractorSearch }, opts = {}) {
+  const { requireCif = false } = opts;
+  let contractor = null;
+  if (contractorId) {
+    contractor = await prisma.esContractor.findUnique({ where: { id: contractorId } });
+  } else if (contractorCif) {
+    contractor = await prisma.esContractor.findFirst({ where: { nif: contractorCif } });
+  } else if (contractorSearch) {
+    const result = await findEsContractor(prisma, contractorSearch);
+    if (!result.contractor) {
+      res.json({ ok: false, suggestions: result.suggestions, hint: 'Najpierw cs_create_customer albo podaj poprawne nif/contractorSearch.' });
+      return null;
+    }
+    contractor = result.contractor;
+  }
+  if (!contractor) {
+    res.status(404).json({ error: 'contractor not found — podaj contractorId, contractorCif albo contractorSearch' });
+    return null;
+  }
+  if (requireCif && !contractor.nif) {
+    res.status(400).json({ error: 'contractor missing CIF/NIF — Nikodem wystawia tylko B2B' });
+    return null;
+  }
+  if (!contractor.contasimpleId) {
+    res.status(400).json({ error: 'contractor istnieje lokalnie ale nie ma contasimpleId — uruchom cs_sync_customers albo utwórz w Contasimple' });
+    return null;
+  }
+  return contractor;
+}
+
 // ============ SMOKE TEST ============
 //
 // After deploy, run:
@@ -2284,13 +2321,8 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'items[] required' });
   }
-  const contractor = await findEsContractor(prisma, { contractorId, contractorCif, contractorSearch });
-  if (!contractor) {
-    return res.status(404).json({
-      error: 'contractor not found',
-      hint: 'Najpierw cs_create_customer albo podaj poprawne nif/contractorSearch.',
-    });
-  }
+  const contractor = await resolveEsContractor(res, { contractorId, contractorCif, contractorSearch });
+  if (!contractor) return; // resolveEsContractor już odpowiedział (404 / suggestions)
   let positions;
   try {
     positions = await expandEsLines(prisma, items);
