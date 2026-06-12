@@ -2223,6 +2223,23 @@ router.post('/invoices/backfill-lines-bg', async (req, res) => {
   })();
 });
 
+// Backfill pozycji SYNCHRONICZNIE — przetwarza kandydatow i ODDAJE wynik z
+// bledami per faktura (diagnoza). Limit 30 (te 16 zalapie sie w calosci).
+router.post('/invoices/backfill-lines-now', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const limit = Math.min(parseInt((req.body && req.body.limit), 10) || 30, 50);
+  try {
+    const r = await runIfirmaLinesBackfill(prisma, {
+      apply: true, limit, sleepMs: 150, verbose: true,
+      log: (m) => console.log('[backfill-now]', m),
+    });
+    res.json({ ok: true, limit, ...r });
+  } catch (e) {
+    console.error('[backfill-lines-now]', e);
+    res.status(500).json({ ok: false, error: e.message, stack: (e.stack || '').split('\n').slice(0, 3) });
+  }
+});
+
 // Podglad postepu backfillu pozycji (do diagnozy "ile FV bez sztuk").
 router.get('/invoices/lines-backfill-status', async (req, res) => {
   const prisma = req.app.locals.prisma;
