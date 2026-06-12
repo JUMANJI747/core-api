@@ -394,20 +394,25 @@ async function runBackfill(prisma, opts = {}) {
 
   // Wszystkie FV ktore maja ifirmaId, sa typu fakturowego (nie korekta) i
   // nie maja jeszcze lineItems. type=null tez bierzemy (czesto staremi).
-  const invoices = await prisma.invoice.findMany({
+  // UWAGA: NIE filtrujemy lineBackfillFailed w SQL — Prisma/Postgres JSON path
+  // z NOT odrzuca tez wiersze BEZ klucza (NULL = true -> NULL -> NOT NULL ->
+  // wykluczony). Przez to backfill widzial 0 kandydatow. Filtr robimy w JS.
+  const fetched = await prisma.invoice.findMany({
     where: {
       ifirmaId: { not: null },
       lineItems: { none: {} },
-      NOT: { extras: { path: ['lineBackfillFailed'], equals: true } }, // pomijamy trwale porazki
     },
     orderBy: { issueDate: 'desc' },
-    take: limit,
+    take: limit * 3, // zapas na odfiltrowane trwale porazki
     select: {
-      id: true, number: true, ifirmaId: true, type: true,
+      id: true, number: true, ifirmaId: true, type: true, ifirmaType: true,
       contractorId: true, contractorCountry: true,
       currency: true, issueDate: true, extras: true,
     },
   });
+  const invoices = fetched
+    .filter(inv => !(inv.extras && typeof inv.extras === 'object' && inv.extras.lineBackfillFailed === true))
+    .slice(0, limit);
 
   log(`found ${invoices.length} candidate invoices (cap limit=${limit})`);
 
