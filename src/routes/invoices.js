@@ -30,7 +30,7 @@ function refreshGkOrders() {
       const orders = [];
       for (let page = 0; page < 6; page++) {
         const body = await getOrders({ limit: 100, offset: page * 100 });
-        const arr = Array.isArray(body) ? body : (body && (body.data || body.orders || body.items)) || [];
+        const arr = Array.isArray(body) ? body : (body && (body.results || body.items || body.data)) || [];
         if (!arr.length) break;
         for (const o of arr) {
           const num = o.number || o.orderNumber;
@@ -2096,29 +2096,50 @@ router.get('/invoices', async (req, res) => {
     try {
       const gkOrders = await getGkOrders();
       if (gkOrders.length) {
-        const { normalizeContractorName } = require('../services/contractor-match');
-        const gkByName = {};
-        for (const o of gkOrders) {
-          if (!o.receiverName) continue;
-          const k = normalizeContractorName(o.receiverName);
-          if (k) (gkByName[k] ||= []).push({ ...o, used: false });
-        }
-        const invByName = {};
-        for (const inv of list) {
-          const k = inv.contractorName ? normalizeContractorName(inv.contractorName) : '';
-          if (k) (invByName[k] ||= []).push(inv);
-        }
+        const { normalizeContractorName, scoreContractor } = require('../services/contractor-match');
         const WINDOW_MS = 45 * 86400000; // paczka zwykle do paru tygodni od FV
-        for (const k of Object.keys(invByName)) {
-          const ships = gkByName[k];
-          if (!ships || !ships.length) continue;
-          const invs = invByName[k].slice().sort((a, b) => new Date(a.issueDate) - new Date(b.issueDate));
-          for (const inv of invs) {
-            let best = null, bestDiff = Infinity;
-            for (const s of ships) {
+        const gk = gkOrders
+          .filter(o => o.receiverName)
+          .map(o => ({ ...o, key: normalizeContractorName(o.receiverName), used: false }));
+        const gkByKey = {};
+        for (const o of gk) if (o.key) (gkByKey[o.key] ||= []).push(o);
+
+        // Od NAJNOWSZEJ faktury — swiezo wystawiony list trafia do najnowszej
+        // FV kontrahenta bez wysylki (zgodnie z oczekiwaniem usera).
+        const sortedInvs = list
+          .filter(i => i.contractorName)
+          .slice()
+          .sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
+
+        const assignNearest = (inv, pool) => {
+          let best = null, bd = Infinity;
+          for (const s of pool) {
+            if (s.used) continue;
+            const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
+            if (d <= WINDOW_MS && d < bd) { bd = d; best = s; }
+          }
+          if (best) { best.used = true; shipByInvoiceId[inv.id] = best; return true; }
+          return false;
+        };
+
+        // Pass 1: dokladna nazwa znormalizowana (najczestszy przypadek).
+        for (const inv of sortedInvs) {
+          const k = normalizeContractorName(inv.contractorName);
+          if (k && gkByKey[k]) assignNearest(inv, gkByKey[k]);
+        }
+        // Pass 2: fuzzy (scoreContractor>=80) dla niezmatchowanych — lapie warianty
+        // nazwy odbiorcy ("Force7" vs "Force 7", osoba vs firma, skroty).
+        const unmatched = sortedInvs.filter(i => !shipByInvoiceId[i.id]);
+        const unusedGk = gk.filter(o => !o.used);
+        if (unmatched.length && unusedGk.length) {
+          for (const inv of unmatched) {
+            let best = null, bestScore = 0, bestDiff = Infinity;
+            for (const s of unusedGk) {
               if (s.used) continue;
-              const diff = Math.abs(new Date(inv.issueDate) - new Date(s.date));
-              if (diff <= WINDOW_MS && diff < bestDiff) { bestDiff = diff; best = s; }
+              const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
+              if (d > WINDOW_MS) continue;
+              const sc = scoreContractor({ name: s.receiverName }, inv.contractorName);
+              if (sc >= 80 && (sc > bestScore || (sc === bestScore && d < bestDiff))) { bestScore = sc; bestDiff = d; best = s; }
             }
             if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
           }
