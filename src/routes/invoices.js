@@ -2143,12 +2143,19 @@ router.get('/invoices', async (req, res) => {
           .slice()
           .sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
 
+        const isCanceled = (s) => ['CANCELED', 'CANCELLED'].includes((s.status || '').toUpperCase());
+        // Najlepszy kandydat z puli: NAJPIERW listy aktywne (nie-anulowane),
+        // dopiero w braku — anulowane; w obrebie grupy najblizsza data.
+        // (Case: 2 listy dla tego samego klienta, jeden anulowany — faktura ma
+        // pokazac AKTYWNY/IN_TRANSIT, nie CANCELED.)
         const assignNearest = (inv, pool) => {
-          let best = null, bd = Infinity;
+          let best = null, bd = Infinity, bestCanceled = true;
           for (const s of pool) {
             if (s.used) continue;
             const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
-            if (d <= WINDOW_MS && d < bd) { bd = d; best = s; }
+            if (d > WINDOW_MS) continue;
+            const c = isCanceled(s);
+            if ((bestCanceled && !c) || (c === bestCanceled && d < bd)) { bd = d; best = s; bestCanceled = c; }
           }
           if (best) { best.used = true; shipByInvoiceId[inv.id] = best; return true; }
           return false;
@@ -2159,19 +2166,29 @@ router.get('/invoices', async (req, res) => {
           const k = normalizeContractorName(inv.contractorName);
           if (k && gkByKey[k]) assignNearest(inv, gkByKey[k]);
         }
-        // Pass 2: fuzzy (scoreContractor>=80) dla niezmatchowanych — lapie warianty
-        // nazwy odbiorcy ("Force7" vs "Force 7", osoba vs firma, skroty).
+        // Pass 2: fuzzy dla niezmatchowanych — TYLKO obustronny score>=90
+        // (WSZYSTKIE znaczace slowa jednej nazwy w drugiej). Wczesniejszy prog
+        // 80 = JEDNO wspolne slowo — u nas niemal kazda nazwa ma "surf", wiec
+        // wolny list jednego klienta lapal sie do faktury INNEGO (incydent:
+        // list Club de Surf Patris przypiety do cudzej nowej FV).
         const unmatched = sortedInvs.filter(i => !shipByInvoiceId[i.id]);
         const unusedGk = gk.filter(o => !o.used);
         if (unmatched.length && unusedGk.length) {
           for (const inv of unmatched) {
-            let best = null, bestScore = 0, bestDiff = Infinity;
+            let best = null, bestScore = 0, bestDiff = Infinity, bestCanceled = true;
             for (const s of unusedGk) {
               if (s.used) continue;
               const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
               if (d > WINDOW_MS) continue;
-              const sc = scoreContractor({ name: s.receiverName }, inv.contractorName);
-              if (sc >= 80 && (sc > bestScore || (sc === bestScore && d < bestDiff))) { bestScore = sc; bestDiff = d; best = s; }
+              const sc = Math.min(
+                scoreContractor({ name: s.receiverName }, inv.contractorName),
+                scoreContractor({ name: inv.contractorName }, s.receiverName)
+              );
+              if (sc < 90) continue;
+              const c = isCanceled(s);
+              const better = (bestCanceled && !c)
+                || (c === bestCanceled && (sc > bestScore || (sc === bestScore && d < bestDiff)));
+              if (better) { bestScore = sc; bestDiff = d; best = s; bestCanceled = c; }
             }
             if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
           }
