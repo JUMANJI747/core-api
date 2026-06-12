@@ -5,7 +5,7 @@ const { fetchInvoices: fetchIfirmaInvoices, createInvoice, fetchInvoicePdf, fetc
 const { buildIfirmaContractorPayload } = require('../services/ifirma-payload');
 const { backfillInvoiceItems } = require('../services/invoice-backfill');
 const { sendMail, getAccounts } = require('../mail-sender');
-const { sendTelegram } = require('../telegram-utils');
+const { sendTelegram, sendTelegramDocument } = require('../telegram-utils');
 const { notifyMailResult } = require('../services/notify-mail-result');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { findBestContractors } = require('../services/contractor-match');
@@ -891,37 +891,11 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     let pdfSent = false;
     try {
       if (tgToken && tgChat) {
-        const boundary = '----FormBoundary' + Date.now();
         const caption = `Faktura ${pelnyNumer} dla ${contractor.name}`;
         const filename = `faktura_${pelnyNumer.replace(/\//g, '_')}.pdf`;
-
-        const parts = [
-          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${tgChat}`,
-          `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
-          `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
-        ];
-
-        const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
-        const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-        const body = Buffer.concat([pre, pdfBuffer, post]);
-
-        await new Promise((resolve, reject) => {
-          const tgUrl = new URL(`https://api.telegram.org/bot${tgToken}/sendDocument`);
-          const options = {
-            hostname: tgUrl.hostname,
-            path: tgUrl.pathname,
-            method: 'POST',
-            headers: {
-              'Content-Type': `multipart/form-data; boundary=${boundary}`,
-              'Content-Length': body.length,
-            },
-          };
-          const req2 = require('https').request(options, r => { r.resume(); resolve(); });
-          req2.on('error', reject);
-          req2.write(body);
-          req2.end();
-        });
-        pdfSent = true;
+        const tgResp = await sendTelegramDocument(tgToken, tgChat, pdfBuffer, filename, caption);
+        pdfSent = Boolean(tgResp && tgResp.ok);
+        if (!pdfSent) console.error('[invoice-confirm-latest] Telegram sendDocument not-ok:', JSON.stringify(tgResp));
       }
     } catch (tgErr) {
       console.error('[invoice-confirm-latest] Telegram error:', tgErr.message);
@@ -1049,37 +1023,11 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${token.slice(-4)}`);
 
       if (token && chatId) {
-        const boundary = '----FormBoundary' + Date.now();
         const caption = `Faktura ${pelnyNumer} dla ${contractor.name}`;
         const filename = `faktura_${pelnyNumer.replace(/\//g, '_')}.pdf`;
-
-        const parts = [
-          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}`,
-          `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
-          `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
-        ];
-
-        const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
-        const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-        const body = Buffer.concat([pre, pdfBuffer, post]);
-
-        await new Promise((resolve, reject) => {
-          const tgUrl = new URL(`https://api.telegram.org/bot${token}/sendDocument`);
-          const options = {
-            hostname: tgUrl.hostname,
-            path: tgUrl.pathname,
-            method: 'POST',
-            headers: {
-              'Content-Type': `multipart/form-data; boundary=${boundary}`,
-              'Content-Length': body.length,
-            },
-          };
-          const req2 = require('https').request(options, r => { r.resume(); resolve(); });
-          req2.on('error', reject);
-          req2.write(body);
-          req2.end();
-        });
-        pdfSent = true;
+        const tgResp = await sendTelegramDocument(token, chatId, pdfBuffer, filename, caption);
+        pdfSent = Boolean(tgResp && tgResp.ok);
+        if (!pdfSent) console.error('[invoice-confirm] Telegram sendDocument not-ok:', JSON.stringify(tgResp));
       }
     } catch (tgErr) {
       console.error('[invoice-confirm] Telegram error:', tgErr.message);
@@ -1804,30 +1752,12 @@ router.post('/ifirma/resend-pdf-telegram', async (req, res) => {
     if (!tgToken) return res.json({ ok: false, error: 'Brak telegram_bot_token. Skonfiguruj env TELEGRAM_BOT_TOKEN albo Config.' });
     if (!tgChat) return res.json({ ok: false, error: 'Brak chatId w body żądania. Master n8n musi przekazać chatId={{ $(\'Buduj kontekst\').first().json.chatId }} w body tool calla.' });
 
-    const boundary = '----FormBoundary' + Date.now();
     const filename = `faktura_${realNumber.replace(/\//g, '_')}.pdf`;
     const caption = `Faktura ${realNumber}`;
-    const parts = [
-      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${tgChat}`,
-      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`,
-      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`,
-    ];
-    const pre = Buffer.from(parts.join('\r\n') + '\r\n', 'utf8');
-    const post = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const tgBody = Buffer.concat([pre, pdfBuffer, post]);
-
-    await new Promise((resolve, reject) => {
-      const tgUrl = new URL(`https://api.telegram.org/bot${tgToken}/sendDocument`);
-      const r = require('https').request({
-        hostname: tgUrl.hostname,
-        path: tgUrl.pathname,
-        method: 'POST',
-        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': tgBody.length },
-      }, resp => { resp.resume(); resolve(); });
-      r.on('error', reject);
-      r.write(tgBody);
-      r.end();
-    });
+    const tgResp = await sendTelegramDocument(tgToken, tgChat, pdfBuffer, filename, caption);
+    if (!tgResp || !tgResp.ok) {
+      return res.json({ ok: false, sent: false, error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'}`, invoiceNumber: realNumber });
+    }
 
     res.json({
       ok: true,
