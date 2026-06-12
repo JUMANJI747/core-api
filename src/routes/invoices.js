@@ -12,6 +12,7 @@ const { findBestContractors } = require('../services/contractor-match');
 const { getActiveCatalog } = require('../services/product-catalog');
 const { processIfirmaInvoices } = require('../services/ifirma-sync');
 const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/invoice-lines-backfill');
+const { runBackfill: runIfirmaLinesBackfill } = require('../services/invoice-lines-from-ifirma-backfill');
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
 
@@ -2168,6 +2169,29 @@ router.get('/invoices', async (req, res) => {
     console.error('[GET /invoices] error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Backfill pozycji faktur W TLE — wolany przez dashboard przy wejsciu. Maly
+// batch + lock (anti-duplikat). Uzupelnia InvoiceLineItem dla FV bez pozycji
+// (iFirma details, a gdy brak -> PDF + LLM). Dzieki temu dashboard z czasem
+// liczy sztuki poprawnie (zamiast 0 dla FV bez items). Idempotentny.
+let _linesBackfillRunning = false;
+router.post('/invoices/backfill-lines-bg', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  if (_linesBackfillRunning) return res.json({ ok: true, started: false, note: 'already running' });
+  const limit = Math.min(parseInt((req.body && req.body.limit), 10) || 8, 30);
+  _linesBackfillRunning = true;
+  res.json({ ok: true, started: true, limit }); // odpowiedz od razu, robota leci w tle
+  (async () => {
+    try {
+      const r = await runIfirmaLinesBackfill(prisma, { apply: true, limit, sleepMs: 300, log: (m) => console.log(`[bg-lines-backfill] ${m}`) });
+      console.log(`[bg-lines-backfill] done: processed=${(r.results || []).length} totalLines=${r.totalLines}`);
+    } catch (e) {
+      console.error('[bg-lines-backfill] error:', e.message);
+    } finally {
+      _linesBackfillRunning = false;
+    }
+  })();
 });
 
 // ============ IFIRMA CONTRACTOR DIAG + FORCE-SYNC ============

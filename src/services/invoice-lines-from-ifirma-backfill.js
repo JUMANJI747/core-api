@@ -221,7 +221,36 @@ async function processInvoice(prisma, inv, productCache, opts) {
     : (details.response && Array.isArray(details.response.Pozycje)) ? details.response.Pozycje
     : [];
   if (pozycje.length === 0) {
-    return { id: inv.id, number: inv.number, error: 'no Pozycje in iFirma response' };
+    // Fallback PDF — iFirma nie zwraca pozycji (np. FV wystawione recznie /
+    // innym szablonem). Generowany PDF parsujemy (regex + fallback LLM) i
+    // budujemy linie. Bez tego dashboard zaniza sztuki (kwota jest, szt=0).
+    const pdfRecords = await buildRecordsFromPdf(prisma, inv, productCache);
+    if (!pdfRecords.length) {
+      // Trwala porazka (brak PDF / pusty parse) — oznacz, zeby nie mielic
+      // iFirmy/LLM w kazdym przebiegu (query wyklucza lineBackfillFailed).
+      if (apply) {
+        const ce = (inv.extras && typeof inv.extras === 'object') ? inv.extras : {};
+        await prisma.invoice.update({ where: { id: inv.id }, data: { extras: { ...ce, lineBackfillFailed: true, lineBackfillFailedAt: new Date().toISOString() } } });
+      }
+      return { id: inv.id, number: inv.number, error: 'no Pozycje in iFirma + PDF parse empty' };
+    }
+    if (apply) {
+      await prisma.invoiceLineItem.createMany({ data: pdfRecords });
+      const currentExtras = (inv.extras && typeof inv.extras === 'object') ? inv.extras : {};
+      await prisma.invoice.update({
+        where: { id: inv.id },
+        data: {
+          extras: {
+            ...currentExtras,
+            items: pdfRecords.map(r => ({ name: r.name, qty: Number(r.qty), priceNetto: Number(r.unitPriceNetto), currency: r.currency, vatRate: r.vatRate })),
+            backfilledLinesAt: new Date().toISOString(),
+            itemsSource: 'pdf-parse',
+          },
+        },
+      });
+    }
+    if (verbose) log(`  ${inv.number}: ${pdfRecords.length} pozycji z PDF (iFirma bez Pozycje)`);
+    return { id: inv.id, number: inv.number, lineCount: pdfRecords.length, source: 'pdf' };
   }
 
   const matches = [];
@@ -292,6 +321,67 @@ async function processInvoice(prisma, inv, productCache, opts) {
   return { id: inv.id, number: inv.number, lineCount: records.length, matches };
 }
 
+// Buduje rekordy InvoiceLineItem z PDF faktury (gdy iFirma nie zwraca Pozycji).
+async function buildRecordsFromPdf(prisma, inv, productCache) {
+  if (!inv.ifirmaId) return [];
+  const { fetchInvoicePdf } = require('../ifirma-client');
+  const { parseIfirmaPdfItems } = require('./ifirma-pdf-parser');
+  const rodzaj = inv.ifirmaType || inv.type || 'wdt';
+  let pdf;
+  try {
+    pdf = await fetchInvoicePdf(inv.number, rodzaj, inv.ifirmaId);
+  } catch (e) {
+    console.error(`[ifirma-lines-backfill] fetchInvoicePdf failed for ${inv.number}: ${e.message}`);
+    return [];
+  }
+  let items = [];
+  try {
+    ({ items } = await parseIfirmaPdfItems(pdf));
+  } catch (e) {
+    console.error(`[ifirma-lines-backfill] PDF parse failed for ${inv.number}: ${e.message}`);
+    return [];
+  }
+  if (!items || !items.length) return [];
+
+  const records = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const qty = Number(it.qty || 0);
+    if (!(qty > 0)) continue;
+    const unitNetto = Number(it.priceNetto || 0);
+    const vatPct = it.vatRate != null && !isNaN(Number(it.vatRate)) ? Number(it.vatRate) : 0;
+    const totalNetto = Math.round(unitNetto * qty * 100) / 100;
+    const vatAmount = Math.round(totalNetto * (vatPct / 100) * 100) / 100;
+    const totalGross = Math.round((totalNetto + vatAmount) * 100) / 100;
+    const { ean, cleanName } = extractEanFromName(it.name);
+    let productId = null;
+    try {
+      productId = (await resolveProduct(prisma, productCache, cleanName, ean, { qty, priceNetto: unitNetto, currency: inv.currency })).productId;
+    } catch (_) { /* match best-effort */ }
+    records.push({
+      invoiceId: inv.id,
+      productId,
+      ean: ean || null,
+      name: cleanName || it.name,
+      unit: 'szt',
+      qty,
+      unitPriceNetto: unitNetto,
+      vatRate: String(vatPct),
+      vatAmount,
+      totalNetto,
+      totalGross,
+      currency: it.currency || inv.currency || 'PLN',
+      contractorId: inv.contractorId,
+      contractorCountry: inv.contractorCountry,
+      issueDate: inv.issueDate,
+      ifirmaLineId: null,
+      position: i + 1,
+      extras: { source: 'pdf-parse' },
+    });
+  }
+  return records;
+}
+
 async function runBackfill(prisma, opts = {}) {
   const apply = !!opts.apply;
   const verbose = !!opts.verbose;
@@ -307,6 +397,7 @@ async function runBackfill(prisma, opts = {}) {
     where: {
       ifirmaId: { not: null },
       lineItems: { none: {} },
+      NOT: { extras: { path: ['lineBackfillFailed'], equals: true } }, // pomijamy trwale porazki
     },
     orderBy: { issueDate: 'desc' },
     take: limit,
