@@ -477,6 +477,34 @@ async function getNextDeliveryNoteNumber(numberingFormatId) {
   );
 }
 
+// Lista formatow numeracji skonfigurowanych na koncie. Uzywane do
+// auto-wykrycia formatu albaranu (WZ) zeby Nikodem nie musial recznie
+// ustawiac KANARY_ALBARAN_NUMBERING_FORMAT_ID. Endpoint moze sie roznic miedzy
+// wdrozeniami Contasimple — probujemy kilku znanych sciezek, pierwsza ktora
+// odpowie 2xx wygrywa. Best-effort: zwraca [] gdy zaden nie zadziala.
+async function listNumberingFormats() {
+  const candidates = [
+    '/accounting/numberingFormats',
+    '/numberingFormats',
+    '/accounting/numerationFormats',
+    '/me/numberingFormats',
+  ];
+  for (const path of candidates) {
+    try {
+      const data = await csJson('GET', path);
+      const arr = Array.isArray(data) ? data : (data && (data.data || data.items || data.results));
+      if (Array.isArray(arr)) {
+        console.log(`[contasimple] listNumberingFormats via ${path} → ${arr.length} formatow`);
+        return arr;
+      }
+    } catch (e) {
+      // 404/403 — sprobuj nastepny kandydat.
+    }
+  }
+  console.warn('[contasimple] listNumberingFormats — zaden kandydat-endpoint nie zadzialal');
+  return [];
+}
+
 // ============ EXPORTS ============
 
 function isConfigured() {
@@ -518,6 +546,7 @@ module.exports = {
   fetchDeliveryNotePdf,
   sendDeliveryNoteEmail,
   getNextDeliveryNoteNumber,
+  listNumberingFormats,
   // helpers
   dateToPeriod,
   DEFAULT_VAT_PERCENT,

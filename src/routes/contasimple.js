@@ -2398,6 +2398,97 @@ router.post('/albaran-confirm', asyncHandler(async (req, res) => {
   await confirmAlbaran(req, res, previewId);
 }));
 
+const ALBARAN_FORMAT_CONFIG_KEY = 'kanary_albaran_numbering_format_id';
+
+// Diagnostyka: pokaz formaty numeracji widziane w Contasimple (do znalezienia
+// id formatu WZ z prefixem AL-) + co aktualnie rozwiazuje backend.
+router.get('/numbering-formats', asyncHandler(async (req, res) => {
+  let formats = [];
+  try { formats = await cs.listNumberingFormats(); } catch (e) { /* best-effort */ }
+  let sampleDeliveryNote = null;
+  try {
+    const dn = await cs.listDeliveryNotes({ itemsPerPage: 1 });
+    const list = Array.isArray(dn) ? dn : (dn && (dn.data || dn.items || dn.results)) || [];
+    sampleDeliveryNote = list[0] ? { number: list[0].number, numberingFormatId: list[0].numberingFormatId || list[0].numberingFormatID } : null;
+  } catch (e) { /* best-effort */ }
+  const cfg = await prisma.config.findUnique({ where: { key: ALBARAN_FORMAT_CONFIG_KEY } }).catch(() => null);
+  res.json({
+    ok: true,
+    resolved: await resolveAlbaranFormatId(prisma),
+    fromEnv: NIKODEM_DEFAULTS.albaranNumberingFormatId || null,
+    fromConfig: cfg ? parseInt(cfg.value, 10) : null,
+    sampleDeliveryNote,
+    formats,
+  });
+}));
+
+// Ustaw recznie id formatu numeracji WZ (zapis w Config, bez redeploya).
+router.post('/albaran-format', asyncHandler(async (req, res) => {
+  const id = parseInt((req.body && (req.body.id ?? req.body.numberingFormatId)), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'id (dodatnia liczba) wymagane w body' });
+  }
+  await prisma.config.upsert({
+    where: { key: ALBARAN_FORMAT_CONFIG_KEY },
+    update: { value: String(id) },
+    create: { key: ALBARAN_FORMAT_CONFIG_KEY, value: String(id) },
+  });
+  res.json({ ok: true, key: ALBARAN_FORMAT_CONFIG_KEY, value: id });
+}));
+
+// Rozwiazuje numberingFormatId dla albaranow (WZ). Kolejnosc zrodel:
+//   1. env KANARY_ALBARAN_NUMBERING_FORMAT_ID (NIKODEM_DEFAULTS),
+//   2. Config DB (cache z poprzedniego auto-wykrycia / recznie ustawiony),
+//   3. auto-wykrycie z istniejacych albaranow (zero zgadywania — czytamy
+//      numberingFormatId z realnego dokumentu),
+//   4. auto-wykrycie z listy formatow numeracji (wybor formatu WZ po typie/
+//      prefixie 'AL').
+// Znaleziona wartosc jest cache'owana do Config, wiec to setup jednorazowy
+// bez redeploya. Zwraca number|null.
+async function resolveAlbaranFormatId(prisma) {
+  if (NIKODEM_DEFAULTS.albaranNumberingFormatId) return NIKODEM_DEFAULTS.albaranNumberingFormatId;
+
+  const cfg = await prisma.config.findUnique({ where: { key: ALBARAN_FORMAT_CONFIG_KEY } }).catch(() => null);
+  const cached = cfg && parseInt(cfg.value, 10);
+  if (cached) return cached;
+
+  const persist = async (id, src) => {
+    await prisma.config.upsert({
+      where: { key: ALBARAN_FORMAT_CONFIG_KEY },
+      update: { value: String(id) },
+      create: { key: ALBARAN_FORMAT_CONFIG_KEY, value: String(id) },
+    }).catch(() => {});
+    console.log(`[cs albaran] numberingFormatId=${id} auto-wykryty (${src}), zapisany w Config`);
+    return id;
+  };
+
+  // 3. Z istniejacych albaranow.
+  try {
+    const dn = await cs.listDeliveryNotes({ itemsPerPage: 1 });
+    const list = Array.isArray(dn) ? dn : (dn && (dn.data || dn.items || dn.results)) || [];
+    const fid = list[0] && (list[0].numberingFormatId || list[0].numberingFormatID);
+    if (fid) return persist(fid, 'existing-deliveryNote');
+  } catch (e) {
+    console.warn('[cs albaran] listDeliveryNotes discovery failed:', e.message);
+  }
+
+  // 4. Z listy formatow numeracji — wybierz format WZ.
+  try {
+    const formats = await cs.listNumberingFormats();
+    const isAlbaran = f => {
+      const blob = `${f.type || ''} ${f.documentType || ''} ${f.prefix || ''} ${f.name || ''} ${f.format || ''}`.toLowerCase();
+      return /albar|delivery|deliverynote|\bal[-_ ]/.test(blob) || (typeof f.documentType === 'number' && f.documentType === 3);
+    };
+    const match = formats.find(isAlbaran);
+    const fid = match && (match.id || match.numberingFormatId || match.formatId);
+    if (fid) return persist(fid, 'numberingFormats-list');
+  } catch (e) {
+    console.warn('[cs albaran] listNumberingFormats discovery failed:', e.message);
+  }
+
+  return null;
+}
+
 async function confirmAlbaran(req, res, previewId) {
   const stored = getEsAlbaranPreview(previewId);
   if (!stored) {
@@ -2406,16 +2497,17 @@ async function confirmAlbaran(req, res, previewId) {
   }
   const { contractor, lines, deliveryNoteDate, chatId: storedChatId } = stored;
 
-  if (!NIKODEM_DEFAULTS.albaranNumberingFormatId) {
+  const albaranFormatId = await resolveAlbaranFormatId(prisma);
+  if (!albaranFormatId) {
     return res.status(500).json({
-      error: 'KANARY_ALBARAN_NUMBERING_FORMAT_ID not set',
-      hint: 'W Railway env ustaw KANARY_ALBARAN_NUMBERING_FORMAT_ID = <id formatu z prefixem AL- z panelu Contasimple, sekcja Configuración → Numeración>.',
+      error: 'albaran numbering format not configured',
+      hint: 'Nie udalo sie auto-wykryc formatu numeracji WZ. Ustaw recznie: POST /api/contasimple/albaran-format {id} (z panelu Contasimple → Configuración → Numeración, format z prefixem AL-) albo env KANARY_ALBARAN_NUMBERING_FORMAT_ID. Lista dostepnych: GET /api/contasimple/numbering-formats.',
     });
   }
 
   let nextNumber = '';
   try {
-    const r = await cs.getNextDeliveryNoteNumber(NIKODEM_DEFAULTS.albaranNumberingFormatId);
+    const r = await cs.getNextDeliveryNoteNumber(albaranFormatId);
     nextNumber = (r && r.data) || '';
   } catch (e) {
     console.error('[cs albaran-confirm] getNextDeliveryNoteNumber failed:', e.message);
@@ -2425,7 +2517,7 @@ async function confirmAlbaran(req, res, previewId) {
     targetEntityId: contractor.contasimpleId,
     lines,
     deliveryNoteDate,
-    overrides: nextNumber ? { number: nextNumber } : {},
+    overrides: { numberingFormatId: albaranFormatId, ...(nextNumber ? { number: nextNumber } : {}) },
   });
   console.log('[cs albaran-confirm] payload:', JSON.stringify(csPayload));
 
