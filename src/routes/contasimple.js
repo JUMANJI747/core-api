@@ -148,6 +148,29 @@ async function resolveEsContractor(res, { contractorId, contractorCif, contracto
   return contractor;
 }
 
+// Wspolny push na Telegram ES (kanary): resolve token + chatId → send →
+// interpretacja odpowiedzi. Wczesniej 7 miejsc w tym pliku kopiowalo ten blok
+// z lekko innymi stringami bledow. NIGDY nie rzuca — push jest wszedzie
+// best-effort, bledy wracaja w { ok:false, reason, error }.
+//   reason: 'no_token' | 'no_chat' | 'api' | 'exception'
+// Tekst: pushEsTelegram(chatId, { text }). PDF: pushEsTelegram(chatId,
+// { document: { buffer, filename, caption } }).
+async function pushEsTelegram(reqChatId, { text, document }) {
+  try {
+    const tgChat = await getEsChatId(prisma, reqChatId);
+    const tgToken = await getEsTelegramToken(prisma);
+    if (!tgToken) return { ok: false, reason: 'no_token', error: 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY' };
+    if (!tgChat) return { ok: false, reason: 'no_chat', error: 'chatId missing (request + Config telegram_chat_id_es/telegram_chat_id all empty)' };
+    const tgResp = document
+      ? await sendTelegramDocument(tgToken, String(tgChat), document.buffer, document.filename, document.caption)
+      : await sendTelegram(tgToken, String(tgChat), text);
+    if (tgResp && tgResp.ok) return { ok: true };
+    return { ok: false, reason: 'api', error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})` };
+  } catch (e) {
+    return { ok: false, reason: 'exception', error: e.message };
+  }
+}
+
 // ============ SMOKE TEST ============
 //
 // After deploy, run:
@@ -858,28 +881,9 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'items required' });
   }
 
-  // Resolve contractor: id > cif > fuzzy search.
-  let contractor = null;
-  if (body.contractorId) {
-    contractor = await prisma.esContractor.findUnique({ where: { id: body.contractorId } });
-  } else if (body.contractorCif) {
-    contractor = await prisma.esContractor.findFirst({ where: { nif: body.contractorCif } });
-  } else if (body.contractorSearch) {
-    const result = await findEsContractor(prisma, body.contractorSearch);
-    if (!result.contractor) {
-      return res.json({ ok: false, suggestions: result.suggestions, hint: 'Add the customer first via POST /api/contasimple/customers' });
-    }
-    contractor = result.contractor;
-  }
-  if (!contractor) {
-    return res.status(404).json({ error: 'contractor not found — provide contractorId, contractorCif, or contractorSearch' });
-  }
-  if (!contractor.nif) {
-    return res.status(400).json({ error: 'contractor missing CIF/NIF — Nikodem invoices only B2B' });
-  }
-  if (!contractor.contasimpleId) {
-    return res.status(400).json({ error: 'contractor exists locally but has no contasimpleId — re-run /sync-customers or create in Contasimple first' });
-  }
+  // Resolve contractor: id > cif > fuzzy search. FV = tylko B2B (requireCif).
+  const contractor = await resolveEsContractor(res, body, { requireCif: true });
+  if (!contractor) return; // resolveEsContractor już odpowiedział (404 / suggestions / 400)
 
   // ANTI-DUPLIKAT: jesli ostatnia FV dla tego klienta wystawiona < 2 min temu,
   // to prawie na pewno duplikat (agent zaptlil sie na "wystaw" / "tak"). Zwroc
@@ -981,21 +985,10 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   // telegramPushed = czy push REALNIE poszedl; wraca w response, zeby agent
   // wiedzial czy musi sam pokazac blok (gdy false).
   let telegramPushed = false;
-  if (body.source !== 'frontend') try {
-    const tgChatId = await getEsChatId(prisma, body.chatId);
-    const tgToken = await getEsTelegramToken(prisma);
-    if (tgToken && tgChatId) {
-      try {
-        await sendTelegram(tgToken, String(tgChatId), previewText);
-        telegramPushed = true;
-      } catch (e) {
-        console.error('[cs invoice-preview] tg notify failed:', e.message);
-      }
-    } else {
-      console.error(`[cs invoice-preview] push pominiety — token=${tgToken ? 'ok' : 'BRAK'} chatId=${tgChatId ? 'ok' : 'BRAK'} (reqChatId=${body.chatId || '-'})`);
-    }
-  } catch (e) {
-    console.error('[cs invoice-preview] tg notify outer:', e.message);
+  if (body.source !== 'frontend') {
+    const push = await pushEsTelegram(body.chatId, { text: previewText });
+    telegramPushed = push.ok;
+    if (!push.ok) console.error('[cs invoice-preview] tg push failed:', push.error);
   }
 
   // AWAIT — context musi byc zapisany ZANIM odpowiemy, inaczej szybkie "tak"
@@ -1142,25 +1135,18 @@ async function confirmEsPreview(stored) {
   if (storedSource === 'frontend') {
     pdfError = 'skipped: source=frontend';
   } else try {
-    const tgChat = await getEsChatId(prisma, storedChatId);
-    const tgToken = await getEsTelegramToken(prisma);
-    if (!tgToken) pdfError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
-    else if (!tgChat) pdfError = 'chatId missing (request + Config telegram_chat_id_es/telegram_chat_id all empty)';
-    else {
-      const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
-      const filename = `factura_${(invoice.number || invoice.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
-      const caption = `Factura ${invoice.number || invoice.id} — ${contractor.name} (${preview.totals.brutto} €)`;
-      const tgResp = await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
-      if (tgResp && tgResp.ok) {
-        pdfSent = true;
-      } else {
-        pdfError = `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})`;
-        console.error('[cs invoice-confirm] Telegram returned not-ok:', JSON.stringify(tgResp));
-      }
+    const { buffer } = await cs.fetchInvoicePdf(period, invoice.id);
+    const filename = `factura_${(invoice.number || invoice.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+    const caption = `Factura ${invoice.number || invoice.id} — ${contractor.name} (${preview.totals.brutto} €)`;
+    const push = await pushEsTelegram(storedChatId, { document: { buffer, filename, caption } });
+    pdfSent = push.ok;
+    if (!push.ok) {
+      pdfError = push.error;
+      console.error('[cs invoice-confirm] Telegram PDF push failed:', push.error);
     }
-  } catch (tgErr) {
-    pdfError = tgErr.message;
-    console.error('[cs invoice-confirm] Telegram PDF send threw:', tgErr.message);
+  } catch (pdfErr) {
+    pdfError = pdfErr.message;
+    console.error('[cs invoice-confirm] PDF fetch threw:', pdfErr.message);
   }
 
   prisma.agentContext
@@ -1407,38 +1393,30 @@ async function executeDeleteForPreview(stored) {
   let tgSent = false;
   let tgError = null;
   try {
-    const tgChat = await getEsChatId(prisma, storedChatId);
-    const tgToken = await getEsTelegramToken(prisma);
-    if (!tgToken) tgError = 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY';
-    else if (!tgChat) tgError = 'chatId missing (request + Config all empty)';
-    else {
-      const lines = [];
-      if (deleted.length) {
-        const header = contractor && contractor.name
-          ? `Skasowano ${deleted.length} FV dla ${contractor.name}:`
-          : `Skasowano ${deleted.length} FV:`;
-        lines.push(header);
-        for (const d of deleted) {
-          lines.push(`- ${d.number} (${d.totalAmount} €)`);
-        }
-        const totalSum = deleted.reduce((s, d) => s + (Number(d.totalAmount) || 0), 0);
-        lines.push(`Razem: ${totalSum.toFixed(2)} €`);
+    const lines = [];
+    if (deleted.length) {
+      const header = contractor && contractor.name
+        ? `Skasowano ${deleted.length} FV dla ${contractor.name}:`
+        : `Skasowano ${deleted.length} FV:`;
+      lines.push(header);
+      for (const d of deleted) {
+        lines.push(`- ${d.number} (${d.totalAmount} €)`);
       }
-      if (failed.length) {
-        if (deleted.length) lines.push('');
-        lines.push(`Nie udało się skasować ${failed.length}:`);
-        for (const f of failed) {
-          lines.push(`- ${f.number}: ${f.error || 'unknown'}`);
-        }
+      const totalSum = deleted.reduce((s, d) => s + (Number(d.totalAmount) || 0), 0);
+      lines.push(`Razem: ${totalSum.toFixed(2)} €`);
+    }
+    if (failed.length) {
+      if (deleted.length) lines.push('');
+      lines.push(`Nie udało się skasować ${failed.length}:`);
+      for (const f of failed) {
+        lines.push(`- ${f.number}: ${f.error || 'unknown'}`);
       }
-      const text = lines.join('\n');
-      const tgResp = await sendTelegram(tgToken, tgChat, text);
-      if (tgResp && tgResp.ok) {
-        tgSent = true;
-      } else {
-        tgError = `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})`;
-        console.error('[cs delete-confirm] Telegram returned not-ok:', JSON.stringify(tgResp));
-      }
+    }
+    const push = await pushEsTelegram(storedChatId, { text: lines.join('\n') });
+    tgSent = push.ok;
+    if (!push.ok) {
+      tgError = push.error;
+      console.error('[cs delete-confirm] Telegram push failed:', push.error);
     }
   } catch (tgErr) {
     tgError = tgErr.message;
@@ -1876,24 +1854,17 @@ router.post('/resend-pdf-telegram', asyncHandler(async (req, res) => {
   if (!resolved) {
     return res.status(404).json({ error: 'invoice not found', invoiceNumber, contasimpleId });
   }
-  const tgChat = await getEsChatId(prisma, req.body && req.body.chatId);
-  const tgToken = await getEsTelegramToken(prisma);
-  if (!tgToken) return res.status(503).json({ error: 'telegram bot token (ES/PL) missing — set TELEGRAM_BOT_TOKEN_KANARY' });
-  if (!tgChat) return res.status(503).json({ error: 'chatId missing (request + Config all empty)' });
-
   const { buffer } = await cs.fetchInvoicePdf(resolved.period, resolved.id);
   const number = resolved.data.number || String(resolved.id);
   const customer = (resolved.data.target && resolved.data.target.organization) || '';
   const total = resolved.data.totalAmount;
   const filename = `factura_${number.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
   const caption = `Factura ${number}${customer ? ` — ${customer}` : ''}${total != null ? ` (${total} €)` : ''}`;
-  const tgResp = await sendTelegramDocument(tgToken, tgChat, buffer, filename, caption);
-  if (!tgResp || !tgResp.ok) {
-    return res.status(502).json({
-      ok: false,
-      error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'}`,
-      invoiceNumber: number,
-    });
+  const push = await pushEsTelegram(req.body && req.body.chatId, { document: { buffer, filename, caption } });
+  if (!push.ok) {
+    // no_token/no_chat = brak konfiguracji (503), reszta = blad po stronie API (502).
+    const status = push.reason === 'no_token' || push.reason === 'no_chat' ? 503 : 502;
+    return res.status(status).json({ ok: false, error: push.error, invoiceNumber: number });
   }
   res.json({ ok: true, invoiceNumber: number, invoiceId: resolved.id, period: resolved.period, pdfSent: true });
 }));
@@ -2361,23 +2332,9 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     `Potwierdzasz? "tak/ok" wystawi.`;
 
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV.
-  let telegramPushed = false;
-  try {
-    const tgChatId = await getEsChatId(prisma, body.chatId);
-    const tgToken = await getEsTelegramToken(prisma);
-    if (tgToken && tgChatId) {
-      try {
-        await sendTelegram(tgToken, String(tgChatId), previewText);
-        telegramPushed = true;
-      } catch (e) {
-        console.error('[cs albaran-preview] tg notify failed:', e.message);
-      }
-    } else {
-      console.error(`[cs albaran-preview] push pominiety — token=${tgToken ? 'ok' : 'BRAK'} chatId=${tgChatId ? 'ok' : 'BRAK'} (reqChatId=${body.chatId || '-'})`);
-    }
-  } catch (e) {
-    console.error('[cs albaran-preview] tg notify outer:', e.message);
-  }
+  const pushA = await pushEsTelegram(body.chatId, { text: previewText });
+  const telegramPushed = pushA.ok;
+  if (!pushA.ok) console.error('[cs albaran-preview] tg push failed:', pushA.error);
 
   // AWAIT — context zapisany przed odpowiedzia, by szybkie "tak" nie odczytalo
   // starego lastAction i nie wygenerowalo drugiego preview WZ.
@@ -2541,22 +2498,19 @@ async function confirmAlbaran(req, res, previewId) {
   let pdfSent = false;
   let pdfError = null;
   try {
-    const tgChatId = await getEsChatId(prisma, storedChatId || (req.body && req.body.chatId));
-    const tgToken = await getEsTelegramToken(prisma);
-    if (!tgToken) pdfError = 'telegram bot token missing';
-    else if (!tgChatId) pdfError = 'telegram chatId missing';
-    else {
-      const { buffer } = await cs.fetchDeliveryNotePdf(albaran.id);
-      const filename = `albaran_${(albaran.number || albaran.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
-      const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
-      const caption = `Albarán ${albaran.number || albaran.id} — ${contractor.organization || contractor.name} (${totalQty} szt)`;
-      const tgResp = await sendTelegramDocument(tgToken, String(tgChatId), buffer, filename, caption);
-      if (tgResp && tgResp.ok) pdfSent = true;
-      else pdfError = (tgResp && tgResp.description) || 'unknown';
+    const { buffer } = await cs.fetchDeliveryNotePdf(albaran.id);
+    const filename = `albaran_${(albaran.number || albaran.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+    const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
+    const caption = `Albarán ${albaran.number || albaran.id} — ${contractor.organization || contractor.name} (${totalQty} szt)`;
+    const push = await pushEsTelegram(storedChatId || (req.body && req.body.chatId), { document: { buffer, filename, caption } });
+    pdfSent = push.ok;
+    if (!push.ok) {
+      pdfError = push.error;
+      console.error('[cs albaran-confirm] PDF push failed:', push.error);
     }
   } catch (e) {
     pdfError = e.message;
-    console.error('[cs albaran-confirm] PDF Telegram error:', e.message);
+    console.error('[cs albaran-confirm] PDF fetch threw:', e.message);
   }
 
   prisma.agentContext.upsert({
@@ -2603,20 +2557,16 @@ router.post('/albaran-resend-pdf-telegram', asyncHandler(async (req, res) => {
   }
   if (!id) return res.status(404).json({ error: 'albaran not found (podaj albaranId albo albaranNumber)' });
 
-  const tgToken = await getEsTelegramToken(prisma);
-  const tgChat = await getEsChatId(prisma, req.body && req.body.chatId);
-  if (!tgToken) return res.status(503).json({ error: 'telegram bot token missing — set TELEGRAM_BOT_TOKEN_KANARY' });
-  if (!tgChat) return res.status(503).json({ error: 'chatId missing' });
-
   const { buffer } = await cs.fetchDeliveryNotePdf(id);
   const albaran = (await cs.getDeliveryNote(id)).data;
   const filename = `albaran_${(albaran.number || id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
   const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
   const customer = (albaran.target && albaran.target.organization) || '';
   const caption = `Albarán ${albaran.number || id}${customer ? ` — ${customer}` : ''} (${totalQty} szt)`;
-  const tgResp = await sendTelegramDocument(tgToken, String(tgChat), buffer, filename, caption);
-  if (!tgResp || !tgResp.ok) {
-    return res.status(502).json({ ok: false, error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'}`, albaranNumber: albaran.number });
+  const push = await pushEsTelegram(req.body && req.body.chatId, { document: { buffer, filename, caption } });
+  if (!push.ok) {
+    const status = push.reason === 'no_token' || push.reason === 'no_chat' ? 503 : 502;
+    return res.status(status).json({ ok: false, error: push.error, albaranNumber: albaran.number });
   }
   res.json({ ok: true, sent: true, albaranNumber: albaran.number, albaranId: id });
 }));
