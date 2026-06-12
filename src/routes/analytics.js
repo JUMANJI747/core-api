@@ -362,6 +362,10 @@ router.get('/analytics/revenue', async (req, res) => {
       `);
     }
     if (wantEs) {
+      // ES (Contasimple) = sprzedaz nasza markowa w calosci. requireItems jest
+      // PL/iFirma-specyficzny (zaliczki, prywatne "grafiki 3D") — ES NIE
+      // filtrujemy nim, bo EsInvoiceLineItem.productId bywa NULL (linie z
+      // Contasimple niezmapowane do katalogu) i caly obrot ES by znikal.
       queries.push(prisma.$queryRaw`
         SELECT
           'es'::text                                                   AS source,
@@ -373,7 +377,6 @@ router.get('/analytics/revenue', async (req, res) => {
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
           AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
-          AND (${requireItems}::boolean = false OR EXISTS (SELECT 1 FROM "EsInvoiceLineItem" eli WHERE eli."esInvoiceId" = "EsInvoice".id AND eli."productId" IS NOT NULL))
         GROUP BY 2, 3
         ORDER BY period, currency
       `);
@@ -439,6 +442,8 @@ router.get('/analytics/qty-sold', async (req, res) => {
       `);
     }
     if (wantEs) {
+      // productsOnly jest PL-specyficzny (grafika 3D itp.). ES NIE filtrujemy —
+      // EsInvoiceLineItem.productId bywa NULL, inaczej sztuki ES = 0.
       queries.push(prisma.$queryRaw`
         SELECT
           'es'::text                                                          AS source,
@@ -448,7 +453,6 @@ router.get('/analytics/qty-sold', async (req, res) => {
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-          AND (${productsOnly}::boolean = false OR "productId" IS NOT NULL)
         GROUP BY 2
         ORDER BY period
       `);
