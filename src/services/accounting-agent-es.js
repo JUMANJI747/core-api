@@ -108,6 +108,8 @@ KRÓTKIE POLECENIA UŻYTKOWNIKA (tak/ok/wyślij/potwierdź) — bez konkretów:
 KROK 1: cs_get_context (ZAWSZE pierwszy, BEZ pytania użytkownika "co potwierdzasz?").
 KROK 2: WYKONAJ akcję ZGODNIE Z lastAction z wyniku cs_get_context — NIE pytaj ponownie:
 - lastAction="preview" + "tak"/"ok" → NATYCHMIAST cs_invoice_confirm. NIE pokazuj preview ponownie, NIE pytaj "co potwierdzasz".
+- lastAction="albaran-preview" + "tak"/"ok" → NATYCHMIAST cs_albaran_confirm. NIE pokazuj preview WZ ponownie, NIE pytaj.
+- lastAction="albaran-confirmed" + jakikolwiek confirm/wystaw intent → ZWRÓĆ "WZ {albaranNumber} został już wystawiony ~Xs temu. Co dalej?". NIE rób cs_albaran_preview ani cs_albaran_confirm.
 - lastAction="confirmed" + jakikolwiek confirm/wystaw intent → ZWRÓĆ "FV {lastInvoiceNumber} została już wystawiona ~Xs temu. Nie wystawiam duplikatu. Co dalej?". NIE rób cs_invoice_preview ani cs_invoice_confirm.
 - lastAction="confirmed" + "wyślij mailem do X" → cs_invoice_send_email
 - lastAction="delete-preview" + "tak" → cs_delete_confirm
@@ -120,7 +122,10 @@ FLOW WYSTAWIENIA FV:
 1. cs_invoice_preview z items + contractorSearch (lub contractorCif) → response: previewId, previewText, telegramPushed, preview.lines[], preview.totals{netto,igic,brutto}, preview.period
    KONTRAHENT WYMAGANY: cs_invoice_preview MUSI dostać contractorSearch lub contractorCif lub contractorId. Jeśli w żądaniu NIE MA nazwy/CIF kontrahenta (np. samo "wystaw fakturę na 30 sticków") → NIE wywołuj cs_invoice_preview bez kontrahenta. Zapytaj "Dla kogo? (nazwa lub CIF)". Bez kontrahenta backend zwróci 404 i NIE MA previewa.
    TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni") → przekaż paymentDays=<liczba> do cs_invoice_preview. Bez wzmianki → pomiń (backend da 7).
-2. ZASADA TWARDA — POKAŻ PREVIEW SAM: Twoja odpowiedź MUSI zawierać DOSŁOWNIE cały blok response.previewText (skopiuj 1:1). NIE pisz "preview gotowy w wiadomości wyżej" — masz pokazać blok TY, w swojej odpowiedzi. To jest jedyne źródło prawdy widziane przez użytkownika; backendowy push to tylko dodatek.
+2. POKAZANIE PREVIEW — zależnie od response.telegramPushed (UNIKAJ DUBLOWANIA):
+   - telegramPushed=true → backend JUŻ wypchnął cały blok na Telegram. Odpowiedz TYLKO jedną krótką linią: "Podgląd FV ⬆️ — potwierdź: tak/ok". NIE powtarzaj bloku, NIE pisz liczb (user już je widzi wyżej).
+   - telegramPushed=false (lub brak) → backend NIE wypchnął. Pokaż wtedy DOSŁOWNIE cały response.previewText (1:1), bo inaczej user nic nie zobaczy.
+   W ŻADNYM wypadku NIE pisz liczb z głowy — wyłącznie z response.
 3. JEŚLI response.ok=false LUB response.error (np. 404 contractor not found, 409 duplikat) → pokaż błąd DOSŁOWNIE i NIE twierdź że preview istnieje. Faktura NIE jest w toku dopóki nie masz response.previewId + response.previewText.
 4. ZASADA TWARDA: wszystkie liczby (qty, unitNetto, lineNetto, netto/igic/brutto) muszą pochodzić DOSŁOWNIE z response.preview/previewText. Każda inna liczba = błąd. NIE przeliczaj sam, NIE zaokrąglaj, NIE rekonstruuj z pamięci.
 5. User "tak"/"ok" → cs_invoice_confirm (bez argumentów)
@@ -144,7 +149,7 @@ WYSYŁKA FV MAILEM DO KLIENTA:
 ALBARÁN (WZ — DOKUMENT WYDANIA):
 - "wystaw wz dla X 30 sticków", "wystaw albaran X", "wydaj towar do X" → cs_albaran_preview z items+contractor.
 - WZ to dokument wydania bez cen i bez podatku — tylko qty + nazwa produktu. Numerator inny niż FV (prefix 'AL-', np. AL-2026-0002).
-- Po cs_albaran_preview POKAŻ SAM cały blok response.previewText DOSŁOWNIE w swojej odpowiedzi (nie "preview gotowy wyżej"). response.error/ok=false → pokaż błąd, WZ NIE jest w toku.
+- Po cs_albaran_preview (UNIKAJ DUBLOWANIA): telegramPushed=true → backend już wypchnął blok, odpowiedz JEDNĄ krótką linią "Podgląd WZ ⬆️ — potwierdź: tak/ok". telegramPushed=false → pokaż DOSŁOWNIE response.previewText (1:1). response.error/ok=false → pokaż błąd, WZ NIE jest w toku.
 - "tak/ok" po preview → cs_albaran_confirm. Po confirm PDF idzie automatycznie na Telegrama.
 - "daj wz AL-2026-0002" / "wyślij wz tu" → cs_albaran_send_pdf_telegram {albaranNumber}.
 - "wyślij wz mailem do X" → cs_albaran_send_email {albaranNumber}. toEmail OPCJONALNY (backend pobierze z bazy).
@@ -537,6 +542,7 @@ async function processAccountingEsQuery(query, opts = {}) {
       const FRESH_MS = 10 * 60 * 1000;
       const fresh = result.timestamp ? (Date.now() - Number(result.timestamp) < FRESH_MS) : true;
       if (result.lastAction === 'preview' && fresh) return 'cs_invoice_confirm';
+      if (result.lastAction === 'albaran-preview' && fresh) return 'cs_albaran_confirm';
       if (result.lastAction === 'delete-preview' && fresh) return 'cs_delete_confirm';
     }
     return null;

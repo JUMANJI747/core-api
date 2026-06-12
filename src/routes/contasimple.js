@@ -998,7 +998,9 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
     console.error('[cs invoice-preview] tg notify outer:', e.message);
   }
 
-  prisma.agentContext
+  // AWAIT — context musi byc zapisany ZANIM odpowiemy, inaczej szybkie "tak"
+  // odczyta stary lastAction (cs_get_context) i agent zrobi preview drugi raz.
+  await prisma.agentContext
     .upsert({
       where: { id: 'ksiegowosc-es' },
       update: {
@@ -2377,7 +2379,9 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     console.error('[cs albaran-preview] tg notify outer:', e.message);
   }
 
-  prisma.agentContext.upsert({
+  // AWAIT — context zapisany przed odpowiedzia, by szybkie "tak" nie odczytalo
+  // starego lastAction i nie wygenerowalo drugiego preview WZ.
+  await prisma.agentContext.upsert({
     where: { id: 'ksiegowosc-es' },
     update: { data: { lastAction: 'albaran-preview', albaranPreviewId: previewId, contractor: { name: contractor.name, nif: contractor.nif }, totalQty: preview.totalQty, timestamp: Date.now() } },
     create: { id: 'ksiegowosc-es', data: { lastAction: 'albaran-preview', albaranPreviewId: previewId, contractor: { name: contractor.name, nif: contractor.nif }, totalQty: preview.totalQty, timestamp: Date.now() } },
