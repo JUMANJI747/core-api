@@ -212,9 +212,11 @@ router.post('/ifirma/autosync', async (req, res) => {
     const nowIso = new Date().toISOString();
     await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
 
-    // Okno rozszerzane do najstarszej nieoplaconej FV — zeby wychwycic platnosci
-    // zaksiegowane pozno na starszych fakturach (np. FV z marca oplacona w czerwcu).
-    const { dataOd, dataDo } = await computeSyncWindow(prisma);
+    // Autosync (przy wejsciu na Faktury) = LEKKO: tylko biezacy miesiac.
+    // Platnosci na starszych FV domyka szersze okno w cronie + pelny sync.
+    const now = new Date();
+    const dataDo = nowIso.slice(0, 10);
+    const dataOd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
     const work = (async () => {
       const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
       return await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });
@@ -227,6 +229,25 @@ router.post('/ifirma/autosync', async (req, res) => {
   } catch (e) {
     console.error('[ifirma/autosync]', e.message);
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// Jednorazowy PELNY sync z iFirmy (domyslnie od poczatku biezacego roku).
+// Aktualizuje paidAmount/status/kwoty wszystkich FV w zakresie — uzyj raz, by
+// wyrownac stan (np. stare FV oplacone pozno). Override dataOd/dataDo w body.
+router.post('/ifirma/sync-full', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const body = req.body || {};
+    const dataDo = body.dataDo || new Date().toISOString().slice(0, 10);
+    const dataOd = body.dataOd || `${new Date().getUTCFullYear()}-01-01`;
+    console.log(`[ifirma/sync-full] ${dataOd} -> ${dataDo}`);
+    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });
+    res.json({ ok: true, dataOd, dataDo, fetched: invoices.length, ...result });
+  } catch (e) {
+    console.error('[ifirma/sync-full]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
