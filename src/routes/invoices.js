@@ -2211,6 +2211,12 @@ router.get('/invoices/lines-backfill-status', async (req, res) => {
       prisma.invoice.count({ where: { ifirmaId: { not: null }, extras: { path: ['lineBackfillFailed'], equals: true } } }),
       prisma.invoiceLineItem.count(),
     ]);
+    const withoutSample = await prisma.invoice.findMany({
+      where: { ifirmaId: { not: null }, lineItems: { none: {} } },
+      orderBy: { issueDate: 'desc' },
+      take: 30,
+      select: { number: true, issueDate: true, grossAmount: true, currency: true, type: true, ifirmaType: true },
+    });
     res.json({
       ok: true,
       running: _linesBackfillRunning,
@@ -2219,6 +2225,7 @@ router.get('/invoices/lines-backfill-status', async (req, res) => {
       withoutLineItems: total - withLines,
       markedFailed: failed,
       totalLineItems: lineItemTotal,
+      withoutSample: withoutSample.map(i => ({ number: i.number, date: i.issueDate, amount: String(i.grossAmount), currency: i.currency, type: i.ifirmaType || i.type || null })),
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
