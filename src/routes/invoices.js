@@ -170,6 +170,16 @@ async function deriveCountry(contractor) {
 
 // ============ IFIRMA SYNC ============
 
+// Wspolny rdzen wszystkich syncow iFirmy: pobierz FV z okna [dataOd, dataDo]
+// i przepusc przez processIfirmaInvoices. Roznice per-endpoint (okno, throttle,
+// timeout race, dryRun, silent) zostaja w handlerach — tu tylko fetch+process
+// (wczesniej skopiowane w 4 miejscach).
+async function runIfirmaSync(prisma, { dataOd, dataDo, dryRun = false, silent = false }) {
+  const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+  const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun, silent });
+  return { fetched: invoices.length, ...result };
+}
+
 router.post('/ifirma/sync', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -189,9 +199,8 @@ router.post('/ifirma/sync', async (req, res) => {
     const lastDay = new Date(y, m, 0).getDate();
     const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
 
-    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
-    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: dryRun || false });
-    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, fetched: invoices.length, dryRun: dryRun || false, ...result });
+    const result = await runIfirmaSync(prisma, { dataOd, dataDo, dryRun: dryRun || false });
+    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, dryRun: dryRun || false, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -217,10 +226,7 @@ router.post('/ifirma/autosync', async (req, res) => {
     const now = new Date();
     const dataDo = nowIso.slice(0, 10);
     const dataOd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
-    const work = (async () => {
-      const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
-      return await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });
-    })();
+    const work = runIfirmaSync(prisma, { dataOd, dataDo, dryRun: false, silent: true });
     const result = await Promise.race([
       work,
       new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 15000)),
@@ -242,9 +248,8 @@ router.post('/ifirma/sync-full', async (req, res) => {
     const dataDo = body.dataDo || new Date().toISOString().slice(0, 10);
     const dataOd = body.dataOd || `${new Date().getUTCFullYear()}-01-01`;
     console.log(`[ifirma/sync-full] ${dataOd} -> ${dataDo}`);
-    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
-    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });
-    res.json({ ok: true, dataOd, dataDo, fetched: invoices.length, ...result });
+    const result = await runIfirmaSync(prisma, { dataOd, dataDo, dryRun: false, silent: true });
+    res.json({ ok: true, dataOd, dataDo, ...result });
   } catch (e) {
     console.error('[ifirma/sync-full]', e.message);
     res.status(500).json({ ok: false, error: e.message });
@@ -266,9 +271,8 @@ router.get('/ifirma/sync/preview', async (req, res) => {
     const lastDay = new Date(y, m, 0).getDate();
     const dataDo = `${y}-${String(m).padStart(2, '0')}-${lastDay}`;
 
-    const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
-    const result = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: true });
-    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, fetched: invoices.length, dryRun: true, ...result });
+    const result = await runIfirmaSync(prisma, { dataOd, dataDo, dryRun: true });
+    res.json({ ok: true, period: `${y}-${String(m).padStart(2, '0')}`, dryRun: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
