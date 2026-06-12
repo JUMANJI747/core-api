@@ -187,11 +187,26 @@ router.get('/emails', async (req, res) => {
     // domyslnie ukrywamy archived, trash ORAZ pgf (zalew od dostawcy —
     // dostepny tylko w osobnym folderze 'pgf', nie zasmieca glownego widoku).
     where.NOT = { tags: { hasSome: ['archived', 'trash', 'pgf'] } };
-    // important=1 -> tylko maile ktore wywolaly powiadomienie push/Telegram
-    // (tag 'tg_notified' nadawany przez inbox-poller). Ten SAM filtr co notyfikacje
-    // -> odsiewa autorespondery/auto-powiadomienia/bounce.
+    // important=1 -> WAZNE: maile ktore wywolaly powiadomienie (tag 'tg_notified')
+    // LUB ktore w temacie/tresci maja "zamowienie" w dowolnym jezyku. Drugi
+    // warunek lapie zamowienia B2B nawet jak poller ich nie znotyfikowal
+    // (i dziala wstecznie na istniejacych mailach).
     if (important === '1' || important === 'true') {
-      where.tags = { has: 'tg_notified' };
+      const ORDER_KW = [
+        'zamówien', 'zamowien', 'zamawia',   // PL
+        'order',                              // EN
+        'pedido', 'encomenda',               // ES/PT
+        'commande',                          // FR
+        'bestellung', 'bestell', 'bestelling', // DE/NL
+        'ordine',                            // IT
+      ];
+      const orConds = [{ tags: { has: 'tg_notified' } }];
+      for (const kw of ORDER_KW) {
+        orConds.push({ subject: { contains: kw, mode: 'insensitive' } });
+        orConds.push({ bodyPreview: { contains: kw, mode: 'insensitive' } });
+        orConds.push({ bodyFull: { contains: kw, mode: 'insensitive' } });
+      }
+      where.AND = [...(where.AND || []), { OR: orConds }];
     }
   }
   if (search) {
