@@ -2179,19 +2179,50 @@ let _linesBackfillRunning = false;
 router.post('/invoices/backfill-lines-bg', async (req, res) => {
   const prisma = req.app.locals.prisma;
   if (_linesBackfillRunning) return res.json({ ok: true, started: false, note: 'already running' });
-  const limit = Math.min(parseInt((req.body && req.body.limit), 10) || 8, 30);
   _linesBackfillRunning = true;
-  res.json({ ok: true, started: true, limit }); // odpowiedz od razu, robota leci w tle
+  res.json({ ok: true, started: true }); // odpowiedz od razu, robota leci w tle az do konca
   (async () => {
+    const BATCH = 25;
+    let rounds = 0, totalLines = 0, totalProcessed = 0;
     try {
-      const r = await runIfirmaLinesBackfill(prisma, { apply: true, limit, sleepMs: 300, log: (m) => console.log(`[bg-lines-backfill] ${m}`) });
-      console.log(`[bg-lines-backfill] done: processed=${(r.results || []).length} totalLines=${r.totalLines}`);
+      while (rounds < 80) { // safety cap ~2000 FV
+        const r = await runIfirmaLinesBackfill(prisma, { apply: true, limit: BATCH, sleepMs: 250, log: () => {} });
+        rounds++;
+        totalLines += r.totalLinesCreated || 0;
+        totalProcessed += r.processed || 0;
+        if ((r.processed || 0) < BATCH) break; // brak wiecej kandydatow
+      }
+      console.log(`[bg-lines-backfill] FINISHED rounds=${rounds} processed=${totalProcessed} linesCreated=${totalLines}`);
     } catch (e) {
       console.error('[bg-lines-backfill] error:', e.message);
     } finally {
       _linesBackfillRunning = false;
     }
   })();
+});
+
+// Podglad postepu backfillu pozycji (do diagnozy "ile FV bez sztuk").
+router.get('/invoices/lines-backfill-status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const [total, withLines, failed, lineItemTotal] = await Promise.all([
+      prisma.invoice.count({ where: { ifirmaId: { not: null } } }),
+      prisma.invoice.count({ where: { ifirmaId: { not: null }, lineItems: { some: {} } } }),
+      prisma.invoice.count({ where: { ifirmaId: { not: null }, extras: { path: ['lineBackfillFailed'], equals: true } } }),
+      prisma.invoiceLineItem.count(),
+    ]);
+    res.json({
+      ok: true,
+      running: _linesBackfillRunning,
+      ifirmaInvoices: total,
+      withLineItems: withLines,
+      withoutLineItems: total - withLines,
+      markedFailed: failed,
+      totalLineItems: lineItemTotal,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ============ IFIRMA CONTRACTOR DIAG + FORCE-SYNC ============
