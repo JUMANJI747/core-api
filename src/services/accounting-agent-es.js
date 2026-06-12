@@ -8,7 +8,7 @@
 // POST /api/agent/accounting-es.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool } = require('./agent-runtime');
+const { buildExecuteTool, makeTemplaters } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -16,28 +16,6 @@ const MODEL =
   process.env.ACCOUNTING_AGENT_ES_MODEL ||
   process.env.ACCOUNTING_AGENT_MODEL ||
   'claude-sonnet-4-5-20250929';
-
-function buildSystemPrompt() {
-  const today = new Date().toISOString().slice(0, 10);
-  const year = today.slice(0, 4);
-  const lastYear = String(parseInt(year, 10) - 1);
-  return BASE_PROMPT
-    .replace(/\{\{TODAY\}\}/g, today)
-    .replace(/\{\{YEAR\}\}/g, year)
-    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
-}
-
-function buildTools() {
-  // Tools template — {{YEAR}}/{{TODAY}} podstawiane runtime tak samo jak
-  // w prompcie. Anthropic SDK serializuje description jako-jest.
-  const today = new Date().toISOString().slice(0, 10);
-  const year = today.slice(0, 4);
-  return JSON.parse(
-    JSON.stringify(tools)
-      .replace(/\{\{TODAY\}\}/g, today)
-      .replace(/\{\{YEAR\}\}/g, year)
-  );
-}
 
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
 
@@ -472,6 +450,8 @@ const executeTool = buildExecuteTool({
   endpointMap: ENDPOINT_MAP,
   logPrefix: '[accounting-agent-es]',
 });
+
+const { buildSystemPrompt, buildTools } = makeTemplaters(BASE_PROMPT, tools);
 
 // Force tool choice on unambiguous intents to suppress LLM detours.
 const PREVIEW_INTENT = /\b(wystaw|zr[oó]b|przygotuj) (fakt|fv|factura)|\b(faktur|fv|factura) (dla|na|para)/i;

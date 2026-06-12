@@ -74,12 +74,14 @@ async function runAgentLoop({
     });
   }
 
-  const textBlock = response.content.find(b => b.type === 'text');
-  return {
-    text: textBlock ? textBlock.text : '',
-    iterations,
-    stopReason: response.stop_reason,
-  };
+  // Laczymy WSZYSTKIE bloki tekstowe (model czasem rozbija odpowiedz na kilka).
+  // Wczesniej brano tylko pierwszy — gubilo to dalsze fragmenty.
+  const text = response.content
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('\n')
+    .trim();
+  return { text, iterations, stopReason: response.stop_reason };
 }
 
 module.exports = { runAgentLoop };

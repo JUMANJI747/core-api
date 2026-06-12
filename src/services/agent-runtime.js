@@ -93,4 +93,28 @@ function sanitizeAssistantContent(content) {
   });
 }
 
-module.exports = { selfCall, expandPath, buildExecuteTool, sanitizeAssistantContent };
+// Podstawia {{TODAY}}/{{YEAR}}/{{LAST_YEAR}} (data per-request) w stringu.
+// Wspolne dla promptu i definicji tooli — wczesniej kazdy agent (accounting/
+// accounting-es/operations) mial wlasna, identyczna kopie buildSystemPrompt/
+// buildTools.
+function renderDateTemplate(str) {
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  const lastYear = String(parseInt(year, 10) - 1);
+  return String(str)
+    .replace(/\{\{TODAY\}\}/g, today)
+    .replace(/\{\{YEAR\}\}/g, year)
+    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
+}
+
+// Zwraca { buildSystemPrompt, buildTools } z podstawieniem dat per-wywolanie.
+// tools jest re-parsowane z JSON za kazdym razem (swieza kopia, zero mutacji
+// wspoldzielonego obiektu).
+function makeTemplaters(basePrompt, tools) {
+  return {
+    buildSystemPrompt: () => renderDateTemplate(basePrompt),
+    buildTools: () => JSON.parse(renderDateTemplate(JSON.stringify(tools))),
+  };
+}
+
+module.exports = { selfCall, expandPath, buildExecuteTool, sanitizeAssistantContent, renderDateTemplate, makeTemplaters };

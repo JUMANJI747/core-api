@@ -1,30 +1,11 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { buildExecuteTool, makeTemplaters } = require('./agent-runtime');
+const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.OPERATIONS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
-
-function buildSystemPrompt() {
-  const today = new Date().toISOString().slice(0, 10);
-  const year = today.slice(0, 4);
-  const lastYear = String(parseInt(year, 10) - 1);
-  return BASE_PROMPT
-    .replace(/\{\{TODAY\}\}/g, today)
-    .replace(/\{\{YEAR\}\}/g, year)
-    .replace(/\{\{LAST_YEAR\}\}/g, lastYear);
-}
-
-function buildTools() {
-  const today = new Date().toISOString().slice(0, 10);
-  const year = today.slice(0, 4);
-  return JSON.parse(
-    JSON.stringify(tools)
-      .replace(/\{\{TODAY\}\}/g, today)
-      .replace(/\{\{YEAR\}\}/g, year)
-  );
-}
 
 const BASE_PROMPT = `Jesteś sub-agentem OPERACJE SurfStickBell. Plain text PL, krótko.
 
@@ -345,6 +326,8 @@ const executeTool = buildExecuteTool({
   logPrefix: '[operations-agent]',
 });
 
+const { buildSystemPrompt, buildTools } = makeTemplaters(BASE_PROMPT, tools);
+
 async function processOperationsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) return { text: 'ANTHROPIC_API_KEY nie skonfigurowany.', error: 'no_api_key' };
   if (!query || typeof query !== 'string') return { text: 'Brak query.', error: 'no_query' };
@@ -368,39 +351,19 @@ async function processOperationsQuery(query, ctx = {}) {
   const yearStr = todayStr.slice(0, 4);
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" = ${yearStr}.]\n\n`;
   const messages = [{ role: 'user', content: dateContextPrefix + query }];
-  let response = await anthropic.messages.create({
+
+  // MAX_ITER 6: listing + decyzja + ewentualne merge / split — luźne 6 rund.
+  return runAgentLoop({
+    anthropic,
     model: MODEL,
-    max_tokens: 2048,
-    system: buildSystemPrompt(),
-    tools: buildTools(),
     messages,
+    getSystem: buildSystemPrompt,
+    getTools: buildTools,
+    executeTool,
+    ctx,
+    logPrefix: '[operations-agent]',
+    maxIter: 6,
   });
-
-  const MAX_ITER = 6;   // listing + decyzja + ewentualne merge / split — daje agentowi luźne 6 rund
-  let iterations = 0;
-  while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
-    iterations++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
-      console.log(`[operations-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 200));
-      const result = await executeTool(tu.name, tu.input, ctx);
-      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) });
-    }
-    messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
-    messages.push({ role: 'user', content: toolResultBlocks });
-
-    response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: buildSystemPrompt(),
-      tools: buildTools(),
-      messages,
-    });
-  }
-
-  const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-  return { text: finalText, iterations, stopReason: response.stop_reason };
 }
 
 module.exports = { processOperationsQuery };
