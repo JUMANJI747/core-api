@@ -10,7 +10,7 @@ const { notifyMailResult } = require('../services/notify-mail-result');
 const { invoicePreviews, savePreview, getPreview } = require('../stores');
 const { findBestContractors } = require('../services/contractor-match');
 const { getActiveCatalog } = require('../services/product-catalog');
-const { processIfirmaInvoices } = require('../services/ifirma-sync');
+const { processIfirmaInvoices, computeSyncWindow } = require('../services/ifirma-sync');
 const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/invoice-lines-backfill');
 const { runBackfill: runIfirmaLinesBackfill } = require('../services/invoice-lines-from-ifirma-backfill');
 const { fetchWithTimeout } = require('../http');
@@ -212,8 +212,9 @@ router.post('/ifirma/autosync', async (req, res) => {
     const nowIso = new Date().toISOString();
     await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
 
-    const dataDo = nowIso.slice(0, 10);
-    const dataOd = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Okno rozszerzane do najstarszej nieoplaconej FV — zeby wychwycic platnosci
+    // zaksiegowane pozno na starszych fakturach (np. FV z marca oplacona w czerwcu).
+    const { dataOd, dataDo } = await computeSyncWindow(prisma);
     const work = (async () => {
       const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
       return await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, dryRun: false, silent: true });

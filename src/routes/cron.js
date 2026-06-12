@@ -116,13 +116,12 @@ router.post('/cron/sync-ifirma', async (req, res) => {
   try {
     const result = await withLock(prisma, 'sync-ifirma', async () => {
       return await runJob(prisma, 'sync-ifirma', async () => {
-        const { processIfirmaInvoices } = require('../services/ifirma-sync');
+        const { processIfirmaInvoices, computeSyncWindow } = require('../services/ifirma-sync');
         const { fetchInvoices } = require('../ifirma-client');
-        // Okno 60 dni — sync AKTUALIZUJE istniejace (paidAmount/status), wiec
-        // szersze okno wychwytuje platnosci zaksiegowane na starszych fakturach
-        // (typowe terminy 7-30 dni). 7 dni gubilo takie aktualizacje.
-        const dataDo = new Date().toISOString().slice(0, 10);
-        const dataOd = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        // Okno 60 dni, ALE rozszerzane do najstarszej nieoplaconej FV — sync
+        // AKTUALIZUJE paidAmount/status, wiec musi objac stare FV, ktorych
+        // platnosc zaksiegowano pozno (inaczej "oplacona" nie wskakuje do CRM).
+        const { dataOd, dataDo } = await computeSyncWindow(prisma);
         const invs = await fetchInvoices({ dataOd, dataDo });
         return await processIfirmaInvoices(invs, prisma, { dataOd, dataDo, dryRun: false });
       }, 'sync.ifirma');

@@ -222,4 +222,28 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
   };
 }
 
-module.exports = { processIfirmaInvoices, guessCountryFromInv };
+// Okno dat dla syncu z iFirmy. Domyslnie 60 dni wstecz, ALE rozszerzane tak,
+// by objac NAJSTARSZA nieoplacona/czesciowa FV — bo platnosc moze zostac
+// zaksiegowana dlugo po wystawieniu (FV z marca oplacona w czerwcu wypadala
+// poza okno 60 dni i status "oplacona" nigdy nie wskakiwal do CRM). Cap od
+// 2025-01-01, zeby nie ciagnac w nieskonczonosc.
+async function computeSyncWindow(prisma) {
+  const dataDo = new Date().toISOString().slice(0, 10);
+  let fromMs = Date.now() - 60 * 24 * 60 * 60 * 1000;
+  try {
+    const oldestUnpaid = await prisma.invoice.findFirst({
+      where: { ifirmaId: { not: null }, status: { in: ['unpaid', 'partial'] } },
+      orderBy: { issueDate: 'asc' },
+      select: { issueDate: true },
+    });
+    if (oldestUnpaid && oldestUnpaid.issueDate) {
+      const t = new Date(oldestUnpaid.issueDate).getTime();
+      if (Number.isFinite(t) && t < fromMs) fromMs = t;
+    }
+  } catch (_) { /* best-effort — zostajemy przy 60 dniach */ }
+  const capMs = new Date('2025-01-01').getTime();
+  if (fromMs < capMs) fromMs = capMs;
+  return { dataOd: new Date(fromMs).toISOString().slice(0, 10), dataDo };
+}
+
+module.exports = { processIfirmaInvoices, guessCountryFromInv, computeSyncWindow };
