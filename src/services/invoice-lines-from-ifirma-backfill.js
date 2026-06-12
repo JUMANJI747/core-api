@@ -208,17 +208,18 @@ async function resolveProduct(prisma, productCache, cleanName, ean, ctx) {
 async function processInvoice(prisma, inv, productCache, opts) {
   const { apply, log, verbose } = opts;
 
-  let details;
+  let details = null;
   try {
     details = await fetchInvoiceDetails(inv.ifirmaId, inv.type);
   } catch (e) {
-    return { id: inv.id, number: inv.number, error: `fetchDetails: ${e.message}` };
+    // iFirma niedostepne/blad dla tej FV -> nie poddajemy sie, sprobujemy PDF nizej.
+    if (verbose) log(`  ${inv.number}: fetchDetails blad (${e.message}) -> fallback PDF`);
   }
 
   // Defensive: fetchInvoiceDetails unwrap-uje response, ale jakby ktos
   // kiedys zmienil unwrap — szukamy tez pod .response.Pozycje.
-  const pozycje = Array.isArray(details.Pozycje) ? details.Pozycje
-    : (details.response && Array.isArray(details.response.Pozycje)) ? details.response.Pozycje
+  const pozycje = details && Array.isArray(details.Pozycje) ? details.Pozycje
+    : (details && details.response && Array.isArray(details.response.Pozycje)) ? details.response.Pozycje
     : [];
   if (pozycje.length === 0) {
     // Fallback PDF — iFirma nie zwraca pozycji (np. FV wystawione recznie /
