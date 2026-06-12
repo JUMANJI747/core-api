@@ -751,6 +751,9 @@ async function fetchInvoiceDetails(fakturaId, rodzaj) {
     endpoint = 'fakturaproforma';
   } else if (r === 'prz_dostawa_ue_towarow' || r === 'wdt') {
     endpoint = 'fakturawdt';
+  } else if (r.includes('wys_ter') || r.includes('waluta') || r.includes('obca_wal')) {
+    // faktury w walucie obcej (krajowa-walutowa / zaliczkowa / koncowa walutowa)
+    endpoint = 'fakturawaluta';
   } else {
     endpoint = 'fakturakraj';
   }
