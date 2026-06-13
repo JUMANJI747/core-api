@@ -234,22 +234,62 @@ router.post('/customers', asyncHandler(async (req, res) => {
   if (!data.organization && !(data.firstname || data.lastname)) {
     return res.status(400).json({ error: 'organization or firstname/lastname required' });
   }
-  const result = await cs.createCustomer(data);
-
-  // MIRROR DO LOKALNEJ BAZY: Contasimple zwraca utworzonego klienta z id.
-  // Bez tego nowy kontrahent istnieje TYLKO w Contasimple, a front (Kontrahenci
-  // — baza Kanary) czyta lokalny EsContractor → "bot dodał, a nie ma w bazie".
-  // Upsert tym samym helperem co /sync-customers (mapowanie + owner + dedup).
-  const remote = (result && result.data) || result;
-  let localSaved = null;
-  try {
-    if (remote && remote.id) localSaved = await upsertEsContractorFromRemote(prisma, remote);
-    else console.warn('[cs customers] createCustomer nie zwrócił id — pomijam mirror lokalny:', JSON.stringify(result).slice(0, 200));
-  } catch (e) {
-    console.error('[cs customers] mirror do EsContractor nieudany:', e.message);
+  // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
+  // danymi — POTEM push do Contasimple (z polami, ktore jego endpoint przyjmuje).
+  // Dzieki temu kontrahent JEST w CRM nawet gdy push do Contasimple sie nie uda;
+  // a front (zakladka Kanary) widzi go od razu.
+  const name = data.organization || [data.firstname, data.lastname].filter(Boolean).join(' ').trim() || data.name || `Klient ${data.nif}`;
+  const esData = {
+    type: data.type || 'Issuer',
+    organization: data.organization || null,
+    firstname: data.firstname || null,
+    lastname: data.lastname || null,
+    name,
+    nif: data.nif,
+    email: data.email || null,
+    phone: data.phone || null,
+    mobile: data.mobile || null,
+    address: data.address || null,
+    city: data.city || null,
+    province: data.province || null,
+    country: data.country || null,
+    countryId: data.countryId || null,
+    postalCode: data.postalCode || null,
+    documentCulture: data.documentCulture || null,
+  };
+  // 1) Upsert do CRM Kanary po NIF (jeszcze bez contasimpleId).
+  let local = await prisma.esContractor.findFirst({ where: { nif: data.nif } });
+  if (local) {
+    local = await prisma.esContractor.update({ where: { id: local.id }, data: esData });
+  } else {
+    const owner = resolveOwnerFromAddress({ postalCode: data.postalCode, city: data.city, province: data.province });
+    local = await prisma.esContractor.create({ data: { ...esData, owner } });
   }
 
-  res.json({ ...result, localSaved: localSaved ? { id: localSaved.id, contasimpleId: localSaved.contasimpleId } : null });
+  // 2) Push do Contasimple (cs.createCustomer wysyla tylko pola akceptowane przez
+  // endpoint). 3) Zwrocone id zapisujemy z powrotem do CRM (dedup po NIF).
+  let result = null;
+  let csError = null;
+  try {
+    result = await cs.createCustomer(data);
+    const remote = (result && result.data) || result;
+    if (remote && remote.id) local = await upsertEsContractorFromRemote(prisma, remote);
+    else console.warn('[cs customers] createCustomer nie zwrócił id:', JSON.stringify(result).slice(0, 200));
+  } catch (e) {
+    csError = e.message;
+    console.error('[cs customers] push do Contasimple nieudany (rekord jest w CRM):', e.message);
+  }
+
+  res.json({
+    ok: true,
+    ...(result || {}),
+    crmSaved: { id: local.id, nif: local.nif, contasimpleId: local.contasimpleId || null },
+    contasimplePushed: !csError && !!local.contasimpleId,
+    ...(csError ? {
+      contasimpleError: csError,
+      warning: 'Zapisano w CRM (Kanary), ale push do Contasimple nie powiódł się. Faktury nie wystawisz dopóki nie ma contasimpleId — popraw dane i ponów.',
+    } : {}),
+  });
 }));
 
 // Bulk import: pull every customer from Contasimple, upsert into EsContractor.
