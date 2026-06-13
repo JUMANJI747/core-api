@@ -164,11 +164,25 @@ async function upsertEsContractorFromRemote(prisma, c) {
   // istnieje niekompletny rekord lokalny dodany wczesniej bez contasimpleId).
   let existing = await prisma.esContractor.findUnique({ where: { contasimpleId: c.id } });
   if (!existing && c.nif) existing = await prisma.esContractor.findFirst({ where: { nif: c.nif } });
+  let saved;
   if (existing) {
-    return prisma.esContractor.update({ where: { id: existing.id }, data });
+    saved = await prisma.esContractor.update({ where: { id: existing.id }, data });
+  } else {
+    const owner = resolveOwnerFromAddress({ postalCode: c.postalCode, city: c.city, province: c.province });
+    saved = await prisma.esContractor.create({ data: { ...data, owner } });
   }
-  const owner = resolveOwnerFromAddress({ postalCode: c.postalCode, city: c.city, province: c.province });
-  return prisma.esContractor.create({ data: { ...data, owner } });
+
+  // Lustrzane odbicie do CRM (Contractor) — tam trzymamy maile/telefony/adresy/
+  // tagi. Best-effort: brak rekordu CRM nie blokuje flow ES. Lazy require by
+  // uniknac cyklu modulow.
+  try {
+    const { ensureCrmContractorFromEs } = require('./contractor-sync-helpers');
+    await ensureCrmContractorFromEs(prisma, saved);
+  } catch (e) {
+    console.error('[upsertEsContractorFromRemote] CRM mirror failed:', e.message);
+  }
+
+  return saved;
 }
 
 // ============ PRODUCT FUZZY LOOKUP ============

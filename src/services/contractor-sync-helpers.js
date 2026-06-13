@@ -209,10 +209,102 @@ async function appendAlias(prisma, contractorId, newAlias, source = 'sync') {
   }
 }
 
+// Zapewnia rekord w CRM (Contractor) dla danego EsContractor: znajduje istniejacy
+// (po linkedEsContractorId albo NIP) albo TWORZY nowy, linkuje 1-1 i upsertuje
+// kontakty (email/telefon) + adres billing. CRM ma wiecej pol niz EsContractor
+// (kontakty, adresy, tagi) — to tu trzymamy "maile/telefony/wszystko". Tag
+// 'kanary' znakuje pochodzenie, country z ES (domyslnie ES). Idempotentne:
+// ponowne wywolanie znajduje juz zlinkowany rekord po linkedEsContractorId.
+async function ensureCrmContractorFromEs(prisma, es) {
+  if (!es || !es.id) return null;
+  const cleanNif = es.nif ? String(es.nif).replace(/[\s\-.]/g, '').toUpperCase() : null;
+  const name =
+    es.organization ||
+    [es.firstname, es.lastname].filter(Boolean).join(' ').trim() ||
+    es.name ||
+    `Klient ${es.contasimpleId || es.id}`;
+
+  // 1) Juz zlinkowany? (idempotencja przy re-syncu).
+  let pl = await prisma.contractor.findFirst({
+    where: { linkedEsContractorId: es.id },
+    select: { id: true },
+  });
+
+  // 2) Brak linku — szukaj po NIP (z/bez prefixu kraju), zlinkuj wolny.
+  if (!pl && cleanNif) {
+    const candidates = await prisma.contractor.findMany({
+      where: { OR: [{ nip: cleanNif }, { nip: cleanNif.replace(/^[A-Z]{2}/, '') }] },
+      select: { id: true, linkedEsContractorId: true },
+    });
+    const free = candidates.find(c => !c.linkedEsContractorId || c.linkedEsContractorId === es.id);
+    if (free) {
+      pl = { id: free.id };
+      if (free.linkedEsContractorId !== es.id) {
+        await prisma.contractor.update({ where: { id: free.id }, data: { linkedEsContractorId: es.id } }).catch(() => {});
+      }
+    }
+    // wszyscy kandydaci zajeci przez INNE ES → nie tworzymy duplikatu po unique nip;
+    // pl zostaje null i niżej create rzuci -> obsluga kolizji.
+  }
+
+  // 3) Brak w CRM — utworz nowy (ostroznie z unique nip / wyscigiem).
+  if (!pl) {
+    try {
+      pl = await prisma.contractor.create({
+        data: {
+          type: 'BUSINESS',
+          name,
+          nip: cleanNif || null,
+          country: es.country || 'ES',
+          city: es.city || null,
+          address: es.address || null,
+          phone: es.phone || es.mobile || null,
+          email: es.email || null,
+          primaryEmail: normalizeEmail(es.email),
+          source: 'contasimple',
+          tags: ['kanary'],
+          externalIds: es.contasimpleId ? { contasimpleId: es.contasimpleId } : {},
+          linkedEsContractorId: es.id,
+        },
+        select: { id: true },
+      });
+    } catch (e) {
+      // Kolizja unique nip (rownolegly create / istniejacy zajety) — znajdz i zlinkuj.
+      if (cleanNif) {
+        const ex = await prisma.contractor.findUnique({ where: { nip: cleanNif }, select: { id: true, linkedEsContractorId: true } }).catch(() => null);
+        if (ex) {
+          if (!ex.linkedEsContractorId) await prisma.contractor.update({ where: { id: ex.id }, data: { linkedEsContractorId: es.id } }).catch(() => {});
+          pl = { id: ex.id };
+        }
+      }
+      if (!pl) { console.error('[crm-from-es] create failed:', e.message); return null; }
+    }
+  }
+
+  // 4) Kontakty + adres (idempotentne upserty z dedup).
+  await upsertContact(prisma, pl.id, { type: 'email', value: es.email, source: 'contasimple', isPrimary: true });
+  await upsertContact(prisma, pl.id, { type: 'phone', value: es.phone, source: 'contasimple' });
+  await upsertContact(prisma, pl.id, { type: 'mobile', value: es.mobile, source: 'contasimple' });
+  if (es.address || es.city || es.postalCode) {
+    await upsertAddress(prisma, pl.id, {
+      type: 'billing',
+      street: es.address || null,
+      city: es.city || null,
+      postalCode: es.postalCode || null,
+      region: es.province || null,
+      country: es.country || 'ES',
+      fullAddress: [es.address, es.postalCode, es.city, es.country].filter(Boolean).join(', ') || null,
+      source: 'contasimple',
+    });
+  }
+  return pl;
+}
+
 module.exports = {
   upsertContact,
   upsertAddress,
   tryAutoLinkEs,
+  ensureCrmContractorFromEs,
   appendAlias,
   normalizeEmail,
   normalizePhone,

@@ -39,9 +39,7 @@ const {
   resolveEsProductIdByEan,
 } = require('../services/invoice-lines-backfill');
 const {
-  upsertContact: upsertCrmContact,
-  upsertAddress: upsertCrmAddress,
-  tryAutoLinkEs,
+  ensureCrmContractorFromEs,
 } = require('../services/contractor-sync-helpers');
 
 // Wspolny sync write helper — po EsInvoice.create budujemy EsInvoiceLineItem
@@ -264,6 +262,7 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
 
   let created = 0;
   let updated = 0;
+  let crmLinked = 0;
   for (const c of list) {
     const name =
       c.organization ||
@@ -318,39 +317,17 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
       created++;
     }
 
-    // CRM v2 Etap 1.5 — sync hooks. Auto-link PL<->ES po NIF + upsert
-    // ContractorContact/Address na PL Contractor jak istnieje linked.
+    // Lustro do CRM (Contractor): znajdz/utworz + zlinkuj + kontakty/adres.
+    // Tu trzymamy maile/telefony/adresy/tagi. Best-effort.
     try {
-      const linked = await tryAutoLinkEs(prisma, saved);
-      if (linked) {
-        const pl = await prisma.contractor.findFirst({
-          where: { linkedEsContractorId: saved.id },
-          select: { id: true },
-        });
-        if (pl) {
-          if (c.email) await upsertCrmContact(prisma, pl.id, { type: 'email', value: c.email, source: 'contasimple' });
-          if (c.phone) await upsertCrmContact(prisma, pl.id, { type: 'phone', value: c.phone, source: 'contasimple' });
-          if (c.mobile) await upsertCrmContact(prisma, pl.id, { type: 'mobile', value: c.mobile, source: 'contasimple' });
-          if (c.address || c.city || c.postalCode) {
-            await upsertCrmAddress(prisma, pl.id, {
-              type: 'billing',
-              street: c.address || null,
-              city: c.city || null,
-              postalCode: c.postalCode || null,
-              region: c.province || null,
-              country: c.country || null,
-              fullAddress: [c.address, c.postalCode, c.city, c.country].filter(Boolean).join(', ') || null,
-              source: 'contasimple',
-            });
-          }
-        }
-      }
+      const pl = await ensureCrmContractorFromEs(prisma, saved);
+      if (pl) crmLinked++;
     } catch (e) {
-      console.error('[sync-customers] CRM hook failed for', c.id, ':', e.message);
+      console.error('[sync-customers] CRM mirror failed for', c.id, ':', e.message);
     }
   }
 
-  res.json({ ok: true, total: list.length, created, updated });
+  res.json({ ok: true, total: list.length, created, updated, crmLinked });
 }));
 
 router.get('/contractors', asyncHandler(async (req, res) => {
