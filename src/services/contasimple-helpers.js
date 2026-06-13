@@ -517,4 +517,5 @@ module.exports = {
   buildEsTotals,
   buildContasimplePayload,
   buildContasimpleAlbaranPayload,
+  upsertEsContractorFromRemote,
 };

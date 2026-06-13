@@ -26,6 +26,7 @@ const {
   buildEsTotals,
   buildContasimplePayload,
   buildContasimpleAlbaranPayload,
+  upsertEsContractorFromRemote,
   IGIC_DEFAULT_PCT,
   NIKODEM_DEFAULTS,
 } = require('../services/contasimple-helpers');
@@ -234,7 +235,21 @@ router.post('/customers', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'organization or firstname/lastname required' });
   }
   const result = await cs.createCustomer(data);
-  res.json(result);
+
+  // MIRROR DO LOKALNEJ BAZY: Contasimple zwraca utworzonego klienta z id.
+  // Bez tego nowy kontrahent istnieje TYLKO w Contasimple, a front (Kontrahenci
+  // — baza Kanary) czyta lokalny EsContractor → "bot dodał, a nie ma w bazie".
+  // Upsert tym samym helperem co /sync-customers (mapowanie + owner + dedup).
+  const remote = (result && result.data) || result;
+  let localSaved = null;
+  try {
+    if (remote && remote.id) localSaved = await upsertEsContractorFromRemote(prisma, remote);
+    else console.warn('[cs customers] createCustomer nie zwrócił id — pomijam mirror lokalny:', JSON.stringify(result).slice(0, 200));
+  } catch (e) {
+    console.error('[cs customers] mirror do EsContractor nieudany:', e.message);
+  }
+
+  res.json({ ...result, localSaved: localSaved ? { id: localSaved.id, contasimpleId: localSaved.contasimpleId } : null });
 }));
 
 // Bulk import: pull every customer from Contasimple, upsert into EsContractor.
