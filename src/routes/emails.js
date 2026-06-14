@@ -443,6 +443,61 @@ router.post('/emails/bulk-action', async (req, res) => {
 // Grupowanie spojne z lista po stronie klienta: stripped(subject) + (contractorId
 // LUB email partnera). Zwraca najnowsze NA GORZE — zeby od razu bylo widac
 // ostatnia odpowiedz ("odpowiedziane").
+// GET /api/emails/recipient-suggest — wszystkie adresy email kontrahentow
+// (PL Contractor + ContractorContact + ES EsContractor) do autouzupelniania
+// pola "Do" w kompozytorze. Zwraca distinct {email, name, source}. MUSI byc
+// zdefiniowane PRZED router.get('/emails/:id') — inaczej :id przechwytuje
+// "recipient-suggest". Front laduje raz i filtruje po stronie klienta.
+router.get('/emails/recipient-suggest', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const q = String(req.query.q || '').trim().toLowerCase();
+  try {
+    const out = new Map(); // email -> {email, name, source}
+    const add = (email, name, source) => {
+      if (!email) return;
+      const e = String(email).trim().toLowerCase();
+      if (!e.includes('@')) return;
+      if (q && !e.startsWith(q) && !(name && name.toLowerCase().includes(q))) return;
+      if (!out.has(e)) out.set(e, { email: e, name: name || null, source });
+    };
+
+    const [pls, contacts, ess] = await Promise.all([
+      prisma.contractor.findMany({
+        where: { OR: [{ email: { not: null } }, { primaryEmail: { not: null } }] },
+        select: { name: true, email: true, primaryEmail: true },
+        take: 5000,
+      }),
+      prisma.contractorContact.findMany({
+        where: { type: 'email' },
+        select: { value: true, contractor: { select: { name: true } } },
+        take: 5000,
+      }),
+      prisma.esContractor.findMany({
+        where: { email: { not: null } },
+        select: { name: true, organization: true, email: true },
+        take: 5000,
+      }),
+    ]);
+
+    for (const c of pls) { add(c.primaryEmail, c.name, 'pl'); add(c.email, c.name, 'pl'); }
+    for (const c of contacts) add(c.value, c.contractor && c.contractor.name, 'pl');
+    for (const c of ess) add(c.email, c.organization || c.name, 'es');
+
+    const list = Array.from(out.values()).sort((a, b) => {
+      if (q) {
+        const ap = a.email.startsWith(q) ? 0 : 1;
+        const bp = b.email.startsWith(q) ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+      }
+      return a.email.localeCompare(b.email);
+    });
+    res.json({ ok: true, count: list.length, suggestions: list.slice(0, 1000) });
+  } catch (e) {
+    console.error('[emails/recipient-suggest] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message, suggestions: [] });
+  }
+});
+
 router.get('/emails/:id/thread', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -2472,61 +2527,6 @@ router.post('/emails/draft-with-invoice', async (req, res) => {
   } catch (e) {
     console.error('[draft-with-invoice] error:', e.message);
     res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/emails/recipient-suggest — wszystkie adresy email kontrahentow
-// (PL Contractor + ContractorContact + ES EsContractor) do autouzupelniania
-// pola "Do" w kompozytorze. Zwraca distinct {email, name, source}. Front laduje
-// raz i wpina w <datalist> — przegladarka filtruje po wpisywanym prefiksie i
-// pokazuje calosc po kliknieciu. Opcjonalny ?q= robi pre-filtr po stronie API.
-router.get('/emails/recipient-suggest', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  const q = String(req.query.q || '').trim().toLowerCase();
-  try {
-    const out = new Map(); // email -> {email, name, source}
-    const add = (email, name, source) => {
-      if (!email) return;
-      const e = String(email).trim().toLowerCase();
-      if (!e.includes('@')) return;
-      if (q && !e.startsWith(q) && !(name && name.toLowerCase().includes(q))) return;
-      if (!out.has(e)) out.set(e, { email: e, name: name || null, source });
-    };
-
-    const [pls, contacts, ess] = await Promise.all([
-      prisma.contractor.findMany({
-        where: { OR: [{ email: { not: null } }, { primaryEmail: { not: null } }] },
-        select: { name: true, email: true, primaryEmail: true },
-        take: 5000,
-      }),
-      prisma.contractorContact.findMany({
-        where: { type: 'email' },
-        select: { value: true, contractor: { select: { name: true } } },
-        take: 5000,
-      }),
-      prisma.esContractor.findMany({
-        where: { email: { not: null } },
-        select: { name: true, organization: true, email: true },
-        take: 5000,
-      }),
-    ]);
-
-    for (const c of pls) { add(c.primaryEmail, c.name, 'pl'); add(c.email, c.name, 'pl'); }
-    for (const c of contacts) add(c.value, c.contractor && c.contractor.name, 'pl');
-    for (const c of ess) add(c.email, c.organization || c.name, 'es');
-
-    const list = Array.from(out.values()).sort((a, b) => {
-      if (q) {
-        const ap = a.email.startsWith(q) ? 0 : 1;
-        const bp = b.email.startsWith(q) ? 0 : 1;
-        if (ap !== bp) return ap - bp;
-      }
-      return a.email.localeCompare(b.email);
-    });
-    res.json({ ok: true, count: list.length, suggestions: list.slice(0, 1000) });
-  } catch (e) {
-    console.error('[emails/recipient-suggest] error:', e.message);
-    res.status(500).json({ ok: false, error: e.message, suggestions: [] });
   }
 });
 
