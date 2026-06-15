@@ -776,7 +776,8 @@ router.post('/send-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     console.log(`[send-email] req.body keys: ${Object.keys(req.body || {}).join(',')} bodyLen: ${String(req.body && req.body.body || '').length} draft: ${req.body && req.body.draft}`);
-    let { from, to, subject, body, html, attachments, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+    let { from, to, cc, subject, body, html, attachments, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+    cc = (cc && String(cc).trim()) || null;
 
     // Zalaczniki z frontu: [{ filename, contentBase64, contentType, cid? }].
     // Inline obrazki (wklejone w tresc) maja cid -> <img src="cid:..."> w html.
@@ -846,6 +847,7 @@ router.post('/send-email', async (req, res) => {
           inReplyTo: inReplyTo || null,
           references: references || null,
           contractorId,
+          ...(cc ? { extras: { cc } } : {}),
         },
       });
 
@@ -898,6 +900,7 @@ router.post('/send-email', async (req, res) => {
 
     const saved = await sendMail({
       from, to, subject, body,
+      ...(cc ? { cc } : {}),
       ...(html ? { html } : {}),
       ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
       inReplyTo, references,
@@ -941,6 +944,7 @@ router.post('/send-email/confirm', async (req, res) => {
     await sendMail({
       from: email.fromEmail,
       to: email.toEmail,
+      cc: (email.extras && email.extras.cc) || undefined,
       subject: email.subject || '',
       body: email.bodyFull || '',
       inReplyTo: email.inReplyTo || undefined,
@@ -985,6 +989,7 @@ router.post('/send-email/confirm-latest', async (req, res) => {
       saved = await sendMail({
         from: draft.fromEmail,
         to: draft.toEmail,
+        cc: (draft.extras && draft.extras.cc) || undefined,
         subject: draft.subject || '',
         body: draft.bodyFull || '',
         inReplyTo: draft.inReplyTo || undefined,
@@ -1038,6 +1043,7 @@ router.post('/send-email/:id/confirm', async (req, res) => {
     await sendMail({
       from: email.fromEmail,
       to: email.toEmail,
+      cc: (email.extras && email.extras.cc) || undefined,
       subject: email.subject || '',
       body: email.bodyFull || '',
       inReplyTo: email.inReplyTo || undefined,

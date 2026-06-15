@@ -61,7 +61,7 @@ function extractInbox(email) {
 
 // ============ SEND MAIL ============
 
-async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, references, attachments }) {
+async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo, references, attachments }) {
   // Diag: pokaz co dokladnie wchodzi do sendMail. Pomoglo zdiagnozowac bug
   // "wyslany mail pusty" — body byl pusty z frontu mimo ze user widzial tekst
   // w composer textarea. Body znika gdzies w przesylce frontend->backend.
@@ -98,6 +98,7 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
   const mailOptions = {
     from,
     to,
+    ...(cc ? { cc } : {}),
     subject,
     messageId: fixedMessageId,
     ...(html ? { html } : {}),
@@ -189,6 +190,8 @@ async function sendMail({ from, to, subject, body, html, replyTo, inReplyTo, ref
       inReplyTo: inReplyTo || null,
       references: references || null,
       contractorId,
+      // CC nie ma kolumny — trzymamy w extras (do podgladu/historii).
+      ...(cc ? { extras: { cc } } : {}),
     },
   });
 
