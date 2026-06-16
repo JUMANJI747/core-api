@@ -10,7 +10,16 @@ const {
   upsertAddress: upsertCrmAddress,
 } = require('../services/contractor-sync-helpers');
 
+// DEDUP zamowien kuriera: master/n8n potrafi ponowic POST /glob/order (handler
+// trwa ~10s: createOrder + CMR), a kazde wywolanie tworzylo NOWA paczke (3x ten
+// sam list). Blokada po quoteId: rownolegle wywolania odrzucamy, a ponowienie
+// PO sukcesie zwraca to samo zamowienie zamiast tworzyc kolejne.
+const orderingNow = new Set();              // quoteId w toku
+const recentlyOrdered = new Map();          // quoteId -> { at, payload }
+const ORDER_DEDUP_TTL_MS = 10 * 60 * 1000;
+
 // ============ PRESETS ============
+
 
 router.get('/glob/presets', (req, res) => {
   res.json({ ok: true, presets: PACKAGE_PRESETS });
@@ -910,8 +919,10 @@ router.post('/glob/quote', async (req, res) => {
 
 router.post('/glob/order', async (req, res) => {
   const prisma = req.app.locals.prisma;
+  let quoteId = null; // hoisted — finally (dedup unlock) musi go widziec
   try {
-    let { quoteId, productId } = req.body || {};
+    let productId;
+    ({ quoteId, productId } = req.body || {});
     const quoteStore = req.app.locals.quoteStore || {};
 
     if (!quoteId && req.body && req.body.query) {
@@ -992,6 +1003,23 @@ router.post('/glob/order', async (req, res) => {
     }
 
     console.log(`[glob/order] Quote resolved: id=${quoteId}, offers=${(quote.offers || []).length}, productIdRequested=${JSON.stringify(productId)}`);
+
+    // DEDUP (anty potrojne zamowienie): ta sama wycena juz zamowiona / w toku.
+    // Sprawdzenie + zajecie zamka SYNCHRONICZNIE (przed jakimkolwiek await na
+    // createOrder), wiec rownolegle retry mastera odpadaja zamiast tworzyc kopie.
+    for (const [k, v] of recentlyOrdered) {
+      if (Date.now() - v.at > ORDER_DEDUP_TTL_MS) recentlyOrdered.delete(k);
+    }
+    const alreadyOrdered = recentlyOrdered.get(String(quoteId));
+    if (alreadyOrdered) {
+      console.log(`[glob/order] DEDUP: quote ${quoteId} juz zamowione (${Math.round((Date.now() - alreadyOrdered.at) / 1000)}s temu) → zwracam istniejace`);
+      return res.json({ ...alreadyOrdered.payload, deduplicated: true });
+    }
+    if (orderingNow.has(String(quoteId))) {
+      console.log(`[glob/order] DEDUP: quote ${quoteId} zamowienie W TOKU → odrzucam duplikat`);
+      return res.status(200).json({ ok: false, duplicate: true, error: 'Zamówienie dla tej wyceny już trwa — poczekaj na potwierdzenie, nie ponawiaj.' });
+    }
+    orderingNow.add(String(quoteId));
 
     const deliveryType = (req.body && req.body.deliveryType) || quote.deliveryType || 'PICKUP';
     const collectionType = (req.body && req.body.collectionType) || quote.collectionType || 'PICKUP';
@@ -1805,7 +1833,7 @@ router.post('/glob/order', async (req, res) => {
       }
     }
 
-    res.json({
+    const successPayload = {
       ok: true,
       order: result,
       cmrSent,
@@ -1813,10 +1841,17 @@ router.post('/glob/order', async (req, res) => {
       price: selectedOffer.price + ' ' + selectedOffer.currency,
       sender: { name: sender.companyName || sender.name, city: sender.city },
       receiver: { name: receiver.name, city: receiver.city },
-    });
+    };
+    // Zapamietaj wynik — ponowne POST z tym samym quoteId zwroci TO zamowienie
+    // (idempotencja), nie wystawi kolejnego listu.
+    if (quoteId) recentlyOrdered.set(String(quoteId), { at: Date.now(), payload: successPayload });
+    res.json(successPayload);
   } catch (err) {
     console.error('[glob/order]', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    // Zwolnij zamek „w toku" — od teraz dedup pilnuje recentlyOrdered (TTL).
+    if (quoteId) orderingNow.delete(String(quoteId));
   }
 });
 
