@@ -283,7 +283,7 @@ router.get('/emails', async (req, res) => {
       const candidates = await prisma.email.findMany({
         where: {
           direction: { in: ['OUTBOUND', 'DRAFT'] },
-          createdAt: { gte: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) }, // limit do roku w tyl
+          createdAt: { gte: new Date(Date.now() - 1095 * 24 * 60 * 60 * 1000) }, // 3 lata wstecz — "Odpowiedziano" tez dla starszych watkow
           OR: [
             { inReplyTo: { not: null } },
             { references: { not: null } },
@@ -338,7 +338,7 @@ router.get('/emails', async (req, res) => {
             where: {
               direction: { in: ['OUTBOUND', 'DRAFT'] },
               toEmail: { in: fromEmails, mode: 'insensitive' },
-              createdAt: { gte: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) },
+              createdAt: { gte: new Date(Date.now() - 1095 * 24 * 60 * 60 * 1000) },
             },
             orderBy: { createdAt: 'desc' },
             select: { id: true, toEmail: true, subject: true, direction: true, createdAt: true },
@@ -355,9 +355,10 @@ router.get('/emails', async (req, res) => {
               if (stripPrefix(c.subject) !== inboundSubj) continue;
               // OUTBOUND musi byc PO inbound (replyto, nie przed)
               if (new Date(c.createdAt) < inboundDate) continue;
-              // W oknie 90 dni
+              // Odpowiedz musi byc po inbound, w rozsadnym oknie (365 dni) —
+              // szersze niz dawne 90, zeby "Odpowiedziano" lapalo starsze watki.
               const diffDays = (new Date(c.createdAt) - inboundDate) / (24 * 60 * 60 * 1000);
-              if (diffDays > 90) continue;
+              if (diffDays > 365) continue;
               if (!replyMap[inbound.id]) {
                 replyMap[inbound.id] = { id: c.id, direction: c.direction, createdAt: c.createdAt, source: 'subject' };
               }
