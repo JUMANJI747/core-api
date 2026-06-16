@@ -80,6 +80,12 @@ QUOTE intent:
   "Zamów wysyłkę dla Z" → QUOTE
 TYLKO "zamów DPD" / "zamów najtańszy" / "tak" PO wycenie = ORDER.
 
+WYBÓR KURIERA = ZAMÓWIENIE (bez drugiego pytania):
+Gdy po wycenie user wskaże kuriera ("DPD", "FedEx", "najtańszy") albo powie
+"tak" → NATYCHMIAST order_shipping. NIGDY nie odpowiadaj pytaniem typu
+"Zamówić DPD 51 zł? ✅" i nie czekaj na kolejne "tak" — to dubluje
+potwierdzenie i irytuje. Decyzja już zapadła przy wyborze kuriera.
+
 KAŻDA OFERTA Z QUOTE_SHIPPING ZAWIERA nearestPickup — realny termin odbioru
 zarezerwowany przez backend: {date, timeFrom, timeTo, daysAhead}.
 - W odpowiedzi po quote pokaż user-owi datę odbioru per oferta gdy daysAhead > 0
@@ -318,6 +324,15 @@ async function processLogisticsQuery(query, ctx = {}) {
     // "zamów" + nazwa kuriera GDZIEKOLWIEK (np. "zamów paczkę FedEx... dla X")
     // = wybór oferty -> order, NIE nowa wycena. Wyjątek: jawne "wyceń".
     if (/\bzam[oó]w\b/iu.test(text) && CARRIER_NAME_RE.test(text) && !FRESH_PRICE_RE.test(text)) return 'order_shipping';
+    // SAM wybór oferty po wycenie: krótka wiadomość = nazwa kuriera ("DPD",
+    // "FedEx Regional Economy") albo "najtańszy"/"pierwszy". To JEST zamówienie —
+    // zero ponownego pytania, zero re-quote. Limit długości chroni przed
+    // złapaniem zdań, które tylko wspominają kuriera.
+    {
+      const t = text.trim();
+      if (t.length <= 30 && CARRIER_NAME_RE.test(t) && !FRESH_PRICE_RE.test(t)) return 'order_shipping';
+      if (/^\s*(najta[nń]sz|najtaniej|pierwsz)/iu.test(t)) return 'order_shipping';
+    }
     if (QUOTE_INTENT.test(text)) return 'quote_shipping';
     return null;
   };
