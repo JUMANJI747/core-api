@@ -36,11 +36,20 @@ function calculatePackageFromItems(items) {
     else if (name.includes('lip')) productType = 'lips';
     else if (name.includes('collection')) productType = 'collection';
     const weightPer30 = PRODUCT_WEIGHTS[productType] || 1;
-    totalWeight += (qty / 30) * weightPer30;
-    // Kartonik mieści standardowo 30 szt, ale upycha się do 36 (świadoma
-    // optymalizacja by zaoszczędzić jeden karton — np. 125 szt = 4 zatłoczone
-    // kartoniki, nie 5 luźnych).
-    kartonikCount += Math.ceil(qty / 36);
+    // Jednostka pozycji: BOX/kartonik (qty = liczba boxów, każdy 30 szt) czy
+    // luzem (qty = liczba sztuk). "3 box stick" = 3 kartoniki = ~3 kg, NIE 3 szt.
+    const isBoxUnit = String(productType).startsWith('box-')
+      || /\b(box|boxy|box[oó]w|kartonik|karton|pude[łl])/.test(name);
+    if (isBoxUnit) {
+      totalWeight += qty * weightPer30;   // każdy box = weightPer30 kg
+      kartonikCount += qty;               // każdy box = 1 kartonik
+    } else {
+      totalWeight += (qty / 30) * weightPer30;
+      // Kartonik mieści standardowo 30 szt, ale upycha się do 36 (świadoma
+      // optymalizacja by zaoszczędzić jeden karton — np. 125 szt = 4 zatłoczone
+      // kartoniki, nie 5 luźnych).
+      kartonikCount += Math.ceil(qty / 36);
+    }
   }
   totalWeight = Math.max(1, Math.ceil(totalWeight));
 
