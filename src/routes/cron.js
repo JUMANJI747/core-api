@@ -123,7 +123,18 @@ router.post('/cron/sync-ifirma', async (req, res) => {
         // platnosc zaksiegowano pozno (inaczej "oplacona" nie wskakuje do CRM).
         const { dataOd, dataDo } = await computeSyncWindow(prisma);
         const invs = await fetchInvoices({ dataOd, dataDo });
-        return await processIfirmaInvoices(invs, prisma, { dataOd, dataDo, dryRun: false });
+        const r = await processIfirmaInvoices(invs, prisma, { dataOd, dataDo, dryRun: false });
+        // Auto-scal OCZYWISTE duplikaty (ten sam znormalizowany NIP) — tu właśnie
+        // powstają z faktur. Best-effort: błąd dedupu nie psuje syncu.
+        let contractorsDeduped = 0;
+        try {
+          const { selfCall } = require('../services/agent-runtime');
+          const dd = await selfCall('POST', '/api/admin/dedupe-contractors', { apply: true });
+          contractorsDeduped = (dd.body && dd.body.merged) || 0;
+        } catch (e) {
+          console.error('[cron/sync-ifirma] auto-dedupe failed:', e.message);
+        }
+        return { ...r, contractorsDeduped };
       }, 'sync.ifirma');
     });
     res.json(result);

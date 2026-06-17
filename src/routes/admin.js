@@ -755,7 +755,8 @@ router.post('/admin/dedupe-contractors', async (req, res) => {
     const groups = new Map();
     for (const c of all) {
       const key = normNipForDedup(c.nip);
-      if (!key || key.length < 4) continue; // za krótki / brak NIP → nie ruszamy (ryzyko fałszywego scalenia)
+      if (!key || key.length < 5) continue; // za krótki / brak NIP → nie ruszamy (ryzyko fałszywego scalenia)
+      if (/^(.)\1+$/.test(key)) continue;   // placeholder typu "0000000000" — NIE scalaj różnych firm
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
