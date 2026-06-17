@@ -355,6 +355,7 @@ async function processLogisticsQuery(query, ctx = {}) {
   let iterations = 0;
   const MAX_ITER = 5;
   let orderPlaced = false;
+  let quotedThisTurn = false;
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
@@ -372,8 +373,22 @@ async function processLogisticsQuery(query, ctx = {}) {
         });
         continue;
       }
+      // TWARDY GUARD: NIGDY nie zamawiaj w tej samej turze co wycena. Wymusza
+      // preview→osobne zatwierdzenie (user musi wybrać kuriera w kolejnej
+      // wiadomości). Bez tego agent z "zamów najtańszy" wyceniał I zamawiał od
+      // razu — paczka leciała bez akceptacji.
+      if (tu.name === 'order_shipping' && quotedThisTurn) {
+        console.log('[logistics-agent] BLOKADA: order_shipping w tej samej turze co quote — wymagam osobnego potwierdzenia');
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify({ ok: false, blocked: true, needsConfirmation: true, error: 'Najpierw POKAŻ wycenę (oferty + ceny) i ZAKOŃCZ turę. Nie zamawiam w tej samej turze co wycena — user musi wybrać kuriera ("DPD"/"tak") osobną wiadomością.' }),
+        });
+        continue;
+      }
       console.log(`[logistics-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
+      if (tu.name === 'quote_shipping' && result && result.ok !== false) quotedThisTurn = true;
       if (tu.name === 'order_shipping' && result && result.ok) orderPlaced = true;
       toolResultBlocks.push({
         type: 'tool_result',
