@@ -717,6 +717,91 @@ router.post('/admin/merge-contractors', async (req, res) => {
   }
 });
 
+// POST /api/admin/dedupe-contractors — auto-scalanie OCZYWISTYCH duplikatów PL
+// kontrahentów: grupuje po ZNORMALIZOWANYM NIP (zdjęty prefiks kraju + format).
+// Ten sam NIP = ta sama firma → bezpieczny merge. body: { apply?:bool }.
+// apply=false (default) → tylko plan (dry-run). apply=true → scala przez
+// /admin/contractors/merge (przenosi FV/maile/kontakty/adresy, kasuje duplikat).
+const EU_VAT_PREFIX = /^(FR|ES|DE|PT|IT|NL|BE|PL|GB|IE|AT|SE|DK|FI|CZ|SK|HU|RO|BG|HR|SI|LT|LV|EE|LU|MT|CY|GR|EL)$/;
+function normNipForDedup(nip) {
+  if (!nip) return '';
+  let s = String(nip).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // Zdejmij wiodący 2-literowy kod kraju VAT (np. FR/ES) gdy poprzedza resztę
+  // — "FR44123"=="44123", "ESB12"=="B12". Hiszpański NIF "B12.." (litera+cyfra)
+  // nie jest ruszany, bo [A-Z]{2} wymaga dwóch LITER.
+  const m = s.match(/^([A-Z]{2})(?=[0-9A-Z])/);
+  if (m && EU_VAT_PREFIX.test(m[1])) s = s.slice(2);
+  return s;
+}
+function dedupKeepScore(c) {
+  return (c.linkedEsContractorId ? 4 : 0)
+    + (c.email || c.primaryEmail ? 1 : 0)
+    + (c.phone ? 1 : 0)
+    + (c.address ? 1 : 0)
+    + (c.city ? 1 : 0)
+    + ((c.aliases && c.aliases.length) ? 1 : 0);
+}
+router.post('/admin/dedupe-contractors', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const apply = req.body && (req.body.apply === true || req.body.apply === 'true');
+  try {
+    const all = await prisma.contractor.findMany({
+      select: {
+        id: true, name: true, nip: true, email: true, primaryEmail: true, phone: true,
+        address: true, city: true, country: true, aliases: true, linkedEsContractorId: true, createdAt: true,
+      },
+    });
+    // Grupuj po znormalizowanym NIP (pomijamy puste).
+    const groups = new Map();
+    for (const c of all) {
+      const key = normNipForDedup(c.nip);
+      if (!key || key.length < 4) continue; // za krótki / brak NIP → nie ruszamy (ryzyko fałszywego scalenia)
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+
+    const plan = [];
+    for (const [key, members] of groups) {
+      if (members.length < 2) continue;
+      // keep = najpełniejszy rekord; remis → najstarszy (stabilna tożsamość/nazwa).
+      const sorted = members.slice().sort((a, b) =>
+        dedupKeepScore(b) - dedupKeepScore(a) || new Date(a.createdAt) - new Date(b.createdAt));
+      const keep = sorted[0];
+      const drops = sorted.slice(1);
+      plan.push({
+        nipNorm: key,
+        keep: { id: keep.id, name: keep.name, nip: keep.nip },
+        drops: drops.map(d => ({ id: d.id, name: d.name, nip: d.nip })),
+      });
+    }
+
+    if (!apply) {
+      const totalDrops = plan.reduce((s, g) => s + g.drops.length, 0);
+      return res.json({ ok: true, dryRun: true, groups: plan.length, toMerge: totalDrops, plan });
+    }
+
+    // APPLY — scal każdą parę keep←drop przez kompletny merge (self-call).
+    const { selfCall } = require('../services/agent-runtime');
+    let merged = 0;
+    const errors = [];
+    for (const g of plan) {
+      for (const d of g.drops) {
+        try {
+          const r = await selfCall('POST', '/api/admin/contractors/merge', { keepId: g.keep.id, dropId: d.id, confirm: true });
+          if (r.status === 200 && r.body && r.body.ok !== false) merged++;
+          else errors.push({ keep: g.keep.id, drop: d.id, status: r.status, error: (r.body && r.body.error) || 'unknown' });
+        } catch (e) {
+          errors.push({ keep: g.keep.id, drop: d.id, error: e.message });
+        }
+      }
+    }
+    res.json({ ok: true, dryRun: false, groups: plan.length, merged, errors });
+  } catch (e) {
+    console.error('[admin/dedupe-contractors]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/admin/contractor-cleanup — batch fix kontrahenta:
 // aktualizuj NIP/email/nazwe, linkuj maile, linkuj fakture, ustaw kraj.
 // body: { contractorId, updates: { nip?, email?, name?, country?, address?, city? },
