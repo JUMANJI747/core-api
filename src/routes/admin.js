@@ -776,9 +776,52 @@ router.post('/admin/dedupe-contractors', async (req, res) => {
       });
     }
 
+    // PROPOZYCJE (NIE auto-scalane): podobni po EMAILU lub TELEFONIE, ale bez
+    // wspólnego znormalizowanego NIP — czyli przypadki "nie na 100%". Pokazujemy
+    // do ręcznej decyzji (merge robisz świadomie). Email/telefon = mocny sygnał,
+    // mało fałszywek; nazwy nie używamy (zbyt szumna). Wykluczamy pary, które i
+    // tak złapie auto-merge po NIP.
+    const { normalizeEmail, normalizePhone, isOwnEmail } = require('../services/contractor-sync-helpers');
+    const sameNipKey = (a, b) => {
+      const ka = normNipForDedup(a.nip); const kb = normNipForDedup(b.nip);
+      return ka && kb && ka === kb;
+    };
+    const byKey = new Map(); // "email:x" / "phone:x" -> [contractors]
+    for (const c of all) {
+      const em = normalizeEmail(c.email) || normalizeEmail(c.primaryEmail);
+      if (em && !isOwnEmail(em)) {
+        const k = `email:${em}`;
+        if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(c);
+      }
+      const ph = normalizePhone(c.phone);
+      if (ph) {
+        const k = `phone:${ph}`;
+        if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(c);
+      }
+    }
+    const suggestions = [];
+    const seenPair = new Set();
+    for (const [k, members] of byKey) {
+      if (members.length < 2) continue;
+      // tylko gdy NIE wszyscy mają ten sam NIP (inaczej auto-merge to ogarnie)
+      const distinct = members.filter((m, i) => members.findIndex(x => x.id === m.id) === i);
+      if (distinct.length < 2) continue;
+      const allSameNip = distinct.every(m => sameNipKey(m, distinct[0]));
+      if (allSameNip) continue;
+      const [type, value] = k.split(/:(.+)/);
+      const pairKey = distinct.map(m => m.id).sort().join('|');
+      if (seenPair.has(pairKey)) continue;
+      seenPair.add(pairKey);
+      suggestions.push({
+        reason: type, value,
+        members: distinct.map(m => ({ id: m.id, name: m.name, nip: m.nip || null, email: m.email || m.primaryEmail || null, country: m.country || null })),
+        hint: 'Niepewne — sprawdź i scal ręcznie: POST /api/admin/contractors/merge {keepId, dropId, confirm:true}',
+      });
+    }
+
     if (!apply) {
       const totalDrops = plan.reduce((s, g) => s + g.drops.length, 0);
-      return res.json({ ok: true, dryRun: true, groups: plan.length, toMerge: totalDrops, plan });
+      return res.json({ ok: true, dryRun: true, groups: plan.length, toMerge: totalDrops, plan, suggestions });
     }
 
     // APPLY — scal każdą parę keep←drop przez kompletny merge (self-call).
@@ -796,7 +839,7 @@ router.post('/admin/dedupe-contractors', async (req, res) => {
         }
       }
     }
-    res.json({ ok: true, dryRun: false, groups: plan.length, merged, errors });
+    res.json({ ok: true, dryRun: false, groups: plan.length, merged, errors, suggestions });
   } catch (e) {
     console.error('[admin/dedupe-contractors]', e.message);
     res.status(500).json({ ok: false, error: e.message });
