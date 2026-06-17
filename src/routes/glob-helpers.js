@@ -53,22 +53,24 @@ function calculatePackageFromItems(items) {
   }
   totalWeight = Math.max(1, Math.ceil(totalWeight));
 
-  // Pakowanie: kartoniki układamy "w słupek" po NAJKRÓTSZYM boku (wysokość
-  // jednego = 10 cm), baza 20×20. Czyli N boxów = 20×20×(10·N): 3 boxy → 20×20×30.
-  // Gdy słupek przekroczy ~60 cm — dwie kolumny (40×20), potem większy karton.
+  // Pakowanie: kartoniki w WIEŻE max po 3 (wysokość 10·3 = 30 cm), baza boxa
+  // 20×20. Wieże ustawiamy obok siebie w siatce (max 3 w rzędzie):
+  //   3 boxy  = 1 wieża      → 20×20×30
+  //   6 boxów = 2 wieże po 3 → 20×40×30
+  //   9 boxów = 3 wieże      → 20×60×30
+  //   12      = 4 wieże      → 40×60×30 (2 rzędy)
   const BOX = { h: 10, w: 20, l: 20 };
-  const MAX_H = 60;
-  let dimensions;
-  if (kartonikCount <= 1) {
-    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h };
-  } else if (kartonikCount * BOX.h <= MAX_H) {
-    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h * kartonikCount }; // słupek: 3 → 30
-  } else if (kartonikCount <= 12) {
-    dimensions = { length: BOX.l * 2, width: BOX.w, height: Math.min(MAX_H, BOX.h * Math.ceil(kartonikCount / 2)) };
-  } else {
-    dimensions = { length: 40, width: 40, height: 40 };
-    if (kartonikCount > 16) dimensions.height = Math.min(MAX_H, Math.ceil(kartonikCount / 4) * BOX.h);
-  }
+  const MAX_PER_TOWER = 3;   // max kartoników na wieżę (najkrótszy bok)
+  const MAX_TOWERS_PER_ROW = 3;
+  const towers = Math.ceil(kartonikCount / MAX_PER_TOWER);
+  const towerHeight = BOX.h * Math.min(kartonikCount, MAX_PER_TOWER); // 1→10, 2→20, ≥3→30
+  const towersPerRow = Math.min(towers, MAX_TOWERS_PER_ROW);
+  const rows = Math.ceil(towers / MAX_TOWERS_PER_ROW);
+  const dimensions = {
+    length: BOX.l * rows,
+    width: BOX.w * towersPerRow,
+    height: towerHeight,
+  };
 
   return {
     weight: totalWeight,
