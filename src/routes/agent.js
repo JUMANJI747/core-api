@@ -355,15 +355,79 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
   res.json({ ...winner, ...(others.length ? { alternatives: others } : {}) });
 }));
 
+// Odczyt załączników udostępnionych w czacie asystenta. Obrazy → vision
+// (Anthropic), PDF → tekst (pdf-parse). Zwraca zwięzły tekst z danymi do CRM,
+// który dopinamy do query, żeby agenci (tekstowi) "widzieli" co przysłał user.
+async function extractAssistantAttachments(anthropic, attachments) {
+  const parts = [];
+  const imageBlocks = [];
+  for (const a of attachments) {
+    const ct = String(a.contentType || '').toLowerCase();
+    const b64 = a.contentBase64 || a.dataBase64 || a.data;
+    const fname = a.filename || '';
+    if (!b64) continue;
+    if (ct.startsWith('image/')) {
+      const media = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(ct) ? ct : 'image/jpeg';
+      imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
+    } else if (ct === 'application/pdf' || fname.toLowerCase().endsWith('.pdf')) {
+      try {
+        const { PDFParse } = require('pdf-parse');
+        const parser = new PDFParse({ data: Buffer.from(b64, 'base64') });
+        const parsed = await parser.getText();
+        const txt = (parsed.text || '').trim();
+        if (txt) parts.push(`PDF "${fname}":\n${txt.slice(0, 6000)}`);
+        else parts.push(`PDF "${fname}": brak warstwy tekstowej (skan) — nie odczytano.`);
+      } catch (e) {
+        parts.push(`PDF "${fname}": nie udało się odczytać (${e.message}).`);
+      }
+    } else {
+      parts.push(`Plik "${fname}" (${ct || 'nieznany typ'}) — pominięty (nieobsługiwany do odczytu AI).`);
+    }
+  }
+  if (imageBlocks.length) {
+    try {
+      const model = process.env.ASSISTANT_VISION_MODEL || 'claude-haiku-4-5-20251001';
+      const resp = await anthropic.messages.create({
+        model,
+        max_tokens: 1500,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Odczytaj DOKŁADNIE zawartość tych załączników (zdjęcia/skany). Wypisz wszystkie dane przydatne do CRM: nazwa firmy/osoby, NIP/CIF/NIE, adres (ulica, kod, miasto, kraj), pozycje zamówienia (produkt, ilość, cena), numery dokumentów, kwoty, email, telefon. Zwięźle, po polsku, bez interpretacji — tylko to, co realnie widać.' },
+            ...imageBlocks,
+          ],
+        }],
+      });
+      const t = (resp.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+      if (t) parts.push(`Zdjęcia/skany (odczyt AI):\n${t}`);
+    } catch (e) {
+      parts.push(`Zdjęcia: nie udało się odczytać przez AI (${e.message}).`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
 // POST /api/agent/assistant — tani router (Haiku) który decyduje którego
 // agenta (Sonnet) wywołać i łączy wyniki. Dla frontu — zero Opus.
-// Body: { query, context: { contractorId?, ... }, previousTurns? }
+// Body: { query, context: { contractorId?, ... }, previousTurns?, attachments? }
 router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
+  let { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
+  const attachments = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
+  if (!query && attachments.length) query = 'Przeanalizuj załączone pliki/zdjęcia i powiedz co z nimi zrobić.';
   if (!query) return res.status(400).json({ error: 'query required' });
+
+  // Załączniki z czatu (zdjęcia/PDF) → odczyt (vision/pdf-parse) i doklejenie do
+  // query, żeby tekstowi sub-agenci "widzieli" ich treść (np. zrób fakturę z foto).
+  if (attachments.length) {
+    const extracted = await extractAssistantAttachments(anthropic, attachments).catch(e => {
+      console.error('[agent/assistant] attachment extract failed:', e.message);
+      return '';
+    });
+    if (extracted) query = `${query}\n\n[ZAŁĄCZNIKI OD UŻYTKOWNIKA — odczytane przez AI]:\n${extracted}`;
+  }
 
   // Buduje query z prefixem kontekstu: dane kontrahenta + CALY WATEK rozmowy
   // (zamowienie bywa w starszym mailu niz otwarty) + historia maili kontrahenta
