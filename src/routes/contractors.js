@@ -704,6 +704,49 @@ router.post('/vat-mode', async (req, res) => {
   }
 });
 
+// GET /api/contractors/by-invoice?number=110/2026 — znajdź kontrahenta(ów) dla
+// danego numeru faktury (PL Invoice albo ES EsInvoice → powiązany PL Contractor).
+// Używane przez "Wchłoń kontrahenta": zamiast nazwy można podać numer FV.
+// MUSI być PRZED router.get('/:id').
+router.get('/by-invoice', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const number = String(req.query.number || '').trim();
+  if (!number) return res.status(400).json({ error: 'number (numer faktury) wymagany' });
+  try {
+    const ids = new Set();
+    // PL — Invoice.number → contractorId.
+    const plInvs = await prisma.invoice.findMany({
+      where: { number: { contains: number, mode: 'insensitive' }, contractorId: { not: null } },
+      select: { contractorId: true },
+      take: 10,
+    });
+    for (const i of plInvs) if (i.contractorId) ids.add(i.contractorId);
+    // ES — EsInvoice.number → EsContractor → powiązany PL Contractor (linkedEsContractorId).
+    const esInvs = await prisma.esInvoice.findMany({
+      where: { number: { contains: number, mode: 'insensitive' }, contractorId: { not: null } },
+      select: { contractorId: true },
+      take: 10,
+    });
+    const esContractorIds = [...new Set(esInvs.map(i => i.contractorId).filter(Boolean))];
+    if (esContractorIds.length) {
+      const linked = await prisma.contractor.findMany({
+        where: { linkedEsContractorId: { in: esContractorIds } },
+        select: { id: true },
+      });
+      for (const c of linked) ids.add(c.id);
+    }
+    if (!ids.size) return res.json({ contractors: [], note: `Nie znaleziono faktury "${number}" z przypisanym kontrahentem.` });
+    const contractors = await prisma.contractor.findMany({
+      where: { id: { in: [...ids] } },
+      select: { id: true, name: true, nip: true, country: true, email: true, primaryEmail: true, phone: true, city: true, address: true, tags: true, source: true, updatedAt: true },
+    });
+    res.json({ contractors });
+  } catch (e) {
+    console.error('[contractors/by-invoice]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { search, country, tag, limit } = req.query;
