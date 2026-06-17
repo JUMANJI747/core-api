@@ -30,6 +30,11 @@ function httpsPost(url, headers, body) {
   });
 }
 
+// Model dla NL→SQL i streszczeń. Hardcoded 'claude-sonnet-4-20250514' został
+// wycofany → API zwracało błąd → /api/analytics dawało 500. Default = ten sam
+// działający model co sub-agenci; nadpisywalny env ANALYTICS_MODEL.
+const ANALYTICS_MODEL = process.env.ANALYTICS_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
+
 async function callClaudeWithRetry(body, maxRetries = 3) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -152,16 +157,22 @@ Wygeneruj TYLKO zapytanie SQL (PostgreSQL) które odpowiada na to pytanie.
 Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
 
     const sqlResp = await callClaudeWithRetry({
-      model: 'claude-sonnet-4-20250514',
+      model: ANALYTICS_MODEL,
       max_tokens: 2000,
       messages: [{ role: 'user', content: sqlPrompt }],
     });
 
     if (sqlResp.status !== 200) {
-      return res.status(500).json({ error: 'Claude SQL generation failed', details: sqlResp.body });
+      console.error('[analytics] Claude SQL gen failed:', sqlResp.status, JSON.stringify(sqlResp.body).slice(0, 400));
+      return res.status(502).json({ ok: false, error: `Claude SQL generation failed (${sqlResp.status})`, details: sqlResp.body });
     }
 
-    const sql = (sqlResp.body.content[0].text || '').replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
+    const sqlText = sqlResp.body && Array.isArray(sqlResp.body.content) && sqlResp.body.content[0] && sqlResp.body.content[0].text;
+    if (!sqlText) {
+      console.error('[analytics] Claude SQL gen — no text in response:', JSON.stringify(sqlResp.body).slice(0, 400));
+      return res.status(502).json({ ok: false, error: 'Claude nie zwrócił SQL (pusta odpowiedź modelu).', details: sqlResp.body });
+    }
+    const sql = sqlText.replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
 
     const forbidden = /\b(DELETE|DROP|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|EXEC|VACUUM|ANALYZE|COPY|LOAD|LISTEN|NOTIFY|LOCK|RESET|CALL|DO|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|pg_terminate_backend|pg_sleep|pg_read_file|pg_ls_dir|pg_advisory_lock)\b/i;
     if (forbidden.test(sql)) {
@@ -189,7 +200,7 @@ Odpowiedz TYLKO czystym SQL bez markdown, bez komentarzy, bez wyjaśnień.`;
     if (safeResults.length > 0) {
       try {
         const summaryResp = await callClaudeWithRetry({
-          model: 'claude-sonnet-4-20250514',
+          model: ANALYTICS_MODEL,
           max_tokens: 1000,
           messages: [{
             role: 'user',
