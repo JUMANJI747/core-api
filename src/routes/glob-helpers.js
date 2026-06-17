@@ -53,17 +53,21 @@ function calculatePackageFromItems(items) {
   }
   totalWeight = Math.max(1, Math.ceil(totalWeight));
 
+  // Pakowanie: kartoniki układamy "w słupek" po NAJKRÓTSZYM boku (wysokość
+  // jednego = 10 cm), baza 20×20. Czyli N boxów = 20×20×(10·N): 3 boxy → 20×20×30.
+  // Gdy słupek przekroczy ~60 cm — dwie kolumny (40×20), potem większy karton.
   const BOX = { h: 10, w: 20, l: 20 };
+  const MAX_H = 60;
   let dimensions;
-  if (kartonikCount <= 1) dimensions = { length: BOX.l, width: BOX.w, height: BOX.h };
-  else if (kartonikCount <= 2) dimensions = { length: BOX.l, width: BOX.w, height: BOX.h * 2 };
-  else if (kartonikCount <= 4) dimensions = { length: BOX.l * 2, width: BOX.w, height: BOX.h * 2 };
-  else if (kartonikCount <= 6) dimensions = { length: BOX.l * 2, width: BOX.w, height: BOX.h * 3 };
-  else if (kartonikCount <= 8) dimensions = { length: BOX.l * 2, width: BOX.w * 2, height: BOX.h * 2 };
-  else if (kartonikCount <= 12) dimensions = { length: BOX.l * 2, width: BOX.w * 2, height: BOX.h * 3 };
-  else {
+  if (kartonikCount <= 1) {
+    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h };
+  } else if (kartonikCount * BOX.h <= MAX_H) {
+    dimensions = { length: BOX.l, width: BOX.w, height: BOX.h * kartonikCount }; // słupek: 3 → 30
+  } else if (kartonikCount <= 12) {
+    dimensions = { length: BOX.l * 2, width: BOX.w, height: Math.min(MAX_H, BOX.h * Math.ceil(kartonikCount / 2)) };
+  } else {
     dimensions = { length: 40, width: 40, height: 40 };
-    if (kartonikCount > 16) dimensions.height = Math.min(60, Math.ceil(kartonikCount / 4) * BOX.h);
+    if (kartonikCount > 16) dimensions.height = Math.min(MAX_H, Math.ceil(kartonikCount / 4) * BOX.h);
   }
 
   return {
