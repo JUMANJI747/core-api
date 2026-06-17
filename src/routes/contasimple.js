@@ -2801,6 +2801,25 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
   res.json({ count: list.length, data: list });
 }));
 
+// GET /api/contasimple/local-invoices/:id/pdf — pobranie PDF faktury ES po
+// LOKALNYM id (UUID z EsInvoice). Rozwiazuje contasimpleId + period z bazy
+// (period z daty gdy brak), pobiera PDF z Contasimple i streamuje inline —
+// tak samo jak PL /api/invoices/:id/pdf, zeby front mial guzik "PDF".
+router.get('/local-invoices/:id/pdf', asyncHandler(async (req, res) => {
+  const row = await prisma.esInvoice.findUnique({
+    where: { id: req.params.id },
+    select: { contasimpleId: true, period: true, invoiceDate: true, number: true },
+  });
+  if (!row) return res.status(404).json({ error: 'faktura ES nie znaleziona w bazie' });
+  if (!row.contasimpleId) return res.status(400).json({ error: 'faktura nie ma contasimpleId — nie ma jej w Contasimple (PDF niedostępny)' });
+  const period = row.period || cs.dateToPeriod(row.invoiceDate || new Date());
+  const { buffer, contentType } = await cs.fetchInvoicePdf(period, row.contasimpleId);
+  const safeNum = String(row.number || row.contasimpleId).replace(/[^A-Za-z0-9_-]/g, '_');
+  res.set('Content-Type', contentType || 'application/pdf');
+  res.set('Content-Disposition', `inline; filename="factura_${safeNum}.pdf"`);
+  res.send(buffer);
+}));
+
 // ============ SET OWNER (Rogacz/Nikodem assignment) ============
 // PUT /api/contasimple/contractors/:id/owner
 // Body: { owner: 'rogacz' | 'nikodem' | null }
