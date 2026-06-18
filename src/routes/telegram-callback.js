@@ -18,7 +18,25 @@
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
 const { selfCall } = require('../services/agent-runtime');
-const { answerCallbackQuery, editMessageReplyMarkup } = require('../telegram-utils');
+const { sendTelegram, answerCallbackQuery, editMessageReplyMarkup } = require('../telegram-utils');
+
+// POST /api/telegram/test-button — wysyła na Telegram wiadomość z przyciskiem
+// testowym (callback_data="ping:test"). Służy do skonfigurowania IF/Switch w
+// n8n: odpalasz to z terminala, klikasz przycisk, n8n łapie callback_query i
+// pod niego ustawiasz noda. Bezpieczne — "ping" nic nie wystawia.
+// body: { scope?: 'pl'|'kanary' (default kanary), chatId? }
+router.post('/telegram/test-button', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const scope = (req.body && req.body.scope) === 'pl' ? 'pl' : 'kanary';
+  const { resolveToken, resolveChatId } = require('../services/telegram-helper');
+  const token = (await resolveToken(prisma, scope)).token || '';
+  const chatId = (await resolveChatId(prisma, req.body && req.body.chatId, scope)).chatId;
+  if (!token) return res.status(503).json({ ok: false, error: `brak tokena bota (${scope})` });
+  if (!chatId) return res.status(503).json({ ok: false, error: 'brak chatId (podaj w body albo ustaw w Config)' });
+  const replyMarkup = { inline_keyboard: [[{ text: '✅ Klik testowy', callback_data: `ping:${scope}` }]] };
+  const r = await sendTelegram(token, String(chatId), '🔘 Test przycisku — kliknij, żeby n8n złapał callback_query.', { replyMarkup });
+  res.json({ ok: !!(r && r.ok), scope, chatId, telegram: r });
+}));
 
 // Mapowanie prefiksu akcji → endpoint + budowa body + zakres tokena (do
 // odpowiedzi/edycji wiadomości właściwym botem).
@@ -41,6 +59,15 @@ router.post('/telegram/callback', asyncHandler(async (req, res) => {
   const chatId = cq.message && cq.message.chat && cq.message.chat.id;
   const messageId = cq.message && cq.message.message_id;
   if (!data) return res.status(400).json({ ok: false, error: 'brak callback_data' });
+
+  // PING — test round-tripu (nic nie wystawia). Tylko potwierdza tapnięcie.
+  if (String(data).startsWith('ping')) {
+    const scope = String(data).split(':')[1] === 'pl' ? 'pl' : 'kanary';
+    const { resolveToken } = require('../services/telegram-helper');
+    const tok = (await resolveToken(prisma, scope)).token || '';
+    if (tok && cqId) await answerCallbackQuery(tok, cqId, '✅ Callback działa (test OK)');
+    return res.json({ ok: true, action: 'ping', toast: 'test OK' });
+  }
 
   const action = resolveAction(data, chatId);
   if (!action) return res.status(400).json({ ok: false, error: `nieznana akcja: ${String(data).slice(0, 40)}` });
