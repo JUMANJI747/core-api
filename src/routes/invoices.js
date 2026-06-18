@@ -726,33 +726,22 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     const previewId = require('crypto').randomUUID();
     // Uwagi/notatka na FV (np. numer zamówienia) — z req.body.uwagi lub .notes.
     const uwagi = (req.body && (req.body.uwagi || req.body.notes)) || null;
-    const storePayload = { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays, uwagi };
-    savePreview(previewId, storePayload);
-
-    // TRWAŁY zapis pełnego podglądu w DB (agentContext) — in-memory Map ginie
-    // przy redeployu / między instancjami, przez co confirm-latest nie znajdował
-    // podglądu i agent halucynował "wystawiona". Confirm ma fallback do tego.
-    const previewData = {
-      lastAction: 'preview', previewId,
-      contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country },
-      suma: preview.suma, waluta, timestamp: Date.now(),
-      previewFull: storePayload, previewSavedAt: Date.now(),
-    };
-    prisma.agentContext.upsert({
-      where: { id: 'ksiegowosc' },
-      update: { data: previewData },
-      create: { id: 'ksiegowosc', data: previewData },
-    }).catch(e => console.error('[invoice-preview] AgentContext save error:', e.message));
+    const reqSource = (req.body && req.body.source) || null;
+    const reqChatId = req.body && req.body.chatId;
 
     // Telegram: push podglądu z przyciskami Akceptuj/Odrzuć (deterministycznie,
-    // bez Anthropic — tap woła confirm/discard WPROST po previewId). Analogicznie
-    // do ES. Pomijamy gdy żądanie idzie z CRM (frontend) — tam są przyciski w UI.
+    // bez Anthropic — tap woła confirm/discard WPROST po previewId). Pomijamy gdy
+    // żądanie idzie z CRM (frontend) — tam są przyciski w UI. ZAPAMIĘTUJEMY chat,
+    // na który poszedł podgląd (pushChatId), żeby confirm wysłał tam PDF — bez tego
+    // confirm był STRICT i FV się wystawiała, ale potwierdzenie/PDF nie docierało.
     let telegramPushed = false;
-    if (req.body.source !== 'frontend') {
+    let pushChatId = null;
+    if (reqSource !== 'frontend') {
       try {
         const { resolveTelegram } = require('../services/telegram-helper');
-        const tg = await resolveTelegram(prisma, { reqChatId: req.body && req.body.chatId, scope: 'pl' });
+        const tg = await resolveTelegram(prisma, { reqChatId, scope: 'pl' });
         if (tg.token && tg.chatId) {
+          pushChatId = String(tg.chatId);
           const lines = linee.map(l =>
             `• ${l.nazwa}${l.wariant ? ` ${l.wariant}` : ''} × ${l.ilosc} szt\n  ${l.cenaNetto != null ? `netto ${l.cenaNetto.toFixed(2)}` : `brutto ${(l.cena || 0).toFixed(2)}`} ${waluta}/szt → ${l.wartosc.toFixed(2)} ${waluta}`
           ).join('\n');
@@ -776,6 +765,24 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
         console.error('[invoice-preview] tg push threw:', e.message);
       }
     }
+
+    const storePayload = { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays, uwagi, source: reqSource, chatId: pushChatId };
+    savePreview(previewId, storePayload);
+
+    // TRWAŁY zapis pełnego podglądu w DB (agentContext) — in-memory Map ginie
+    // przy redeployu / między instancjami, przez co confirm-latest nie znajdował
+    // podglądu i agent halucynował "wystawiona". Confirm ma fallback do tego.
+    const previewData = {
+      lastAction: 'preview', previewId,
+      contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country },
+      suma: preview.suma, waluta, timestamp: Date.now(),
+      previewFull: storePayload, previewSavedAt: Date.now(),
+    };
+    prisma.agentContext.upsert({
+      where: { id: 'ksiegowosc' },
+      update: { data: previewData },
+      create: { id: 'ksiegowosc', data: previewData },
+    }).catch(e => console.error('[invoice-preview] AgentContext save error:', e.message));
 
     res.json({ ok: true, preview, previewId, telegramPushed });
   } catch (e) {
@@ -830,15 +837,18 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     const storedUwagi = stored.uwagi || null;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
 
-    // STRICT routing: tylko per-request chatId, brak fallback Config.
+    // Chat docelowy PDF: per-request chatId → chat z podglądu (stored.chatId) →
+    // fallback Config (resolveTelegram). Gdy podgląd był z CRM (source=frontend) →
+    // NIE wysyłamy na Telegram (potwierdzenie/PDF zostają w CRM).
     const reqChatId = req.body && req.body.chatId;
-    const { resolveToken } = require('../services/telegram-helper');
-    const tgChat = reqChatId ? String(reqChatId) : null;
-    const tgToken = (await resolveToken(prisma, 'pl')).token || '';
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const _tg = await resolveTelegram(prisma, { reqChatId: reqChatId || stored.chatId, scope: 'pl' });
+    const tgToken = _tg.token || '';
+    const tgChat = stored.source === 'frontend' ? null : (_tg.chatId ? String(_tg.chatId) : null);
     if (!tgChat) {
-      console.warn('[ifirma confirm-latest] BRAK chatId w body żądania — Master n8n nie skonfigurowany. PDF nie zostanie wysłany.');
+      console.warn(`[ifirma confirm-latest] brak chatId (source=${stored.source || 'n/a'}) — PDF nie zostanie wysłany na Telegram.`);
     }
-    console.log(`[ifirma confirm-latest] tg → chat=${tgChat || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${tgToken.slice(-4)}`);
+    console.log(`[ifirma confirm-latest] tg → chat=${tgChat || 'NONE'} token=...${tgToken.slice(-4)}`);
 
     let ifirmaResult;
     try {
@@ -1163,15 +1173,17 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     let pdfSent = false;
     try {
-      // STRICT: tylko per-request chatId. Bez fallback na Config.
+      // Chat docelowy: per-request chatId → chat z podglądu (stored.chatId) →
+      // Config fallback. Podgląd z CRM (source=frontend) → bez Telegrama.
       const reqChatId = req.body && req.body.chatId;
-      const { resolveToken } = require('../services/telegram-helper');
-      const chatId = reqChatId ? String(reqChatId) : null;
-      const token = (await resolveToken(prisma, 'pl')).token || '';
+      const { resolveTelegram } = require('../services/telegram-helper');
+      const _tg = await resolveTelegram(prisma, { reqChatId: reqChatId || stored.chatId, scope: 'pl' });
+      const token = _tg.token || '';
+      const chatId = stored.source === 'frontend' ? null : (_tg.chatId ? String(_tg.chatId) : null);
       if (!chatId) {
-        console.warn('[ifirma confirm] BRAK chatId w body żądania — PDF nie zostanie wysłany.');
+        console.warn(`[ifirma confirm] brak chatId (source=${stored.source || 'n/a'}) — PDF nie zostanie wysłany.`);
       }
-      console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${token.slice(-4)}`);
+      console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} token=...${token.slice(-4)}`);
 
       if (token && chatId) {
         // Najpierw KRÓTKIE potwierdzenie tekstowe — żeby user zawsze wiedział, że
