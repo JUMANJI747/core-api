@@ -710,7 +710,40 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       create: { id: 'ksiegowosc', data: previewData },
     }).catch(e => console.error('[invoice-preview] AgentContext save error:', e.message));
 
-    res.json({ ok: true, preview, previewId });
+    // Telegram: push podglądu z przyciskami Akceptuj/Odrzuć (deterministycznie,
+    // bez Anthropic — tap woła confirm/discard WPROST po previewId). Analogicznie
+    // do ES. Pomijamy gdy żądanie idzie z CRM (frontend) — tam są przyciski w UI.
+    let telegramPushed = false;
+    if (req.body.source !== 'frontend') {
+      try {
+        const { resolveTelegram } = require('../services/telegram-helper');
+        const tg = await resolveTelegram(prisma, { reqChatId: req.body && req.body.chatId, scope: 'pl' });
+        if (tg.token && tg.chatId) {
+          const lines = linee.map(l =>
+            `• ${l.nazwa}${l.wariant ? ` ${l.wariant}` : ''} × ${l.ilosc} szt\n  ${l.cenaNetto != null ? `netto ${l.cenaNetto.toFixed(2)}` : `brutto ${(l.cena || 0).toFixed(2)}`} ${waluta}/szt → ${l.wartosc.toFixed(2)} ${waluta}`
+          ).join('\n');
+          const previewText =
+            `🧾 PODGLĄD FAKTURY${rodzaj === 'wdt' ? ' (WDT)' : ''}\n\n` +
+            `Kontrahent: ${contractor.name}${contractor.country ? ` (${contractor.country})` : ''}\n` +
+            `Waluta: ${waluta} | VAT: ${vatMode}\n` +
+            `Termin płatności: ${terminPlatnosci} (${paymentDays} dni)\n\n` +
+            `${lines}\n\n` +
+            `SUMA: ${netto.toFixed(2)} netto | ${brutto.toFixed(2)} brutto ${waluta}\n\n` +
+            `Akceptuj przyciskiem poniżej albo napisz "tak".`;
+          const replyMarkup = { inline_keyboard: [[
+            { text: '✅ Akceptuj i wystaw fakturę', callback_data: `fvpl:${previewId}` },
+            { text: '❌ Odrzuć', callback_data: `fvno:${previewId}` },
+          ]] };
+          const r = await sendTelegram(tg.token, String(tg.chatId), previewText, { replyMarkup });
+          telegramPushed = !!(r && r.ok);
+          if (!telegramPushed) console.error('[invoice-preview] tg push failed:', r && r.error);
+        }
+      } catch (e) {
+        console.error('[invoice-preview] tg push threw:', e.message);
+      }
+    }
+
+    res.json({ ok: true, preview, previewId, telegramPushed });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

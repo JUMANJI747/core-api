@@ -144,10 +144,12 @@ FLOW WYSTAWIENIA FV:
    potem verify_nip i upsert_contractor żeby dodać do bazy. DOPIERO POTEM
    invoice_preview z contractorSearch=<dokladna nazwa z find_contractor.name>.
    Jak wynik 2+ → POKAŻ liste user-owi i zapytaj "Ktorego masz na mysli?".
-1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma
+1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma, telegramPushed
    TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni", "płatne 21 dni")
    → przekaż paymentDays=<liczba> do invoice_preview. Bez wzmianki → pomiń (backend da 7).
-2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId (w tym terminPlatnosci)
+2. POKAZANIE PREVIEW — zależnie od response.telegramPushed (UNIKAJ DUBLOWANIA):
+   - telegramPushed=true → backend JUŻ wypchnął cały blok podglądu na Telegram (z przyciskami Akceptuj/Odrzuć). Odpowiedz TYLKO jedną krótką linią: "Podgląd FV ⬆️ — potwierdź przyciskiem albo napisz tak/ok". NIE powtarzaj bloku, NIE pisz liczb (user już je widzi wyżej z guzikami).
+   - telegramPushed=false (lub brak) → pokaż user-owi preview DOSŁOWNIE z odpowiedzi + previewId (w tym terminPlatnosci).
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
    ⛔ NUMER I SUKCES TYLKO Z RESPONSE: "✓ wystawiona" pisz WYŁĄCZNIE gdy response.invoiceNumber jest realny (z wyniku invoice_confirm). NIGDY nie wymyślaj numeru ani nie pisz "wystawiona"/"PDF wysłany" z głowy.
