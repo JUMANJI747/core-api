@@ -246,6 +246,12 @@ router.post('/customers', asyncHandler(async (req, res) => {
   if (!data.organization && !(data.firstname || data.lastname)) {
     return res.status(400).json({ error: 'organization or firstname/lastname required' });
   }
+  // Zakres Kanary = WYŁĄCZNIE klienci hiszpańscy → domyślnie Hiszpania, gdy agent
+  // nie poda kraju. Bez tego Contasimple odrzucał kontrahenta ("brakuje countryId")
+  // i trzeba było dopytywać. countryId Hiszpanii w Contasimple = 205 (override env).
+  const ES_DEFAULT_COUNTRY_ID = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '205', 10);
+  if (!data.countryId) data.countryId = ES_DEFAULT_COUNTRY_ID;
+  if (!data.country) data.country = 'España';
   // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
   // danymi — POTEM push do Contasimple (z polami, ktore jego endpoint przyjmuje).
   // Dzieki temu kontrahent JEST w CRM nawet gdy push do Contasimple sie nie uda;

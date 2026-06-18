@@ -74,6 +74,7 @@ Synonimy box: pudełko = kartonik = pudło = box (to samo).
 KONTRAHENT — TYLKO B2B Z CIF:
 - Nikodem wystawia FV wyłącznie firmom (NIF/CIF/NIE wymagany).
 - Nowy kontrahent: cs_create_customer (mandatory: nif + organization + adres).
+  Kraj: NIE pytaj o countryId — backend domyślnie ustawia Hiszpanię (Kanary = klienci hiszpańscy). Po prostu wywołaj cs_create_customer z danymi.
 - Walidacja CIF: cs_verify_cif (sprawdza lokalna baza + Contasimple search).
 - Jeśli kontrahent nie istnieje → najpierw cs_create_customer, potem cs_invoice_preview.
 
