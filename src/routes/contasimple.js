@@ -131,27 +131,26 @@ async function getEsChatId(prismaClient, reqChatId) {
 // Helper odpowiada bezposrednio na res (404 / suggestions) i zwraca null, albo
 // zwraca pelny rekord kontrahenta. requireCif=true wymusza B2B (FV); albaran
 // (WZ) moze isc bez CIF, ale zawsze potrzebuje contasimpleId.
-// Domyślne countryId Hiszpanii — NIE zgadujemy (205=Senegal!). Kolejność pewności:
-//  1) env KANARY_DEFAULT_COUNTRY_ID (pinned ręcznie),
-//  2) najczęstsze countryId wśród kontrahentów OZNACZONYCH España (wiąże id z krajem),
-//  3) najczęstsze countryId w ogóle (ostatnia deska — i tak ~wszyscy to Hiszpania).
+// ZNANE countryId z Contasimple — zaobserwowane na realnych klientach (NIE
+// zgadywane; 205 to było Senegal, stąd ostrożność). Klucze znormalizowane
+// (lowercase). Dodawaj tylko POTWIERDZONE wartości.
+const CONTASIMPLE_COUNTRY_IDS = {
+  'españa': 1, 'espana': 1, 'spain': 1, 'es': 1, 'hiszpania': 1,
+  'reino unido': 79, 'uk': 79, 'united kingdom': 79, 'gb': 79, 'wielka brytania': 79,
+  'polonia': 179, 'poland': 179, 'pl': 179, 'polska': 179,
+};
+const ES_SPAIN_COUNTRY_ID = 1; // Hiszpania w Contasimple
+// country (nazwa/ISO) → countryId, jeśli znamy z pewnością.
+function countryIdFor(name) {
+  if (!name) return null;
+  return CONTASIMPLE_COUNTRY_IDS[String(name).trim().toLowerCase()] || null;
+}
+
+// Domyślne countryId Hiszpanii — wpisane na stałe (=1, potwierdzone w Contasimple).
+// env KANARY_DEFAULT_COUNTRY_ID nadpisuje, gdyby kiedyś trzeba.
 async function resolveEsDefaultCountryId() {
   const envId = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10);
-  if (envId > 0) return envId;
-  try {
-    const esRows = await prisma.esContractor.groupBy({
-      by: ['countryId'],
-      where: { countryId: { not: null }, country: { in: ['España', 'Espana', 'Spain', 'ES', 'Hiszpania'] } },
-      _count: { countryId: true }, orderBy: { _count: { countryId: 'desc' } }, take: 1,
-    });
-    if (esRows && esRows[0] && esRows[0].countryId) return esRows[0].countryId;
-    const rows = await prisma.esContractor.groupBy({
-      by: ['countryId'], where: { countryId: { not: null } },
-      _count: { countryId: true }, orderBy: { _count: { countryId: 'desc' } }, take: 1,
-    });
-    if (rows && rows[0] && rows[0].countryId) return rows[0].countryId;
-  } catch (e) { console.error('[cs] countryId inference failed:', e.message); }
-  return null;
+  return envId > 0 ? envId : ES_SPAIN_COUNTRY_ID;
 }
 
 async function resolveEsContractor(res, { contractorId, contractorCif, contractorSearch }, opts = {}) {
@@ -199,7 +198,7 @@ async function resolveEsContractor(res, { contractorId, contractorCif, contracto
         city: contractor.city || null,
         province: contractor.province || null,
         country: contractor.country || 'España',
-        countryId: contractor.countryId || await resolveEsDefaultCountryId(),
+        countryId: contractor.countryId || countryIdFor(contractor.country) || await resolveEsDefaultCountryId(),
         postalCode: contractor.postalCode || null,
         documentCulture: contractor.documentCulture || null,
       };
@@ -434,13 +433,10 @@ router.post('/customers', asyncHandler(async (req, res) => {
   if (!data.organization && !(data.firstname || data.lastname)) {
     return res.status(400).json({ error: 'organization or firstname/lastname required' });
   }
-  // Zakres Kanary = WYŁĄCZNIE klienci hiszpańscy → domyślnie Hiszpania, gdy agent
-  // nie poda kraju (Contasimple odrzuca bez countryId). NIE zgadujemy numeru
-  // (zgadnięte 205 = Senegal!). Bierzemy prawdziwe countryId z istniejących klientów.
-  // Brak danych do wnioskowania → zostaw puste (lepszy błąd niż zły kraj).
+  // countryId: jeśli podano kraj, weź id ze znanej mapy (España=1, Reino Unido=79,
+  // Polonia=179…). Bez kraju → domyślnie Hiszpania (=1). NIE zgadujemy (205=Senegal!).
   if (!data.countryId) {
-    const inferred = await resolveEsDefaultCountryId();
-    if (inferred) data.countryId = inferred;
+    data.countryId = countryIdFor(data.country) || await resolveEsDefaultCountryId();
   }
   if (!data.country) data.country = 'España';
   // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
@@ -672,11 +668,12 @@ router.patch('/contractors/:id', asyncHandler(async (req, res) => {
     const ln = data.lastname !== undefined ? data.lastname : existing.lastname;
     data.name = org || [fn, ln].filter(Boolean).join(' ').trim() || existing.name;
   }
-  // Zmiana kraju na Hiszpanię → ustaw też poprawne countryId (to ONO decyduje w
-  // Contasimple; sam string "España" nie naprawi błędnego countryId=205/Senegal).
-  if (data.country && data.countryId === undefined && /^(es|españa|espana|spain|hiszpania)$/i.test(String(data.country).trim())) {
-    const esId = await resolveEsDefaultCountryId();
-    if (esId) { data.countryId = esId; data.country = 'España'; }
+  // Zmiana kraju → ustaw też poprawne countryId ze znanej mapy (to ONO decyduje w
+  // Contasimple; sam string nie naprawi błędnego id). Dla nieznanego kraju zostaw
+  // countryId bez zmian (nie zgadujemy).
+  if (data.country && data.countryId === undefined) {
+    const id = countryIdFor(data.country);
+    if (id) data.countryId = id;
   }
   const saved = await prisma.esContractor.update({ where: { id: existing.id }, data });
 
