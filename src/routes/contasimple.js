@@ -1515,6 +1515,8 @@ router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
       ok: true,
       invoiceNumber: result.invoice.number,
       invoiceId: result.invoice.id,
+      // LOKALNE id EsInvoice (uuid) — tym pobieramy PDF: /local-invoices/:id/pdf.
+      localInvoiceId: result.localInvoice && result.localInvoice.id,
       period: result.period,
       pdfSent: result.pdfSent,
       pdfError: result.pdfError,
@@ -1561,6 +1563,7 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
       ok: true,
       invoiceNumber: result.invoice.number,
       invoiceId: result.invoice.id,
+      localInvoiceId: result.localInvoice && result.localInvoice.id,
       period: result.period,
       pdfSent: result.pdfSent,
       pdfError: result.pdfError,
