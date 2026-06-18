@@ -485,32 +485,29 @@ async function processAccountingEsQuery(query, opts = {}) {
   const yearStr = todayStr.slice(0, 4);
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
   const messages = buildHistoryMessages(opts.previousTurns, dateContextPrefix + query);
-  let forcedTool = null;
-  // Czy to "czysta" intencja potwierdzenia (tak/ok) bez konkretow? Jesli tak,
-  // po cs_get_context wymusimy deterministycznie cs_invoice_confirm gdy
-  // lastAction='preview' (root-cause "tak → co potwierdzasz" — LLM zamiast
-  // confirm zwracal pytanie clarification mimo swiezego previewa).
-  const pureConfirmIntent =
-    CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query) &&
-    !ALBARAN_PREVIEW_INTENT.test(query) && !DELETE_INTENT.test(query) &&
-    !ALBARAN_DELETE_INTENT.test(query);
-  if (pureConfirmIntent) {
-    forcedTool = 'cs_get_context';
-  } else if (ALBARAN_DELETE_INTENT.test(query)) {
-    forcedTool = 'cs_albaran_delete';
-  } else if (DELETE_INTENT.test(query)) {
-    forcedTool = 'cs_delete_preview';
-  } else if (PDF_TELEGRAM_INTENT_RE.test(query)) {
-    forcedTool = 'cs_send_invoice_pdf_telegram';
-  } else if (SEND_EMAIL_INTENT.test(query)) {
-    forcedTool = 'cs_invoice_send_email';
-  } else if (SYNC_INTENT.test(query)) {
-    forcedTool = 'cs_sync_customers';
-  } else if (ALBARAN_PREVIEW_INTENT.test(query)) {
-    forcedTool = 'cs_albaran_preview';
-  } else if (PREVIEW_INTENT.test(query)) {
-    forcedTool = 'cs_invoice_preview';
-  }
+  // Intencję oceniamy na OSTATNIEJ NIEPUSTEJ LINII (realna komenda), bo master/
+  // asystent doklejają kontekst PRZED nią, a CONFIRM_INTENT ma kotwicę '^tak' —
+  // z prefiksem nie łapał i "tak" nie wymuszało confirm. Fallback: cały query.
+  const cmd = (query.trim().split('\n').map(s => s.trim()).filter(Boolean).pop()) || query;
+  const isPureConfirm = (text) =>
+    CONFIRM_INTENT.test(text) && !PREVIEW_INTENT.test(text) &&
+    !ALBARAN_PREVIEW_INTENT.test(text) && !DELETE_INTENT.test(text) &&
+    !ALBARAN_DELETE_INTENT.test(text);
+  const detectEsIntent = (text) => {
+    if (isPureConfirm(text)) return 'cs_get_context';
+    if (ALBARAN_DELETE_INTENT.test(text)) return 'cs_albaran_delete';
+    if (DELETE_INTENT.test(text)) return 'cs_delete_preview';
+    if (PDF_TELEGRAM_INTENT_RE.test(text)) return 'cs_send_invoice_pdf_telegram';
+    if (SEND_EMAIL_INTENT.test(text)) return 'cs_invoice_send_email';
+    if (SYNC_INTENT.test(text)) return 'cs_sync_customers';
+    if (ALBARAN_PREVIEW_INTENT.test(text)) return 'cs_albaran_preview';
+    if (PREVIEW_INTENT.test(text)) return 'cs_invoice_preview';
+    return null;
+  };
+  const forcedTool = detectEsIntent(cmd) || detectEsIntent(query);
+  // pureConfirmIntent (do onToolResult): czysta intencja "tak/ok" wykryta na
+  // komendzie → po cs_get_context wymusi cs_invoice_confirm gdy świeży preview.
+  const pureConfirmIntent = forcedTool === 'cs_get_context';
 
   // ROOT-CAUSE FIX: po cs_get_context przy czystej intencji potwierdzenia,
   // jesli ostatnia akcja to swiezy 'preview' → wymus cs_invoice_confirm na

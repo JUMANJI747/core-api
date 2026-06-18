@@ -667,24 +667,24 @@ async function processAccountingQuery(query, ctx = {}) {
   // Historia rozmowy z panelu AI (previousTurns) → agent pamięta wcześniejszy
   // preview/szczegóły, nie pyta o nie ponownie po korekcie (np. VAT).
   const messages = buildHistoryMessages(ctx.previousTurns, dateContextPrefix + query);
-  let forcedTool = null;
-  // Order matters: confirm beats preview when both could match (e.g. "tak wystaw fakturę"
-  // is rare; but typical "tak" alone is confirm).
-  if (CONFIRM_INTENT.test(query) && !PREVIEW_INTENT.test(query)) forcedTool = 'invoice_confirm';
-  // WYSTAWIENIE bije reprint: "wystaw fakture dla X i przeslij PDF na telegram"
-  // wczesniej wymuszalo send_invoice_pdf_telegram (reprint!) — agent zgadywal
-  // numer, endpoint znajdowal CUDZA istniejaca FV i wysylal jej PDF jako rzekomo
-  // nowa (incydent: 'wystawiona 101/2026' przy realnej numeracji 113, zadna FV
-  // nie powstala). PREVIEW przed PDF_TELEGRAM; "daj fv 65" dalej idzie w reprint
-  // (PREVIEW go nie matchuje).
-  else if (PREVIEW_INTENT.test(query)) forcedTool = 'invoice_preview';
-  else if (PDF_TELEGRAM_INTENT_RE.test(query)) forcedTool = 'send_invoice_pdf_telegram';
-  // "wyslij FV X mailem" → ZAWSZE krok 1 (draft), nigdy bezposrednia wysylka.
-  // User musi zaakceptowac draft osobnym poleceniem -> dopiero wtedy email_send_draft.
-  else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'email_draft_with_invoice';
-  else if (SYNC_INTENT.test(query)) forcedTool = 'ifirma_sync';
-  else if (ANALYTICS_INTENT.test(query)) forcedTool = 'analytics';
-  else if (PREVIEW_INTENT.test(query)) forcedTool = 'invoice_preview';
+  // Intencję oceniamy na OSTATNIEJ NIEPUSTEJ LINII (realna komenda usera), bo
+  // asystent/master doklejają kontekst PRZED nią — a CONFIRM_INTENT ma kotwicę
+  // '^tak', więc z prefiksem nie łapał i 'tak' nie wymuszało invoice_confirm
+  // (agent pytał o pozycje mimo świeżego preview). Fallback: cały query.
+  const lastLine = (query.trim().split('\n').map(s => s.trim()).filter(Boolean).pop()) || query;
+  const detectAccIntent = (text) => {
+    // Order matters: confirm beats preview ("tak" alone = confirm).
+    if (CONFIRM_INTENT.test(text) && !PREVIEW_INTENT.test(text)) return 'invoice_confirm';
+    // WYSTAWIENIE bije reprint (incydent 101/2026 — zgadnięty numer = cudza FV).
+    if (PREVIEW_INTENT.test(text)) return 'invoice_preview';
+    if (PDF_TELEGRAM_INTENT_RE.test(text)) return 'send_invoice_pdf_telegram';
+    // "wyslij FV X mailem" → krok 1 (draft), user akceptuje osobno.
+    if (SEND_INVOICE_INTENT.test(text)) return 'email_draft_with_invoice';
+    if (SYNC_INTENT.test(text)) return 'ifirma_sync';
+    if (ANALYTICS_INTENT.test(text)) return 'analytics';
+    return null;
+  };
+  const forcedTool = detectAccIntent(lastLine) || detectAccIntent(query);
 
   return runAgentLoop({
     anthropic,
