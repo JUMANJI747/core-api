@@ -76,7 +76,7 @@ function resolveAction(data, chatId) {
     case 'csfv':    return a && { scope: 'kanary', path: '/api/contasimple/invoice-confirm', body: { previewId: a, chatId } };
     case 'csalb':   return a && { scope: 'kanary', path: '/api/contasimple/albaran-confirm', body: { previewId: a, chatId } };
     case 'fvpl':    return a && { scope: 'pl', path: '/api/ifirma/invoice-confirm', body: { previewId: a, chatId } };
-    case 'ord':     return a && b && { scope: 'pl', path: '/api/glob/order', body: { quoteId: a, productId: b, chatId } };
+    case 'ord':     return a && b && { scope: 'pl', path: '/api/glob/order', body: { quoteId: a, productId: b, chatId }, order: true };
     // ODRZUĆ — kasuje błędny podgląd (deterministycznie, bez Anthropic).
     case 'csno':    return a && { scope: 'kanary', path: '/api/contasimple/invoice-preview-discard', body: { previewId: a }, reject: true };
     case 'csalbno': return a && { scope: 'kanary', path: '/api/contasimple/albaran-preview-discard', body: { previewId: a }, reject: true };
@@ -126,9 +126,14 @@ router.post('/telegram/callback', asyncHandler(async (req, res) => {
 
   let success;
   let toast;
+  // removeButtons: czy zdjąć WSZYSTKIE guziki z wiadomości. Domyślnie po sukcesie.
+  // Dla kuriera zdejmujemy też gdy wycena jest już zamawiana/zamówiona (dedup) —
+  // żeby z JEDNEJ wyceny nie dało się zamówić kilku kurierów.
+  let removeButtons;
   if (action.reject) {
     // ODRZUĆ — sukces = podgląd skasowany. Nic nie wystawiamy.
     success = httpOk;
+    removeButtons = success;
     toast = success
       ? '❌ Odrzucono — podgląd skasowany.'
       : `⚠ Nie udało się odrzucić: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 160)}`;
@@ -136,21 +141,41 @@ router.post('/telegram/callback', asyncHandler(async (req, res) => {
     // KASOWANIE — sukces = co najmniej jedna FV usunięta i 0 błędów.
     const n = Number(result.totalDeleted || 0);
     success = httpOk && n > 0;
+    removeButtons = success;
     const nums = (result.results || []).filter(r => r.status === 'deleted').map(r => r.number).join(', ');
     toast = success
       ? `🗑 Skasowano ${n} FV${nums ? `: ${nums}` : ''}`
       : `⚠ Nie skasowano: ${String(result.error || result.message || (result.totalFailed ? `${result.totalFailed} błędów` : `HTTP ${httpStatus}`)).slice(0, 160)}`;
+  } else if (action.order) {
+    // KURIER — sukces = zamówienie istnieje (numer/hash) albo dedup zwrócił
+    // istniejące. result.duplicate = "w toku" (drugie tapnięcie). W KAŻDYM z tych
+    // przypadków blokujemy guziki tej wyceny (jedna paczka = jeden kurier).
+    const ord = result.order || {};
+    const ref = ord.number || ord.orderNumber || ord.hash || ord.orderHash || result.number || null;
+    success = httpOk && (!!ref || result.deduplicated === true);
+    // Guziki zdejmujemy gdy zamówienie POTWIERDZONE (sukces/dedup). Przy "w toku"
+    // (duplicate) zostawiamy — backend i tak NIE zamówi drugiego kuriera (blokada
+    // po quoteId), a gdyby pierwszy padł, user może wybrać innego z tej wyceny.
+    removeButtons = success;
+    if (success) {
+      toast = `📦 Zamówiono kuriera${result.carrier ? ` ${result.carrier}` : ''}${ref ? ` — ${ref}` : ''}${result.deduplicated ? ' (już było zamówione)' : ''}`;
+    } else if (result.duplicate === true) {
+      toast = '📦 Zamówienie tej wyceny już trwa — nie zamawiam drugiego kuriera.';
+    } else {
+      toast = `⚠ Nie udało się zamówić: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 170)}`;
+    }
   } else {
     const number = result.invoiceNumber || result.albaranNumber || (result.order && (result.order.number || result.order.orderNumber)) || result.number;
     success = httpOk && !!number;
+    removeButtons = success;
     toast = success
       ? `✅ Wystawiono: ${number}`
       : `⚠ Nie udało się: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 180)}`;
   }
 
-  // Odpowiedz na callback (zegarek znika) + usuń przyciski po sukcesie (anty-2x).
+  // Odpowiedz na callback (zegarek znika) + usuń przyciski (anty-2x / anty-drugi kurier).
   if (token && cqId) await answerCallbackQuery(token, cqId, toast.slice(0, 190));
-  if (token && success && chatId && messageId) await editMessageReplyMarkup(token, chatId, messageId, { inline_keyboard: [] });
+  if (token && removeButtons && chatId && messageId) await editMessageReplyMarkup(token, chatId, messageId, { inline_keyboard: [] });
 
   res.json({ ok: success, action: data.split(':')[0], reject: !!action.reject, toast, httpStatus, result });
 }));
