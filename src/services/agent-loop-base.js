@@ -41,6 +41,10 @@ async function runAgentLoop({
   });
 
   let iterations = 0;
+  // Wyłapujemy previewId z wyniku narzędzia preview (FV/WZ) — front pokaże guzik
+  // "Akceptuj", który woła confirm-endpoint WPROST (bez Anthropic). Confirm nie
+  // zwraca previewId, więc po potwierdzeniu zostaje null.
+  let pendingPreview = null;
   while (response.stop_reason === 'tool_use' && iterations < maxIter) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
@@ -50,6 +54,7 @@ async function runAgentLoop({
       if (onToolUse) onToolUse(tu, ctx);
       console.log(`${logPrefix} tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
+      if (result && result.previewId) pendingPreview = { tool: tu.name, previewId: result.previewId };
       if (logResult) console.log(`${logPrefix} tool_result ${tu.name}:`, JSON.stringify(result).slice(0, 400));
       if (onToolResult) {
         const forced = onToolResult(tu.name, result, ctx);
@@ -81,7 +86,7 @@ async function runAgentLoop({
     .map(b => b.text)
     .join('\n')
     .trim();
-  return { text, iterations, stopReason: response.stop_reason };
+  return { text, iterations, stopReason: response.stop_reason, pendingPreview };
 }
 
 module.exports = { runAgentLoop };

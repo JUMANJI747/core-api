@@ -484,6 +484,19 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     return r ? JSON.stringify(r).slice(0, 500) : '';
   };
 
+  // Preview tool → konfiguracja guzika "Akceptuj" (front woła ten endpoint
+  // WPROST, bez Anthropic → deterministyczne zatwierdzenie, zero halucynacji).
+  const CONFIRM_MAP = {
+    invoice_preview: { type: 'invoice-pl', path: '/api/ifirma/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę' },
+    cs_invoice_preview: { type: 'invoice-es', path: '/api/contasimple/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę (Kanary)' },
+    cs_albaran_preview: { type: 'albaran', path: '/api/contasimple/albaran-confirm-latest', label: '✅ Akceptuj i wystaw WZ' },
+  };
+  const pcFrom = (r) => {
+    const pp = r && r.pendingPreview;
+    if (!pp || !pp.previewId || !CONFIRM_MAP[pp.tool]) return null;
+    return { ...CONFIRM_MAP[pp.tool], previewId: pp.previewId };
+  };
+
   // EXPLICIT TARGET z quick-action frontu (np. "Dodaj kontrahenta" -> accounting).
   // Pomijamy router: woła wskazanego sub-agenta deterministycznie. Router bywal
   // misroutowal "dodaj kontrahenta przez upsert_contractor" jako 'direct' i
@@ -492,7 +505,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     try {
       const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
       console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
-      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target' });
+      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r) });
     } catch (e) {
       return res.json({ ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' });
     }
@@ -522,7 +535,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
         const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-8) });
-        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue' });
+        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r) });
       } catch (e) {
         return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
       }
@@ -583,6 +596,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
     };
 
     const results = [];
+    let pendingConfirm = null;
     for (const agentName of (routing.agents || ['accounting']).slice(0, 3)) {
       const fn = processors[agentName];
       if (!fn) continue;
@@ -602,6 +616,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
         const r = await fn(fullQuery, { prisma, chatId: null, previousTurns: previousTurns.slice(-6) });
         console.log(`[agent/assistant] [timing] agent ${agentName} → ${Date.now() - tAgent}ms (${r.iterations != null ? r.iterations + ' rund' : '?'})`);
         results.push({ agent: agentName, text: pickText(r) });
+        const pc = pcFrom(r); if (pc) pendingConfirm = pc;
       } catch (e) {
         console.log(`[agent/assistant] [timing] agent ${agentName} ERROR → ${Date.now() - tAgent}ms`);
         results.push({ agent: agentName, text: `Blad ${agentName}: ${e.message}` });
@@ -610,7 +625,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 
     console.log(`[agent/assistant] [timing] CALA TURA → ${Date.now() - tTurn}ms (agenci: ${results.map(r => r.agent).join('+') || 'brak'})`);
     const combined = results.map(r => r.text).join('\n\n---\n\n');
-    res.json({ ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant' });
+    res.json({ ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant', pendingConfirm });
   } catch (e) {
     console.error('[agent/assistant]', e.message);
     res.status(500).json({ ok: false, error: e.message });
