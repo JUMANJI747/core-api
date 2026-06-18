@@ -557,6 +557,12 @@ router.patch('/contractors/:id', asyncHandler(async (req, res) => {
     const ln = data.lastname !== undefined ? data.lastname : existing.lastname;
     data.name = org || [fn, ln].filter(Boolean).join(' ').trim() || existing.name;
   }
+  // Zmiana kraju na Hiszpanię → ustaw też poprawne countryId (to ONO decyduje w
+  // Contasimple; sam string "España" nie naprawi błędnego countryId=205/Senegal).
+  if (data.country && data.countryId === undefined && /^(es|españa|espana|spain|hiszpania)$/i.test(String(data.country).trim())) {
+    const esId = await resolveEsDefaultCountryId();
+    if (esId) { data.countryId = esId; data.country = 'España'; }
+  }
   const saved = await prisma.esContractor.update({ where: { id: existing.id }, data });
 
   let contasimplePushed = false;
