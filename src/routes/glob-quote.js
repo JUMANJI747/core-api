@@ -1635,7 +1635,10 @@ router.post('/glob/order', async (req, res) => {
     }
 
     let cmrSent = false;
-    if (orderHash) {
+    // List przewozowy na Telegram — TYLKO gdy zamówienie z Telegrama (jest chatId).
+    // Z CRM (brak chatId) NIE pushujemy na Telegram — PDF pobierasz w oknie CRM
+    // (GET /glob/order-label?hash=...). Inaczej Nikodem zamawia, a list leci do mnie.
+    if (orderHash && req.body && req.body.chatId) {
       try {
         await new Promise(r => setTimeout(r, 3000));
         const labelResult = await getOrderLabels(orderHash, 'A4');
@@ -1887,8 +1890,10 @@ router.post('/glob/order', async (req, res) => {
             } catch (_) {}
 
             // Push preview to the operator's Telegram with the LIVE link so
-            // they can click → verify → only then approve.
-            const tg = await resolveTelegram(prisma, { reqChatId, scope: 'pl' });
+            // they can click → verify → only then approve. TYLKO dla zamówień z
+            // Telegrama (reqChatId). Z CRM draft zostaje w Mailach do wysłania
+            // (przycisk "Wyślij tracking" w oknie wysyłki) — bez pingu na Telegram.
+            const tg = reqChatId ? await resolveTelegram(prisma, { reqChatId, scope: 'pl' }) : { ready: false };
             if (tg.ready) {
               const msg =
                 `📦 Tracking gotowy — wymaga potwierdzenia\n` +
@@ -1916,11 +1921,16 @@ router.post('/glob/order', async (req, res) => {
     const successPayload = {
       ok: true,
       order: result,
+      // Pola top-level dla frontu (okno "Nowa wysyłka" pokazuje numer + guziki).
+      orderNumber: result.number || result.orderNumber || null,
+      hash: orderHash || null,
+      tracking: result.trackingNumber || result.tracking || null,
+      labelHash: orderHash || null, // do pobrania PDF listu: /glob/order-label?hash=
       cmrSent,
       carrier: selectedOffer.carrier,
       price: selectedOffer.price + ' ' + selectedOffer.currency,
       sender: { name: sender.companyName || sender.name, city: sender.city },
-      receiver: { name: receiver.name, city: receiver.city },
+      receiver: { name: receiver.name, city: receiver.city, email: receiver.email || null },
     };
     // Zapamietaj wynik — ponowne POST z tym samym quoteId zwroci TO zamowienie
     // (idempotencja), nie wystawi kolejnego listu.
@@ -1934,6 +1944,7 @@ router.post('/glob/order', async (req, res) => {
     if (quoteId) orderingNow.delete(String(quoteId));
   }
 });
+
 
 // Mapowanie prefiksów telefonicznych E.164 (longest-prefix-match) → ISO-2.
 // GK nie zwraca ISO countryCode na odbiorcach (tylko numeryczne countryId),
