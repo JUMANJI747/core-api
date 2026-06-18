@@ -486,10 +486,11 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
 
   // Preview tool → konfiguracja guzika "Akceptuj" (front woła ten endpoint
   // WPROST, bez Anthropic → deterministyczne zatwierdzenie, zero halucynacji).
+  // UWAGA: bez prefiksu /api — front woła `/api/core${path}` (proxy dokleja /api).
   const CONFIRM_MAP = {
-    invoice_preview: { type: 'invoice-pl', path: '/api/ifirma/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę' },
-    cs_invoice_preview: { type: 'invoice-es', path: '/api/contasimple/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę (Kanary)' },
-    cs_albaran_preview: { type: 'albaran', path: '/api/contasimple/albaran-confirm-latest', label: '✅ Akceptuj i wystaw WZ' },
+    invoice_preview: { type: 'invoice-pl', path: '/ifirma/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę' },
+    cs_invoice_preview: { type: 'invoice-es', path: '/contasimple/invoice-confirm-latest', label: '✅ Akceptuj i wystaw fakturę (Kanary)' },
+    cs_albaran_preview: { type: 'albaran', path: '/contasimple/albaran-confirm-latest', label: '✅ Akceptuj i wystaw WZ' },
   };
   const pcFrom = (r) => {
     const pp = r && r.pendingPreview;
