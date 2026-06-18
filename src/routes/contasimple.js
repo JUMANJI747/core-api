@@ -44,6 +44,18 @@ const {
   tryAutoLinkEs,
 } = require('../services/contractor-sync-helpers');
 
+// IDEMPOTENCJA wystawiania (FV/WZ) Kanary: jeden previewId => jeden dokument.
+// Tap w guzik akceptacji mógł przyjść kilka razy / równolegle (Contasimple jest
+// wolne), a bez blokady każdy tap tworzył NOWY dokument. _confirmingEs = w toku,
+// _confirmedEs = już wystawione (zwracamy ten sam wynik zamiast duplikatu).
+const _confirmingEs = new Set();
+const _confirmedEs = new Map(); // previewId -> { result, at }
+const ES_CONFIRM_TTL_MS = 30 * 60 * 1000;
+function sweepConfirmedEs() {
+  const now = Date.now();
+  for (const [k, v] of _confirmedEs) if (now - v.at > ES_CONFIRM_TTL_MS) _confirmedEs.delete(k);
+}
+
 // Wspolny sync write helper — po EsInvoice.create budujemy EsInvoiceLineItem
 // z previewLines (preferowane bo zawiera ean+variant) albo z contasimple
 // lines fallback. Best-effort, glowna sciezka (create FV + send PDF) wazniejsza.
@@ -1281,12 +1293,22 @@ router.post('/albaran-preview-discard', asyncHandler(async (req, res) => {
 router.post('/invoice-confirm', asyncHandler(async (req, res) => {
   const { previewId } = req.body || {};
   if (!previewId) return res.status(400).json({ error: 'previewId required' });
+
+  // IDEMPOTENCJA: jeden previewId => jedna FV (anti-duplikat przy wielokrotnym
+  // tapnięciu guzika; Contasimple wolne, więc równoległe wywołania zdążyłyby
+  // wystawić kilka FV zanim podgląd zostanie skasowany).
+  sweepConfirmedEs();
+  const dupe = _confirmedEs.get(previewId);
+  if (dupe) return res.json({ ...dupe.result, duplicate: true, pdfSent: false });
+  if (_confirmingEs.has(previewId)) return res.status(409).json({ ok: false, error: 'FV z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+
   const stored = getEsPreview(previewId);
   if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
+  _confirmingEs.add(previewId);
   try {
     const result = await confirmEsPreview(stored);
     deleteEsPreview(previewId);
-    res.json({
+    const payload = {
       ok: true,
       invoiceNumber: result.invoice.number,
       invoiceId: result.invoice.id,
@@ -1294,9 +1316,13 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
       pdfSent: result.pdfSent,
       pdfError: result.pdfError,
       contasimpleResponse: result.invoice,
-    });
+    };
+    _confirmedEs.set(previewId, { result: { ...payload, pdfSent: undefined }, at: Date.now() });
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
+  } finally {
+    _confirmingEs.delete(previewId);
   }
 }));
 
@@ -2480,7 +2506,15 @@ router.post('/albaran-confirm-latest', asyncHandler(async (req, res) => {
 router.post('/albaran-confirm', asyncHandler(async (req, res) => {
   const { previewId } = req.body || {};
   if (!previewId) return res.status(400).json({ error: 'previewId required' });
-  await confirmAlbaran(req, res, previewId);
+  // IDEMPOTENCJA: blokuj równoległe tapnięcia tego samego podglądu WZ.
+  const key = `alb:${previewId}`;
+  if (_confirmingEs.has(key)) return res.status(409).json({ ok: false, error: 'WZ z tego podglądu jest właśnie wystawiane — poczekaj chwilę.', inProgress: true });
+  _confirmingEs.add(key);
+  try {
+    await confirmAlbaran(req, res, previewId);
+  } finally {
+    _confirmingEs.delete(key);
+  }
 }));
 
 const ALBARAN_FORMAT_CONFIG_KEY = 'kanary_albaran_numbering_format_id';

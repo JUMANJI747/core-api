@@ -16,6 +16,19 @@ const { runBackfill: runIfirmaLinesBackfill } = require('../services/invoice-lin
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
 
+// IDEMPOTENCJA wystawiania FV: jeden previewId => jedna faktura. Tap w guzik
+// "Akceptuj" (callback) albo "tak" przychodzil kilka razy / rownolegle, a iFirma
+// jest wolna — bez blokady KAZDE wywolanie tworzylo NOWA fakture (incydent: 4 FV
+// z jednego podgladu). _confirming = w toku (rownolegle odrzucamy), _confirmed =
+// juz wystawione (zwracamy TEN SAM numer zamiast duplikatu).
+const _confirmingPreviews = new Set();
+const _confirmedPreviews = new Map(); // previewId -> { invoiceNumber, invoiceId, ifirmaId, at }
+const CONFIRM_DEDUP_TTL_MS = 30 * 60 * 1000;
+function sweepConfirmedPreviews() {
+  const now = Date.now();
+  for (const [k, v] of _confirmedPreviews) if (now - v.at > CONFIRM_DEDUP_TTL_MS) _confirmedPreviews.delete(k);
+}
+
 // Zywe zamowienia z GlobKuriera — zrodlo prawdy dla statusu wysylki na fakturach
 // (matchujemy fakture do zamowienia GK po nazwie odbiorcy + dacie, NIE przez
 // krucha warstwe Transakcji/dealow). Cache 5 min: swieze -> serwuj; przeterminowane
@@ -772,6 +785,7 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
 
 router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
   const prisma = req.app.locals.prisma;
+  let lockedId = null;
   try {
     const now = Date.now();
     let bestId = null;
@@ -797,6 +811,18 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       }
     }
     if (!stored) return res.status(404).json({ error: 'Brak aktywnego podglądu. Utwórz nowy.' });
+
+    // IDEMPOTENCJA: jeden podgląd => jedna faktura (anti-duplikat przy wielokrotnym
+    // "tak"/tapnięciu guzika; iFirma jest wolna, więc równoległe wywołania zdążyłyby
+    // wystawić kilka FV zanim podgląd zostanie skasowany).
+    sweepConfirmedPreviews();
+    if (bestId) {
+      const already = _confirmedPreviews.get(bestId);
+      if (already) return res.json({ ok: true, invoiceNumber: already.invoiceNumber, invoiceId: already.invoiceId, duplicate: true, pdfSent: false });
+      if (_confirmingPreviews.has(bestId)) return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+      _confirmingPreviews.add(bestId);
+      lockedId = bestId;
+    }
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
@@ -985,6 +1011,9 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     }
 
     invoicePreviews.delete(bestId);
+    // Zapamiętaj wystawioną FV pod previewId — kolejne "tak"/tapnięcia zwrócą
+    // TEN SAM numer zamiast tworzyć duplikat.
+    if (lockedId) _confirmedPreviews.set(lockedId, { invoiceNumber: pelnyNumer, invoiceId: invoice.id, ifirmaId: fakturaId, at: Date.now() });
 
     prisma.agentContext.upsert({
       where: { id: 'ksiegowosc' },
@@ -995,6 +1024,8 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent, ifirmaResponse: ifirmaRaw });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  } finally {
+    if (lockedId) _confirmingPreviews.delete(lockedId);
   }
 });
 
@@ -1021,12 +1052,24 @@ router.post('/ifirma/invoice-preview-discard', async (req, res) => {
 
 router.post('/ifirma/invoice-confirm', async (req, res) => {
   const prisma = req.app.locals.prisma;
+  let lockedId = null;
   try {
     const { previewId } = req.body;
     if (!previewId) return res.status(400).json({ error: 'previewId required' });
 
+    // IDEMPOTENCJA: jeden previewId => jedna faktura. Tapnięcie guzika "Akceptuj"
+    // mogło przyjść kilka razy / równolegle — bez tej blokady każdy tap tworzył
+    // NOWĄ fakturę (incydent: 4 FV z jednego podglądu). Duplikat → ten sam numer.
+    sweepConfirmedPreviews();
+    const already = _confirmedPreviews.get(previewId);
+    if (already) return res.json({ ok: true, invoiceNumber: already.invoiceNumber, invoiceId: already.invoiceId, duplicate: true, pdfSent: false });
+    if (_confirmingPreviews.has(previewId)) return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+
     const stored = getPreview(previewId);
     if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
+
+    _confirmingPreviews.add(previewId);
+    lockedId = previewId;
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
@@ -1142,9 +1185,12 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     }
 
     invoicePreviews.delete(previewId);
+    if (lockedId) _confirmedPreviews.set(lockedId, { invoiceNumber: pelnyNumer, invoiceId: invoice.id, ifirmaId, at: Date.now() });
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  } finally {
+    if (lockedId) _confirmingPreviews.delete(lockedId);
   }
 });
 
