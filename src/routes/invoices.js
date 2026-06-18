@@ -625,13 +625,15 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
         return { cena: contractorExtras.lastPrice, isNetto: false, source: 'lastPrice' };
       }
       const nameNorm = (contractorName || '').toLowerCase();
-      // Cennik to ceny HURTOWE NETTO (B2B) — VAT dolicza się na fakturze krajowej.
-      // (Wcześniej traktowane jako brutto → przy 23% liczyło netto=brutto/1.23,
-      //  np. 8×45 EUR pokazywało 360 brutto zamiast 360 netto + 82,80 VAT.)
+      // Konwencja cennika per waluta: EUR = ceny NETTO (B2B, VAT dolicza się na
+      // fakturze krajowej 23%), PLN = ceny BRUTTO (tak umawiane krajowo).
+      // (Wcześniej EUR błędnie liczone jako brutto → 8×45 EUR pokazywało 360
+      //  brutto zamiast 360 netto + 82,80 VAT.)
+      const catalogIsNetto = waluta === 'EUR';
       for (const [key, val] of Object.entries(cennikWaluta.wyjatki)) {
-        if (nameNorm.includes(key.toLowerCase())) return { cena: val, isNetto: true, source: 'wyjątek' };
+        if (nameNorm.includes(key.toLowerCase())) return { cena: val, isNetto: catalogIsNetto, source: 'wyjątek' };
       }
-      return { cena: cennikWaluta.default, isNetto: true, source: 'default' };
+      return { cena: cennikWaluta.default, isNetto: catalogIsNetto, source: 'default' };
     };
 
     const linee = pozycje.map(({ product: p, ilosc, itemCena, itemCenaNetto, isDelivery }) => {
