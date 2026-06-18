@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, makeTemplaters } = require('./agent-runtime');
+const { buildExecuteTool, makeTemplaters, buildHistoryMessages } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -350,7 +350,7 @@ async function processOperationsQuery(query, ctx = {}) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const yearStr = todayStr.slice(0, 4);
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" = ${yearStr}.]\n\n`;
-  const messages = [{ role: 'user', content: dateContextPrefix + query }];
+  const messages = buildHistoryMessages(ctx.previousTurns, dateContextPrefix + query);
 
   // MAX_ITER 6: listing + decyzja + ewentualne merge / split — luźne 6 rund.
   return runAgentLoop({

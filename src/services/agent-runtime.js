@@ -117,4 +117,32 @@ function makeTemplaters(basePrompt, tools) {
   };
 }
 
-module.exports = { selfCall, expandPath, buildExecuteTool, sanitizeAssistantContent, renderDateTemplate, makeTemplaters };
+// Buduje tablicę messages z historii rozmowy (previousTurns z panelu AI) +
+// bieżącej wiadomości użytkownika. Bez tego sub-agent widział TYLKO bieżące
+// zapytanie i "gubił wątek" — np. zrobił preview FV z pozycjami, a po korekcie
+// VAT pytał o pozycje od nowa. Pilnuje wymogów Anthropic: start od 'user',
+// naprzemienność ról (scala sąsiednie tej samej roli), niepuste teksty.
+function buildHistoryMessages(previousTurns, currentContent) {
+  const msgs = [];
+  if (Array.isArray(previousTurns)) {
+    for (const t of previousTurns) {
+      if (!t || (t.role !== 'user' && t.role !== 'assistant')) continue;
+      const text = typeof t.text === 'string' ? t.text.trim() : '';
+      if (!text) continue;
+      if (msgs.length && msgs[msgs.length - 1].role === t.role) {
+        msgs[msgs.length - 1].content += '\n\n' + text; // scal sąsiednie tej samej roli
+      } else {
+        msgs.push({ role: t.role, content: text });
+      }
+    }
+  }
+  while (msgs.length && msgs[0].role !== 'user') msgs.shift(); // pierwsza musi być user
+  if (msgs.length && msgs[msgs.length - 1].role === 'user') {
+    msgs[msgs.length - 1].content += '\n\n' + currentContent; // dolej do trailing user
+  } else {
+    msgs.push({ role: 'user', content: currentContent });
+  }
+  return msgs;
+}
+
+module.exports = { selfCall, expandPath, buildExecuteTool, sanitizeAssistantContent, renderDateTemplate, makeTemplaters, buildHistoryMessages };

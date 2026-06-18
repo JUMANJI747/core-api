@@ -10,7 +10,7 @@
 // - Per-request chatId propagacja (jak accounting-agent-es).
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool } = require('./agent-runtime');
+const { buildExecuteTool, buildHistoryMessages } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -278,7 +278,7 @@ async function processCommunicationEsQuery(query, ctx = {}) {
     return { text: 'Brak query.', error: 'no_query' };
   }
 
-  const messages = [{ role: 'user', content: query }];
+  const messages = buildHistoryMessages(ctx.previousTurns, query);
   let forcedTool = null;
   if (CONFIRM_INTENT.test(query)) forcedTool = 'confirm_draft';
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';

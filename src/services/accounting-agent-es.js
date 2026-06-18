@@ -8,7 +8,7 @@
 // POST /api/agent/accounting-es.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, makeTemplaters } = require('./agent-runtime');
+const { buildExecuteTool, makeTemplaters, buildHistoryMessages } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -484,7 +484,7 @@ async function processAccountingEsQuery(query, opts = {}) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const yearStr = todayStr.slice(0, 4);
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
-  const messages = [{ role: 'user', content: dateContextPrefix + query }];
+  const messages = buildHistoryMessages(opts.previousTurns, dateContextPrefix + query);
   let forcedTool = null;
   // Czy to "czysta" intencja potwierdzenia (tak/ok) bez konkretow? Jesli tak,
   // po cs_get_context wymusimy deterministycznie cs_invoice_confirm gdy

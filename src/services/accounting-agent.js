@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildExecuteTool, makeTemplaters } = require('./agent-runtime');
+const { buildExecuteTool, makeTemplaters, buildHistoryMessages } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -662,7 +662,9 @@ async function processAccountingQuery(query, ctx = {}) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const yearStr = todayStr.slice(0, 4);
   const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
-  const messages = [{ role: 'user', content: dateContextPrefix + query }];
+  // Historia rozmowy z panelu AI (previousTurns) → agent pamięta wcześniejszy
+  // preview/szczegóły, nie pyta o nie ponownie po korekcie (np. VAT).
+  const messages = buildHistoryMessages(ctx.previousTurns, dateContextPrefix + query);
   let forcedTool = null;
   // Order matters: confirm beats preview when both could match (e.g. "tak wystaw fakturę"
   // is rare; but typical "tak" alone is confirm).
