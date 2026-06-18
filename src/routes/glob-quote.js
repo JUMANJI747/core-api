@@ -1520,6 +1520,25 @@ router.post('/glob/order', async (req, res) => {
     // Quote consumed on confirmed success — drop the durable copy too.
     try { await prisma.quote.delete({ where: { id: String(quoteId) } }); } catch (_) {}
 
+    // Wstrzyknij nowy list do cache zamowien GK strony Faktur — żeby faktura
+    // pokazała STATUS WYSYŁKI od razu po odświeżeniu (zamiast guzika "Kurier").
+    // Bez tego trzeba było czekać na 5-min TTL cache'u.
+    try {
+      const invoicesRouter = require('./invoices');
+      if (invoicesRouter && typeof invoicesRouter.addGkOrderToCache === 'function') {
+        invoicesRouter.addGkOrderToCache({
+          number: orderNumber || orderHash,
+          status: 'NEW',
+          carrier: (selectedOffer && selectedOffer.carrier) || '',
+          receiverName: (receiver && (receiver.name || receiver.companyName)) || '',
+          date: new Date().toISOString(),
+          tracking: (result && result.trackingNumber) || null,
+        });
+      }
+    } catch (e) {
+      console.error('[glob/order] addGkOrderToCache failed (best-effort):', e.message);
+    }
+
     // Operations tracker — link to existing Transaction (matched against an
     // earlier-created invoice) or open a new one. Best-effort.
     if (orderHash) {

@@ -67,6 +67,25 @@ async function getGkOrders() {
   await Promise.race([refreshGkOrders(), new Promise(r => setTimeout(r, 8000))]);
   return _gkCache.orders;
 }
+// Po zamowieniu kuriera (glob/order) wstrzykujemy nowy list DO cache od razu, by
+// faktura pokazala status wysylki natychmiast po odswiezeniu — bez czekania na
+// 5-min TTL (to bylo zrodlo "guzik Kurier zamiast statusu" tuz po zamowieniu).
+// Dodatkowo odpalamy refresh w tle, zeby dociagnac autorytatywne dane z GK.
+function addGkOrderToCache(o) {
+  if (!o || !o.number) return;
+  const number = String(o.number);
+  if (!_gkCache.orders.some(x => x.number === number)) {
+    _gkCache.orders.unshift({
+      number,
+      status: o.status || 'NEW',
+      carrier: o.carrier || '',
+      receiverName: o.receiverName || '',
+      date: o.date || new Date().toISOString(),
+      tracking: o.tracking || null,
+    });
+  }
+  refreshGkOrders();
+}
 // Rozgrzej na starcie procesu.
 refreshGkOrders();
 
@@ -2370,4 +2389,5 @@ router.post('/ifirma/contractors/sync/:id', async (req, res) => {
   }
 });
 
+router.addGkOrderToCache = addGkOrderToCache;
 module.exports = router;
