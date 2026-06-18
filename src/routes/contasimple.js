@@ -1338,7 +1338,6 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
 
   const filters = {
     numRows: 300,
-    number: body.number,
     nif: nifFilter,
     fromDate: body.fromDate,
     toDate: body.toDate,
@@ -1346,6 +1345,22 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
   };
   const remote = await cs.listInvoices(period, filters);
   let found = (remote && remote.data) || [];
+
+  // Dopasowanie numeru LOKALNIE — user pisze skróty ("0085" zamiast "2026-0085"),
+  // a serwerowy filtr number jest zbyt sztywny i zwracał 0 wyników (przez co
+  // delete "nie działał"). Porównujemy ogon numeru numerycznie + endsWith.
+  if (body.number) {
+    const wantDigits = String(body.number).replace(/[^0-9]/g, '');
+    const wantNum = parseInt(wantDigits, 10);
+    const matchNumber = (invNumber) => {
+      if (!invNumber) return false;
+      if (String(invNumber) === String(body.number)) return true;
+      const tail = String(invNumber).split(/[^0-9]/).filter(Boolean).pop() || '';
+      if (tail && Number.isFinite(wantNum) && parseInt(tail, 10) === wantNum) return true;
+      return String(invNumber).replace(/[^0-9]/g, '').endsWith(wantDigits);
+    };
+    found = found.filter(inv => matchNumber(inv.number));
+  }
 
   // Defensive: sort newest-first locally too in case Contasimple ignores `sort`.
   found.sort((a, b) => new Date(b.invoiceDate) - new Date(a.invoiceDate));
@@ -1412,6 +1427,28 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
     })
     .catch(e => console.error('[cs delete-preview] AgentContext save error:', e.message));
 
+  // Telegram: push podglądu KASOWANIA z przyciskami (deterministycznie — tap woła
+  // /delete-confirm WPROST po previewId, bez Anthropic). Analogicznie do FV/WZ.
+  let telegramPushed = false;
+  if (body.source !== 'frontend') {
+    const list = summary.map(inv =>
+      `• ${inv.number} — ${inv.customerName || inv.customerNif || '—'} (${inv.totalAmount != null ? `${inv.totalAmount} €` : ''})`
+    ).join('\n');
+    const previewText =
+      `🗑 PODGLĄD KASOWANIA FV (Kanary)\n` +
+      `Okres: ${period}${totalMatched > found.length ? ` — wybrano ${found.length} z ${totalMatched}` : ''}\n\n` +
+      `${list}\n\n` +
+      `⚠ To skasuje ${found.length === 1 ? 'tę fakturę' : `te ${found.length} faktur`} w Contasimple.\n` +
+      `Potwierdź przyciskiem albo napisz "tak".`;
+    const replyMarkup = { inline_keyboard: [[
+      { text: `🗑 Skasuj ${found.length === 1 ? 'FV' : found.length + ' FV'}`, callback_data: `csdel:${previewId}` },
+      { text: '❌ Anuluj', callback_data: `csdelno:${previewId}` },
+    ]] };
+    const push = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup });
+    telegramPushed = push.ok;
+    if (!push.ok) console.error('[cs delete-preview] tg push failed:', push.error);
+  }
+
   res.json({
     ok: true,
     period,
@@ -1420,10 +1457,18 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
     invoices: summary,
     contractor: contractorInfo ? { id: contractorInfo.id, name: contractorInfo.name, nif: contractorInfo.nif } : null,
     previewId,
+    telegramPushed,
     hint: limit === 1
       ? `Wybrano najnowszą z ${totalMatched} pasujących. Wykonaj POST /api/contasimple/delete-confirm-latest aby skasować.`
       : `${found.length} z ${totalMatched} FV. Wykonaj POST /api/contasimple/delete-confirm-latest aby skasować WSZYSTKIE z tej listy.`,
   });
+}));
+
+// ODRZUĆ/ANULUJ delete-preview ES — kasuje podgląd kasowania (nic nie usuwa z CS).
+router.post('/delete-preview-discard', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (previewId) deleteEsDeletePreview(previewId);
+  res.json({ ok: true, discarded: true, previewId: previewId || null });
 }));
 
 async function executeDeleteForPreview(stored) {

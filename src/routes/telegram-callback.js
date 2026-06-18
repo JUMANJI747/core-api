@@ -15,6 +15,8 @@
 //   csno:<previewId>            → ODRZUĆ preview FV Kanary (kasuje podgląd)
 //   csalbno:<previewId>         → ODRZUĆ preview WZ Kanary
 //   fvno:<previewId>            → ODRZUĆ preview FV PL
+//   csdel:<previewId>           → POTWIERDŹ kasowanie FV Kanary (usuwa z Contasimple)
+//   csdelno:<previewId>         → ANULUJ podgląd kasowania FV Kanary
 //
 // n8n: na callback_query → HTTP POST {tu} z body = { callback_query }.
 
@@ -79,6 +81,9 @@ function resolveAction(data, chatId) {
     case 'csno':    return a && { scope: 'kanary', path: '/api/contasimple/invoice-preview-discard', body: { previewId: a }, reject: true };
     case 'csalbno': return a && { scope: 'kanary', path: '/api/contasimple/albaran-preview-discard', body: { previewId: a }, reject: true };
     case 'fvno':    return a && { scope: 'pl', path: '/api/ifirma/invoice-preview-discard', body: { previewId: a }, reject: true };
+    // KASOWANIE FV Kanary — potwierdzenie usuwa z Contasimple; anuluj kasuje podgląd.
+    case 'csdel':   return a && { scope: 'kanary', path: '/api/contasimple/delete-confirm', body: { previewId: a, chatId }, del: true };
+    case 'csdelno': return a && { scope: 'kanary', path: '/api/contasimple/delete-preview-discard', body: { previewId: a }, reject: true };
     default: return null;
   }
 }
@@ -127,6 +132,14 @@ router.post('/telegram/callback', asyncHandler(async (req, res) => {
     toast = success
       ? '❌ Odrzucono — podgląd skasowany.'
       : `⚠ Nie udało się odrzucić: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 160)}`;
+  } else if (action.del) {
+    // KASOWANIE — sukces = co najmniej jedna FV usunięta i 0 błędów.
+    const n = Number(result.totalDeleted || 0);
+    success = httpOk && n > 0;
+    const nums = (result.results || []).filter(r => r.status === 'deleted').map(r => r.number).join(', ');
+    toast = success
+      ? `🗑 Skasowano ${n} FV${nums ? `: ${nums}` : ''}`
+      : `⚠ Nie skasowano: ${String(result.error || result.message || (result.totalFailed ? `${result.totalFailed} błędów` : `HTTP ${httpStatus}`)).slice(0, 160)}`;
   } else {
     const number = result.invoiceNumber || result.albaranNumber || (result.order && (result.order.number || result.order.orderNumber)) || result.number;
     success = httpOk && !!number;
