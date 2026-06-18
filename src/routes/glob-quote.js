@@ -893,13 +893,17 @@ router.post('/glob/quote', async (req, res) => {
 
     // Telegram: każda oferta dostaje SWÓJ przycisk. Tap → /api/telegram/callback
     // → /api/glob/order { quoteId, productId } WPROST (bez Anthropic). Analogicznie
-    // do przycisku akceptacji FV. Pomijamy gdy zapytanie idzie z CRM (frontend).
+    // do przycisku akceptacji FV.
+    // STRICT: pushujemy TYLKO gdy żądanie ma jawny chatId (czyli przyszło z
+    // Telegrama przez n8n). Wycena z CRM (brak chatId, source=frontend) zostaje
+    // w CRM — wcześniej fallback na Config chatId wypychał ją błędnie na Telegram.
     let telegramPushed = false;
-    if (req.body.source !== 'frontend' && offers.length) {
+    const reqChatId = req.body && req.body.chatId;
+    if (req.body.source !== 'frontend' && reqChatId && offers.length) {
       try {
         const { resolveTelegram } = require('../services/telegram-helper');
         const { sendTelegram } = require('../telegram-utils');
-        const tg = await resolveTelegram(prisma, { reqChatId: req.body && req.body.chatId, scope: 'pl' });
+        const tg = await resolveTelegram(prisma, { reqChatId, scope: 'pl' });
         if (tg.token && tg.chatId) {
           const rcvName = receiver.name || '';
           const rcvCity = receiver.city || '';
