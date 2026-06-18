@@ -156,7 +156,7 @@ async function resolveEsContractor(res, { contractorId, contractorCif, contracto
 //   reason: 'no_token' | 'no_chat' | 'api' | 'exception'
 // Tekst: pushEsTelegram(chatId, { text }). PDF: pushEsTelegram(chatId,
 // { document: { buffer, filename, caption } }).
-async function pushEsTelegram(reqChatId, { text, document }) {
+async function pushEsTelegram(reqChatId, { text, document, replyMarkup }) {
   try {
     const tgChat = await getEsChatId(prisma, reqChatId);
     const tgToken = await getEsTelegramToken(prisma);
@@ -164,7 +164,7 @@ async function pushEsTelegram(reqChatId, { text, document }) {
     if (!tgChat) return { ok: false, reason: 'no_chat', error: 'chatId missing (request + Config telegram_chat_id_es/telegram_chat_id all empty)' };
     const tgResp = document
       ? await sendTelegramDocument(tgToken, String(tgChat), document.buffer, document.filename, document.caption)
-      : await sendTelegram(tgToken, String(tgChat), text);
+      : await sendTelegram(tgToken, String(tgChat), text, replyMarkup ? { replyMarkup } : {});
     if (tgResp && tgResp.ok) return { ok: true };
     return { ok: false, reason: 'api', error: `telegram api: ${(tgResp && tgResp.description) || 'unknown'} (chat=${tgChat})` };
   } catch (e) {
@@ -1041,7 +1041,10 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   // wiedzial czy musi sam pokazac blok (gdy false).
   let telegramPushed = false;
   if (body.source !== 'frontend') {
-    const push = await pushEsTelegram(body.chatId, { text: previewText });
+    // Przycisk akceptacji — tap woła backend (przez n8n) i wystawia FV WPROST,
+    // bez Anthropic (deterministycznie, po previewId).
+    const replyMarkup = { inline_keyboard: [[{ text: '✅ Akceptuj i wystaw FV', callback_data: `csfv:${previewId}` }]] };
+    const push = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup });
     telegramPushed = push.ok;
     if (!push.ok) console.error('[cs invoice-preview] tg push failed:', push.error);
   }
@@ -2386,8 +2389,9 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     `Razem sztuk: ${preview.totalQty}\n\n` +
     `Potwierdzasz? "tak/ok" wystawi.`;
 
-  // Telegram-notyfikacja preview (ground truth) — analogiczna do FV.
-  const pushA = await pushEsTelegram(body.chatId, { text: previewText });
+  // Telegram-notyfikacja preview (ground truth) — analogiczna do FV, z przyciskiem.
+  const replyMarkupA = { inline_keyboard: [[{ text: '✅ Akceptuj i wystaw WZ', callback_data: `csalb:${previewId}` }]] };
+  const pushA = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup: replyMarkupA });
   const telegramPushed = pushA.ok;
   if (!pushA.ok) console.error('[cs albaran-preview] tg push failed:', pushA.error);
 

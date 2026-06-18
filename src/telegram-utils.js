@@ -8,6 +8,7 @@ async function sendTelegram(botToken, chatId, text, opts = {}) {
   // back into HTML or MarkdownV2 if they hand-craft escaped content.
   const payload = { chat_id: chatId, text };
   if (opts.parseMode) payload.parse_mode = opts.parseMode;
+  if (opts.replyMarkup) payload.reply_markup = opts.replyMarkup; // inline_keyboard (przyciski)
   const body = Buffer.from(JSON.stringify(payload));
   return new Promise((resolve, reject) => {
     const req = https.request({
@@ -96,4 +97,34 @@ async function sendTelegramDocument(botToken, chatId, docBuffer, filename, capti
   });
 }
 
-module.exports = { sendTelegram, sendTelegramPhoto, sendTelegramDocument };
+// Prosty POST JSON do Bot API (dla answerCallbackQuery / editMessageReplyMarkup).
+function tgApi(botToken, method, payload) {
+  const body = Buffer.from(JSON.stringify(payload));
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${botToken}/${method}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
+    }, res => {
+      let chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+// Odpowiedz na tapnięcie przycisku (zdejmuje "zegarek" + opcjonalny toast).
+function answerCallbackQuery(botToken, callbackQueryId, text) {
+  return tgApi(botToken, 'answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) }).catch(() => null);
+}
+
+// Usuń/zmień przyciski pod wiadomością (np. po akceptacji — żeby nie kliknąć 2x).
+function editMessageReplyMarkup(botToken, chatId, messageId, replyMarkup) {
+  return tgApi(botToken, 'editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup || { inline_keyboard: [] } }).catch(() => null);
+}
+
+module.exports = { sendTelegram, sendTelegramPhoto, sendTelegramDocument, tgApi, answerCallbackQuery, editMessageReplyMarkup };
