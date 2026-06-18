@@ -482,7 +482,7 @@ async function processAccountingEsQuery(query, opts = {}) {
     return { text: 'Brak query.', error: 'no_query' };
   }
 
-  const ctx = { chatId: opts.chatId || null };
+  const ctx = { chatId: opts.chatId || null, source: opts.source || null };
   // Wstrzyk daty do user content — LLM ignoruje system prompt date,
   // wiec wstawiamy do messages bezposrednio. Trudniej zignorowac niz
   // system prompt fragment.

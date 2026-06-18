@@ -68,6 +68,9 @@ function buildExecuteTool({ endpointMap, logPrefix, transformBody }) {
     // Propagacja chatId żeby endpointy wysyłające Telegram trafiały do
     // tego kto pisał, nie do statycznego telegram_chat_id z Config.
     if (ctx.chatId && body.chatId == null) body.chatId = ctx.chatId;
+    // Propagacja source ('frontend' z CRM) — endpointy preview/confirm wtedy NIE
+    // pushują na Telegram (polecenie z CRM zostaje w CRM: podgląd + guzik + PDF tam).
+    if (ctx.source && body.source == null) body.source = ctx.source;
     const expanded = expandPath(pathTemplate, body);
     const t0 = Date.now();
     try {

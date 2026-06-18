@@ -238,6 +238,29 @@ router.get('/customers/:id', asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// Diagnostyka country ID: rozkład countryId wśród klientów Kanary (źródło prawdy
+// dla domyślnej Hiszpanii) + co aktualnie nadpisuje env. Jak inferowane id jest
+// błędne, ustaw KANARY_DEFAULT_COUNTRY_ID na poprawne.
+router.get('/country-ids', asyncHandler(async (req, res) => {
+  const rows = await prisma.esContractor.groupBy({
+    by: ['countryId'],
+    where: { countryId: { not: null } },
+    _count: { countryId: true },
+    orderBy: { _count: { countryId: 'desc' } },
+  }).catch(() => []);
+  const sample = {};
+  for (const r of rows.slice(0, 8)) {
+    const ex = await prisma.esContractor.findFirst({ where: { countryId: r.countryId }, select: { name: true, country: true, city: true } }).catch(() => null);
+    sample[r.countryId] = { count: r._count.countryId, example: ex };
+  }
+  res.json({
+    ok: true,
+    envOverride: parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10) || null,
+    inferredDefault: rows && rows[0] ? rows[0].countryId : null,
+    distribution: sample,
+  });
+}));
+
 router.post('/customers', asyncHandler(async (req, res) => {
   const data = req.body || {};
   if (!data.nif) {
@@ -247,10 +270,31 @@ router.post('/customers', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'organization or firstname/lastname required' });
   }
   // Zakres Kanary = WYŁĄCZNIE klienci hiszpańscy → domyślnie Hiszpania, gdy agent
-  // nie poda kraju. Bez tego Contasimple odrzucał kontrahenta ("brakuje countryId")
-  // i trzeba było dopytywać. countryId Hiszpanii w Contasimple = 205 (override env).
-  const ES_DEFAULT_COUNTRY_ID = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '205', 10);
-  if (!data.countryId) data.countryId = ES_DEFAULT_COUNTRY_ID;
+  // nie poda kraju (Contasimple odrzuca bez countryId). NIE zgadujemy numeru
+  // (zgadnięte 205 = Senegal, faktura dostała zły kraj!). Bierzemy PRAWDZIWE
+  // countryId Hiszpanii z już istniejących klientów Kanary (zsynchronizowanych z
+  // Contasimple) — najczęstszy = Hiszpania. Override: KANARY_DEFAULT_COUNTRY_ID.
+  if (!data.countryId) {
+    const envId = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10);
+    if (envId > 0) {
+      data.countryId = envId;
+    } else {
+      try {
+        const rows = await prisma.esContractor.groupBy({
+          by: ['countryId'],
+          where: { countryId: { not: null } },
+          _count: { countryId: true },
+          orderBy: { _count: { countryId: 'desc' } },
+          take: 1,
+        });
+        if (rows && rows[0] && rows[0].countryId) data.countryId = rows[0].countryId;
+      } catch (e) {
+        console.error('[cs customers] countryId inference failed:', e.message);
+      }
+    }
+    // Brak danych do wnioskowania → zostaw puste (lepszy błąd "brakuje countryId"
+    // niż wpisanie złego kraju). Wtedy ustaw KANARY_DEFAULT_COUNTRY_ID ręcznie.
+  }
   if (!data.country) data.country = 'España';
   // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
   // danymi — POTEM push do Contasimple (z polami, ktore jego endpoint przyjmuje).
@@ -2471,7 +2515,7 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     deliveryNoteDate: date.toISOString(),
   };
   const previewId = crypto.randomUUID();
-  saveEsAlbaranPreview(previewId, { preview, contractor, lines, deliveryNoteDate: date.toISOString(), body, chatId: body.chatId || null });
+  saveEsAlbaranPreview(previewId, { preview, contractor, lines, deliveryNoteDate: date.toISOString(), body, chatId: body.chatId || null, source: body.source || null });
 
   // Buduj tekst preview ZAWSZE (ground truth) — wraca w response.previewText.
   const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
@@ -2484,13 +2528,17 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     `Potwierdzasz? "tak/ok" wystawi.`;
 
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV, z przyciskiem.
-  const replyMarkupA = { inline_keyboard: [[
-    { text: '✅ Akceptuj i wystaw WZ', callback_data: `csalb:${previewId}` },
-    { text: '❌ Odrzuć', callback_data: `csalbno:${previewId}` },
-  ]] };
-  const pushA = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup: replyMarkupA });
-  const telegramPushed = pushA.ok;
-  if (!pushA.ok) console.error('[cs albaran-preview] tg push failed:', pushA.error);
+  // Pomijamy gdy polecenie z CRM (source=frontend) — podgląd zostaje w CRM.
+  let telegramPushed = false;
+  if (body.source !== 'frontend') {
+    const replyMarkupA = { inline_keyboard: [[
+      { text: '✅ Akceptuj i wystaw WZ', callback_data: `csalb:${previewId}` },
+      { text: '❌ Odrzuć', callback_data: `csalbno:${previewId}` },
+    ]] };
+    const pushA = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup: replyMarkupA });
+    telegramPushed = pushA.ok;
+    if (!pushA.ok) console.error('[cs albaran-preview] tg push failed:', pushA.error);
+  }
 
   // AWAIT — context zapisany przed odpowiedzia, by szybkie "tak" nie odczytalo
   // starego lastAction i nie wygenerowalo drugiego preview WZ.
@@ -2620,7 +2668,7 @@ async function confirmAlbaran(req, res, previewId) {
     deleteEsAlbaranPreview(previewId);
     return res.status(404).json({ error: 'albaran preview expired or unknown' });
   }
-  const { contractor, lines, deliveryNoteDate, chatId: storedChatId } = stored;
+  const { contractor, lines, deliveryNoteDate, chatId: storedChatId, source: storedSource } = stored;
 
   const albaranFormatId = await resolveAlbaranFormatId(prisma);
   if (!albaranFormatId) {
@@ -2658,10 +2706,12 @@ async function confirmAlbaran(req, res, previewId) {
     throw new Error('Contasimple createDeliveryNote returned no data');
   }
 
-  // PDF → Telegram
+  // PDF → Telegram — pomijane gdy source=frontend (CRM pobiera PDF u siebie).
   let pdfSent = false;
   let pdfError = null;
-  try {
+  if (storedSource === 'frontend') {
+    pdfError = 'skipped: source=frontend';
+  } else try {
     const { buffer } = await cs.fetchDeliveryNotePdf(albaran.id);
     const filename = `albaran_${(albaran.number || albaran.id).toString().replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
     const totalQty = (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0);
