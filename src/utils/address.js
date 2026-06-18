@@ -10,8 +10,10 @@
 //  - PL:  NN-NNN        "11-500 Gizycko" -> "11-500"
 //  - PT:  NNNN-NNN      "1990-096 Lisboa" -> "1990-096"
 //  - ES/DE/FR/IT/...: 5 cyfr  "Zubiaurre 121, 3B, 20015" -> "20015"
+//  - SI/AT/CH/BE/DK/HU/NO/...: 4 cyfry  "9240 Ljutomer" -> "9240"
 // Dla formy 5-cyfrowej bierzemy OSTATNIE wystapienie (kod zwykle na koncu
-// adresu, po numerze budynku), zeby nie zlapac numeru domu.
+// adresu, po numerze budynku), zeby nie zlapac numeru domu. Dla 4-cyfrowej
+// (kolizja z numerem domu) wymagamy by kod SASIADOWAL z nazwa miasta.
 function extractPostCode(text) {
   if (!text || typeof text !== 'string') return null;
   let m = text.match(/\b(\d{2}-\d{3})\b/);   // PL
@@ -20,6 +22,13 @@ function extractPostCode(text) {
   if (m) return m[1];
   const five = text.match(/\b\d{5}\b/g);       // ES/DE/FR/IT/NL itd.
   if (five && five.length) return five[five.length - 1];
+  // 4-cyfrowe: tylko gdy przylega do nazwy miasta — "9240 Ljutomer" albo
+  // "Ljutomer 9240" — by NIE zlapac numeru domu ("ulica 4" ma 1 cyfre, ale
+  // np. "Main St 1234" mialaby; forma "NNNN Miasto" jest jednoznaczna).
+  let four = text.match(/(?:^|[,\s])(\d{4})\s+[A-Za-zÀ-ſ]/);   // "9240 Ljutomer"
+  if (four) return four[1];
+  four = text.match(/[A-Za-zÀ-ſ.]\s*,\s*(\d{4})\b/);            // "Ljutomer, 9240"
+  if (four) return four[1];
   return null;
 }
 
