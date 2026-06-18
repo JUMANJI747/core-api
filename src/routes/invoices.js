@@ -692,12 +692,22 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     };
 
     const previewId = require('crypto').randomUUID();
-    savePreview(previewId, { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays });
+    const storePayload = { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays };
+    savePreview(previewId, storePayload);
 
+    // TRWAŁY zapis pełnego podglądu w DB (agentContext) — in-memory Map ginie
+    // przy redeployu / między instancjami, przez co confirm-latest nie znajdował
+    // podglądu i agent halucynował "wystawiona". Confirm ma fallback do tego.
+    const previewData = {
+      lastAction: 'preview', previewId,
+      contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country },
+      suma: preview.suma, waluta, timestamp: Date.now(),
+      previewFull: storePayload, previewSavedAt: Date.now(),
+    };
     prisma.agentContext.upsert({
       where: { id: 'ksiegowosc' },
-      update: { data: { lastAction: 'preview', previewId, contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country }, suma: preview.suma, waluta, timestamp: Date.now() } },
-      create: { id: 'ksiegowosc', data: { lastAction: 'preview', previewId, contractor: { name: contractor.name, nip: contractor.nip, country: contractor.country }, suma: preview.suma, waluta, timestamp: Date.now() } },
+      update: { data: previewData },
+      create: { id: 'ksiegowosc', data: previewData },
     }).catch(e => console.error('[invoice-preview] AgentContext save error:', e.message));
 
     res.json({ ok: true, preview, previewId });
@@ -720,9 +730,20 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         bestId = id;
       }
     }
-    if (!bestId) return res.status(404).json({ error: 'Brak aktywnego podglądu. Utwórz nowy.' });
+    let stored = bestId ? getPreview(bestId) : null;
 
-    const stored = getPreview(bestId);
+    // FALLBACK DB: in-memory Map pusty (redeploy / inna instancja). Wczytaj
+    // pełny podgląd z agentContext (zapisany przy /invoice-preview), jeśli świeży.
+    if (!stored) {
+      const PREVIEW_DB_TTL_MS = 30 * 60 * 1000;
+      const ac = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc' } }).catch(() => null);
+      const d = ac && ac.data;
+      if (d && d.previewFull && d.previewSavedAt && (now - Number(d.previewSavedAt) < PREVIEW_DB_TTL_MS) && d.lastAction === 'preview') {
+        stored = d.previewFull;
+        bestId = d.previewId || null;
+        console.log('[ifirma confirm-latest] preview odtworzony z DB (agentContext)');
+      }
+    }
     if (!stored) return res.status(404).json({ error: 'Brak aktywnego podglądu. Utwórz nowy.' });
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;

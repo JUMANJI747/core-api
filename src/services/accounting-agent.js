@@ -150,6 +150,8 @@ FLOW WYSTAWIENIA FV:
 2. POKAŻ user-owi preview DOSŁOWNIE z odpowiedzi + previewId (w tym terminPlatnosci)
 3. User mówi "tak"/"ok" → invoice_confirm (bez argumentów — bierze najnowszy preview)
 4. Po confirm: response ma invoiceNumber, invoiceId. PDF idzie automatycznie na Telegram.
+   ⛔ NUMER I SUKCES TYLKO Z RESPONSE: "✓ wystawiona" pisz WYŁĄCZNIE gdy response.invoiceNumber jest realny (z wyniku invoice_confirm). NIGDY nie wymyślaj numeru ani nie pisz "wystawiona"/"PDF wysłany" z głowy.
+   ⛔ Gdy invoice_confirm zwróci 404 / "Brak aktywnego podglądu" (preview wygasł / utracony) → powiedz DOSŁOWNIE: "Podgląd wygasł — zrób go jeszcze raz (wystaw fakturę…)" i ZATRZYMAJ. NIE wystawiaj z pamięci, NIE zgaduj numeru (zgadnięty numer = cudza faktura). To była realna wpadka: agent napisał "wystawiona 100/2026" mimo że nic nie powstało.
 
 FLOW WYSYLANIA FV MAILEM (ZAWSZE 2 KROKI — NIGDY BEZPOSREDNIO):
 Krok 1: email_draft_with_invoice({invoiceNumber, toEmail?, customNote?})
