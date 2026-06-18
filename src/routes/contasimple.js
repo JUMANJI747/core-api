@@ -322,6 +322,54 @@ router.get('/country-ids', asyncHandler(async (req, res) => {
   });
 }));
 
+// ODZYSKANIE kraju po błędnym ujednoliceniu na España. Każda FV zapisuje migawkę
+// contractorCountry SPRZED zmiany — z niej odtwarzamy oryginalny kraj kontrahenta.
+// DRY-RUN domyślnie; ?apply=1 przywraca string kraju LOKALNIE (countryId i push do
+// Contasimple to osobny krok — wymaga mapy kraj→id). Bezpieczne/odwracalne.
+router.get('/country-recovery', asyncHandler(async (req, res) => {
+  const apply = req.query.apply === '1';
+  const esId = await resolveEsDefaultCountryId();
+  const norm = s => String(s || '').trim().toLowerCase();
+  const SPAIN = new Set(['es', 'espana', 'españa', 'spain', 'hiszpania', 'es-es']);
+  const contractors = await prisma.esContractor.findMany({
+    select: { id: true, name: true, country: true, countryId: true, contasimpleId: true },
+  });
+  const recoverable = [];
+  const noSnapshot = [];
+  let restored = 0;
+  for (const c of contractors) {
+    const currentSpain = SPAIN.has(norm(c.country)) || (esId && c.countryId === esId);
+    if (!currentSpain) continue; // ruszamy tylko te przerobione na Hiszpanię
+    const inv = await prisma.esInvoice.findFirst({
+      where: { contractorId: c.id, contractorCountry: { not: null } },
+      orderBy: { invoiceDate: 'desc' },
+      select: { contractorCountry: true, number: true, invoiceDate: true },
+    });
+    const original = inv && inv.contractorCountry;
+    if (original && !SPAIN.has(norm(original))) {
+      recoverable.push({ id: c.id, name: c.name, current: c.country, recovered: original, fromInvoice: inv.number, contasimpleId: c.contasimpleId || null });
+      if (apply) { await prisma.esContractor.update({ where: { id: c.id }, data: { country: original } }); restored++; }
+    } else if (!inv) {
+      // Brak FV = brak migawki → kraju nie da się odtworzyć automatycznie (jeśli
+      // ten klient był zagraniczny, trzeba poprawić ręcznie w edycji).
+      noSnapshot.push({ id: c.id, name: c.name, contasimpleId: c.contasimpleId || null });
+    }
+  }
+  res.json({
+    ok: true,
+    mode: apply ? 'applied' : 'dry-run',
+    spainCountryId: esId,
+    recoverableCount: recoverable.length,
+    restoredLocal: apply ? restored : 0,
+    noSnapshotCount: noSnapshot.length,
+    note: apply
+      ? 'Przywrócono STRING kraju z migawek FV. countryId i push do Contasimple = osobny krok (potrzebna mapa kraj→id). Klienci bez FV (noSnapshot) wymagają ręcznej poprawki, jeśli byli zagraniczni.'
+      : 'DRY-RUN — nic nie zmieniono. Dodaj ?apply=1 aby przywrócić kraj lokalnie. Najpierw sprawdź listę recoverable.',
+    recoverable,
+    noSnapshot: noSnapshot.slice(0, 100),
+  });
+}));
+
 // Ujednolicenie kraju: firma działa TYLKO na Kanarach, więc wszyscy kontrahenci =
 // Hiszpania. Naprawia rekordy z błędnym/innym countryId (np. 205=Senegal) lokalnie
 // i pushuje poprawkę do Contasimple (dla tych z contasimpleId). Idempotentne.
