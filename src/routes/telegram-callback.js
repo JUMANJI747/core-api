@@ -18,7 +18,32 @@
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
 const { selfCall } = require('../services/agent-runtime');
-const { sendTelegram, answerCallbackQuery, editMessageReplyMarkup } = require('../telegram-utils');
+const { sendTelegram, tgApi, answerCallbackQuery, editMessageReplyMarkup } = require('../telegram-utils');
+
+// GET /api/telegram/webhook-info?scope=pl|kanary — diagnostyka: pokazuje URL
+// webhooka i allowed_updates. Jeśli allowed_updates NIE zawiera "callback_query"
+// (i nie jest puste = wszystkie), to tapnięcia przycisków NIE są dostarczane —
+// trzeba dodać callback_query w Telegram Trigger w n8n i RE-AKTYWOWAĆ workflow.
+router.get('/telegram/webhook-info', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const scope = req.query.scope === 'pl' ? 'pl' : 'kanary';
+  const { resolveToken } = require('../services/telegram-helper');
+  const token = (await resolveToken(prisma, scope)).token || '';
+  if (!token) return res.status(503).json({ ok: false, error: `brak tokena (${scope})` });
+  const info = await tgApi(token, 'getWebhookInfo', {});
+  const au = info && info.result && info.result.allowed_updates;
+  const callbackDelivered = !au || (Array.isArray(au) && au.includes('callback_query'));
+  res.json({
+    ok: true, scope,
+    url: info && info.result && info.result.url,
+    allowed_updates: au || '(puste = wszystkie domyślne)',
+    callbackDelivered,
+    hint: callbackDelivered
+      ? 'callback_query JEST dostarczany. Jeśli n8n nie łapie — sprawdź czy nasłuch jest na tym samym bocie/URL.'
+      : 'callback_query NIE jest dostarczany — dodaj go w Telegram Trigger (Updates) i RE-AKTYWUJ workflow (off/on), żeby n8n ponownie zarejestrował webhook.',
+    raw: info && info.result,
+  });
+}));
 
 // POST /api/telegram/test-button — wysyła na Telegram wiadomość z przyciskiem
 // testowym (callback_data="ping:test"). Służy do skonfigurowania IF/Switch w
