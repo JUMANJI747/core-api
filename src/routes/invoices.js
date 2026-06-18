@@ -1091,7 +1091,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       });
     } catch (_) {}
 
-    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj);
+    const pdfBuffer = await fetchInvoicePdf(pelnyNumer, rodzaj, ifirmaId);
 
     let pdfSent = false;
     try {
@@ -1106,6 +1106,12 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       console.log(`[ifirma confirm] tg → chat=${chatId || 'NONE'} (source=${reqChatId ? 'request' : 'NONE'}) token=...${token.slice(-4)}`);
 
       if (token && chatId) {
+        // Najpierw KRÓTKIE potwierdzenie tekstowe — żeby user zawsze wiedział, że
+        // FV powstała, nawet gdyby PDF nie zdążył się wygenerować po stronie iFirmy.
+        await sendTelegram(token, chatId,
+          `✅ Wystawiono fakturę ${pelnyNumer} dla ${contractor.name}\nKwota: ${brutto} ${waluta}`
+        ).catch(e => console.error('[invoice-confirm] tg notify error:', e.message));
+
         const caption = `Faktura ${pelnyNumer} dla ${contractor.name}`;
         const filename = `faktura_${pelnyNumer.replace(/\//g, '_')}.pdf`;
         const tgResp = await sendTelegramDocument(token, chatId, pdfBuffer, filename, caption);
