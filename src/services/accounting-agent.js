@@ -409,6 +409,7 @@ const tools = [
         globalPriceNetto: { type: 'number', description: 'Cena netto dla wszystkich pozycji (gdy user mówi "po X netto")' },
         globalPriceBrutto: { type: 'number', description: 'Cena brutto dla wszystkich pozycji' },
         paymentDays: { type: 'number', description: 'Termin płatności w dniach. Default 7. User mówi "30 dni" → 30, "termin 14 dni" → 14. Bez wzmianki — pomiń (backend da 7).' },
+        uwagi: { type: 'string', description: 'Notatka/uwagi drukowane na fakturze (iFirma pole Uwagi) — np. numer zamówienia. Ustaw gdy user mówi "dopisek/uwaga/notatka/numer zamówienia X" (np. "z dopiskiem zamówienie #123" → uwagi="Zamówienie #123"). Bez wzmianki — pomiń.' },
       },
       required: ['items'],
     },

@@ -724,7 +724,9 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     };
 
     const previewId = require('crypto').randomUUID();
-    const storePayload = { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays };
+    // Uwagi/notatka na FV (np. numer zamówienia) — z req.body.uwagi lub .notes.
+    const uwagi = (req.body && (req.body.uwagi || req.body.notes)) || null;
+    const storePayload = { preview, contractorData: contractor, pozycjeData: linee, waluta, rodzaj, priceMode, paymentDays, uwagi };
     savePreview(previewId, storePayload);
 
     // TRWAŁY zapis pełnego podglądu w DB (agentContext) — in-memory Map ginie
@@ -825,6 +827,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     }
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
+    const storedUwagi = stored.uwagi || null;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
 
     // STRICT routing: tylko per-request chatId, brak fallback Config.
@@ -876,6 +879,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         rodzaj,
         priceMode,
         paymentDays,
+        uwagi: storedUwagi,
       });
     } catch (ifirmaErr) {
       const raw = ifirmaErr.ifirmaRaw || null;
@@ -1072,6 +1076,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     lockedId = previewId;
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
+    const storedUwagi = stored.uwagi || null;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
 
     const kontrahentPayload2 = await buildIfirmaContractorPayload(prisma, contractor);
@@ -1102,6 +1107,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       rodzaj,
       priceMode: storedPriceMode,
       paymentDays,
+      uwagi: storedUwagi,
     });
 
     const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;

@@ -466,7 +466,7 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
-async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, paymentDays = 7 }) {
+async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, paymentDays = 7, uwagi }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
   const isWdt = rodzaj === 'wdt';
@@ -534,6 +534,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     ZaplaconoNaDokumencie: 0,
     WidocznyNumerGios: false,
     Numer: null,
+    // Uwagi — notatka drukowana na fakturze (np. numer zamówienia). iFirma
+    // przyjmuje pole 'Uwagi' na fakturakraj/fakturawaluta/fakturawdt.
+    ...(uwagi && String(uwagi).trim() ? { Uwagi: String(uwagi).trim().slice(0, 1000) } : {}),
     LiczOd: isNetto ? 'NET' : 'BRT',
     ...(_ifirmaId ? { IdentyfikatorKontrahenta: _ifirmaId } : {}),
     ...(_nip ? { NIPKontrahenta: _nip } : {}),
