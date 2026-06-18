@@ -891,7 +891,40 @@ router.post('/glob/quote', async (req, res) => {
       warnings.push('Terminy odbioru chwilowo niedostępne (GlobKurier pickupTimeRanges nie odpowiada) — ceny są aktualne, termin odbioru dobierze się przy zamawianiu.');
     }
 
+    // Telegram: każda oferta dostaje SWÓJ przycisk. Tap → /api/telegram/callback
+    // → /api/glob/order { quoteId, productId } WPROST (bez Anthropic). Analogicznie
+    // do przycisku akceptacji FV. Pomijamy gdy zapytanie idzie z CRM (frontend).
+    let telegramPushed = false;
+    if (req.body.source !== 'frontend' && offers.length) {
+      try {
+        const { resolveTelegram } = require('../services/telegram-helper');
+        const { sendTelegram } = require('../telegram-utils');
+        const tg = await resolveTelegram(prisma, { reqChatId: req.body && req.body.chatId, scope: 'pl' });
+        if (tg.token && tg.chatId) {
+          const rcvName = receiver.name || '';
+          const rcvCity = receiver.city || '';
+          const head = `📦 Wyceny kuriera → ${rcvName}${rcvCity ? ` (${rcvCity})` : ''}\n` +
+            `Paczka: ${weight}kg ${length}×${width}×${height}cm\n` +
+            `Kliknij ofertę, żeby zamówić (bez dodatkowych pytań):`;
+          // Jeden przycisk = jedna oferta (max 8, by zmieścić się w limicie Telegrama).
+          const rows = offers.slice(0, 8).map((o) => {
+            const term = o.nearestPickup && o.nearestPickup.date ? ` • odbiór ${o.nearestPickup.date}` : '';
+            return [{
+              text: `${o.carrier} — ${o.price} ${o.currency || 'PLN'}${term}`.slice(0, 64),
+              callback_data: `ord:${quoteId}:${o.productId}`,
+            }];
+          });
+          const r = await sendTelegram(tg.token, String(tg.chatId), head, { replyMarkup: { inline_keyboard: rows } });
+          telegramPushed = !!(r && r.ok);
+          if (!telegramPushed) console.error('[glob/quote] tg push failed:', r && r.error);
+        }
+      } catch (e) {
+        console.error('[glob/quote] tg push threw:', e.message);
+      }
+    }
+
     res.json({
+      telegramPushed,
       ok: true,
       quoteId,
       sender: { name: sender.companyName || sender.name, city: sender.city, country: sender.country },

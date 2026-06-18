@@ -12,6 +12,9 @@
 //   csalb:<previewId>           → wystaw WZ Kanary
 //   fvpl:<previewId>            → wystaw FV PL (iFirma)
 //   ord:<quoteId>:<productId>   → zamów kuriera (GlobKurier)
+//   csno:<previewId>            → ODRZUĆ preview FV Kanary (kasuje podgląd)
+//   csalbno:<previewId>         → ODRZUĆ preview WZ Kanary
+//   fvno:<previewId>            → ODRZUĆ preview FV PL
 //
 // n8n: na callback_query → HTTP POST {tu} z body = { callback_query }.
 
@@ -68,10 +71,14 @@ router.post('/telegram/test-button', asyncHandler(async (req, res) => {
 function resolveAction(data, chatId) {
   const [prefix, a, b] = String(data || '').split(':');
   switch (prefix) {
-    case 'csfv':  return a && { scope: 'kanary', path: '/api/contasimple/invoice-confirm', body: { previewId: a, chatId } };
-    case 'csalb': return a && { scope: 'kanary', path: '/api/contasimple/albaran-confirm', body: { previewId: a, chatId } };
-    case 'fvpl':  return a && { scope: 'pl', path: '/api/ifirma/invoice-confirm', body: { previewId: a, chatId } };
-    case 'ord':   return a && b && { scope: 'pl', path: '/api/glob/order', body: { quoteId: a, productId: b, chatId } };
+    case 'csfv':    return a && { scope: 'kanary', path: '/api/contasimple/invoice-confirm', body: { previewId: a, chatId } };
+    case 'csalb':   return a && { scope: 'kanary', path: '/api/contasimple/albaran-confirm', body: { previewId: a, chatId } };
+    case 'fvpl':    return a && { scope: 'pl', path: '/api/ifirma/invoice-confirm', body: { previewId: a, chatId } };
+    case 'ord':     return a && b && { scope: 'pl', path: '/api/glob/order', body: { quoteId: a, productId: b, chatId } };
+    // ODRZUĆ — kasuje błędny podgląd (deterministycznie, bez Anthropic).
+    case 'csno':    return a && { scope: 'kanary', path: '/api/contasimple/invoice-preview-discard', body: { previewId: a }, reject: true };
+    case 'csalbno': return a && { scope: 'kanary', path: '/api/contasimple/albaran-preview-discard', body: { previewId: a }, reject: true };
+    case 'fvno':    return a && { scope: 'pl', path: '/api/ifirma/invoice-preview-discard', body: { previewId: a }, reject: true };
     default: return null;
   }
 }
@@ -110,17 +117,29 @@ router.post('/telegram/callback', asyncHandler(async (req, res) => {
     result = { ok: false, error: e.message };
   }
 
-  const number = result.invoiceNumber || result.albaranNumber || (result.order && (result.order.number || result.order.orderNumber)) || result.number;
-  const success = httpStatus >= 200 && httpStatus < 300 && result.ok !== false && !!number;
-  const toast = success
-    ? `✅ Wystawiono: ${number}`
-    : `⚠ Nie udało się: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 180)}`;
+  const httpOk = httpStatus >= 200 && httpStatus < 300 && result.ok !== false;
+
+  let success;
+  let toast;
+  if (action.reject) {
+    // ODRZUĆ — sukces = podgląd skasowany. Nic nie wystawiamy.
+    success = httpOk;
+    toast = success
+      ? '❌ Odrzucono — podgląd skasowany.'
+      : `⚠ Nie udało się odrzucić: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 160)}`;
+  } else {
+    const number = result.invoiceNumber || result.albaranNumber || (result.order && (result.order.number || result.order.orderNumber)) || result.number;
+    success = httpOk && !!number;
+    toast = success
+      ? `✅ Wystawiono: ${number}`
+      : `⚠ Nie udało się: ${String(result.error || result.message || `HTTP ${httpStatus}`).slice(0, 180)}`;
+  }
 
   // Odpowiedz na callback (zegarek znika) + usuń przyciski po sukcesie (anty-2x).
   if (token && cqId) await answerCallbackQuery(token, cqId, toast.slice(0, 190));
   if (token && success && chatId && messageId) await editMessageReplyMarkup(token, chatId, messageId, { inline_keyboard: [] });
 
-  res.json({ ok: success, action: data.split(':')[0], number: number || null, toast, httpStatus, result });
+  res.json({ ok: success, action: data.split(':')[0], reject: !!action.reject, toast, httpStatus, result });
 }));
 
 module.exports = router;

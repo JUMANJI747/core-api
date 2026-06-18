@@ -1043,7 +1043,10 @@ router.post('/invoice-preview', asyncHandler(async (req, res) => {
   if (body.source !== 'frontend') {
     // Przycisk akceptacji — tap woła backend (przez n8n) i wystawia FV WPROST,
     // bez Anthropic (deterministycznie, po previewId).
-    const replyMarkup = { inline_keyboard: [[{ text: '✅ Akceptuj i wystaw FV', callback_data: `csfv:${previewId}` }]] };
+    const replyMarkup = { inline_keyboard: [[
+      { text: '✅ Akceptuj i wystaw FV', callback_data: `csfv:${previewId}` },
+      { text: '❌ Odrzuć', callback_data: `csno:${previewId}` },
+    ]] };
     const push = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup });
     telegramPushed = push.ok;
     if (!push.ok) console.error('[cs invoice-preview] tg push failed:', push.error);
@@ -1259,6 +1262,20 @@ router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
   }
+}));
+
+// ODRZUĆ preview FV ES — kasuje błędny podgląd, żeby nie dało się go zatwierdzić.
+router.post('/invoice-preview-discard', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (previewId) deleteEsPreview(previewId);
+  res.json({ ok: true, discarded: true, previewId: previewId || null });
+}));
+
+// ODRZUĆ preview WZ (albaran) ES — kasuje błędny podgląd.
+router.post('/albaran-preview-discard', asyncHandler(async (req, res) => {
+  const { previewId } = req.body || {};
+  if (previewId) deleteEsAlbaranPreview(previewId);
+  res.json({ ok: true, discarded: true, previewId: previewId || null });
 }));
 
 router.post('/invoice-confirm', asyncHandler(async (req, res) => {
@@ -2390,7 +2407,10 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
     `Potwierdzasz? "tak/ok" wystawi.`;
 
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV, z przyciskiem.
-  const replyMarkupA = { inline_keyboard: [[{ text: '✅ Akceptuj i wystaw WZ', callback_data: `csalb:${previewId}` }]] };
+  const replyMarkupA = { inline_keyboard: [[
+    { text: '✅ Akceptuj i wystaw WZ', callback_data: `csalb:${previewId}` },
+    { text: '❌ Odrzuć', callback_data: `csalbno:${previewId}` },
+  ]] };
   const pushA = await pushEsTelegram(body.chatId, { text: previewText, replyMarkup: replyMarkupA });
   const telegramPushed = pushA.ok;
   if (!pushA.ok) console.error('[cs albaran-preview] tg push failed:', pushA.error);

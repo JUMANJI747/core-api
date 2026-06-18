@@ -946,6 +946,25 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
   }
 });
 
+// ODRZUĆ preview FV PL — kasuje błędny podgląd (in-memory + trwały w DB),
+// żeby nie dało się go zatwierdzić ani przez confirm-latest, ani przez button.
+router.post('/ifirma/invoice-preview-discard', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { previewId } = req.body || {};
+    if (previewId) invoicePreviews.delete(previewId);
+    // Wyczyść trwały podgląd, by confirm-latest (fallback DB) go nie odnalazł.
+    await prisma.agentContext.upsert({
+      where: { id: 'ksiegowosc' },
+      update: { data: { lastAction: 'preview-discarded', timestamp: Date.now() } },
+      create: { id: 'ksiegowosc', data: { lastAction: 'preview-discarded', timestamp: Date.now() } },
+    }).catch(e => console.error('[invoice-preview-discard] AgentContext clear error:', e.message));
+    res.json({ ok: true, discarded: true, previewId: previewId || null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ INVOICE CONFIRM ============
 
 router.post('/ifirma/invoice-confirm', async (req, res) => {
