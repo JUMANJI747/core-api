@@ -625,16 +625,14 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
         return { cena: contractorExtras.lastPrice, isNetto: false, source: 'lastPrice' };
       }
       const nameNorm = (contractorName || '').toLowerCase();
+      // Cennik to ceny HURTOWE NETTO (B2B) — VAT dolicza się na fakturze krajowej.
+      // (Wcześniej traktowane jako brutto → przy 23% liczyło netto=brutto/1.23,
+      //  np. 8×45 EUR pokazywało 360 brutto zamiast 360 netto + 82,80 VAT.)
       for (const [key, val] of Object.entries(cennikWaluta.wyjatki)) {
-        if (nameNorm.includes(key.toLowerCase())) return { cena: val, isNetto: false, source: 'wyjątek' };
+        if (nameNorm.includes(key.toLowerCase())) return { cena: val, isNetto: true, source: 'wyjątek' };
       }
-      return { cena: cennikWaluta.default, isNetto: false, source: 'default' };
+      return { cena: cennikWaluta.default, isNetto: true, source: 'default' };
     };
-
-    // Determine price mode: if ANY item has netto price, whole invoice is netto
-    const hasNetto = pozycje.some(p => p.itemCenaNetto != null) || globalPriceNetto != null;
-    const priceMode = hasNetto ? 'netto' : 'brutto';
-    console.log(`[invoice-preview] Price mode: ${priceMode}`);
 
     const linee = pozycje.map(({ product: p, ilosc, itemCena, itemCenaNetto, isDelivery }) => {
       const { cena, isNetto, source } = resolvePrice(itemCena, itemCenaNetto, contractor.name, contractor.extras);
@@ -642,6 +640,12 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
       const wartosc = Math.round(cena * ilosc * 100) / 100;
       return { ean: p.ean, nazwa: p.name, wariant: p.variant || null, ilosc, cena, cenaNetto: isNetto ? cena : null, wartosc, priceSource: source, isDelivery: !!isDelivery };
     });
+
+    // Price mode z REALNYCH linii: 'brutto' tylko gdy WSZYSTKIE linie są brutto
+    // (override brutto / lastPrice). Cennik/wyjątek/netto-override = netto.
+    // Steruje i podglądem, i createInvoice (iFirma) — więc poprawia obie strony.
+    const priceMode = (linee.length && linee.every(l => l.cenaNetto == null)) ? 'brutto' : 'netto';
+    console.log(`[invoice-preview] Price mode: ${priceMode}`);
 
     let brutto, netto, vat;
     if (priceMode === 'netto' && rodzaj === 'krajowa') {
