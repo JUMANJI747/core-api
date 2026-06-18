@@ -131,6 +131,21 @@ async function getEsChatId(prismaClient, reqChatId) {
 // Helper odpowiada bezposrednio na res (404 / suggestions) i zwraca null, albo
 // zwraca pelny rekord kontrahenta. requireCif=true wymusza B2B (FV); albaran
 // (WZ) moze isc bez CIF, ale zawsze potrzebuje contasimpleId.
+// Domyślne countryId Hiszpanii — NIE zgadujemy (205=Senegal!); bierzemy z env
+// albo z najczęstszego countryId istniejących klientów Kanary (zsync z Contasimple).
+async function resolveEsDefaultCountryId() {
+  const envId = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10);
+  if (envId > 0) return envId;
+  try {
+    const rows = await prisma.esContractor.groupBy({
+      by: ['countryId'], where: { countryId: { not: null } },
+      _count: { countryId: true }, orderBy: { _count: { countryId: 'desc' } }, take: 1,
+    });
+    if (rows && rows[0] && rows[0].countryId) return rows[0].countryId;
+  } catch (e) { console.error('[cs] countryId inference failed:', e.message); }
+  return null;
+}
+
 async function resolveEsContractor(res, { contractorId, contractorCif, contractorSearch }, opts = {}) {
   const { requireCif = false } = opts;
   let contractor = null;
@@ -154,9 +169,44 @@ async function resolveEsContractor(res, { contractorId, contractorCif, contracto
     res.status(400).json({ error: 'contractor missing CIF/NIF — Nikodem wystawia tylko B2B' });
     return null;
   }
+  // Kontrahent istnieje tylko lokalnie (nie w Contasimple) → tworzymy go w
+  // Contasimple DOPIERO TERAZ, przy wystawianiu faktury (nie przy edycji). Dane
+  // bierzemy z lokalnego rekordu; brak kraju → domyślnie Hiszpania (z istniejących).
   if (!contractor.contasimpleId) {
-    res.status(400).json({ error: 'contractor istnieje lokalnie ale nie ma contasimpleId — uruchom cs_sync_customers albo utwórz w Contasimple' });
-    return null;
+    if (!contractor.nif) {
+      res.status(400).json({ error: 'contractor bez CIF/NIF — nie utworzę w Contasimple (Nikodem wystawia tylko B2B)' });
+      return null;
+    }
+    try {
+      const createData = {
+        type: 'Issuer',
+        organization: contractor.organization || contractor.name,
+        firstname: contractor.firstname || null,
+        lastname: contractor.lastname || null,
+        nif: contractor.nif,
+        email: contractor.email || null,
+        phone: contractor.phone || null,
+        mobile: contractor.mobile || null,
+        address: contractor.address || null,
+        city: contractor.city || null,
+        province: contractor.province || null,
+        country: contractor.country || 'España',
+        countryId: contractor.countryId || await resolveEsDefaultCountryId(),
+        postalCode: contractor.postalCode || null,
+        documentCulture: contractor.documentCulture || null,
+      };
+      const result = await cs.createCustomer(createData);
+      const remote = (result && result.data) || result;
+      if (!remote || !remote.id) {
+        res.status(502).json({ error: 'Nie udało się utworzyć kontrahenta w Contasimple (brak id w odpowiedzi).' });
+        return null;
+      }
+      contractor = await upsertEsContractorFromRemote(prisma, remote);
+      console.log(`[cs resolveEsContractor] utworzono w Contasimple przy FV: ${contractor.name} (csId=${contractor.contasimpleId})`);
+    } catch (e) {
+      res.status(502).json({ error: `Nie udało się utworzyć kontrahenta w Contasimple: ${e.message}` });
+      return null;
+    }
   }
   return contractor;
 }
@@ -271,29 +321,11 @@ router.post('/customers', asyncHandler(async (req, res) => {
   }
   // Zakres Kanary = WYŁĄCZNIE klienci hiszpańscy → domyślnie Hiszpania, gdy agent
   // nie poda kraju (Contasimple odrzuca bez countryId). NIE zgadujemy numeru
-  // (zgadnięte 205 = Senegal, faktura dostała zły kraj!). Bierzemy PRAWDZIWE
-  // countryId Hiszpanii z już istniejących klientów Kanary (zsynchronizowanych z
-  // Contasimple) — najczęstszy = Hiszpania. Override: KANARY_DEFAULT_COUNTRY_ID.
+  // (zgadnięte 205 = Senegal!). Bierzemy prawdziwe countryId z istniejących klientów.
+  // Brak danych do wnioskowania → zostaw puste (lepszy błąd niż zły kraj).
   if (!data.countryId) {
-    const envId = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10);
-    if (envId > 0) {
-      data.countryId = envId;
-    } else {
-      try {
-        const rows = await prisma.esContractor.groupBy({
-          by: ['countryId'],
-          where: { countryId: { not: null } },
-          _count: { countryId: true },
-          orderBy: { _count: { countryId: 'desc' } },
-          take: 1,
-        });
-        if (rows && rows[0] && rows[0].countryId) data.countryId = rows[0].countryId;
-      } catch (e) {
-        console.error('[cs customers] countryId inference failed:', e.message);
-      }
-    }
-    // Brak danych do wnioskowania → zostaw puste (lepszy błąd "brakuje countryId"
-    // niż wpisanie złego kraju). Wtedy ustaw KANARY_DEFAULT_COUNTRY_ID ręcznie.
+    const inferred = await resolveEsDefaultCountryId();
+    if (inferred) data.countryId = inferred;
   }
   if (!data.country) data.country = 'España';
   // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
