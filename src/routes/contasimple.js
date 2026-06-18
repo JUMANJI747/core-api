@@ -322,10 +322,59 @@ router.get('/country-ids', asyncHandler(async (req, res) => {
   });
 }));
 
-// ODZYSKANIE kraju po błędnym ujednoliceniu na España. Każda FV zapisuje migawkę
-// contractorCountry SPRZED zmiany — z niej odtwarzamy oryginalny kraj kontrahenta.
-// DRY-RUN domyślnie; ?apply=1 przywraca string kraju LOKALNIE (countryId i push do
-// Contasimple to osobny krok — wymaga mapy kraj→id). Bezpieczne/odwracalne.
+// ODZYSKANIE kraju Z CONTASIMPLE (źródło prawdy). Czyta country/countryId per
+// kontrahent WPROST z Contasimple i (apply=1) przywraca lokalnie. Stronicowane:
+// ?offset=0&limit=40 — przeklikaj kolejne offsety z Konsoli. DRY-RUN domyślnie:
+// pokazuje remote vs local — od razu widać CZY Contasimple ma jeszcze prawdziwe
+// kraje (jeśli wszędzie España/1 = push nadpisał i stamtąd nie odzyskamy).
+router.get('/cs-resync-country', asyncHandler(async (req, res) => {
+  const apply = req.query.apply === '1';
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 40, 100));
+  const all = await prisma.esContractor.findMany({
+    where: { contasimpleId: { not: null } },
+    orderBy: { name: 'asc' },
+    select: { id: true, name: true, country: true, countryId: true, contasimpleId: true },
+  });
+  const slice = all.slice(offset, offset + limit);
+  const changed = [];
+  let updated = 0; let errors = 0;
+  for (const c of slice) {
+    try {
+      const r = await cs.getCustomer(c.contasimpleId);
+      const remote = (r && r.data) || r || {};
+      const remoteCountry = remote.country ?? null;
+      const remoteCountryId = remote.countryId ?? null;
+      const diff = (remoteCountry !== c.country) || (remoteCountryId !== c.countryId);
+      if (diff) {
+        changed.push({ name: c.name, local: { country: c.country, countryId: c.countryId }, contasimple: { country: remoteCountry, countryId: remoteCountryId } });
+        if (apply && (remoteCountry || remoteCountryId != null)) {
+          await prisma.esContractor.update({ where: { id: c.id }, data: { country: remoteCountry, countryId: remoteCountryId } });
+          updated++;
+        }
+      }
+    } catch (e) {
+      errors++;
+      changed.push({ name: c.name, error: e.message });
+    }
+  }
+  res.json({
+    ok: true,
+    mode: apply ? 'applied' : 'dry-run',
+    total: all.length,
+    processed: slice.length,
+    offset, limit,
+    nextOffset: offset + limit < all.length ? offset + limit : null,
+    diffCount: changed.length,
+    updatedLocal: apply ? updated : 0,
+    errors,
+    note: 'Jeśli kolumna contasimple pokazuje RÓŻNE prawdziwe kraje → Contasimple jest nienaruszony, daj ?apply=1 by przywrócić. Jeśli wszędzie España/1 → push nadpisał Contasimple.',
+    sample: changed.slice(0, 60),
+  });
+}));
+
+// ODZYSKANIE kraju z migawek FV (fallback, gdy Contasimple nadpisany). UWAGA:
+// migawka mogła złapać błędny kraj (np. Senegal z buga 205) — weryfikuj listę.
 router.get('/country-recovery', asyncHandler(async (req, res) => {
   const apply = req.query.apply === '1';
   const esId = await resolveEsDefaultCountryId();
