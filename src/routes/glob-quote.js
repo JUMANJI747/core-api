@@ -1385,7 +1385,28 @@ router.post('/glob/order', async (req, res) => {
           problems.push(field + ': ' + msg);
         }
       }
-      if (problems.length === 0) problems.push('Nieznany błąd GlobKurier. Spróbuj ponownie.');
+      if (problems.length === 0) {
+        // Brak rozpoznanych pól → wyciągnij surowy komunikat GK (string/obiekt),
+        // żeby NIE chować prawdziwego błędu pod "Nieznany". To on mówi czego
+        // brakuje (np. UPS wymaga innego pola niż reszta kurierów).
+        const rawParts = [];
+        const e = errResult || {};
+        if (typeof e.error === 'string' && e.error.trim()) rawParts.push(e.error.trim());
+        if (typeof e.message === 'string' && e.message.trim()) rawParts.push(e.message.trim());
+        if (e.errors && typeof e.errors === 'string') rawParts.push(e.errors.trim());
+        if (Array.isArray(e.errors)) {
+          for (const it of e.errors) rawParts.push(typeof it === 'string' ? it : (it && (it.message || it.field || JSON.stringify(it))));
+        } else if (e.errors && typeof e.errors === 'object') {
+          for (const [k, v] of Object.entries(e.errors)) {
+            if (k === 'fields') continue;
+            rawParts.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+          }
+        }
+        const raw = rawParts.filter(Boolean).join('; ').slice(0, 400);
+        problems.push(raw
+          ? `GlobKurier (${(selectedOffer && selectedOffer.carrier) || 'kurier'}) odrzucił zamówienie: ${raw}`
+          : `GlobKurier (${(selectedOffer && selectedOffer.carrier) || 'kurier'}) odrzucił zamówienie bez czytelnego komunikatu. Odpowiedź: ${JSON.stringify(errResult).slice(0, 300)}`);
+      }
       return problems.join('\n');
     }
 
@@ -1472,6 +1493,9 @@ router.post('/glob/order', async (req, res) => {
           error: humanizeGkErrors(result),
           carrier: selectedOffer && selectedOffer.carrier,
           receiverName: receiver && receiver.name,
+          // Surowa odpowiedź GK — żeby diagnozować bez grzebania w logach
+          // (np. UPS odrzuca przez konkretne pole, które tu widać wprost).
+          gkResponse: result,
         });
       }
     }
