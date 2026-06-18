@@ -311,6 +311,37 @@ router.get('/country-ids', asyncHandler(async (req, res) => {
   });
 }));
 
+// Ujednolicenie kraju: firma działa TYLKO na Kanarach, więc wszyscy kontrahenci =
+// Hiszpania. Naprawia rekordy z błędnym/innym countryId (np. 205=Senegal) lokalnie
+// i pushuje poprawkę do Contasimple (dla tych z contasimpleId). Idempotentne.
+router.post('/normalize-country', asyncHandler(async (req, res) => {
+  const esId = await resolveEsDefaultCountryId();
+  if (!esId) return res.status(400).json({ ok: false, error: 'Nie udało się ustalić countryId Hiszpanii — ustaw KANARY_DEFAULT_COUNTRY_ID.' });
+  const toFix = await prisma.esContractor.findMany({
+    where: { OR: [{ countryId: { not: esId } }, { countryId: null }, { country: { not: 'España' } }] },
+  });
+  let updated = 0; let pushed = 0; let pushErrors = 0;
+  for (const c of toFix) {
+    await prisma.esContractor.update({ where: { id: c.id }, data: { country: 'España', countryId: esId } });
+    updated++;
+    if (c.contasimpleId) {
+      try {
+        await cs.updateCustomer(c.contasimpleId, {
+          organization: c.organization, firstname: c.firstname, lastname: c.lastname, name: c.name,
+          nif: c.nif, email: c.email, phone: c.phone, mobile: c.mobile,
+          address: c.address, city: c.city, province: c.province,
+          country: 'España', countryId: esId, postalCode: c.postalCode,
+        });
+        pushed++;
+      } catch (e) {
+        pushErrors++;
+        console.error(`[cs normalize-country] push ${c.contasimpleId} failed:`, e.message);
+      }
+    }
+  }
+  res.json({ ok: true, spainCountryId: esId, updated, pushedToContasimple: pushed, pushErrors });
+}));
+
 router.post('/customers', asyncHandler(async (req, res) => {
   const data = req.body || {};
   if (!data.nif) {
