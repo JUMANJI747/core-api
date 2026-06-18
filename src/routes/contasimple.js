@@ -497,6 +497,55 @@ router.get('/contractors', asyncHandler(async (req, res) => {
   res.json({ count: list.length, data: list });
 }));
 
+// GET pojedynczy kontrahent Kanary + jego faktury (jak karta PL, ale bez wysyłek).
+router.get('/contractors/:id', asyncHandler(async (req, res) => {
+  const contractor = await prisma.esContractor.findUnique({
+    where: { id: req.params.id },
+    include: { invoices: { orderBy: { invoiceDate: 'desc' }, take: 200 } },
+  });
+  if (!contractor) return res.status(404).json({ error: 'contractor not found' });
+  res.json({ ok: true, contractor });
+}));
+
+// PATCH edycja kontrahenta Kanary — zapis lokalny + push do Contasimple (gdy ma
+// contasimpleId). Best-effort push: rekord w CRM zapisany nawet gdy CS padnie.
+const ES_EDITABLE_FIELDS = ['organization', 'firstname', 'lastname', 'name', 'nif', 'email', 'phone', 'mobile', 'address', 'city', 'province', 'country', 'countryId', 'postalCode', 'documentCulture', 'notes', 'owner'];
+router.patch('/contractors/:id', asyncHandler(async (req, res) => {
+  const existing = await prisma.esContractor.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: 'contractor not found' });
+  const body = req.body || {};
+  const data = {};
+  for (const f of ES_EDITABLE_FIELDS) {
+    if (body[f] !== undefined) data[f] = (typeof body[f] === 'string' && body[f].trim() === '') ? null : body[f];
+  }
+  // name denormalizowany — odśwież gdy zmienia się organization/imię/nazwisko.
+  if (data.organization !== undefined || data.firstname !== undefined || data.lastname !== undefined) {
+    const org = data.organization !== undefined ? data.organization : existing.organization;
+    const fn = data.firstname !== undefined ? data.firstname : existing.firstname;
+    const ln = data.lastname !== undefined ? data.lastname : existing.lastname;
+    data.name = org || [fn, ln].filter(Boolean).join(' ').trim() || existing.name;
+  }
+  const saved = await prisma.esContractor.update({ where: { id: existing.id }, data });
+
+  let contasimplePushed = false;
+  let contasimpleError = null;
+  if (saved.contasimpleId) {
+    try {
+      await cs.updateCustomer(saved.contasimpleId, {
+        organization: saved.organization, firstname: saved.firstname, lastname: saved.lastname,
+        name: saved.name, nif: saved.nif, email: saved.email, phone: saved.phone, mobile: saved.mobile,
+        address: saved.address, city: saved.city, province: saved.province,
+        country: saved.country, countryId: saved.countryId, postalCode: saved.postalCode,
+      });
+      contasimplePushed = true;
+    } catch (e) {
+      contasimpleError = e.message;
+      console.error('[cs contractors PATCH] push do Contasimple nieudany (CRM zapisany):', e.message);
+    }
+  }
+  res.json({ ok: true, contractor: saved, contasimplePushed, ...(contasimpleError ? { contasimpleError } : {}) });
+}));
+
 // ============ INVOICES ============
 
 router.get('/invoices', asyncHandler(async (req, res) => {
