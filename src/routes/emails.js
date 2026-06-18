@@ -777,7 +777,7 @@ router.post('/send-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     console.log(`[send-email] req.body keys: ${Object.keys(req.body || {}).join(',')} bodyLen: ${String(req.body && req.body.body || '').length} draft: ${req.body && req.body.draft}`);
-    let { from, to, cc, subject, body, html, attachments, replyTo, emailId: replyToEmailId, draft = true } = req.body;
+    let { from, to, cc, subject, body, html, attachments, uploadIds, replyTo, emailId: replyToEmailId, draft = true } = req.body;
     cc = (cc && String(cc).trim()) || null;
 
     // Zalaczniki z frontu: [{ filename, contentBase64, contentType, cid? }].
@@ -790,6 +790,17 @@ router.post('/send-email', async (req, res) => {
         contentType: a.contentType || 'application/octet-stream',
         ...(a.cid ? { cid: String(a.cid) } : {}),
       })) : [];
+
+    // Duże załączniki przyszły chunked (omijają limit 4.5MB Vercela) — backend
+    // trzyma je po uploadId; doklejamy je tutaj jako pełne pliki.
+    if (Array.isArray(uploadIds) && uploadIds.length) {
+      const { getFinalizedUpload } = require('./upload');
+      for (const uid of uploadIds) {
+        const f = getFinalizedUpload(uid);
+        if (!f) return res.status(400).json({ error: `Załącznik wygasł lub nie został wgrany (uploadId ${uid}). Dodaj plik ponownie.` });
+        mailAttachments.push({ filename: f.filename, content: f.buffer, contentType: f.contentType });
+      }
+    }
 
     // Reply-in-thread: resolve from/to/subject from original email
     let inReplyTo = null;
