@@ -131,12 +131,20 @@ async function getEsChatId(prismaClient, reqChatId) {
 // Helper odpowiada bezposrednio na res (404 / suggestions) i zwraca null, albo
 // zwraca pelny rekord kontrahenta. requireCif=true wymusza B2B (FV); albaran
 // (WZ) moze isc bez CIF, ale zawsze potrzebuje contasimpleId.
-// Domyślne countryId Hiszpanii — NIE zgadujemy (205=Senegal!); bierzemy z env
-// albo z najczęstszego countryId istniejących klientów Kanary (zsync z Contasimple).
+// Domyślne countryId Hiszpanii — NIE zgadujemy (205=Senegal!). Kolejność pewności:
+//  1) env KANARY_DEFAULT_COUNTRY_ID (pinned ręcznie),
+//  2) najczęstsze countryId wśród kontrahentów OZNACZONYCH España (wiąże id z krajem),
+//  3) najczęstsze countryId w ogóle (ostatnia deska — i tak ~wszyscy to Hiszpania).
 async function resolveEsDefaultCountryId() {
   const envId = parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10);
   if (envId > 0) return envId;
   try {
+    const esRows = await prisma.esContractor.groupBy({
+      by: ['countryId'],
+      where: { countryId: { not: null }, country: { in: ['España', 'Espana', 'Spain', 'ES', 'Hiszpania'] } },
+      _count: { countryId: true }, orderBy: { _count: { countryId: 'desc' } }, take: 1,
+    });
+    if (esRows && esRows[0] && esRows[0].countryId) return esRows[0].countryId;
     const rows = await prisma.esContractor.groupBy({
       by: ['countryId'], where: { countryId: { not: null } },
       _count: { countryId: true }, orderBy: { _count: { countryId: 'desc' } }, take: 1,
@@ -307,6 +315,9 @@ router.get('/country-ids', asyncHandler(async (req, res) => {
     ok: true,
     envOverride: parseInt(process.env.KANARY_DEFAULT_COUNTRY_ID || '0', 10) || null,
     inferredDefault: rows && rows[0] ? rows[0].countryId : null,
+    // Wartość, którą backend faktycznie użyje jako Hiszpanię — to wpisz w env
+    // KANARY_DEFAULT_COUNTRY_ID, żeby przypiąć na stałe.
+    recommendedEnvValue: await resolveEsDefaultCountryId(),
     distribution: sample,
   });
 }));
