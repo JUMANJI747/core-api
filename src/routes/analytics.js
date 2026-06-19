@@ -3,6 +3,14 @@
 const router = require('express').Router();
 const https = require('https');
 
+// Filtr "tylko nasze produkty" dla obrotu Kanary (Dashboard). Nikodem sprzedaje
+// czasem przez Contasimple drogie rzeczy NIE-nasze — odrzucamy je. Konfigurowalne
+// (nie na sztywno): max cena jednostkowa + regex nazw (różne pisownie). Nasze
+// kosmetyki ~4,5 €/szt i mają w nazwie surf/stick/mascara/spf.
+const ES_OURS_MAX_UNIT = parseFloat(process.env.KANARY_REVENUE_MAX_UNIT_PRICE || '10');
+const ES_OURS_REGEX = (process.env.KANARY_REVENUE_NAME_PATTERNS || 'surf,stick,mascar,spf,lip balm,zinc')
+  .split(',').map(s => s.trim()).filter(Boolean).join('|');
+
 // ============ HELPER ============
 
 function httpsPost(url, headers, body) {
@@ -373,24 +381,48 @@ router.get('/analytics/revenue', async (req, res) => {
       `);
     }
     if (wantEs) {
-      // ES (Contasimple) = sprzedaz nasza markowa w calosci. requireItems jest
-      // PL/iFirma-specyficzny (zaliczki, prywatne "grafiki 3D") — ES NIE
-      // filtrujemy nim, bo EsInvoiceLineItem.productId bywa NULL (linie z
-      // Contasimple niezmapowane do katalogu) i caly obrot ES by znikal.
-      queries.push(prisma.$queryRaw`
-        SELECT
-          'es'::text                                                   AS source,
-          to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
-          currency,
-          SUM("totalAmount")::text                                      AS amount,
-          COUNT(*)::int                                                 AS invoice_count
-        FROM "EsInvoice"
-        WHERE "invoiceDate" BETWEEN ${from} AND ${to}
-          AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
-          AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
-        GROUP BY 2, 3
-        ORDER BY period, currency
-      `);
+      const esOursOnly = req.query.esOursOnly === '1' || req.query.esOursOnly === 'true';
+      if (esOursOnly) {
+        // Tylko NASZE produkty: liczymy z linii (EsInvoiceLineItem) — odrzucamy
+        // pozycje > ${ES_OURS_MAX_UNIT} €/szt oraz nie pasujące do nazw naszych
+        // kosmetyków (regex). Dzięki temu drogie nie-nasze rzeczy Nikodema znikają
+        // z obrotu Dashboardu, nawet jeśli są na tej samej fakturze.
+        queries.push(prisma.$queryRaw`
+          SELECT
+            'es'::text                                                   AS source,
+            to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')   AS period,
+            currency,
+            SUM("totalGross")::text                                      AS amount,
+            COUNT(DISTINCT "esInvoiceId")::int                           AS invoice_count
+          FROM "EsInvoiceLineItem"
+          WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+            AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+            AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+            AND "unitPriceNetto" <= ${ES_OURS_MAX_UNIT}
+            AND name ~* ${ES_OURS_REGEX}
+          GROUP BY 2, 3
+          ORDER BY period, currency
+        `);
+      } else {
+        // ES (Contasimple) = sprzedaz nasza markowa w calosci. requireItems jest
+        // PL/iFirma-specyficzny (zaliczki, prywatne "grafiki 3D") — ES NIE
+        // filtrujemy nim, bo EsInvoiceLineItem.productId bywa NULL (linie z
+        // Contasimple niezmapowane do katalogu) i caly obrot ES by znikal.
+        queries.push(prisma.$queryRaw`
+          SELECT
+            'es'::text                                                   AS source,
+            to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
+            currency,
+            SUM("totalAmount")::text                                      AS amount,
+            COUNT(*)::int                                                 AS invoice_count
+          FROM "EsInvoice"
+          WHERE "invoiceDate" BETWEEN ${from} AND ${to}
+            AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+            AND (${currency}::text IS NULL OR UPPER(currency) = ${currency})
+          GROUP BY 2, 3
+          ORDER BY period, currency
+        `);
+      }
     }
 
     const results = await Promise.all(queries);
@@ -453,8 +485,10 @@ router.get('/analytics/qty-sold', async (req, res) => {
       `);
     }
     if (wantEs) {
-      // productsOnly jest PL-specyficzny (grafika 3D itp.). ES NIE filtrujemy —
-      // EsInvoiceLineItem.productId bywa NULL, inaczej sztuki ES = 0.
+      const esOursOnly = req.query.esOursOnly === '1' || req.query.esOursOnly === 'true';
+      // productsOnly jest PL-specyficzny (grafika 3D itp.). Dla ES filtr "tylko
+      // nasze" (esOursOnly) odrzuca pozycje > ${ES_OURS_MAX_UNIT} €/szt i nie
+      // pasujące do nazw naszych kosmetyków (regex) — reszta liczona normalnie.
       queries.push(prisma.$queryRaw`
         SELECT
           'es'::text                                                          AS source,
@@ -464,6 +498,7 @@ router.get('/analytics/qty-sold', async (req, res) => {
         FROM "EsInvoiceLineItem"
         WHERE "invoiceDate" BETWEEN ${from} AND ${to}
           AND (${country}::text IS NULL OR UPPER("contractorCountry") = ${country})
+          AND (${esOursOnly}::boolean = false OR ("unitPriceNetto" <= ${ES_OURS_MAX_UNIT} AND name ~* ${ES_OURS_REGEX}))
         GROUP BY 2
         ORDER BY period
       `);
