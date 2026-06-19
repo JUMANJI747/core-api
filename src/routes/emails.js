@@ -2383,20 +2383,46 @@ router.post('/emails/draft-with-invoice', async (req, res) => {
     }
     if (!invoice) return res.status(404).json({ error: `Invoice not found: "${invoiceNumber || invoiceId}"` });
 
-    // 2. Resolve recipient. toEmail explicit > contractor.primaryEmail > contractor.email.
+    // 2. Resolve recipient. toEmail explicit > kontrahent (po contractorId ORAZ
+    //    po NIP z faktury) — z pola primaryEmail/email LUB z kontaktów
+    //    (ContractorContact type=email). Wcześniej sprawdzaliśmy tylko główne pole
+    //    jednego rekordu → agent mówił "brak emaila" mimo że mail JEST w karcie.
     const contractor = invoice.contractorId
       ? await prisma.contractor.findUnique({ where: { id: invoice.contractorId } })
       : null;
     const looksLikeEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
     let to = looksLikeEmail(toEmail) ? toEmail.trim() : null;
     let toSource = to ? 'request' : null;
-    if (!to && contractor) {
-      if (contractor.primaryEmail && looksLikeEmail(contractor.primaryEmail)) {
-        to = contractor.primaryEmail.trim();
-        toSource = 'contractor.primaryEmail';
-      } else if (contractor.email && looksLikeEmail(contractor.email)) {
-        to = contractor.email.trim();
-        toSource = 'contractor.email';
+    if (!to) {
+      const candidateIds = new Set();
+      if (invoice.contractorId) candidateIds.add(invoice.contractorId);
+      const nip = (invoice.contractorNip || (contractor && contractor.nip) || '').replace(/[^0-9A-Za-z]/g, '');
+      if (nip) {
+        const byNip = await prisma.contractor.findMany({ where: { nip: { contains: nip } }, select: { id: true }, take: 10 }).catch(() => []);
+        for (const c of byNip) candidateIds.add(c.id);
+      }
+      if (candidateIds.size) {
+        const ids = [...candidateIds];
+        const mains = await prisma.contractor.findMany({
+          where: { id: { in: ids } },
+          select: { primaryEmail: true, email: true },
+        }).catch(() => []);
+        for (const m of mains) {
+          if (!to && looksLikeEmail(m.primaryEmail)) { to = m.primaryEmail.trim(); toSource = 'contractor.primaryEmail'; }
+          if (!to && looksLikeEmail(m.email)) { to = m.email.trim(); toSource = 'contractor.email'; }
+        }
+        if (!to) {
+          const contacts = await prisma.contractorContact.findMany({ where: { contractorId: { in: ids }, type: 'email' } }).catch(() => []);
+          const valid = contacts.filter(c => looksLikeEmail(c.value));
+          if (valid.length) {
+            const LABEL_PRIO = { accounting: 1, billing: 2, office: 3, sales: 4, support: 5, shipping: 6 };
+            valid.sort((a, b) => {
+              if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+              return (LABEL_PRIO[String(a.label || '').toLowerCase()] || 9) - (LABEL_PRIO[String(b.label || '').toLowerCase()] || 9);
+            });
+            to = valid[0].value; toSource = 'contractor_contact';
+          }
+        }
       }
     }
     if (!to) {
