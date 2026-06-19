@@ -491,8 +491,10 @@ function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDat
     uiCulture: overrides.uiCulture || 'es-ES',
     retentionPercentage: 0,
     lines: lines.map(l => ({
-      // Endpoint deliveryNotes używa pól jak w odpowiedzi GET: unitTaxableAmount
-      // (NIE unitAmount — to pole faktur; na albaránie było ignorowane → cena 0).
+      // DOKŁADNY kształt jak w istniejących (działających) albaránach z GET:
+      // unitTaxableAmount (NIE unitAmount) + productId/productName/productSku.
+      // 1. próba: unitAmount → ignorowane (cena 0). 2. próba: bez productId →
+      // create odrzucony. Razem: unitTaxableAmount + komplet pól produktu.
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
       quantity: l.qty,
       unitTaxableAmount: l.unitNetto != null ? l.unitNetto : 0,
@@ -502,6 +504,10 @@ function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDat
       reAmount: 0,
       totalTaxableAmount: l.lineNetto != null ? l.lineNetto : 0,
       discountPercentage: 0,
+      detailedDescription: '',
+      productId: (l.product && l.product.contasimpleId) || 0,
+      productName: l.name + (l.variant ? ` ${l.variant}` : ''),
+      productSku: (l.product && l.product.ean) || null,
     })),
   };
 }
