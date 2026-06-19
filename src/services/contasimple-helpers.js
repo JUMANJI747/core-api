@@ -491,16 +491,17 @@ function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDat
     uiCulture: overrides.uiCulture || 'es-ES',
     retentionPercentage: 0,
     lines: lines.map(l => ({
-      // MINIMALNY kształt jak FV (buildContasimplePayload) — sprawdzony, że
-      // Contasimple liczy kwoty poprawnie. Dodatkowe pola (productId/productName/
-      // rePercentage/discountPercentage/detailedDescription) powodują .NET
-      // TaxableAmountDiscrepancy → zerują kwoty (albarán wychodził bez cen!).
+      // Endpoint deliveryNotes używa pól jak w odpowiedzi GET: unitTaxableAmount
+      // (NIE unitAmount — to pole faktur; na albaránie było ignorowane → cena 0).
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
-      unitAmount: l.unitNetto != null ? l.unitNetto : 0,
       quantity: l.qty,
+      unitTaxableAmount: l.unitNetto != null ? l.unitNetto : 0,
       vatPercentage: l.vatPercentage != null ? l.vatPercentage : IGIC_DEFAULT_PCT,
       vatAmount: l.lineIgic != null ? l.lineIgic : 0,
+      rePercentage: 0,
+      reAmount: 0,
       totalTaxableAmount: l.lineNetto != null ? l.lineNetto : 0,
+      discountPercentage: 0,
     })),
   };
 }

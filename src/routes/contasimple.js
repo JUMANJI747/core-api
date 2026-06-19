@@ -2960,6 +2960,10 @@ async function confirmAlbaran(req, res, previewId) {
     albaranId: albaran.id,
     contractor: { organization: contractor.organization || contractor.name, nif: contractor.nif },
     totalQty: (albaran.lines || []).reduce((s, l) => s + (l.quantity || 0), 0),
+    // Kwoty z odpowiedzi Contasimple — do weryfikacji czy ceny weszły (nie 0).
+    totalTaxableAmount: albaran.totalTaxableAmount,
+    totalVatAmount: albaran.totalVatAmount,
+    totalAmount: albaran.totalAmount,
     pdfSent,
     pdfError,
   });
