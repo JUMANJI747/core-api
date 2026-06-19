@@ -1314,36 +1314,51 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
     // mailem", backend resolwuje email z Contractor.email zamiast wymagać
     // od agenta pamiętania adresów (i halucynowania).
     let emailSource = to ? 'request' : null;
-    if (!to && invoice.contractorId) {
-      const contractor = await prisma.contractor.findUnique({
-        where: { id: invoice.contractorId },
-        select: { email: true },
-      });
-      if (contractor && contractor.email) {
-        to = contractor.email;
-        emailSource = 'contractor';
-        console.log(`[send-invoice-email] auto-fetched email from contractor: ${to}`);
-      }
-    }
 
-    // Fallback: email zapisany jako KONTAKT kontrahenta (ContractorContact) —
-    // np. label 'shipping'/'accounting'. Wcześniej sprawdzaliśmy tylko główne
-    // pole Contractor.email, więc maile w kontaktach były pomijane → "brak adresu"
-    // mimo że email JEST w karcie (incydent: Beauty Company miała mail w kontaktach).
-    if (!to && invoice.contractorId) {
-      const contacts = await prisma.contractorContact.findMany({
-        where: { contractorId: invoice.contractorId, type: 'email' },
-      });
-      const valid = contacts.filter(c => looksLikeEmail(c.value));
-      if (valid.length) {
-        const LABEL_PRIO = { accounting: 1, billing: 2, office: 3, sales: 4, support: 5, shipping: 6 };
-        valid.sort((a, b) => {
-          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
-          return (LABEL_PRIO[String(a.label || '').toLowerCase()] || 9) - (LABEL_PRIO[String(b.label || '').toLowerCase()] || 9);
-        });
-        to = valid[0].value;
-        emailSource = 'contractor_contact';
-        console.log(`[send-invoice-email] email z ContractorContact (${valid[0].label || 'no-label'}): ${to}`);
+    // Kandydaci na kontrahenta: po invoice.contractorId ORAZ po NIP z faktury
+    // (gdy contractorId jest null/wskazuje na duplikat bez maila — incydent
+    // Beauty Company: mail był na innym rekordzie/jako kontakt). Zbieramy maile z
+    // pola Contractor.email i z ContractorContact (type=email) wszystkich kandydatów.
+    if (!to) {
+      const candidateIds = new Set();
+      if (invoice.contractorId) candidateIds.add(invoice.contractorId);
+      const nip = (invoice.contractorNip || '').replace(/[^0-9A-Za-z]/g, '');
+      if (nip) {
+        const byNip = await prisma.contractor.findMany({
+          where: { nip: { contains: nip } },
+          select: { id: true },
+          take: 10,
+        }).catch(() => []);
+        for (const c of byNip) candidateIds.add(c.id);
+      }
+      if (candidateIds.size) {
+        const ids = [...candidateIds];
+        // 1) główne pole Contractor.email
+        const mains = await prisma.contractor.findMany({
+          where: { id: { in: ids }, email: { not: null } },
+          select: { email: true },
+        }).catch(() => []);
+        const mainEmail = mains.map(m => m.email).find(e => looksLikeEmail(e));
+        if (mainEmail) {
+          to = mainEmail;
+          emailSource = 'contractor';
+        } else {
+          // 2) kontakty email (label priorytet: accounting>billing>office>sales>support>shipping)
+          const contacts = await prisma.contractorContact.findMany({
+            where: { contractorId: { in: ids }, type: 'email' },
+          }).catch(() => []);
+          const valid = contacts.filter(c => looksLikeEmail(c.value));
+          if (valid.length) {
+            const LABEL_PRIO = { accounting: 1, billing: 2, office: 3, sales: 4, support: 5, shipping: 6 };
+            valid.sort((a, b) => {
+              if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+              return (LABEL_PRIO[String(a.label || '').toLowerCase()] || 9) - (LABEL_PRIO[String(b.label || '').toLowerCase()] || 9);
+            });
+            to = valid[0].value;
+            emailSource = 'contractor_contact';
+            console.log(`[send-invoice-email] email z ContractorContact (${valid[0].label || 'no-label'}): ${to}`);
+          }
+        }
       }
     }
 
