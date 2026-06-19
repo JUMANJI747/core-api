@@ -2885,7 +2885,13 @@ async function resolveAlbaranFormatId(prisma) {
 async function confirmAlbaran(req, res, previewId) {
   const stored = getEsAlbaranPreview(previewId);
   if (!stored) {
-    deleteEsAlbaranPreview(previewId);
+    // Podgląd już skasowany — najpewniej WZ właśnie wystawiony (2. tap guzika).
+    // Zwróć ostatni potwierdzony numer jako idempotentny sukces, zamiast 404.
+    const ac = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc-es' } }).catch(() => null);
+    const d = ac && ac.data;
+    if (d && d.lastAction === 'albaran-confirmed' && d.albaranNumber && d.timestamp && (Date.now() - Number(d.timestamp) < 10 * 60 * 1000)) {
+      return res.json({ ok: true, albaranNumber: d.albaranNumber, albaranId: d.albaranContasimpleId || null, duplicate: true, note: 'WZ już wystawiony (podgląd zużyty).' });
+    }
     return res.status(404).json({ error: 'albaran preview expired or unknown' });
   }
   const { contractor, lines, deliveryNoteDate, chatId: storedChatId, source: storedSource } = stored;
