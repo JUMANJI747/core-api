@@ -1326,6 +1326,27 @@ router.post('/ifirma/send-invoice-email', async (req, res) => {
       }
     }
 
+    // Fallback: email zapisany jako KONTAKT kontrahenta (ContractorContact) —
+    // np. label 'shipping'/'accounting'. Wcześniej sprawdzaliśmy tylko główne
+    // pole Contractor.email, więc maile w kontaktach były pomijane → "brak adresu"
+    // mimo że email JEST w karcie (incydent: Beauty Company miała mail w kontaktach).
+    if (!to && invoice.contractorId) {
+      const contacts = await prisma.contractorContact.findMany({
+        where: { contractorId: invoice.contractorId, type: 'email' },
+      });
+      const valid = contacts.filter(c => looksLikeEmail(c.value));
+      if (valid.length) {
+        const LABEL_PRIO = { accounting: 1, billing: 2, office: 3, sales: 4, support: 5, shipping: 6 };
+        valid.sort((a, b) => {
+          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+          return (LABEL_PRIO[String(a.label || '').toLowerCase()] || 9) - (LABEL_PRIO[String(b.label || '').toLowerCase()] || 9);
+        });
+        to = valid[0].value;
+        emailSource = 'contractor_contact';
+        console.log(`[send-invoice-email] email z ContractorContact (${valid[0].label || 'no-label'}): ${to}`);
+      }
+    }
+
     // Drugi fallback: historia korespondencji. Wcześniej wysyłaliśmy do nich
     // FV (OUTBOUND z contractorId), albo oni pisali do nas (INBOUND). Bierzemy
     // najświeższy wpis Email z tym samym contractorId i ekstraktujemy adres.
