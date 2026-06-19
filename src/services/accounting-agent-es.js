@@ -70,6 +70,8 @@ BOXY (każdy = 30 sztuk po 4,50 € = 135 € netto + 9,45 € IGIC = 144,45 €
 - "X box collection" → name="box collection" (12 lips + 6 daily + 6 gel + 6 care)
 
 Synonimy box: pudełko = kartonik = pudło = box (to samo).
+ILOŚĆ BOXÓW: "box collection"/"box stick" BEZ liczby = 1 box (qty:1). "3 box stick" = qty:3.
+NIGDY nie pytaj "ile sztuk w boxie" ani nie proś o rozpisanie zawartości — skład boxa jest WBITY w systemie (backend sam rozwija: box stick=30 stick, box collection=12 lip+6 daily+6 gel+6 care). Przekaż items=[{name:"box collection", qty:1}, {name:"box stick", qty:1}] i wołaj preview. Pytaj o liczbę boxów TYLKO gdy user napisał coś wieloznacznego (np. "kilka boxów").
 
 KONTRAHENT — TYLKO B2B Z CIF:
 - Nikodem wystawia FV wyłącznie firmom (NIF/CIF/NIE wymagany).
