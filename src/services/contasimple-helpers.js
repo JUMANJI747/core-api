@@ -492,13 +492,15 @@ function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDat
     retentionPercentage: 0,
     lines: lines.map(l => ({
       concept: l.name + (l.variant ? ` ${l.variant}` : ''),
-      unitAmount: 0,
+      // Albarán Z CENAMI + IGIC (jak FV) — wcześniej wszystko 0 (sama lista
+      // wydania). Bierzemy te same pola co faktura; fallback 0 gdy linia bez ceny.
+      unitAmount: l.unitNetto != null ? l.unitNetto : 0,
       quantity: l.qty,
-      vatPercentage: 0,
-      vatAmount: 0,
+      vatPercentage: l.vatPercentage != null ? l.vatPercentage : 0,
+      vatAmount: l.lineIgic != null ? l.lineIgic : 0,
       rePercentage: 0,
       reAmount: 0,
-      totalTaxableAmount: 0,
+      totalTaxableAmount: l.lineNetto != null ? l.lineNetto : 0,
       discountPercentage: 0,
       detailedDescription: '',
       productId: (l.product && l.product.contasimpleId) || 0,

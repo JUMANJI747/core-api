@@ -2696,23 +2696,38 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
   if (!contractor) return; // resolveEsContractor już odpowiedział (404 / suggestions)
   let positions;
   try {
-    positions = await expandEsLines(prisma, items);
+    positions = await expandEsLines(prisma, items, {
+      globalPriceNetto: body.globalPriceNetto,
+      globalPriceBrutto: body.globalPriceBrutto,
+    });
   } catch (e) {
     return res.status(e.status || 500).json({ error: e.message });
   }
 
-  const lines = positions.map(p => ({
+  // Albarán Z CENAMI + IGIC (jak FV) — ten sam kalkulator co faktura.
+  const { lines: pricedLines, totals } = buildEsTotals(positions, {
+    igicPct: IGIC_DEFAULT_PCT,
+    globalPriceNetto: body.globalPriceNetto,
+    globalPriceBrutto: body.globalPriceBrutto,
+  });
+  // Linie do payloadu/preview: dane produktu + ceny/IGIC z buildEsTotals.
+  const lines = positions.map((p, i) => ({
     name: p.product.name,
     variant: p.product.variant || null,
     qty: p.qty,
     product: p.product,
+    unitNetto: pricedLines[i] && pricedLines[i].unitNetto,
+    vatPercentage: pricedLines[i] && pricedLines[i].vatPercentage,
+    lineNetto: pricedLines[i] && pricedLines[i].lineNetto,
+    lineIgic: pricedLines[i] && pricedLines[i].lineIgic,
   }));
 
   const date = deliveryNoteDate ? new Date(deliveryNoteDate) : new Date();
   const preview = {
     type: 'albaran',
     contractor: { id: contractor.id, contasimpleId: contractor.contasimpleId, organization: contractor.organization || contractor.name, nif: contractor.nif },
-    lines: lines.map(l => ({ name: l.name, variant: l.variant, qty: l.qty })),
+    lines: lines.map(l => ({ name: l.name, variant: l.variant, qty: l.qty, unitNetto: l.unitNetto, lineNetto: l.lineNetto, lineIgic: l.lineIgic })),
+    totals,
     totalQty: lines.reduce((s, l) => s + l.qty, 0),
     deliveryNoteDate: date.toISOString(),
   };
@@ -2720,13 +2735,16 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
   saveEsAlbaranPreview(previewId, { preview, contractor, lines, deliveryNoteDate: date.toISOString(), body, chatId: body.chatId || null, source: body.source || null });
 
   // Buduj tekst preview ZAWSZE (ground truth) — wraca w response.previewText.
-  const lineRows = lines.map(l => `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''}`).join('\n');
+  const lineRows = lines.map(l =>
+    `- ${l.qty}× ${l.name}${l.variant ? ' ' + l.variant : ''} @ ${Number(l.unitNetto || 0).toFixed(2)} € = ${Number(l.lineNetto || 0).toFixed(2)} € netto`
+  ).join('\n');
   const previewText =
-    `📋 PREVIEW ALBARÁN (WZ)\n` +
+    `📋 PREVIEW ALBARÁN (WZ — z cenami)\n` +
     `Klient: ${contractor.organization || contractor.name}${contractor.nif ? ` (${contractor.nif})` : ''}\n` +
     `Data: ${date.toISOString().slice(0, 10)}\n\n` +
     `${lineRows}\n\n` +
-    `Razem sztuk: ${preview.totalQty}\n\n` +
+    `Razem sztuk: ${preview.totalQty}\n` +
+    `Netto: ${Number(totals.netto).toFixed(2)} € | IGIC ${IGIC_DEFAULT_PCT}%: ${Number(totals.igic).toFixed(2)} € | Brutto: ${Number(totals.brutto).toFixed(2)} €\n\n` +
     `Potwierdzasz? "tak/ok" wystawi.`;
 
   // Telegram-notyfikacja preview (ground truth) — analogiczna do FV, z przyciskiem.

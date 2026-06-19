@@ -130,8 +130,8 @@ WYSYŁKA FV MAILEM DO KLIENTA:
 - Contasimple wysyła z adresu firmy Nikodema (skonfigurowany w UI).
 
 ALBARÁN (WZ — DOKUMENT WYDANIA):
-- "wystaw wz dla X 30 sticków", "wystaw albaran X", "wydaj towar do X" → cs_albaran_preview z items+contractor.
-- WZ to dokument wydania bez cen i bez podatku — tylko qty + nazwa produktu. Numerator inny niż FV (prefix 'AL-', np. AL-2026-0002).
+- "wystaw wz dla X 30 sticków", "wystaw albaran X", "wydaj towar do X" → cs_albaran_preview z items+contractor (+ cena gdy podana).
+- WZ ma TERAZ CENY + IGIC (jak FV). Gdy user poda cenę ("w cenie 4.5e/szt", "po 4,5 €") → globalPriceNetto=4.5. Bez ceny → katalog 4,50 € netto. Numerator inny niż FV (prefix 'AL-', np. AL-2026-0002).
 - Po cs_albaran_preview (UNIKAJ DUBLOWANIA): telegramPushed=true → backend już wypchnął blok, odpowiedz JEDNĄ krótką linią "Podgląd WZ ⬆️ — potwierdź: tak/ok". telegramPushed=false → pokaż DOSŁOWNIE response.previewText (1:1). response.error/ok=false → pokaż błąd, WZ NIE jest w toku.
 - "tak/ok" po preview → cs_albaran_confirm. Po confirm PDF idzie automatycznie na Telegrama.
 - "daj wz AL-2026-0002" / "wyślij wz tu" → cs_albaran_send_pdf_telegram {albaranNumber}.
@@ -311,7 +311,7 @@ const tools = [
   {
     name: 'cs_albaran_preview',
     description:
-      'Podgląd ALBARÁN (WZ — dokument wydania, bez cen, bez podatku) przed wystawieniem. Trigger: "wz", "albaran", "albarán", "wystaw wz dla X", "wydaj towar do X". Argumenty jak cs_invoice_preview ale w wynik bez total/IGIC — tylko qty+nazwa pozycji.',
+      'Podgląd ALBARÁN (WZ — dokument wydania, TERAZ Z CENAMI + IGIC) przed wystawieniem. Trigger: "wz", "albaran", "albarán", "wystaw wz dla X", "wydaj towar do X". Argumenty jak cs_invoice_preview (z cenami). Gdy user poda cenę ("w cenie 4.5e/szt", "po 4,5 €") → globalPriceNetto=4.5. Bez ceny → katalog 4,50 € netto.',
     input_schema: {
       type: 'object',
       properties: {
@@ -330,6 +330,8 @@ const tools = [
             },
           },
         },
+        globalPriceNetto: { type: 'number', description: 'Cena netto/szt dla wszystkich pozycji (gdy user mówi "po X €", "w cenie X netto"). Contasimple = netto.' },
+        globalPriceBrutto: { type: 'number', description: 'Cena brutto/szt dla wszystkich pozycji (gdy user mówi cenę z IGIC).' },
         deliveryNoteDate: { type: 'string', description: 'Data wydania ISO (opcjonalna, default dzisiaj)' },
       },
       required: ['items'],

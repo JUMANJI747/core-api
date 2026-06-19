@@ -18,16 +18,19 @@ router.post('/agent/logistics', asyncHandler(async (req, res) => {
 }));
 
 router.post('/agent/accounting', asyncHandler(async (req, res) => {
-  const { query, chatId } = req.body || {};
+  const { query, chatId, previousTurns } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processAccountingQuery(query, { chatId });
+  const result = await processAccountingQuery(query, { chatId, previousTurns });
   res.json(result);
 }));
 
 router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
-  const { query, chatId } = req.body || {};
+  // previousTurns — historia rozmowy (n8n master powinien ją przekazać), żeby
+  // agent łączył sloty z kolejnych wiadomości (np. pozycje z 1. tury + kontrahent
+  // z 3.). Bez tego każda wiadomość jest bezkontekstowa (problem na Telegram Kanary).
+  const { query, chatId, previousTurns } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processAccountingEsQuery(query, { chatId });
+  const result = await processAccountingEsQuery(query, { chatId, previousTurns });
   res.json(result);
 }));
 
