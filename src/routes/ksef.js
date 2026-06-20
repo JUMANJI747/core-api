@@ -159,7 +159,10 @@ router.post('/ksef/autosync-sales', asyncHandler(async (req, res) => {
   await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
   try {
     const now = new Date();
-    const from = new Date(now.getTime() - 45 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    // Od 1. dnia poprzedniego miesiąca (z zapasem) — pokrywa cały bieżący miesiąc
+    // i poprzedni, więc świeże faktury (np. od 1 czerwca) są łapane.
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const from = start.toISOString().slice(0, 10);
     const to = now.toISOString().slice(0, 10);
     const r = await runSalesStatusSync(prisma, { from, to, dateType: 'Issue' });
     res.json({ ok: true, throttled: false, matched: r.matched, found: r.found });
