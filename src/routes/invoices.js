@@ -2255,6 +2255,7 @@ router.get('/invoices', async (req, res) => {
         grossAmount: true, currency: true, paidAmount: true,
         status: true, type: true, ifirmaType: true, source: true,
         shipmentNumber: true, shipmentHash: true, shipmentCarrier: true,
+        ksefNumber: true, ksefSentAt: true,
         createdAt: true, updatedAt: true,
       },
     });
@@ -2534,6 +2535,34 @@ router.post('/invoices/link-shipment', async (req, res) => {
       data: { shipmentNumber: String(shipmentNumber), shipmentHash: req.body.shipmentHash || null, shipmentCarrier: req.body.carrier || carrier },
     });
     res.json({ ok: true, invoiceNumber: updated.number, shipmentNumber: updated.shipmentNumber, carrier: updated.shipmentCarrier });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Wyślij fakturę sprzedażową do KSeF przez iFirmę. body/param: invoiceNumber lub id.
+router.post('/invoices/:idOrNumber/ksef-send', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+    if (!inv.ifirmaId) return res.status(400).json({ ok: false, error: 'Faktura nie ma ifirmaId — nie była wystawiona przez iFirmę, nie wyślę do KSeF.' });
+    if (inv.ksefNumber) return res.json({ ok: true, alreadyInKsef: true, ksefNumber: inv.ksefNumber });
+
+    const { sendInvoiceToKsef } = require('../ifirma-client');
+    const r = await sendInvoiceToKsef({ ifirmaId: inv.ifirmaId, rodzaj: inv.type, waluta: inv.currency });
+    const resp = r.body && r.body.response ? r.body.response : r.body;
+    const kod = resp && (resp.Kod !== undefined ? resp.Kod : resp.kod);
+    const ok = r.status >= 200 && r.status < 300 && (kod === 0 || kod === undefined);
+    const ksefNumber = resp && (resp.NumerKSeF || resp.numerKSeF || resp.Numer || null);
+    if (!ok) {
+      return res.status(200).json({ ok: false, error: (resp && (resp.Informacja || resp.informacja)) || `iFirma HTTP ${r.status}`, ifirma: r.body });
+    }
+    await prisma.invoice.update({ where: { id: inv.id }, data: { ksefSentAt: new Date(), ...(ksefNumber ? { ksefNumber: String(ksefNumber) } : {}) } });
+    res.json({ ok: true, invoiceNumber: inv.number, ksefNumber: ksefNumber || null, info: resp && (resp.Informacja || resp.informacja), segment: r.segment });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

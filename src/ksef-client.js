@@ -133,23 +133,25 @@ async function authenticate() {
   return { accessToken: accessTokenValue, refreshToken };
 }
 
-// 7. Metadane faktur KOSZTOWYCH (Subject2 = nabywca) w zakresie dat.
-async function queryCostInvoiceMetadata(accessToken, { from, to, dateType = 'Issue', pageSize = 100 }) {
+// Metadane faktur w zakresie dat. subjectType: 'Subject2' = nabywca (koszty),
+// 'Subject1' = sprzedawca (nasze sprzedażowe — do oznaczania „jest w KSeF").
+async function queryInvoiceMetadata(accessToken, { subjectType = 'Subject2', from, to, dateType = 'Issue', pageSize = 100 }) {
   const results = [];
   let pageOffset = 0;
   for (let guard = 0; guard < 100; guard++) {
-    const body = {
-      subjectType: 'Subject2',
-      dateRange: { dateType, from, to },
-    };
+    const body = { subjectType, dateRange: { dateType, from, to } };
     const resp = await api('POST', `/invoices/query/metadata?pageOffset=${pageOffset}&pageSize=${pageSize}`, { token: accessToken, body });
     const items = pick(resp, 'invoices') || pick(resp, 'items') || (Array.isArray(resp) ? resp : []);
     results.push(...items);
-    const hasMore = items.length >= pageSize;
-    if (!hasMore) break;
+    if (items.length < pageSize) break;
     pageOffset += 1;
   }
   return results;
+}
+
+// Wrapper: faktury KOSZTOWE (Subject2 = nabywca).
+async function queryCostInvoiceMetadata(accessToken, opts) {
+  return queryInvoiceMetadata(accessToken, { ...opts, subjectType: 'Subject2' });
 }
 
 // 8. Pobierz XML pojedynczej faktury po numerze KSeF.
@@ -163,6 +165,7 @@ module.exports = {
   isConfigured,
   authenticate,
   getTokenEncryptionPublicKey,
+  queryInvoiceMetadata,
   queryCostInvoiceMetadata,
   getInvoiceXml,
   _pick: pick,

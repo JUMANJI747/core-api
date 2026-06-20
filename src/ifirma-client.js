@@ -864,9 +864,27 @@ async function trySetAccountingMonth(direction, crossYear, keyOverride) {
   return { status, body: resp, bodySent: body };
 }
 
+// Wysyłka faktury do KSeF przez iFirmę (iFirma ma autoryzację do KSeF).
+// POST /iapi/{fakturakraj|fakturawaluta|fakturawdt}/ksef/send/{ifirmaId}.json
+// body { DataWysylki: null }. HMAC tym samym kluczem 'faktura' co reszta FV.
+async function sendInvoiceToKsef({ ifirmaId, rodzaj, waluta }) {
+  if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
+  if (!ifirmaId) throw new Error('brak ifirmaId — faktura nie ma identyfikatora iFirma (nie wystawiona przez iFirmę?)');
+  const seg = rodzaj === 'wdt'
+    ? 'fakturawdt'
+    : (String(waluta || '').toUpperCase() === 'EUR' ? 'fakturawaluta' : 'fakturakraj');
+  const url = `https://www.ifirma.pl/iapi/${seg}/ksef/send/${encodeURIComponent(ifirmaId)}.json`;
+  const bodyObj = { DataWysylki: null };
+  const bodyStr = JSON.stringify(bodyObj);
+  const auth = generateAuth(url, bodyStr, login, keyHex);
+  const { status, body } = await httpsPostJson(url, { Authentication: auth }, bodyObj);
+  return { status, body, segment: seg };
+}
+
 module.exports = {
   generateAuth, fetchInvoices, fetchNbpRate, searchContractor, upsertContractor,
   createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
   registerPayment, setAccountingMonth,
   getAccountingMonth, trySetAccountingMonth,
+  sendInvoiceToKsef,
 };

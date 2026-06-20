@@ -152,6 +152,11 @@ model Invoice {
   shipmentHash    String?
   shipmentCarrier String?
 
+  // KSeF (faktury sprzedażowe): ksefNumber = numer KSeF (gdy FV jest już w KSeF),
+  // ksefSentAt = kiedy wysłaliśmy przez iFirmę. Znaczek na liście faktur.
+  ksefNumber String?
+  ksefSentAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

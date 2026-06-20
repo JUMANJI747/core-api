@@ -112,6 +112,39 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
   });
 }));
 
+// Synchronizacja statusu KSeF dla NASZYCH faktur sprzedażowych (Subject1):
+// pyta KSeF o nasze wystawione FV i ustawia Invoice.ksefNumber po numerze FV.
+// body: { from, to, dateType? } — domyślnie ostatnie 60 dni.
+router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const now = new Date();
+  const from = (req.body && req.body.from) || new Date(now.getTime() - 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const to = (req.body && req.body.to) || now.toISOString().slice(0, 10);
+  const dateType = (req.body && req.body.dateType) || 'Issue';
+  let accessToken;
+  try { ({ accessToken } = await ksef.authenticate()); }
+  catch (e) { return res.status(502).json({ ok: false, stage: 'auth', error: e.message }); }
+
+  let metadata;
+  try {
+    const fromIso = new Date(from).toISOString();
+    const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
+    metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from: fromIso, to: toIso, dateType });
+  } catch (e) {
+    return res.status(502).json({ ok: false, stage: 'query', error: e.message, status: e.status, body: e.body });
+  }
+
+  let matched = 0; const unmatched = [];
+  for (const m of metadata) {
+    const number = P(m, 'invoiceNumber', 'number');
+    const ksefNumber = P(m, 'ksefNumber', 'ksefReferenceNumber', 'referenceNumber');
+    if (!number || !ksefNumber) continue;
+    const upd = await prisma.invoice.updateMany({ where: { number: String(number), ksefNumber: null }, data: { ksefNumber: String(ksefNumber) } }).catch(() => ({ count: 0 }));
+    if (upd.count) matched += upd.count; else unmatched.push(number);
+  }
+  res.json({ ok: true, range: { from, to, dateType }, found: metadata.length, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0, 20), sample: metadata[0] || null });
+}));
+
 // Lista pobranych faktur kosztowych (dla CRM).
 router.get('/ksef/cost-invoices', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
