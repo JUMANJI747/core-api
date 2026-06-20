@@ -520,6 +520,32 @@ router.get('/analytics/qty-sold', async (req, res) => {
   }
 });
 
+// GET /api/analytics/costs?from=&to=&granularity=month
+// Suma faktur KOSZTOWYCH z KSeF (KsefCostInvoice) per okres. Waluta PLN.
+router.get('/analytics/costs', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { from, to } = parseRange(req);
+    const granularity = parseGranularity(req);
+    const rows = await prisma.$queryRaw`
+      SELECT
+        to_char(date_trunc(${granularity}, "issueDate"), 'YYYY-MM-DD') AS period,
+        SUM("netAmount")::text   AS net,
+        SUM("grossAmount")::text AS gross,
+        SUM("vatAmount")::text   AS vat,
+        COUNT(*)::int            AS count
+      FROM "KsefCostInvoice"
+      WHERE "issueDate" BETWEEN ${from} AND ${to}
+      GROUP BY 1
+      ORDER BY period
+    `;
+    res.json({ from: from.toISOString(), to: to.toISOString(), granularity, currency: 'PLN', buckets: serializeForJson(rows) });
+  } catch (e) {
+    console.error('[analytics/costs] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/analytics/top-customers', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
