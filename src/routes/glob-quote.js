@@ -869,7 +869,7 @@ router.post('/glob/quote', async (req, res) => {
 
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
     const quoteId = Date.now().toString();
-    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, declaredValue: resolvedDeclaredValue, createdAt: new Date() };
+    quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, declaredValue: resolvedDeclaredValue, invoiceNumber: invoiceNumber || (foundInvoice && foundInvoice.number) || null, createdAt: new Date() };
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
     }
@@ -1537,6 +1537,26 @@ router.post('/glob/order', async (req, res) => {
       }
     } catch (e) {
       console.error('[glob/order] addGkOrderToCache failed (best-effort):', e.message);
+    }
+
+    // JAWNE powiązanie faktura→wysyłka — gdy kuriera zamówiono z guzika przy
+    // fakturze (quote.invoiceNumber), zapisujemy numer/hash/kuriera na FV.
+    // Strona Faktur użyje tego wprost (bez dopasowania po nazwie odbiorcy).
+    try {
+      const invNum = quote.invoiceNumber;
+      if (invNum && (orderNumber || orderHash)) {
+        const upd = await prisma.invoice.updateMany({
+          where: { number: String(invNum) },
+          data: {
+            shipmentNumber: orderNumber || orderHash || null,
+            shipmentHash: orderHash || null,
+            shipmentCarrier: (selectedOffer && selectedOffer.carrier) || null,
+          },
+        });
+        console.log(`[glob/order] FV ${invNum} ← wysyłka ${orderNumber || orderHash} (${upd.count} wiersz)`);
+      }
+    } catch (e) {
+      console.error('[glob/order] link FV→shipment failed (best-effort):', e.message);
     }
 
     // Operations tracker — link to existing Transaction (matched against an

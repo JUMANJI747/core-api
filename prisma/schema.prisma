@@ -145,6 +145,13 @@ model Invoice {
   contractorCountry String? // ISO-2
   contractorCity    String?
 
+  // Jawne powiązanie z wysyłką GlobKurier — ustawiane gdy kuriera zamówiono
+  // z guzika przy fakturze (ref=numer FV). Dzięki temu strona Faktur pokazuje
+  // status wysyłki BEZ kruchego dopasowania po nazwie odbiorcy.
+  shipmentNumber  String?
+  shipmentHash    String?
+  shipmentCarrier String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

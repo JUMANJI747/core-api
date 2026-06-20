@@ -2254,6 +2254,7 @@ router.get('/invoices', async (req, res) => {
         issueDate: true, dueDate: true,
         grossAmount: true, currency: true, paidAmount: true,
         status: true, type: true, ifirmaType: true, source: true,
+        shipmentNumber: true, shipmentHash: true, shipmentCarrier: true,
         createdAt: true, updatedAt: true,
       },
     });
@@ -2263,8 +2264,10 @@ router.get('/invoices', async (req, res) => {
     // sie nie pokazywal. Dzieki temu prawie kazda faktura z wysylka pokazuje
     // realny status GK, a guzik "Kurier" zostaje tylko przy tych BEZ wysylki.
     const shipByInvoiceId = {};
+    const gkByNumber = {}; // numer GK → zamówienie (do jawnego linku FV.shipmentNumber)
     try {
       const gkOrders = await getGkOrders();
+      for (const o of gkOrders) { if (o.number) gkByNumber[String(o.number)] = o; }
       if (gkOrders.length) {
         const { normalizeContractorName, scoreContractor } = require('../services/contractor-match');
         const WINDOW_MS = 45 * 86400000; // paczka zwykle do paru tygodni od FV
@@ -2336,7 +2339,15 @@ router.get('/invoices', async (req, res) => {
       console.error('[GET /invoices] shipment match failed (best-effort):', e.message);
     }
     res.json(list.map(i => {
-      const s = shipByInvoiceId[i.id];
+      // PRIORYTET: jawny link FV→wysyłka (i.shipmentNumber, ustawiony przy
+      // zamówieniu kuriera z guzika przy fakturze). Status bierzemy na żywo z GK
+      // po numerze; gdy go (jeszcze) nie ma w cache — pokazujemy wysyłkę z
+      // zapisanych pól (neutralny status), żeby zniknął guzik "Kurier".
+      let s = shipByInvoiceId[i.id];
+      if (!s && i.shipmentNumber) {
+        const live = gkByNumber[String(i.shipmentNumber)];
+        s = live || { number: i.shipmentNumber, tracking: null, status: null, carrier: i.shipmentCarrier || null };
+      }
       if (!s) return { ...i, shipment: null };
       const st = (s.status || '').toUpperCase();
       return {
@@ -2345,7 +2356,7 @@ router.get('/invoices', async (req, res) => {
           shipmentNumber: s.number,
           trackingNumber: s.tracking,
           status: s.status || null,            // surowy status GK (IN_TRANSIT/DELIVERED/CANCELED...)
-          carrier: s.carrier || null,
+          carrier: s.carrier || i.shipmentCarrier || null,
           delivered: st === 'DELIVERED',
           shipped: !!st && !['NEW', 'CREATED', 'CANCELED', 'CANCELLED'].includes(st),
         },
@@ -2485,6 +2496,45 @@ router.post('/ifirma/contractors/sync/:id', async (req, res) => {
     res.json({ ok: true, action: result.action, identifier: result.identifier, payload });
   } catch (e) {
     console.error('[ifirma-contractor-sync] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Ręczne powiązanie faktury z wysyłką GK — naprawa FV zamówionych zanim doszło
+// jawne linkowanie (np. 121/122). Body: { invoiceNumber, shipmentNumber } albo
+// { invoiceNumber } → wtedy auto-dobiera najnowsze zamówienie GK dla kontrahenta.
+router.post('/invoices/link-shipment', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { invoiceNumber } = req.body || {};
+    let { shipmentNumber } = req.body || {};
+    if (!invoiceNumber) return res.status(400).json({ ok: false, error: 'invoiceNumber required' });
+    const inv = await prisma.invoice.findFirst({ where: { number: String(invoiceNumber) }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${invoiceNumber}` });
+
+    let carrier = null;
+    if (!shipmentNumber) {
+      // Auto: dopasuj po nazwie kontrahenta wśród żywych zamówień GK (najnowsze).
+      const { normalizeContractorName, scoreContractor } = require('../services/contractor-match');
+      const gk = await getGkOrders();
+      const key = normalizeContractorName(inv.contractorName || '');
+      const cands = gk
+        .filter(o => o.receiverName)
+        .map(o => ({ o, score: Math.min(scoreContractor({ name: o.receiverName }, inv.contractorName || ''), scoreContractor({ name: inv.contractorName || '' }, o.receiverName)) }))
+        .filter(x => x.score >= 60 || normalizeContractorName(x.o.receiverName) === key)
+        .sort((a, b) => new Date(b.o.date) - new Date(a.o.date));
+      if (!cands.length) {
+        return res.json({ ok: false, error: 'Nie znalazłem zamówienia GK dla tego kontrahenta — podaj shipmentNumber ręcznie.', contractor: inv.contractorName, hint: 'GET /glob/orders pokaże numery wysyłek.' });
+      }
+      shipmentNumber = cands[0].o.number;
+      carrier = cands[0].o.carrier || null;
+    }
+    const updated = await prisma.invoice.update({
+      where: { id: inv.id },
+      data: { shipmentNumber: String(shipmentNumber), shipmentHash: req.body.shipmentHash || null, shipmentCarrier: req.body.carrier || carrier },
+    });
+    res.json({ ok: true, invoiceNumber: updated.number, shipmentNumber: updated.shipmentNumber, carrier: updated.shipmentCarrier });
+  } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
