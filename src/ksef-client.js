@@ -18,7 +18,10 @@
 
 const crypto = require('crypto');
 
-const BASE = (process.env.KSEF_BASE || 'https://api.ksef.mf.gov.pl/api/v2').replace(/\/$/, '');
+// Baza API KSeF 2.0. PROD: https://api.ksef.mf.gov.pl/v2  (UWAGA: stary
+// https://ksef.mf.gov.pl/api/v2 jest WYCOFANY — zwraca HTML). TE/test:
+// https://api-test.ksef.mf.gov.pl/v2. Docs/Swagger są pod /docs/v2 (nie API).
+const BASE = (process.env.KSEF_BASE || 'https://api.ksef.mf.gov.pl/v2').replace(/\/$/, '');
 
 function isConfigured() {
   return !!(process.env.KSEF_TOKEN && process.env.KSEF_NIP);
