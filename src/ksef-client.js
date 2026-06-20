@@ -28,12 +28,21 @@ function isConfigured() {
 }
 
 // Niskopoziomowy fetch JSON z obsługą Bearer + błędów (zwraca {status, body}).
-async function api(method, path, { token, body, accept = 'application/json' } = {}) {
+// TWARDY timeout per wywołanie — bez tego, gdy host KSeF nie odpowiada, request
+// wisi w nieskończoność ("Wysyłam..." w Konsoli).
+async function api(method, path, { token, body, accept = 'application/json', timeoutMs = 15000 } = {}) {
   const url = `${BASE}${path}`;
   const headers = { Accept: accept };
   if (body != null) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(url, { method, headers, body: body != null ? JSON.stringify(body) : undefined });
+  let res;
+  try {
+    res = await fetch(url, { method, headers, body: body != null ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const err = new Error(`KSeF ${method} ${path} → ${e.name === 'TimeoutError' ? `timeout po ${timeoutMs}ms (host nie odpowiada — sprawdź KSEF_BASE/sieć)` : e.message}`);
+    err.status = 0;
+    throw err;
+  }
   const text = await res.text();
   let parsed = null;
   try { parsed = text ? JSON.parse(text) : null; } catch (_) { parsed = text; }
@@ -108,12 +117,12 @@ async function authenticate() {
   const authTokenValue = (authToken && typeof authToken === 'object') ? pick(authToken, 'token', 'value') : authToken;
   if (!authTokenValue) throw new Error(`KSeF: brak authenticationToken (${JSON.stringify(initResp).slice(0, 200)})`);
 
-  // Poll statusu auth (do ~30s).
-  for (let i = 0; i < 15; i++) {
-    const st = await api('GET', `/auth/${encodeURIComponent(refNumber)}`, { token: authTokenValue }).catch(() => null);
+  // Poll statusu auth (krótko — max ~15s; per-call timeout 6s).
+  for (let i = 0; i < 6; i++) {
+    const st = await api('GET', `/auth/${encodeURIComponent(refNumber)}`, { token: authTokenValue, timeoutMs: 6000 }).catch(() => null);
     const status = st && (pick(st, 'status') || pick(pick(st, 'status') || {}, 'code'));
     if (st && (String(status).toLowerCase().includes('succe') || Number(status) === 200 || pick(st, 'authenticationFinished'))) break;
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   const redeem = await api('POST', '/auth/token/redeem', { token: authTokenValue, body: {} });
