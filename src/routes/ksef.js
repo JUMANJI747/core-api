@@ -112,28 +112,13 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
   });
 }));
 
-// Synchronizacja statusu KSeF dla NASZYCH faktur sprzedażowych (Subject1):
-// pyta KSeF o nasze wystawione FV i ustawia Invoice.ksefNumber po numerze FV.
-// body: { from, to, dateType? } — domyślnie ostatnie 60 dni.
-router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  const now = new Date();
-  const from = (req.body && req.body.from) || new Date(now.getTime() - 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-  const to = (req.body && req.body.to) || now.toISOString().slice(0, 10);
-  const dateType = (req.body && req.body.dateType) || 'Issue';
-  let accessToken;
-  try { ({ accessToken } = await ksef.authenticate()); }
-  catch (e) { return res.status(502).json({ ok: false, stage: 'auth', error: e.message }); }
-
-  let metadata;
-  try {
-    const fromIso = new Date(from).toISOString();
-    const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
-    metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from: fromIso, to: toIso, dateType });
-  } catch (e) {
-    return res.status(502).json({ ok: false, stage: 'query', error: e.message, status: e.status, body: e.body });
-  }
-
+// Rdzeń: pyta KSeF o NASZE faktury sprzedażowe (Subject1) i ustawia
+// Invoice.ksefNumber po numerze FV — żeby lista pokazała zielony znaczek „KSeF".
+async function runSalesStatusSync(prisma, { from, to, dateType = 'Issue' }) {
+  const { accessToken } = await ksef.authenticate();
+  const fromIso = new Date(from).toISOString();
+  const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
+  const metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from: fromIso, to: toIso, dateType });
   let matched = 0; const unmatched = [];
   for (const m of metadata) {
     const number = P(m, 'invoiceNumber', 'number');
@@ -142,7 +127,45 @@ router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
     const upd = await prisma.invoice.updateMany({ where: { number: String(number), ksefNumber: null }, data: { ksefNumber: String(ksefNumber) } }).catch(() => ({ count: 0 }));
     if (upd.count) matched += upd.count; else unmatched.push(number);
   }
-  res.json({ ok: true, range: { from, to, dateType }, found: metadata.length, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0, 20), sample: metadata[0] || null });
+  return { found: metadata.length, matched, unmatched, sample: metadata[0] || null };
+}
+
+// Ręczna synchronizacja statusu KSeF (Subject1). body: { from, to, dateType? }.
+router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const now = new Date();
+  const from = (req.body && req.body.from) || new Date(now.getTime() - 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const to = (req.body && req.body.to) || now.toISOString().slice(0, 10);
+  const dateType = (req.body && req.body.dateType) || 'Issue';
+  try {
+    const r = await runSalesStatusSync(prisma, { from, to, dateType });
+    res.json({ ok: true, range: { from, to, dateType }, ...r, unmatchedCount: r.unmatched.length, unmatched: r.unmatched.slice(0, 20) });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message, status: e.status, body: e.body });
+  }
+}));
+
+// Auto-sync statusu KSeF — wołany w tle z listy Faktur. Throttle 10 min, zawsze
+// 200 (błąd nie psuje strony). Zakres: ostatnie 45 dni.
+router.post('/ksef/autosync-sales', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  if (!ksef.isConfigured()) return res.json({ ok: false, configured: false });
+  const KEY = 'autosync:ksef:salesStatus';
+  const THROTTLE_MS = 10 * 60 * 1000;
+  const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
+  const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
+  if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
+  const nowIso = new Date().toISOString();
+  await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
+  try {
+    const now = new Date();
+    const from = new Date(now.getTime() - 45 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const to = now.toISOString().slice(0, 10);
+    const r = await runSalesStatusSync(prisma, { from, to, dateType: 'Issue' });
+    res.json({ ok: true, throttled: false, matched: r.matched, found: r.found });
+  } catch (e) {
+    res.json({ ok: false, throttled: false, error: e.message });
+  }
 }));
 
 // Lista pobranych faktur kosztowych (dla CRM).
