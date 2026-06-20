@@ -70,6 +70,7 @@ app.use('/api', require('./routes/glob'));
 app.use('/api', require('./routes/agent'));
 app.use('/api', require('./routes/upload'));
 app.use('/api', require('./routes/telegram-callback'));
+app.use('/api', require('./routes/ksef'));
 app.use('/api', require('./routes/admin'));
 app.use('/api', require('./routes/activity'));
 app.use('/api', require('./routes/cron'));

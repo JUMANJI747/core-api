@@ -782,3 +782,27 @@ model Transaction {
   @@index([shipmentHash])
   @@index([hasShipped, hasDelivered])
 }
+
+// Faktury KOSZTOWE pobierane z KSeF (gdzie nasza firma jest nabywcą = Subject2).
+// Surowy XML FA(3) zachowany; kilka pól zdenormalizowanych do listy/filtrów.
+model KsefCostInvoice {
+  id            String    @id @default(uuid())
+  ksefNumber    String    @unique // numer KSeF (referencyjny)
+  invoiceNumber String? // numer faktury sprzedawcy (z XML)
+  issueDate     DateTime?
+  sellerName    String?
+  sellerNip     String?
+  buyerNip      String? // nasz NIP (kontekst)
+  netAmount     Decimal?  @db.Decimal(14, 2)
+  vatAmount     Decimal?  @db.Decimal(14, 2)
+  grossAmount   Decimal?  @db.Decimal(14, 2)
+  currency      String?   @default("PLN")
+  xml           String? // surowy dokument FA(3)
+  raw           Json      @default("{}") // metadane z query + parsed snapshot
+  fetchedAt     DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+
+  @@index([sellerNip])
+  @@index([issueDate])
+  @@index([buyerNip])
+}
