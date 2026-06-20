@@ -171,6 +171,66 @@ router.post('/ksef/autosync-sales', asyncHandler(async (req, res) => {
   }
 }));
 
+// Rdzeń: pobiera faktury KOSZTOWE (Subject2) za zakres → upsert do bazy.
+// Tylko metadane (bez XML) gdy withXml=false — szybkie i idempotentne.
+async function runCostPull(prisma, { from, to, dateType = 'Issue', withXml = false, limit = 2000 }) {
+  const buyerNip = String(process.env.KSEF_NIP || '');
+  const { accessToken } = await ksef.authenticate();
+  const fromIso = new Date(from).toISOString();
+  const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
+  let metadata = await ksef.queryCostInvoiceMetadata(accessToken, { from: fromIso, to: toIso, dateType });
+  metadata = metadata.slice(0, limit);
+  let saved = 0; let xmlFetched = 0;
+  for (const m of metadata) {
+    const d = fromMetadata(m, buyerNip);
+    if (!d.ksefNumber) continue;
+    let xml = null;
+    if (withXml) {
+      try { xml = await ksef.getInvoiceXml(accessToken, d.ksefNumber); xmlFetched++; } catch { /* pomiń XML */ }
+    }
+    const data = {
+      ksefNumber: d.ksefNumber,
+      invoiceNumber: d.invoiceNumber || null,
+      issueDate: d.issueDate ? new Date(d.issueDate) : null,
+      sellerName: d.sellerName || null,
+      sellerNip: d.sellerNip ? String(d.sellerNip) : null,
+      buyerNip,
+      netAmount: d.netAmount, vatAmount: d.vatAmount, grossAmount: d.grossAmount,
+      currency: d.currency || 'PLN',
+      raw: m, fetchedAt: new Date(),
+      ...(withXml ? { xml } : {}),
+    };
+    try {
+      await prisma.ksefCostInvoice.upsert({ where: { ksefNumber: d.ksefNumber }, update: data, create: data });
+      saved++;
+    } catch { /* pojedynczy błąd nie psuje całości */ }
+  }
+  return { found: metadata.length, saved, xmlFetched };
+}
+
+// Auto-pull faktur kosztowych — wołany w tle (np. z Dashboardu). Throttle 6h,
+// zawsze 200. Zakres: od początku bieżącego roku do dziś (metadane, bez XML).
+router.post('/ksef/autosync-costs', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  if (!ksef.isConfigured()) return res.json({ ok: false, configured: false });
+  const KEY = 'autosync:ksef:costs';
+  const THROTTLE_MS = 6 * 60 * 60 * 1000;
+  const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
+  const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
+  if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
+  const nowIso = new Date().toISOString();
+  await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
+  // Odpowiadamy od razu — pobranie z KSeF (auth + query) leci w tle, żeby nie
+  // blokować renderu Dashboardu. Koszty pojawią się przy następnym wejściu.
+  res.json({ ok: true, throttled: false, started: true });
+  const now = new Date();
+  const from = `${now.getFullYear()}-01-01`;
+  const to = now.toISOString().slice(0, 10);
+  runCostPull(prisma, { from, to, dateType: 'Issue', withXml: false })
+    .then(r => console.log('[ksef/autosync-costs] done:', JSON.stringify(r)))
+    .catch(e => console.error('[ksef/autosync-costs] error:', e.message));
+}));
+
 // Lista pobranych faktur kosztowych (dla CRM).
 router.get('/ksef/cost-invoices', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
