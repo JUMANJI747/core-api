@@ -56,6 +56,18 @@ function refreshGkOrders() {
             status: o.status || o.statusName || null,
             carrier,
             receiverName: recv.companyName || recv.name || recv.contactPerson || '',
+            // Adres odbiorcy — do zapisania jako adres dostawy kontrahenta przy parowaniu.
+            receiver: {
+              name: recv.companyName || recv.name || null,
+              contactPerson: recv.contactPerson || null,
+              street: recv.street || recv.address || null,
+              houseNumber: recv.houseNumber || recv.houseNo || null,
+              postCode: recv.postCode || recv.zipCode || recv.postalCode || null,
+              city: recv.city || null,
+              country: recv.country || recv.countryCode || null,
+              phone: recv.phone || recv.phoneNumber || null,
+              email: recv.email || recv.contactEmail || null,
+            },
             date: o.creationDate || o.created_at || o.createdAt || null,
             tracking: o.trackingNumber || o.tracking || null,
           });
@@ -2539,7 +2551,30 @@ router.post('/invoices/link-shipment', async (req, res) => {
       where: { id: inv.id },
       data: { shipmentNumber: String(shipmentNumber), shipmentHash: req.body.shipmentHash || null, shipmentCarrier: req.body.carrier || carrier },
     });
-    res.json({ ok: true, invoiceNumber: updated.number, shipmentNumber: updated.shipmentNumber, carrier: updated.shipmentCarrier });
+
+    // Adres wysyłki → zapis do kontrahenta z faktury jako adres dostawy
+    // (+ oznaczenie „ostatnio używany"). Best-effort, nie psuje parowania.
+    let savedAddress = false;
+    try {
+      if (inv.contractorId) {
+        const gk = await getGkOrders();
+        const ord = gk.find(o => String(o.number) === String(shipmentNumber));
+        const a = (ord && ord.receiver) || {};
+        if (a.street || a.city) {
+          const { selfCall } = require('../services/agent-runtime');
+          const r = await selfCall('POST', `/api/contractors/${inv.contractorId}/delivery-address`, {
+            street: a.street, houseNumber: a.houseNumber, postCode: a.postCode,
+            city: a.city, country: a.country, contactPerson: a.contactPerson,
+            phone: a.phone, email: a.email, source: 'gk_pairing',
+          });
+          savedAddress = !!(r.body && r.body.ok);
+        }
+      }
+    } catch (e) {
+      console.error('[invoices/link-shipment] save delivery address failed (best-effort):', e.message);
+    }
+
+    res.json({ ok: true, invoiceNumber: updated.number, shipmentNumber: updated.shipmentNumber, carrier: updated.shipmentCarrier, savedAddress });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
