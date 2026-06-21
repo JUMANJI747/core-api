@@ -125,7 +125,7 @@ async function extractTextFromImage(buffer, mimeType, filename) {
     'POST',
     { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
     JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.PARSE_DOC_MODEL || 'claude-sonnet-4-5-20250929',
       max_tokens: 4096,
       messages: [{
         role: 'user',
@@ -171,7 +171,7 @@ Jeśli pole nie występuje — null. Ilości jako liczby. Ceny jako liczby (bez 
     'POST',
     { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
     JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.PARSE_DOC_MODEL || 'claude-sonnet-4-5-20250929',
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     })

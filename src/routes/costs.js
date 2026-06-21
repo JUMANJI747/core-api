@@ -64,7 +64,7 @@ sellerName = nazwa wystawcy faktury (sprzedawcy), NIE nabywcy. currency np. PLN 
 Jeśli pole nie występuje — null.`;
 
   const msg = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: process.env.COST_PARSE_MODEL || 'claude-sonnet-4-5-20250929',
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
@@ -79,6 +79,39 @@ async function extractText(buffer, fileName, mimeType) {
   if (mime.startsWith('image/')) return extractTextFromImage(buffer, mime, fileName);
   if (mime === 'text/plain') return buffer.toString('utf-8');
   throw new Error(`Nieobsługiwany typ pliku: ${mime} (obsługiwane: PDF, JPG, PNG).`);
+}
+
+// ===== DEDUPLIKACJA =====
+// Klucz: numer faktury + sprzedawca. Numery faktur różnych firm mogą się
+// powtarzać, więc rozróżniamy po NIP (a gdy brak — po nazwie). Sprawdzamy
+// OBYDWA źródła: KSeF (KsefCostInvoice) i ręczne (CostInvoice).
+const normNum = (v) => String(v || '').toLowerCase().replace(/[\s\-_/.]/g, '');
+const normNip = (v) => String(v || '').replace(/\D/g, '');
+const normName = (v) => String(v || '').toLowerCase().replace(/[^a-ząćęłńóśźż0-9]/gi, '');
+
+async function findDuplicate(prisma, region, { invoiceNumber, sellerNip, sellerName }) {
+  const nNum = normNum(invoiceNumber);
+  if (!nNum) return null; // bez numeru nie da się rzetelnie deduplikować
+  const nNip = normNip(sellerNip);
+  const nName = normName(sellerName);
+  const isMatch = (cand) => {
+    if (normNum(cand.invoiceNumber) !== nNum) return false;
+    const cNip = normNip(cand.sellerNip);
+    if (nNip && cNip) return cNip === nNip;            // oba mają NIP → po NIP
+    if (nName && normName(cand.sellerName)) return normName(cand.sellerName) === nName; // inaczej po nazwie
+    return true; // ten sam numer, brak danych do rozróżnienia → ostrożnie: duplikat
+  };
+  const manual = await prisma.costInvoice.findMany({
+    where: { region }, select: { id: true, invoiceNumber: true, sellerNip: true, sellerName: true },
+  });
+  for (const c of manual) if (isMatch(c)) return { source: 'manual', id: c.id, invoiceNumber: c.invoiceNumber, sellerName: c.sellerName };
+  if (region === 'pl') {
+    const ks = await prisma.ksefCostInvoice.findMany({
+      select: { id: true, invoiceNumber: true, sellerNip: true, sellerName: true },
+    });
+    for (const c of ks) if (isMatch(c)) return { source: 'ksef', id: c.id, invoiceNumber: c.invoiceNumber, sellerName: c.sellerName };
+  }
+  return null;
 }
 
 // Lista kosztów dla regionu: PL = ręczne + KSeF, ES = ręczne. Znormalizowane.
@@ -143,33 +176,71 @@ router.post('/costs/parse', asyncHandler(async (req, res) => {
   }
 }));
 
-// Utworzenie kosztu — ręcznie lub z dołączonym plikiem (file: {base64,fileName,mimeType}).
-router.post('/costs', asyncHandler(async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  const b = req.body || {};
-  const region = b.region === 'es' ? 'es' : 'pl';
+// Zapis pojedynczego kosztu (współdzielone przez /costs i /costs/upload).
+async function createCostRecord(prisma, region, fields, file) {
   let source = 'manual'; let fileName = null; let fileMime = null; let fileData = null;
-  if (b.file && b.file.base64) {
-    fileData = Buffer.from(stripDataUrl(b.file.base64), 'base64');
-    fileName = str(b.file.fileName) || 'dokument';
-    fileMime = guessMime(fileName, b.file.mimeType);
+  if (file && file.base64) {
+    fileData = Buffer.from(stripDataUrl(file.base64), 'base64');
+    fileName = str(file.fileName) || 'dokument';
+    fileMime = guessMime(fileName, file.mimeType);
     source = 'document';
   }
-  const created = await prisma.costInvoice.create({
+  return prisma.costInvoice.create({
     data: {
       region, source,
-      invoiceNumber: str(b.invoiceNumber),
-      issueDate: b.issueDate ? new Date(b.issueDate) : null,
-      sellerName: str(b.sellerName),
-      sellerNip: str(b.sellerNip),
-      netAmount: num(b.netAmount), vatAmount: num(b.vatAmount), grossAmount: num(b.grossAmount),
-      currency: defCurrency(region, b.currency),
-      note: str(b.note),
+      invoiceNumber: str(fields.invoiceNumber),
+      issueDate: fields.issueDate ? new Date(fields.issueDate) : null,
+      sellerName: str(fields.sellerName),
+      sellerNip: str(fields.sellerNip),
+      netAmount: num(fields.netAmount), vatAmount: num(fields.vatAmount), grossAmount: num(fields.grossAmount),
+      currency: defCurrency(region, fields.currency),
+      note: str(fields.note),
       fileName, fileMime, fileData,
     },
     select: { id: true },
   });
+}
+
+// Utworzenie kosztu — ręcznie lub z dołączonym plikiem (file: {base64,fileName,mimeType}).
+// Sprawdza duplikat (numer + sprzedawca) w KSeF i ręcznych; force=true pomija kontrolę.
+router.post('/costs', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const b = req.body || {};
+  const region = b.region === 'es' ? 'es' : 'pl';
+  if (!b.force) {
+    const dup = await findDuplicate(prisma, region, { invoiceNumber: b.invoiceNumber, sellerNip: b.sellerNip, sellerName: b.sellerName });
+    if (dup) return res.json({ ok: false, duplicate: true, existing: dup, error: `Faktura ${str(b.invoiceNumber) || ''} od „${dup.sellerName || '—'}" już istnieje (${dup.source === 'ksef' ? 'KSeF' : 'ręczna'}).` });
+  }
+  const created = await createCostRecord(prisma, region, b, b.file);
   res.json({ ok: true, id: created.id });
+}));
+
+// MASOWY upload jednego pliku: odczyt (Anthropic) → dedup → zapis. Front woła
+// to w pętli po wielu plikach. Zwraca status: saved | duplicate | error.
+router.post('/costs/upload', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { base64, fileName, mimeType, region: r, force } = req.body || {};
+  const region = r === 'es' ? 'es' : 'pl';
+  if (!base64) return res.json({ ok: false, status: 'error', error: 'Brak pliku.' });
+  let data;
+  try {
+    const buffer = Buffer.from(stripDataUrl(base64), 'base64');
+    const text = await extractText(buffer, fileName, mimeType);
+    if (!text || text.trim().length < 5) return res.json({ ok: false, status: 'error', error: 'Pusty/niewczytany dokument.' });
+    data = await parseCostInvoice(text, region);
+  } catch (e) {
+    return res.json({ ok: false, status: 'error', error: e.message });
+  }
+  if (!force) {
+    const dup = await findDuplicate(prisma, region, { invoiceNumber: data.invoiceNumber, sellerNip: data.sellerNip, sellerName: data.sellerName });
+    if (dup) return res.json({ ok: true, status: 'duplicate', existing: dup, data });
+  }
+  try {
+    const created = await createCostRecord(prisma, region, data, { base64, fileName, mimeType });
+    res.json({ ok: true, status: 'saved', id: created.id, data });
+  } catch (e) {
+    res.json({ ok: false, status: 'error', error: e.message, data });
+  }
 }));
 
 // Edycja kosztu (tylko ręczne/dokumentowe). Plik podmieniany gdy podany.
