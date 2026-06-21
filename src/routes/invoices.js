@@ -2568,5 +2568,47 @@ router.post('/invoices/:idOrNumber/ksef-send', async (req, res) => {
   }
 });
 
+// Status KSeF pojedynczej faktury — używany przez front do odpytywania po
+// kliknięciu „Wyślij do KSeF" (KSeF nadaje numer asynchronicznie). Jeśli numer
+// jest już w bazie → zwraca go. Inaczej pyta KSeF (Subject1) o ten numer FV
+// w zakresie wokół daty wystawienia i zapisuje numer KSeF gdy się pojawi.
+router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+    if (inv.ksefNumber) return res.json({ ok: true, status: 'in_ksef', ksefNumber: inv.ksefNumber });
+
+    const ksef = require('../ksef-client');
+    if (!ksef.isConfigured()) return res.json({ ok: true, status: 'pending', ksefNumber: null, configured: false });
+
+    // Zakres: od daty wystawienia (z zapasem 2 dni wstecz) do dziś — wąsko, szybko.
+    const issued = inv.issueDate ? new Date(inv.issueDate) : new Date(Date.now() - 7 * 24 * 3600 * 1000);
+    const from = new Date(issued.getTime() - 2 * 24 * 3600 * 1000).toISOString();
+    const to = new Date(Date.now() + 24 * 3600 * 1000 - 1).toISOString();
+    const { accessToken } = await ksef.authenticate();
+    const metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from, to, dateType: 'Issue' });
+    const P = ksef._pick;
+    let ksefNumber = null;
+    for (const m of metadata) {
+      const number = P(m, 'invoiceNumber', 'number');
+      if (number && String(number) === String(inv.number)) {
+        ksefNumber = P(m, 'ksefNumber', 'ksefReferenceNumber', 'referenceNumber');
+        if (ksefNumber) break;
+      }
+    }
+    if (ksefNumber) {
+      await prisma.invoice.update({ where: { id: inv.id }, data: { ksefNumber: String(ksefNumber) } }).catch(() => {});
+      return res.json({ ok: true, status: 'in_ksef', ksefNumber: String(ksefNumber) });
+    }
+    res.json({ ok: true, status: 'pending', ksefNumber: null });
+  } catch (e) {
+    res.status(200).json({ ok: false, status: 'error', error: e.message });
+  }
+});
+
 router.addGkOrderToCache = addGkOrderToCache;
 module.exports = router;
