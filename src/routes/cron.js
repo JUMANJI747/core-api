@@ -263,23 +263,20 @@ router.post('/cron/monthly-report', async (req, res) => {
           console.error('[cron/monthly-report] ksef sync failed:', e.message);
         }
 
-        // 3) Dane do raportu
-        const plInvoices = await prisma.invoice.findMany({
-          where: { ifirmaId: { not: null }, issueDate: { gte: from, lte: to } },
-          select: { number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, currency: true, grossAmount: true, contractorName: true },
-          orderBy: { issueDate: 'asc' },
-        });
-        const total = plInvoices.length;
-        const inKsef = plInvoices.filter(i => i.ksefNumber).length;
-        const toSendList = plInvoices.filter(i => !i.ksefNumber).map(i => i.number);
-        const wdt = plInvoices.filter(isWdtInvoice);
-        const wdtUnpairedList = wdt.filter(i => !i.shipmentNumber).map(i => i.number);
+        // 3) Dane do raportu (wspólny builder — parowanie WDT jak na stronie Faktury)
+        const { buildReport } = require('../services/monthly-accounting');
+        const rep = await buildReport(prisma, { from, to });
+        const total = rep.sales.total;
+        const inKsef = rep.sales.inKsef;
+        const toSendList = rep.sales.toSendNumbers;
+        const wdtUnpairedList = rep.wdt.unpairedNumbers;
+        const wdtTotal = rep.wdt.total;
 
         const report = {
           range: { from: fromIso, to: toIso },
           sync, ksefSync,
-          sales: { total, inKsef, toSend: toSendList.length, toSendNumbers: toSendList },
-          wdt: { total: wdt.length, unpaired: wdtUnpairedList.length, unpairedNumbers: wdtUnpairedList },
+          sales: rep.sales,
+          wdt: rep.wdt,
         };
 
         // 4) Telegram
@@ -297,7 +294,7 @@ router.post('/cron/monthly-report', async (req, res) => {
               `   ✅ w KSeF: ${inKsef}`,
               `   📨 do dosłania: ${toSendList.length}${toSendList.length ? '\n      ' + toSendList.slice(0, 30).join(', ') + (toSendList.length > 30 ? ' …' : '') : ''}`,
               ``,
-              `🚚 WDT bez sparowanej wysyłki: ${wdtUnpairedList.length} / ${wdt.length}${wdtUnpairedList.length ? '\n   ' + wdtUnpairedList.slice(0, 30).join(', ') + (wdtUnpairedList.length > 30 ? ' …' : '') : ''}`,
+              `🚚 WDT bez sparowanej wysyłki: ${wdtUnpairedList.length} / ${wdtTotal}${wdtUnpairedList.length ? '\n   ' + wdtUnpairedList.slice(0, 30).join(', ') + (wdtUnpairedList.length > 30 ? ' …' : '') : ''}`,
             ];
             await sendTelegram(tg.token, String(tg.chatId), lines.join('\n'));
           }

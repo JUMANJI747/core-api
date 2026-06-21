@@ -34,7 +34,24 @@ async function buildReport(prisma, { from, to }) {
   const toSend = plInvoices.filter(i => !i.ksefNumber);
   const inKsef = total - toSend.length;
   const wdt = plInvoices.filter(isWdtInvoice);
-  const wdtUnpaired = wdt.filter(i => !i.shipmentNumber);
+
+  // Parowanie WDT liczymy TAK SAMO jak strona Faktury: faktura jest „sparowana"
+  // gdy ma jawny shipmentNumber LUB dopasowanie po nazwie do zamówienia GK
+  // (runtime, niezapisane w bazie). Bez tego raport pokazywał 21/21 mimo że
+  // prawie wszystkie są połączone. Stan bierzemy wprost z GET /api/invoices.
+  let pairedNumbers = null;
+  try {
+    const { selfCall } = require('./agent-runtime');
+    const r = await selfCall('GET', '/api/invoices', { limit: 10000 });
+    const arr = Array.isArray(r.body) ? r.body : null;
+    if (arr) {
+      pairedNumbers = new Set();
+      for (const it of arr) { if (it && it.shipment && it.number) pairedNumbers.add(String(it.number)); }
+    }
+  } catch (_) { /* fallback niżej */ }
+  const isPaired = (inv) => pairedNumbers ? pairedNumbers.has(String(inv.number)) : !!inv.shipmentNumber;
+  const wdtUnpaired = wdt.filter(i => !isPaired(i));
+
   return {
     sales: { total, inKsef, toSend: toSend.length, toSendNumbers: toSend.map(i => i.number) },
     wdt: { total: wdt.length, unpaired: wdtUnpaired.length, unpairedNumbers: wdtUnpaired.map(i => i.number) },
