@@ -119,6 +119,71 @@ router.post('/build-package', async (req, res) => {
       }
     }
 
+    // b2) AUGMENTACJA: faktury WDT z JAWNYM linkiem (shipmentHash, ustawiony przy
+    // parowaniu w „Dodatkowej księgowości") lub z RĘCZNIE wgranym listem
+    // (shipmentDocData) — dorzucamy ich listy nawet gdy name/LLM-matching ich
+    // nie złapał. Dzięki temu „wyślij listy na maila" działa po sparowaniu/uploadzie.
+    try {
+      const augFrom = new Date(y, m - 1, 1);
+      const augLastDay = new Date(y, m, 0).getDate();
+      const augTo = new Date(y, m - 1, augLastDay, 23, 59, 59, 999);
+      const explicitWdt = await prisma.invoice.findMany({
+        where: {
+          issueDate: { gte: augFrom, lte: augTo },
+          OR: [
+            { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
+            { type: { contains: 'wdt', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+          ],
+        },
+        select: { number: true, contractorName: true, shipmentHash: true, shipmentDocName: true, shipmentDocMime: true, shipmentDocData: true },
+      });
+      for (const inv of explicitWdt) {
+        const existing = await prisma.document.findFirst({ where: { packageId: pkg.id, type: 'cmr', invoiceNumber: inv.number } });
+        if (existing) continue;
+        // (a) ręcznie wgrany list przewozowy
+        if (inv.shipmentDocData) {
+          const ext = (inv.shipmentDocName || '').split('.').pop() || 'pdf';
+          await prisma.document.create({
+            data: {
+              packageId: pkg.id, type: 'cmr',
+              name: `CMR — ${inv.number} — ${inv.contractorName || ''}`,
+              filename: `${inv.number.replace(/\//g, '-')}.${ext}`,
+              invoiceNumber: inv.number, mimeType: inv.shipmentDocMime || 'application/pdf',
+              data: inv.shipmentDocData, size: inv.shipmentDocData.length,
+            },
+          });
+          cmrDownloaded++;
+          console.log('[package] CMR (wgrany list):', inv.number);
+          continue;
+        }
+        // (b) jawny hash GK → pobierz etykietę
+        if (inv.shipmentHash) {
+          try {
+            const { status, body: pdfBuffer } = await getOrderLabels(inv.shipmentHash, 'A4');
+            if (status === 200 && pdfBuffer.length >= 100) {
+              await prisma.document.create({
+                data: {
+                  packageId: pkg.id, type: 'cmr',
+                  name: `CMR — ${inv.number} — ${inv.contractorName || ''}`,
+                  filename: `${inv.number.replace(/\//g, '-')}.pdf`,
+                  invoiceNumber: inv.number, mimeType: 'application/pdf',
+                  data: pdfBuffer, size: pdfBuffer.length,
+                },
+              });
+              cmrDownloaded++;
+              console.log('[package] CMR (jawny hash):', inv.number);
+            }
+          } catch (e) {
+            console.error(`[package] CMR aug error for ${inv.number}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[package] explicit WDT augmentation failed:', e.message);
+    }
+
     // c) Faktury PDF z iFirma POMINIETE — od czasu wprowadzenia KSeF
     // ksiegowa pobiera FV bezposrednio z KSeF, my wysylamy tylko same
     // listy przewozowe (CMR). Kod fetchInvoicePdf zostawiamy jakby kiedys
@@ -433,7 +498,7 @@ router.post('/send-package', async (req, res) => {
 <p>Wygenerowano automatycznie przez system SurfStickBell.</p>`;
 
     await sendMail({
-      from: 'info@surfstickbell.com',
+      from: 'office@surfstickbell.com',
       to,
       subject: `Listy przewozowe za ${period} — SurfStickBell`,
       html: htmlBody,
