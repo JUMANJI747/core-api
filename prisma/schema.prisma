@@ -151,6 +151,11 @@ model Invoice {
   shipmentNumber  String?
   shipmentHash    String?
   shipmentCarrier String?
+  // Ręcznie wgrany list przewozowy (gdy wysyłka spoza GlobKuriera) — obecność
+  // pliku oznacza fakturę jako „ma wysyłkę" (znika z WDT-bez-wysyłki).
+  shipmentDocName String?
+  shipmentDocMime String?
+  shipmentDocData Bytes?
 
   // KSeF (faktury sprzedażowe): ksefNumber = numer KSeF (gdy FV jest już w KSeF),
   // ksefSentAt = kiedy wysłaliśmy przez iFirmę. Znaczek na liście faktur.

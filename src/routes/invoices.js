@@ -2254,7 +2254,7 @@ router.get('/invoices', async (req, res) => {
         issueDate: true, dueDate: true,
         grossAmount: true, currency: true, paidAmount: true,
         status: true, type: true, ifirmaType: true, source: true,
-        shipmentNumber: true, shipmentHash: true, shipmentCarrier: true,
+        shipmentNumber: true, shipmentHash: true, shipmentCarrier: true, shipmentDocName: true,
         ksefNumber: true, ksefSentAt: true,
         createdAt: true, updatedAt: true,
       },
@@ -2349,6 +2349,10 @@ router.get('/invoices', async (req, res) => {
         const live = gkByNumber[String(i.shipmentNumber)];
         s = live || { number: i.shipmentNumber, tracking: null, status: null, carrier: i.shipmentCarrier || null };
       }
+      // Ręcznie wgrany list przewozowy (spoza GK) — też liczy się jako wysyłka.
+      if (!s && i.shipmentDocName) {
+        s = { number: null, tracking: null, status: null, carrier: i.shipmentCarrier || 'ręczny', manualDoc: true };
+      }
       if (!s) return { ...i, shipment: null };
       const st = (s.status || '').toUpperCase();
       return {
@@ -2360,6 +2364,7 @@ router.get('/invoices', async (req, res) => {
           carrier: s.carrier || i.shipmentCarrier || null,
           delivered: st === 'DELIVERED',
           shipped: !!st && !['NEW', 'CREATED', 'CANCELED', 'CANCELLED'].includes(st),
+          manualDoc: !!s.manualDoc,
         },
       };
     }));
@@ -2603,6 +2608,58 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     }
     await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: amount } });
     res.json({ ok: true, invoiceNumber: inv.number, amount, currency, date, info: info || 'wpłata zarejestrowana' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Wgranie ręcznego LISTU PRZEWOZOWEGO do faktury (wysyłka spoza GlobKuriera).
+// Body JSON: { base64, fileName, mimeType }. Obecność pliku oznacza fakturę jako
+// „ma wysyłkę" — znika z listy WDT bez wysyłki.
+router.post('/invoices/:idOrNumber/shipment-doc', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+    const b = req.body || {};
+    if (!b.base64) return res.status(400).json({ ok: false, error: 'Brak pliku (base64).' });
+    const raw = String(b.base64);
+    const i = raw.indexOf('base64,');
+    const data = Buffer.from(i >= 0 ? raw.slice(i + 7) : raw, 'base64');
+    const fileName = (b.fileName && String(b.fileName).trim()) || 'list-przewozowy';
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    const mimeMap = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
+    const mime = b.mimeType && b.mimeType !== 'application/octet-stream' ? b.mimeType : (mimeMap[ext] || 'application/octet-stream');
+    await prisma.invoice.update({
+      where: { id: inv.id },
+      data: {
+        shipmentDocName: fileName, shipmentDocMime: mime, shipmentDocData: data,
+        shipmentCarrier: inv.shipmentCarrier || 'ręczny',
+      },
+    });
+    res.json({ ok: true, invoiceNumber: inv.number, fileName });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/invoices/:idOrNumber/shipment-doc', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key }, select: { shipmentDocName: true, shipmentDocMime: true, shipmentDocData: true } }) : null;
+    if (!inv) {
+      const found = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' }, select: { shipmentDocName: true, shipmentDocMime: true, shipmentDocData: true } });
+      inv = found;
+    }
+    if (!inv || !inv.shipmentDocData) return res.status(404).json({ ok: false, error: 'Brak listu przewozowego.' });
+    res.setHeader('Content-Type', inv.shipmentDocMime || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(inv.shipmentDocName || 'list')}"`);
+    res.send(Buffer.from(inv.shipmentDocData));
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
