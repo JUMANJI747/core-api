@@ -54,6 +54,21 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
   const withXml = !(req.body && req.body.withXml === false); // domyślnie pobieramy XML
   const limit = Math.min(parseInt(req.body && req.body.limit, 10) || 500, 2000);
 
+  // byMonths: pobranie miesiąc po miesiącu (diagnostycznie — zwraca rozbicie
+  // ile faktur KSeF ma w każdym miesiącu). Odporne na limity zakresu.
+  if (req.body && req.body.byMonths) {
+    const f = new Date(from); const t = new Date(to);
+    try {
+      const r = await runCostPullByMonths(prisma, {
+        fromYear: f.getUTCFullYear(), fromMonth: f.getUTCMonth(),
+        toYear: t.getUTCFullYear(), toMonth: t.getUTCMonth(), withXml,
+      });
+      return res.json({ ok: true, base: ksef.BASE, byMonths: true, range: { from, to }, ...r });
+    } catch (e) {
+      return res.status(502).json({ ok: false, byMonths: true, error: e.message, status: e.status, body: e.body });
+    }
+  }
+
   let accessToken;
   try {
     ({ accessToken } = await ksef.authenticate());
@@ -208,26 +223,51 @@ async function runCostPull(prisma, { from, to, dateType = 'Issue', withXml = fal
   return { found: metadata.length, saved, xmlFetched };
 }
 
-// Auto-pull faktur kosztowych — wołany w tle (np. z Dashboardu). Throttle 6h,
-// zawsze 200. Zakres: od początku bieżącego roku do dziś (metadane, bez XML).
+// Pobranie kosztów miesiąc po miesiącu (odporne na ew. limity zakresu w KSeF
+// i pewniejsze przy paginacji). Zwraca sumę found/saved ze wszystkich miesięcy.
+async function runCostPullByMonths(prisma, { fromYear, fromMonth, toYear, toMonth, withXml = false }) {
+  let totalFound = 0; let totalSaved = 0; const perMonth = [];
+  let y = fromYear; let mo = fromMonth;
+  for (let guard = 0; guard < 60; guard++) {
+    const from = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+    const to = `${y}-${String(mo + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    try {
+      const r = await runCostPull(prisma, { from, to, dateType: 'Issue', withXml });
+      totalFound += r.found; totalSaved += r.saved;
+      perMonth.push({ period: from, found: r.found, saved: r.saved });
+    } catch (e) {
+      perMonth.push({ period: from, error: e.message });
+    }
+    if (y === toYear && mo === toMonth) break;
+    mo++; if (mo > 11) { mo = 0; y++; }
+  }
+  return { totalFound, totalSaved, perMonth };
+}
+
+// Auto-pull faktur kosztowych — wołany w tle (np. z Dashboardu). Throttle 6h.
+// Throttle ustawiamy DOPIERO PO udanym pobraniu — błąd nie blokuje ponowienia.
 router.post('/ksef/autosync-costs', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   if (!ksef.isConfigured()) return res.json({ ok: false, configured: false });
   const KEY = 'autosync:ksef:costs';
   const THROTTLE_MS = 6 * 60 * 60 * 1000;
+  const force = !!(req.body && req.body.force);
   const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
   const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
-  if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
-  const nowIso = new Date().toISOString();
-  await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
-  // Odpowiadamy od razu — pobranie z KSeF (auth + query) leci w tle, żeby nie
-  // blokować renderu Dashboardu. Koszty pojawią się przy następnym wejściu.
+  if (!force && ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
+  // Krótka blokada anty-stampede (5 min) — żeby równoległe wejścia nie odpalały
+  // wielu pobrań naraz. Pełny throttle 6h dopiero po sukcesie.
+  const lockIso = new Date(Date.now() - THROTTLE_MS + 5 * 60 * 1000).toISOString();
+  await prisma.config.upsert({ where: { key: KEY }, update: { value: lockIso }, create: { key: KEY, value: lockIso } }).catch(() => {});
   res.json({ ok: true, throttled: false, started: true });
   const now = new Date();
-  const from = `${now.getFullYear()}-01-01`;
-  const to = now.toISOString().slice(0, 10);
-  runCostPull(prisma, { from, to, dateType: 'Issue', withXml: false })
-    .then(r => console.log('[ksef/autosync-costs] done:', JSON.stringify(r)))
+  runCostPullByMonths(prisma, { fromYear: now.getFullYear(), fromMonth: 0, toYear: now.getFullYear(), toMonth: now.getMonth(), withXml: false })
+    .then(async (r) => {
+      console.log('[ksef/autosync-costs] done:', JSON.stringify(r));
+      // Sukces → ustaw pełny throttle 6h.
+      await prisma.config.upsert({ where: { key: KEY }, update: { value: new Date().toISOString() }, create: { key: KEY, value: new Date().toISOString() } }).catch(() => {});
+    })
     .catch(e => console.error('[ksef/autosync-costs] error:', e.message));
 }));
 
