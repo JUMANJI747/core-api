@@ -2,7 +2,6 @@
 
 const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
-const { extractTextFromPdf, extractTextFromImage } = require('./parse-document');
 
 // Faktury kosztowe RĘCZNE / z UPLOADU (model CostInvoice) + KSeF (KsefCostInvoice).
 // PL: KSeF (auto) + ręczne. Kanary (ES): tylko ręczne / z dokumentu.
@@ -32,20 +31,25 @@ function guessMime(fileName, mimeType) {
   return map[ext] || mimeType || 'application/octet-stream';
 }
 
-// Odczyt faktury kosztowej przez Anthropic — z tekstu (PDF/obraz) → JSON pól.
-async function parseCostInvoice(text, region) {
+// ===== ODCZYT FAKTURY KOSZTOWEJ (Anthropic) =====
+// Strategia: PDF z warstwą tekstową → tekst wyciąga LOKALNIE pdf-parse (tanio,
+// dokładnie), do LLM idzie sam tekst. PDF-skan (brak tekstu) → cały PDF do LLM
+// (blok document). Obraz (JPG/PNG) → cały do LLM (blok image).
+const COST_MODEL = () => process.env.COST_PARSE_MODEL || 'claude-sonnet-4-5-20250929';
+
+function getAnthropic() {
   const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
   const Anthropic = require('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey });
+  return new Anthropic({ apiKey });
+}
+
+function costInstruction(region) {
   const langHint = region === 'es'
     ? 'To faktura hiszpańska (Kanary, IGIC zamiast VAT). NIP sprzedawcy to NIF/CIF.'
     : 'To faktura polska. NIP sprzedawcy to polski NIP.';
-  const prompt = `Z poniższego tekstu faktury KOSZTOWEJ (jesteśmy NABYWCĄ) wyciągnij dane sprzedawcy i kwoty.
+  return `Z faktury KOSZTOWEJ (jesteśmy NABYWCĄ) wyciągnij dane SPRZEDAWCY (wystawcy) i kwoty.
 ${langHint}
-
-TEKST FAKTURY:
-${text.slice(0, 12000)}
 
 Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
 {
@@ -62,22 +66,64 @@ Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
 Zasady: issueDate w formacie YYYY-MM-DD. Kwoty jako liczby (kropka dziesiętna, bez waluty i spacji).
 sellerName = nazwa wystawcy faktury (sprzedawcy), NIE nabywcy. currency np. PLN albo EUR.
 Jeśli pole nie występuje — null.`;
+}
 
-  const msg = await client.messages.create({
-    model: process.env.COST_PARSE_MODEL || 'claude-sonnet-4-5-20250929',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
-  });
+function parseJsonOut(msg) {
   const out = (msg.content && msg.content[0] && msg.content[0].text) || '';
   const clean = out.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
   return JSON.parse(clean);
 }
 
-async function extractText(buffer, fileName, mimeType) {
+// Tekst → JSON (PDF z tekstem, pliki .txt).
+async function parseCostInvoice(text, region) {
+  const client = getAnthropic();
+  const msg = await client.messages.create({
+    model: COST_MODEL(), max_tokens: 1024,
+    messages: [{ role: 'user', content: `${costInstruction(region)}\n\nTEKST FAKTURY:\n${String(text).slice(0, 12000)}` }],
+  });
+  return parseJsonOut(msg);
+}
+
+// Cały dokument (PDF-skan / obraz) → JSON (multimodalnie).
+async function parseCostInvoiceFromMedia(buffer, mediaType, region) {
+  const client = getAnthropic();
+  const block = mediaType === 'application/pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType, data: buffer.toString('base64') } };
+  const msg = await client.messages.create({
+    model: COST_MODEL(), max_tokens: 1024,
+    messages: [{ role: 'user', content: [block, { type: 'text', text: costInstruction(region) }] }],
+  });
+  return parseJsonOut(msg);
+}
+
+// Lokalne wyciągnięcie tekstu z PDF (pdf-parse). Zwraca '' gdy skan/brak tekstu.
+async function extractPdfText(buffer) {
+  try {
+    const { PDFParse } = require('pdf-parse');
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    return (result.text || '').trim();
+  } catch (e) {
+    console.log('[costs] pdf-parse failed:', e.message);
+    return '';
+  }
+}
+
+// Główne wejście: buffer → pola faktury. Wybiera tekst-LLM vs cały-dokument-LLM.
+async function parseCostDocument(buffer, fileName, mimeType, region) {
   const mime = guessMime(fileName, mimeType);
-  if (mime === 'application/pdf') return extractTextFromPdf(buffer, fileName);
-  if (mime.startsWith('image/')) return extractTextFromImage(buffer, mime, fileName);
-  if (mime === 'text/plain') return buffer.toString('utf-8');
+  if (mime === 'application/pdf') {
+    const text = await extractPdfText(buffer);
+    if (text.length >= 30) return { data: await parseCostInvoice(text, region), via: 'pdf-text' };
+    return { data: await parseCostInvoiceFromMedia(buffer, 'application/pdf', region), via: 'pdf-scan' };
+  }
+  if (mime.startsWith('image/')) {
+    return { data: await parseCostInvoiceFromMedia(buffer, mime, region), via: 'image' };
+  }
+  if (mime === 'text/plain') {
+    return { data: await parseCostInvoice(buffer.toString('utf-8'), region), via: 'text' };
+  }
   throw new Error(`Nieobsługiwany typ pliku: ${mime} (obsługiwane: PDF, JPG, PNG).`);
 }
 
@@ -167,10 +213,8 @@ router.post('/costs/parse', asyncHandler(async (req, res) => {
   if (!base64) return res.status(400).json({ ok: false, error: 'Brak pliku (base64).' });
   try {
     const buffer = Buffer.from(stripDataUrl(base64), 'base64');
-    const text = await extractText(buffer, fileName, mimeType);
-    if (!text || text.trim().length < 5) return res.json({ ok: false, error: 'Nie udało się odczytać tekstu z pliku.' });
-    const data = await parseCostInvoice(text, region === 'es' ? 'es' : 'pl');
-    res.json({ ok: true, data });
+    const { data, via } = await parseCostDocument(buffer, fileName, mimeType, region === 'es' ? 'es' : 'pl');
+    res.json({ ok: true, data, via });
   } catch (e) {
     res.status(200).json({ ok: false, error: e.message });
   }
@@ -225,9 +269,7 @@ router.post('/costs/upload', asyncHandler(async (req, res) => {
   let data;
   try {
     const buffer = Buffer.from(stripDataUrl(base64), 'base64');
-    const text = await extractText(buffer, fileName, mimeType);
-    if (!text || text.trim().length < 5) return res.json({ ok: false, status: 'error', error: 'Pusty/niewczytany dokument.' });
-    data = await parseCostInvoice(text, region);
+    ({ data } = await parseCostDocument(buffer, fileName, mimeType, region));
   } catch (e) {
     return res.json({ ok: false, status: 'error', error: e.message });
   }
