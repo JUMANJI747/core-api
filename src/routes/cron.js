@@ -205,10 +205,119 @@ router.post('/cron/prune-activity', async (req, res) => {
   }
 });
 
+// Raport miesięczny (9. dnia): iFirma sync → ile FV w KSeF / ile dosłać →
+// ile WDT bez sparowanej wysyłki. Zakres domyślny: poprzedni miesiąc
+// (override body {from,to} YYYY-MM-DD lub {month:"YYYY-MM"}). Wysyła Telegram.
+function isWdtInvoice(inv) {
+  const t = `${inv.ifirmaType || ''} ${inv.type || ''}`.toLowerCase();
+  return t.includes('dostawa_ue') || t.includes('wdt');
+}
+function prevMonthRange() {
+  const now = new Date();
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59));
+  return { from, to };
+}
+
+router.post('/cron/monthly-report', async (req, res) => {
+  const auth = await checkAuth(req);
+  if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+  const prisma = req.app.locals.prisma;
+  try {
+    const result = await withLock(prisma, 'monthly-report', async () => {
+      return await runJob(prisma, 'monthly-report', async () => {
+        // Zakres
+        let { from, to } = prevMonthRange();
+        const b = req.body || {};
+        if (b.month && /^\d{4}-\d{2}$/.test(b.month)) {
+          const [y, m] = b.month.split('-').map(Number);
+          from = new Date(Date.UTC(y, m - 1, 1));
+          to = new Date(Date.UTC(y, m, 0, 23, 59, 59));
+        }
+        if (b.from) from = new Date(b.from);
+        if (b.to) { to = new Date(b.to); to.setUTCHours(23, 59, 59, 999); }
+        const fromIso = from.toISOString().slice(0, 10);
+        const toIso = to.toISOString().slice(0, 10);
+
+        // 1) iFirma sync (te same kroki co /cron/sync-ifirma)
+        let sync = { created: 0, updated: 0 };
+        try {
+          const { processIfirmaInvoices, computeSyncWindow } = require('../services/ifirma-sync');
+          const { fetchInvoices } = require('../ifirma-client');
+          const win = await computeSyncWindow(prisma);
+          const invs = await fetchInvoices({ dataOd: win.dataOd, dataDo: win.dataDo });
+          const r = await processIfirmaInvoices(invs, prisma, { dataOd: win.dataOd, dataDo: win.dataDo, dryRun: false });
+          sync = { created: (r.invoices && r.invoices.created) || 0, updated: (r.invoices && r.invoices.updated) || 0 };
+        } catch (e) {
+          console.error('[cron/monthly-report] iFirma sync failed:', e.message);
+          sync = { error: e.message };
+        }
+
+        // 2) KSeF sync statusu sprzedaży (Subject1) — żeby ksefNumber był świeży
+        let ksefSync = null;
+        try {
+          const { selfCall } = require('../services/agent-runtime');
+          const r = await selfCall('POST', '/api/ksef/sync-sales-status', { from: fromIso, to: toIso });
+          ksefSync = r.body && (r.body.matched != null) ? { matched: r.body.matched, found: r.body.found } : null;
+        } catch (e) {
+          console.error('[cron/monthly-report] ksef sync failed:', e.message);
+        }
+
+        // 3) Dane do raportu
+        const plInvoices = await prisma.invoice.findMany({
+          where: { ifirmaId: { not: null }, issueDate: { gte: from, lte: to } },
+          select: { number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, currency: true, grossAmount: true, contractorName: true },
+          orderBy: { issueDate: 'asc' },
+        });
+        const total = plInvoices.length;
+        const inKsef = plInvoices.filter(i => i.ksefNumber).length;
+        const toSendList = plInvoices.filter(i => !i.ksefNumber).map(i => i.number);
+        const wdt = plInvoices.filter(isWdtInvoice);
+        const wdtUnpairedList = wdt.filter(i => !i.shipmentNumber).map(i => i.number);
+
+        const report = {
+          range: { from: fromIso, to: toIso },
+          sync, ksefSync,
+          sales: { total, inKsef, toSend: toSendList.length, toSendNumbers: toSendList },
+          wdt: { total: wdt.length, unpaired: wdtUnpairedList.length, unpairedNumbers: wdtUnpairedList },
+        };
+
+        // 4) Telegram
+        try {
+          const { resolveTelegram } = require('../services/telegram-helper');
+          const { sendTelegram } = require('../telegram-utils');
+          const tg = await resolveTelegram(prisma, { scope: 'pl' });
+          if (tg.ready) {
+            const lines = [
+              `📋 Raport miesięczny ${fromIso} → ${toIso}`,
+              ``,
+              `🔄 iFirma sync: ${sync.error ? '⚠ ' + sync.error : `+${sync.created} / ~${sync.updated}`}`,
+              ``,
+              `🧾 Sprzedaż (iFirma): ${total} FV`,
+              `   ✅ w KSeF: ${inKsef}`,
+              `   📨 do dosłania: ${toSendList.length}${toSendList.length ? '\n      ' + toSendList.slice(0, 30).join(', ') + (toSendList.length > 30 ? ' …' : '') : ''}`,
+              ``,
+              `🚚 WDT bez sparowanej wysyłki: ${wdtUnpairedList.length} / ${wdt.length}${wdtUnpairedList.length ? '\n   ' + wdtUnpairedList.slice(0, 30).join(', ') + (wdtUnpairedList.length > 30 ? ' …' : '') : ''}`,
+            ];
+            await sendTelegram(tg.token, String(tg.chatId), lines.join('\n'));
+          }
+        } catch (e) {
+          console.error('[cron/monthly-report] telegram failed:', e.message);
+        }
+
+        return report;
+      }, 'sync.monthly_report');
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ============ HEALTH ============
 router.get('/cron/health', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const KNOWN_JOBS = ['sync-ifirma', 'sync-contasimple', 'prune-activity'];
+  const KNOWN_JOBS = ['sync-ifirma', 'sync-contasimple', 'prune-activity', 'monthly-report'];
   const out = {};
   const warnings = [];
   const now = Date.now();
