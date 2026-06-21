@@ -818,3 +818,28 @@ model KsefCostInvoice {
   @@index([issueDate])
   @@index([buyerNip])
 }
+
+// Faktury KOSZTOWE dodawane RĘCZNIE lub z UPLOADU dokumentu (poza KSeF).
+// Kanary (ES) nie mają KSeF — wszystkie koszty tutaj. PL też może mieć koszty
+// spoza KSeF. source: 'manual' (wpisane) | 'document' (z pliku, fileData wypełnione).
+model CostInvoice {
+  id            String    @id @default(uuid())
+  region        String // 'pl' | 'es'
+  source        String    @default("manual") // 'manual' | 'document'
+  invoiceNumber String?
+  issueDate     DateTime?
+  sellerName    String?
+  sellerNip     String?
+  netAmount     Decimal?  @db.Decimal(14, 2)
+  vatAmount     Decimal?  @db.Decimal(14, 2)
+  grossAmount   Decimal?  @db.Decimal(14, 2)
+  currency      String?   @default("PLN")
+  note          String?
+  fileName      String? // nazwa pliku źródłowego (gdy z uploadu)
+  fileMime      String?
+  fileData      Bytes? // sam plik źródłowy (do podglądu)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([region, issueDate])
+}

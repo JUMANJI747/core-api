@@ -264,3 +264,6 @@ router.post('/parse-document', upload.single('file'), async (req, res) => {
 });
 
 module.exports = router;
+// Współdzielone helpery ekstrakcji tekstu (używane też przez routes/costs.js).
+module.exports.extractTextFromPdf = extractTextFromPdf;
+module.exports.extractTextFromImage = extractTextFromImage;
