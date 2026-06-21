@@ -815,15 +815,28 @@ async function deleteInvoice(fakturaId, rodzaj) {
   });
 }
 
+// Segment „Rodzaj" w URL wpłaty. Faktura z bazy trzyma ifirmaType = surowy
+// kod iFirmy (prz_faktura_kraj / prz_dostawa_ue_towarow / prz_faktura_wys_ter_kraj)
+// — wtedy używamy go wprost. Inaczej mapujemy z nazwy/waluty.
+function paymentSegment(type, currency) {
+  const t = String(type || '').toLowerCase();
+  if (t.startsWith('prz_')) return type;                       // już kod Rodzaj z iFirmy
+  if (t === 'wdt' || t.includes('dostawa_ue')) return 'prz_dostawa_ue_towarow';
+  if (t.includes('wys_ter') || t.includes('waluta')) return 'prz_faktura_wys_ter_kraj';
+  if (t === 'krajowa' || t.includes('kraj')) return 'prz_faktura_kraj';
+  return String(currency || '').toUpperCase() === 'EUR' ? 'prz_dostawa_ue_towarow' : 'prz_faktura_kraj';
+}
+
 async function registerPayment(invoiceNumber, type, amount, currency, date) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
-  const typ = type === 'krajowa' ? 'prz_faktura_kraj' : 'prz_dostawa_ue_towarow';
+  const typ = paymentSegment(type, currency);
   const numer = invoiceNumber.replace(/\//g, '_');
   const url = `https://www.ifirma.pl/iapi/faktury/wplaty/${typ}/${numer}.json`;
 
   const body = { Kwota: amount };
-  if (currency !== 'PLN') {
+  if (date) body.Data = date; // data wpłaty (zawsze gdy podana — też dla PLN)
+  if (String(currency || '').toUpperCase() !== 'PLN') {
     const rateUrl = `https://api.nbp.pl/api/exchangerates/rates/a/${currency}/?format=json`;
     const { status: rateStatus, body: rateBody } = await httpsGetRaw(rateUrl, { Accept: 'application/json' });
     if (rateStatus !== 200) throw new Error(`NBP rate fetch failed for ${currency}: status ${rateStatus}`);
@@ -831,12 +844,11 @@ async function registerPayment(invoiceNumber, type, amount, currency, date) {
     const kursNBP = rateData.rates[0].mid;
     console.log(`[ifirma] NBP rate for ${currency}: ${kursNBP}`);
     body.Kurs = kursNBP;
-    body.Data = date;
   }
   const bodyStr = JSON.stringify(body);
   const auth = generateAuth(url, bodyStr, login, keyHex);
 
-  console.log(`[ifirma] registering payment: ${invoiceNumber}, ${amount} ${currency}`);
+  console.log(`[ifirma] registering payment: ${invoiceNumber} (${typ}), ${amount} ${currency}, data=${date || 'dziś'}`);
 
   const result = await httpsPostJson(url, { Authentication: auth, Accept: 'application/json' }, body);
   console.log('[ifirma] registerPayment response:', result.status, JSON.stringify(result.body).slice(0, 300));

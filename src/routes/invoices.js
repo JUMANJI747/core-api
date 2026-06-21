@@ -2568,6 +2568,46 @@ router.post('/invoices/:idOrNumber/ksef-send', async (req, res) => {
   }
 });
 
+// Oznaczenie faktury jako OPŁACONEJ — rejestruje wpłatę w iFirma (wybrana data,
+// domyślnie dziś; kwota domyślnie = brutto) i ustawia status w bazie.
+router.post('/invoices/:idOrNumber/pay', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+    if (!inv.ifirmaId) return res.status(400).json({ ok: false, error: 'Faktura nie z iFirmy — nie zarejestruję wpłaty przez iFirma API.' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const date = (req.body && req.body.date) || today;
+    const amount = (req.body && req.body.amount != null && req.body.amount !== '')
+      ? Number(req.body.amount) : Number(inv.grossAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: 'Nieprawidłowa kwota.' });
+    const currency = inv.currency || 'PLN';
+    const type = inv.ifirmaType || inv.type || (currency === 'EUR' ? 'wdt' : 'krajowa');
+
+    let ifirmaResp;
+    try {
+      ifirmaResp = await registerPayment(inv.number, type, amount, currency, date);
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: e.message });
+    }
+    const r = ifirmaResp && ifirmaResp.body && ifirmaResp.body.response ? ifirmaResp.body.response : (ifirmaResp && ifirmaResp.body);
+    const kod = r && (r.Kod !== undefined ? r.Kod : r.kod);
+    const info = r && (r.Informacja || r.informacja);
+    const ok = ifirmaResp.status >= 200 && ifirmaResp.status < 300 && (kod === 0 || kod === undefined);
+    if (!ok) {
+      return res.status(200).json({ ok: false, error: info || `iFirma HTTP ${ifirmaResp.status}`, ifirma: ifirmaResp.body });
+    }
+    await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: amount } });
+    res.json({ ok: true, invoiceNumber: inv.number, amount, currency, date, info: info || 'wpłata zarejestrowana' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Status KSeF pojedynczej faktury — używany przez front do odpytywania po
 // kliknięciu „Wyślij do KSeF" (KSeF nadaje numer asynchronicznie). Jeśli numer
 // jest już w bazie → zwraca go. Inaczej pyta KSeF (Subject1) o ten numer FV
