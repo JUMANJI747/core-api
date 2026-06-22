@@ -34,6 +34,53 @@ function scheduleGeocode(prisma, contractor) {
 
 // ============ ROUTES ============
 
+// Odczyt danych kontrahenta z wklejonego tekstu (LLM) → mapowanie na pola karty.
+router.post('/parse-blob', async (req, res) => {
+  const { text } = req.body || {};
+  if (!text || !String(text).trim()) return res.status(400).json({ ok: false, error: 'Brak tekstu do odczytania.' });
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  if (!apiKey) return res.status(200).json({ ok: false, error: 'ANTHROPIC_API_KEY nie ustawiony.' });
+  try {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey });
+    const prompt = `Z poniższych danych kontrahenta wyciągnij pola do karty kontrahenta.
+
+DANE:
+${String(text).slice(0, 8000)}
+
+Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
+{
+  "name": null,
+  "nip": null,
+  "email": null,
+  "phone": null,
+  "country": null,
+  "city": null,
+  "address": null,
+  "postCode": null,
+  "notes": null
+}
+
+Zasady:
+- name = nazwa firmy / osoby (kontrahent).
+- nip = NIP/VAT/NIF (same znaki; dla PL bez prefiksu, zagranica może mieć literowy prefiks kraju).
+- country = kod ISO-2 (np. PL, ES, IT, FR, DE). Jeśli nie wiadomo — null.
+- address = ulica z numerem. postCode = kod pocztowy. city = miejscowość.
+- phone, email jeśli są. notes = inne istotne info (np. osoba kontaktowa) albo null.
+- Pole nieobecne — null.`;
+    const msg = await client.messages.create({
+      model: process.env.CONTRACTOR_PARSE_MODEL || 'claude-sonnet-4-5-20250929',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const outText = (msg.content && msg.content[0] && msg.content[0].text) || '';
+    const clean = outText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    res.json({ ok: true, data: JSON.parse(clean) });
+  } catch (e) {
+    res.status(200).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/upsert', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
