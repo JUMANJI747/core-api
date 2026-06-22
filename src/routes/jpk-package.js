@@ -217,17 +217,26 @@ router.post('/build-package', async (req, res) => {
         if (!have) need.push(inv);
       }
       if (need.length) {
-        const raw = await globGetOrders({ limit: 500 });
-        const arr = (raw && (raw.results || raw.items || raw.data)) || (Array.isArray(raw) ? raw : []);
-        const orders = arr.map(o => {
-          const recv = o.receiverAddress || o.receiver || {};
-          return {
-            hash: o.hash || o.id, number: String(o.number || o.orderNumber || ''),
-            name: recv.companyName || recv.name || recv.contactPerson || '',
-            date: o.creationDate || o.created_at || o.createdAt || null,
-            status: (o.status || '').toUpperCase(), used: false,
-          };
-        }).filter(o => o.hash);
+        // GK ucina limit per-request (~100) — paginujemy jak strona Faktury,
+        // żeby objąć starsze wysyłki (np. majowe), nie tylko ostatnie 100.
+        const orders = [];
+        for (let page = 0; page < 8; page++) {
+          const raw = await globGetOrders({ limit: 100, offset: page * 100 });
+          const arr = (raw && (raw.results || raw.items || raw.data)) || (Array.isArray(raw) ? raw : []);
+          if (!arr.length) break;
+          for (const o of arr) {
+            const recv = o.receiverAddress || o.receiver || {};
+            const hash = o.hash || o.id;
+            if (!hash) continue;
+            orders.push({
+              hash, number: String(o.number || o.orderNumber || ''),
+              name: recv.companyName || recv.name || recv.contactPerson || '',
+              date: o.creationDate || o.created_at || o.createdAt || null,
+              status: (o.status || '').toUpperCase(), used: false,
+            });
+          }
+          if (arr.length < 100) break;
+        }
         const byKey = {};
         for (const o of orders) { const k = normalizeContractorName(o.name); if (k) (byKey[k] ||= []).push(o); }
         const WINDOW = 60 * 86400000;
