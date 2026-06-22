@@ -595,6 +595,7 @@ router.post('/send-package', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { to } = req.body;
+    const cc = (req.body && req.body.cc) || null;
     if (!to) return res.status(400).json({ error: 'to (email) is required' });
 
     const now = new Date();
@@ -633,6 +634,7 @@ router.post('/send-package', async (req, res) => {
     await sendMail({
       from: 'office@surfstickbell.com',
       to,
+      ...(cc ? { cc } : {}),
       subject: `Potwierdzenia dostaw do faktur WDT/eksport za ${period} — SurfStickBell`,
       html: htmlBody,
       attachments,
@@ -710,6 +712,7 @@ router.post('/build-and-send', async (req, res) => {
     }
 
     const sendBody = { to: accountantEmail };
+    if (req.body && req.body.cc) sendBody.cc = req.body.cc;
     if (buildBody.year) sendBody.year = buildBody.year;
     if (buildBody.month) sendBody.month = buildBody.month;
     const send = await selfPost('/api/jpk/send-package', sendBody);
