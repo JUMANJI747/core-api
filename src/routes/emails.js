@@ -839,6 +839,11 @@ router.post('/send-email', async (req, res) => {
       const available = getAccounts().map(a => a.user).join(', ');
       return res.status(400).json({ error: `Unknown sender address, available: ${available}` });
     }
+    // Wyślij z DOKŁADNEGO adresu konta (np. niko@ → nikodem@), nie z surowego „Od".
+    if (account.user && account.user.toLowerCase() !== from.toLowerCase()) {
+      console.log(`[send-email] from "${from}" → konto "${account.user}"`);
+      from = account.user;
+    }
 
     if (draft) {
       let contractorId = null;

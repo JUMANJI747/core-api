@@ -40,10 +40,22 @@ function getAccounts() {
 function findAccount(fromEmail) {
   const accounts = getAccounts();
   const from = fromEmail.toLowerCase();
-  const account = accounts.find(a => {
+  let account = accounts.find(a => {
     const user = (a.user || '').toLowerCase();
     return user === from || from.includes(user) || user.includes(from);
   }) || null;
+  // Fallback: ten sam domena + local-part jest prefiksem (np. niko@ → nikodem@).
+  // Composer czasem buduje „Od" z lokalnej części skrzynki (niko), a konto to
+  // nikodem@ — bez tego leciało 400 „Unknown sender".
+  if (!account) {
+    const [fl, fd] = from.split('@');
+    if (fl && fd) {
+      account = accounts.find(a => {
+        const [ul, ud] = (a.user || '').toLowerCase().split('@');
+        return ud === fd && ul && (ul.startsWith(fl) || fl.startsWith(ul));
+      }) || null;
+    }
+  }
   if (account) {
     console.log(`[mail-sender] found account for ${fromEmail}`);
     console.log('[mail-sender] account keys:', Object.keys(account));
