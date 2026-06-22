@@ -10,12 +10,14 @@ const router = require('express').Router();
 const { selfCall } = require('../services/agent-runtime');
 const { monthRange, buildReport } = require('../services/monthly-accounting');
 
-// Raport za miesiąc. Najpierw odświeża status KSeF (Subject1) — best-effort.
+// Raport za miesiąc. Status KSeF odświeżamy W TLE (auth+polling KSeF bywa wolny i
+// powodował abort/timeout requestu) — raport renderuje się od razu z bazy.
 router.get('/accounting/monthly-report', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { from, to, fromIso, toIso } = monthRange(req.query.month);
-    try { await selfCall('POST', '/api/ksef/sync-sales-status', { from: fromIso, to: toIso }); } catch (_) { /* best-effort */ }
+    // fire-and-forget — świeży ksefNumber pojawi się przy kolejnym wejściu
+    selfCall('POST', '/api/ksef/sync-sales-status', { from: fromIso, to: toIso }).catch(() => {});
     const rep = await buildReport(prisma, { from, to });
     res.json({ ok: true, range: { from: fromIso, to: toIso }, sales: rep.sales, wdt: rep.wdt });
   } catch (e) {
