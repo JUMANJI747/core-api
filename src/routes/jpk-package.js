@@ -303,10 +303,32 @@ router.post('/build-package', async (req, res) => {
     // d) Update package
     const docs = await prisma.document.findMany({
       where: { packageId: pkg.id },
-      select: { type: true, name: true, filename: true, size: true },
+      select: { type: true, name: true, filename: true, size: true, invoiceNumber: true },
     });
     const invoiceCount = docs.filter(d => d.type === 'invoice').length;
     const cmrCount = docs.filter(d => d.type === 'cmr').length;
+
+    // Diagnostyka: które faktury WDT/eksport miesiąca NIE mają dokumentu w paczce.
+    let missingDocs = [];
+    try {
+      const dFrom = new Date(y, m - 1, 1);
+      const dLast = new Date(y, m, 0).getDate();
+      const dTo = new Date(y, m - 1, dLast, 23, 59, 59, 999);
+      const allDocInvs = await prisma.invoice.findMany({
+        where: {
+          issueDate: { gte: dFrom, lte: dTo },
+          OR: [
+            { type: { contains: 'dostawa_ue', mode: 'insensitive' } }, { type: { contains: 'wdt', mode: 'insensitive' } },
+            { type: { contains: 'eksport', mode: 'insensitive' } }, { type: { contains: 'export', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } }, { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'eksport', mode: 'insensitive' } }, { ifirmaType: { contains: 'export', mode: 'insensitive' } },
+          ],
+        },
+        select: { number: true, contractorName: true },
+      });
+      const haveCmr = new Set(docs.filter(d => d.type === 'cmr' && d.invoiceNumber).map(d => String(d.invoiceNumber)));
+      missingDocs = allDocInvs.filter(i => !haveCmr.has(String(i.number))).map(i => ({ number: i.number, contractor: i.contractorName }));
+    } catch (e) { console.error('[package] missingDocs calc failed:', e.message); }
 
     await prisma.monthlyPackage.update({
       where: { id: pkg.id },
@@ -362,6 +384,7 @@ router.post('/build-package', async (req, res) => {
       status: 'ready',
       invoices: invoiceCount,
       cmrs: cmrCount,
+      missingDocs,
       unmatchedInvoices: (matchResult.unmatchedInvoices || []).map(u => ({
         number: u.number,
         contractor: u.contractor,
