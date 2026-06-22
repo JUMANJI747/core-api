@@ -133,8 +133,12 @@ router.post('/build-package', async (req, res) => {
           OR: [
             { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
             { type: { contains: 'wdt', mode: 'insensitive' } },
+            { type: { contains: 'eksport', mode: 'insensitive' } },
+            { type: { contains: 'export', mode: 'insensitive' } },
             { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
             { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'eksport', mode: 'insensitive' } },
+            { ifirmaType: { contains: 'export', mode: 'insensitive' } },
           ],
         },
         select: { number: true, contractorName: true, shipmentHash: true, shipmentDocName: true, shipmentDocMime: true, shipmentDocData: true },
@@ -182,6 +186,103 @@ router.post('/build-package', async (req, res) => {
       }
     } catch (e) {
       console.error('[package] explicit WDT augmentation failed:', e.message);
+    }
+
+    // b3) DETERMINISTYCZNE dopasowanie po nazwie (jak strona Faktury) dla faktur
+    // WDT/EKSPORT bez CMR — pobiera etykietę z GK po dopasowaniu. Dzięki temu w
+    // mailu są POTWIERDZENIA DOSTAW dla wszystkich, nie tylko ręcznie wgranych.
+    try {
+      const { getOrders: globGetOrders } = require('../glob-client');
+      const { normalizeContractorName, scoreContractor } = require('../services/contractor-match');
+      const augFrom = new Date(y, m - 1, 1);
+      const augLastDay = new Date(y, m, 0).getDate();
+      const augTo = new Date(y, m - 1, augLastDay, 23, 59, 59, 999);
+      const DOC_OR = [
+        { type: { contains: 'dostawa_ue', mode: 'insensitive' } },
+        { type: { contains: 'wdt', mode: 'insensitive' } },
+        { type: { contains: 'eksport', mode: 'insensitive' } },
+        { type: { contains: 'export', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'dostawa_ue', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'wdt', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'eksport', mode: 'insensitive' } },
+        { ifirmaType: { contains: 'export', mode: 'insensitive' } },
+      ];
+      const docInvs = await prisma.invoice.findMany({
+        where: { issueDate: { gte: augFrom, lte: augTo }, OR: DOC_OR },
+        select: { number: true, contractorName: true, issueDate: true, shipmentNumber: true },
+      });
+      const need = [];
+      for (const inv of docInvs) {
+        const have = await prisma.document.findFirst({ where: { packageId: pkg.id, type: 'cmr', invoiceNumber: inv.number } });
+        if (!have) need.push(inv);
+      }
+      if (need.length) {
+        const raw = await globGetOrders({ limit: 500 });
+        const arr = (raw && (raw.results || raw.items || raw.data)) || (Array.isArray(raw) ? raw : []);
+        const orders = arr.map(o => {
+          const recv = o.receiverAddress || o.receiver || {};
+          return {
+            hash: o.hash || o.id, number: String(o.number || o.orderNumber || ''),
+            name: recv.companyName || recv.name || recv.contactPerson || '',
+            date: o.creationDate || o.created_at || o.createdAt || null,
+            status: (o.status || '').toUpperCase(), used: false,
+          };
+        }).filter(o => o.hash);
+        const byKey = {};
+        for (const o of orders) { const k = normalizeContractorName(o.name); if (k) (byKey[k] ||= []).push(o); }
+        const WINDOW = 60 * 86400000;
+        const isCanceled = (s) => ['CANCELED', 'CANCELLED'].includes(s.status);
+        const pickNearest = (inv, pool) => {
+          let best = null, bd = Infinity, bc = true;
+          for (const s of pool) {
+            if (s.used) continue;
+            const d = Math.abs(new Date(inv.issueDate) - new Date(s.date || 0));
+            if (d > WINDOW) continue;
+            const c = isCanceled(s);
+            if ((bc && !c) || (c === bc && d < bd)) { bd = d; best = s; bc = c; }
+          }
+          return best;
+        };
+        for (const inv of need) {
+          let ord = inv.shipmentNumber ? orders.find(o => !o.used && o.number === String(inv.shipmentNumber)) : null;
+          if (!ord) { const k = normalizeContractorName(inv.contractorName || ''); if (k && byKey[k]) ord = pickNearest(inv, byKey[k]); }
+          if (!ord) {
+            let best = null, bs = 0, bd = Infinity, bc = true;
+            for (const s of orders) {
+              if (s.used) continue;
+              const d = Math.abs(new Date(inv.issueDate) - new Date(s.date || 0));
+              if (d > WINDOW) continue;
+              const sc = Math.min(scoreContractor({ name: s.name }, inv.contractorName || ''), scoreContractor({ name: inv.contractorName || '' }, s.name));
+              if (sc < 90) continue;
+              const c = isCanceled(s);
+              if ((bc && !c) || (c === bc && (sc > bs || (sc === bs && d < bd)))) { bs = sc; bd = d; best = s; bc = c; }
+            }
+            ord = best;
+          }
+          if (!ord) continue;
+          ord.used = true;
+          try {
+            const { status, body: pdfBuffer } = await getOrderLabels(ord.hash, 'A4');
+            if (status === 200 && pdfBuffer.length >= 100) {
+              await prisma.document.create({
+                data: {
+                  packageId: pkg.id, type: 'cmr',
+                  name: `CMR — ${inv.number} — ${inv.contractorName || ''}`,
+                  filename: `${inv.number.replace(/\//g, '-')}.pdf`,
+                  invoiceNumber: inv.number, mimeType: 'application/pdf',
+                  data: pdfBuffer, size: pdfBuffer.length,
+                },
+              });
+              cmrDownloaded++;
+              console.log('[package] CMR (name-match):', inv.number, '→', ord.name);
+            }
+          } catch (e) {
+            console.error(`[package] CMR name-match error for ${inv.number}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[package] name-match augmentation failed:', e.message);
     }
 
     // c) Faktury PDF z iFirma POMINIETE — od czasu wprowadzenia KSeF
@@ -493,14 +594,14 @@ router.post('/send-package', async (req, res) => {
 
     const totalSize = attachments.reduce((s, a) => s + a.content.length, 0);
 
-    const htmlBody = `<h3>Listy przewozowe za ${period}</h3>
-<p>W załączeniu ${cmrCount} listów przewozowych CMR (faktury w KSeF).</p>
+    const htmlBody = `<h3>Potwierdzenia dostaw do faktur WDT/eksport za ${period}</h3>
+<p>W załączeniu ${cmrCount} potwierdzeń dostaw (listy przewozowe / dokumenty eksportowe) do faktur WDT i eksportowych. Faktury są w KSeF.</p>
 <p>Wygenerowano automatycznie przez system SurfStickBell.</p>`;
 
     await sendMail({
       from: 'office@surfstickbell.com',
       to,
-      subject: `Listy przewozowe za ${period} — SurfStickBell`,
+      subject: `Potwierdzenia dostaw do faktur WDT/eksport za ${period} — SurfStickBell`,
       html: htmlBody,
       attachments,
     });
@@ -515,7 +616,7 @@ router.post('/send-package', async (req, res) => {
     const tgToken = __tg2.token;
     const tgChat = __tg2.chatId;
     await sendTelegram(tgToken, tgChat,
-      `📧 Listy CMR za ${period} wysłane na ${to} — ${cmrCount} dokumentów`
+      `📧 Potwierdzenia dostaw WDT/eksport za ${period} wysłane na ${to} — ${cmrCount} dokumentów`
     ).catch(e => console.error('[package] TG error:', e.message));
 
     console.log(`[package] Sent package ${period} to ${to} — ${attachments.length} attachments, ${Math.round(totalSize / 1024)} KB`);

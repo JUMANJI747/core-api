@@ -6,7 +6,7 @@
 
 function isWdtInvoice(inv) {
   const t = `${inv.ifirmaType || ''} ${inv.type || ''}`.toLowerCase();
-  return t.includes('dostawa_ue') || t.includes('wdt');
+  return t.includes('dostawa_ue') || t.includes('wdt') || t.includes('eksport') || t.includes('export');
 }
 
 // month: 'YYYY-MM' albo brak → poprzedni miesiąc.

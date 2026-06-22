@@ -294,7 +294,7 @@ router.post('/cron/monthly-report', async (req, res) => {
               `   ✅ w KSeF: ${inKsef}`,
               `   📨 do dosłania: ${toSendList.length}${toSendList.length ? '\n      ' + toSendList.slice(0, 30).join(', ') + (toSendList.length > 30 ? ' …' : '') : ''}`,
               ``,
-              `🚚 WDT bez sparowanej wysyłki: ${wdtUnpairedList.length} / ${wdtTotal}${wdtUnpairedList.length ? '\n   ' + wdtUnpairedList.slice(0, 30).join(', ') + (wdtUnpairedList.length > 30 ? ' …' : '') : ''}`,
+              `🚚 WDT/Eksport bez dokumentu: ${wdtUnpairedList.length} / ${wdtTotal}${wdtUnpairedList.length ? '\n   ' + wdtUnpairedList.slice(0, 30).join(', ') + (wdtUnpairedList.length > 30 ? ' …' : '') : ''}`,
             ];
             await sendTelegram(tg.token, String(tg.chatId), lines.join('\n'));
           }
