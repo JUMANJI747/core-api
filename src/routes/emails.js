@@ -1509,6 +1509,18 @@ router.post('/emails/backfill-sent', async (req, res) => {
 // (just LIST + STATUS). Useful when the user can't reach webmail and we
 // need to know whether messages are actually on the server or just
 // missing from Thunderbird's local cache.
+// Lista dostępnych adresów nadawczych (do pola „Od" w composerze). Tylko
+// adresy (a.user) — bez haseł/konfiguracji.
+router.get('/mail-accounts', (req, res) => {
+  try {
+    const accounts = (typeof getAccounts === 'function') ? (getAccounts() || []) : [];
+    const list = accounts.map(a => a.user).filter(Boolean);
+    res.json({ accounts: list });
+  } catch (e) {
+    res.json({ accounts: [], error: e.message });
+  }
+});
+
 // Body: { inbox?: string }  // empty = run for every IMAP_ACCOUNTS entry
 router.post('/emails/imap-diag', async (req, res) => {
   const Imap = require('imap');
