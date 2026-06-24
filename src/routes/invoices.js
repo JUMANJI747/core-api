@@ -2746,5 +2746,43 @@ router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
   }
 });
 
+// Cena jednostkowa z OSTATNIEJ faktury kontrahenta (do guzika „Z ostatniej FV").
+// Konwencja: PLN = brutto/szt, EUR = netto/szt. base=es → faktury Kanary.
+router.get('/invoices/last-price', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const contractorId = req.query.contractorId ? String(req.query.contractorId) : null;
+  const base = req.query.base === 'es' ? 'es' : 'pl';
+  if (!contractorId) return res.status(400).json({ ok: false, error: 'contractorId required' });
+  try {
+    if (base === 'es') {
+      const inv = await prisma.esInvoice.findFirst({
+        where: { contractorId }, orderBy: { invoiceDate: 'desc' },
+        include: { lineItems: { orderBy: { position: 'asc' } } },
+      });
+      const li = inv && inv.lineItems.find(l => Number(l.qty) > 0);
+      if (!li) return res.json({ ok: true, price: null });
+      return res.json({ ok: true, price: Number(li.unitPriceNetto), currency: li.currency || 'EUR', isNetto: true, invoiceNumber: inv.number });
+    }
+    const inv = await prisma.invoice.findFirst({
+      where: { contractorId, ifirmaId: { not: null } }, orderBy: { issueDate: 'desc' },
+      include: { lineItems: true },
+    });
+    const li = inv && inv.lineItems.find(l => Number(l.qty) > 0);
+    if (li) {
+      const cur = inv.currency || 'PLN';
+      const qty = Number(li.qty) || 1;
+      const price = cur === 'EUR' ? Number(li.unitPriceNetto) : Math.round((Number(li.totalGross) / qty) * 100) / 100;
+      return res.json({ ok: true, price, currency: cur, isNetto: cur === 'EUR', invoiceNumber: inv.number });
+    }
+    // fallback: zapamiętana cena na kontrahencie
+    const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { extras: true } });
+    const lp = c && c.extras && c.extras.lastPrice;
+    if (lp != null) return res.json({ ok: true, price: Number(lp), currency: 'PLN', isNetto: false, source: 'lastPrice' });
+    return res.json({ ok: true, price: null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.addGkOrderToCache = addGkOrderToCache;
 module.exports = router;
