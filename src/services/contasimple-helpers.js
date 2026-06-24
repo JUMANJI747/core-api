@@ -8,7 +8,7 @@
 //   - tax: IGIC 7% (not VAT 23%)
 //   - currency: EUR only
 
-const { scoreContractor } = require('./contractor-match');
+const { scoreContractor, normalizeContractorName } = require('./contractor-match');
 
 const IGIC_DEFAULT_PCT = 7;
 
@@ -34,13 +34,23 @@ async function findEsContractor(prisma, search) {
     },
   });
 
+  // wordHits = ile DYSTYNKTYWNYCH słów z frazy faktycznie jest w nazwie. Tie-break
+  // przy równym score: chroni przed dopasowaniem po słowie-lokalizacji. Np.
+  // „Folkerts trading Médano" — i „Folkerts trading SL", i „Farmacia ... El Medano"
+  // dostają 80 (bo each ma JAKIEŚ wspólne słowo), ale Folkerts trafia 2 słowa
+  // (folkerts+trading) vs 1 (medano) → wygrywa właściwy.
+  const nSearchWords = normalizeContractorName(search).split(/\s+/).filter(w => w.length >= 3);
   const scored = all
-    .map(c => ({
-      contractor: c,
-      score: scoreContractor({ ...c, nip: c.nif }, search),
-    }))
+    .map(c => {
+      const nn = normalizeContractorName(c.name || '');
+      return {
+        contractor: c,
+        score: scoreContractor({ ...c, nip: c.nif }, search),
+        wordHits: nSearchWords.filter(w => nn.includes(w)).length,
+      };
+    })
     .filter(x => x.score > 0)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score || b.wordHits - a.wordHits);
 
   const best = scored[0];
   // FAST PATH: lokalne trafienie KOMPLETNE (nif + contasimpleId) — uzyj od razu,
