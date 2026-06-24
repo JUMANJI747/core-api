@@ -2511,7 +2511,7 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     '- Respond with ONLY the JSON array, no markdown fences, no commentary.';
 
   const Anthropic = require('@anthropic-ai/sdk');
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   const llm = await anthropic.messages.create({
     model,
     max_tokens: 8192,

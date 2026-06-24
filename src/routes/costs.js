@@ -41,7 +41,7 @@ function getAnthropic() {
   const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
   const Anthropic = require('@anthropic-ai/sdk');
-  return new Anthropic({ apiKey });
+  return new Anthropic({ apiKey, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
 }
 
 function costInstruction(region) {

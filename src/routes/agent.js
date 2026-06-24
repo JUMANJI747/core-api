@@ -418,7 +418,7 @@ async function extractAssistantAttachments(anthropic, attachments) {
 router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const Anthropic = require('@anthropic-ai/sdk');
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   let { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
   const attachments = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
   if (!query && attachments.length) query = 'Przeanalizuj załączone pliki/zdjęcia i powiedz co z nimi zrobić.';

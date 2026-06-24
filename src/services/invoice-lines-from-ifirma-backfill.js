@@ -33,7 +33,7 @@ let anthropic = null;
 function getAnthropic() {
   if (anthropic) return anthropic;
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   return anthropic;
 }
 

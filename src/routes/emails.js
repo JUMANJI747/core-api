@@ -877,7 +877,7 @@ router.post('/send-email', async (req, res) => {
       try {
         const Anthropic = require('@anthropic-ai/sdk');
         if (process.env.ANTHROPIC_API_KEY && body && body.length > 20) {
-          const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+          const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
           const r = await anthropic.messages.create({
             model: process.env.DRAFT_TRANSLATE_MODEL || 'claude-haiku-4-5-20251001',
             max_tokens: 600,
@@ -1420,7 +1420,7 @@ ${tline}`;
     `WYMÓG: w tabeli ${filtered.length} wierszy (po jednym per wątek), kolejność po priorytecie WYSOKI→ŚREDNI→NISKI→MARTWY→AUTO. Po tabeli krótkie podsumowanie (ile WYSOKICH/ŚREDNICH/MARTWYCH/AUTO). Bez własnych komentarzy poza tym.`;
 
   const Anthropic = require('@anthropic-ai/sdk');
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   const llmModel = model || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
   const llm = await anthropic.messages.create({
     model: llmModel,

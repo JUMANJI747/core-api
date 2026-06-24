@@ -42,7 +42,7 @@ router.post('/parse-blob', async (req, res) => {
   if (!apiKey) return res.status(200).json({ ok: false, error: 'ANTHROPIC_API_KEY nie ustawiony.' });
   try {
     const Anthropic = require('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey });
+    const client = new Anthropic({ apiKey, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
     const prompt = `Z poniższych danych kontrahenta wyciągnij pola do karty kontrahenta.
 
 DANE:
@@ -1910,7 +1910,7 @@ router.post('/backfill-location-last-used-llm', async (req, res) => {
 
     const AnthropicPkg = require('@anthropic-ai/sdk');
     const Anthropic = AnthropicPkg.default || AnthropicPkg;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
     const MODEL = 'claude-haiku-4-5-20251001';
 
     const norm = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').trim();

@@ -2,7 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
 const MODEL = process.env.LLM_GEOCODE_MODEL || 'claude-haiku-4-5-20251001';
 
 const SYSTEM = `You normalise messy invoice addresses to a clean form a geocoder can find.

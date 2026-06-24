@@ -2,7 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
 const MODEL = process.env.SHIPMENT_MATCHER_MODEL || 'claude-haiku-4-5-20251001';
 
 // Fuzzy match GlobKurier orders against a free-form user query.

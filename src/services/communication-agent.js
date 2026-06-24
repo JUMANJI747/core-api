@@ -4,7 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { buildExecuteTool } = require('./agent-runtime');
 const { runAgentLoop } = require('./agent-loop-base');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
 const MODEL = process.env.COMMUNICATION_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
 
 const SYSTEM_PROMPT = `Jesteś sub-agentem KOMUNIKACJA SurfStickBell. Plain text, krótko.
