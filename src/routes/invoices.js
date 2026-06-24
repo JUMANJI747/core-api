@@ -2770,9 +2770,10 @@ router.get('/invoices/last-price', async (req, res) => {
     const li = inv && inv.lineItems.find(l => Number(l.qty) > 0);
     if (li) {
       const cur = inv.currency || 'PLN';
-      const qty = Number(li.qty) || 1;
-      const price = cur === 'EUR' ? Number(li.unitPriceNetto) : Math.round((Number(li.totalGross) / qty) * 100) / 100;
-      return res.json({ ok: true, price, currency: cur, isNetto: cur === 'EUR', invoiceNumber: inv.number });
+      // Zwracamy cenę NETTO/szt (to wartość, którą wpisano przy wystawianiu —
+      // dla 16 netto NIE zamieniamy na 19,68 brutto). isNetto=true → front wyśle
+      // ją jako globalPriceNetto, więc nowa FV odtworzy tę samą pozycję.
+      return res.json({ ok: true, price: Number(li.unitPriceNetto), currency: cur, isNetto: true, invoiceNumber: inv.number });
     }
     // fallback: zapamiętana cena na kontrahencie
     const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { extras: true } });
