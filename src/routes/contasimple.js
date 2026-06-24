@@ -3141,7 +3141,7 @@ router.post('/autosync', asyncHandler(async (req, res) => {
 // GET /api/contasimple/local-invoices?search=&status=&fromDate=&toDate=&limit=&contasimpleOnly=1
 // Returns local EsInvoice rows ordered by invoiceDate desc. Used by CRM frontend.
 router.get('/local-invoices', asyncHandler(async (req, res) => {
-  const { search, status, fromDate, toDate, limit, contasimpleOnly, owner } = req.query;
+  const { search, status, fromDate, toDate, limit, contasimpleOnly, owner, withLines } = req.query;
   const where = {};
   if (search) {
     where.OR = [
@@ -3179,6 +3179,7 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
     ];
   }
   const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
+  const wantLines = withLines === '1' || withLines === 'true';
   const list = await prisma.esInvoice.findMany({
     where,
     orderBy: { invoiceDate: 'desc' },
@@ -3191,6 +3192,16 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
       currency: true, status: true, period: true,
       createdAt: true, updatedAt: true,
       contractor: { select: { owner: true } },
+      ...(wantLines ? {
+        lineItems: {
+          orderBy: { position: 'asc' },
+          select: {
+            position: true, ean: true, name: true, unit: true, qty: true,
+            unitPriceNetto: true, vatRate: true, vatAmount: true,
+            totalNetto: true, totalGross: true, currency: true,
+          },
+        },
+      } : {}),
     },
   });
   res.json({ count: list.length, data: list });
