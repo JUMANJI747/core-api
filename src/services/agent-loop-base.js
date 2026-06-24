@@ -15,6 +15,29 @@
 
 const { sanitizeAssistantContent } = require('./agent-runtime');
 
+// Prompt caching (Anthropic) — duży, powtarzalny prefiks (system + definicje
+// narzędzi) cache'ujemy, żeby kolejne wywołania w pętli i kolejne rozmowy
+// trafiały w cache zamiast płacić za pełny prefiks (oszczędność ~do 56%).
+// cache_control na OSTATNIM bloku system i OSTATNIM toolu = 2 breakpointy.
+function cacheSystem(system) {
+  if (!system) return system;
+  if (typeof system === 'string') {
+    return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  }
+  if (Array.isArray(system) && system.length) {
+    const copy = system.map(b => ({ ...b }));
+    copy[copy.length - 1] = { ...copy[copy.length - 1], cache_control: { type: 'ephemeral' } };
+    return copy;
+  }
+  return system;
+}
+function cacheTools(tools) {
+  if (!Array.isArray(tools) || !tools.length) return tools;
+  const copy = tools.map(t => ({ ...t }));
+  copy[copy.length - 1] = { ...copy[copy.length - 1], cache_control: { type: 'ephemeral' } };
+  return copy;
+}
+
 async function runAgentLoop({
   anthropic,
   model,
@@ -34,8 +57,8 @@ async function runAgentLoop({
   let response = await anthropic.messages.create({
     model,
     max_tokens: maxTokens,
-    system: getSystem(),
-    tools: getTools(),
+    system: cacheSystem(getSystem()),
+    tools: cacheTools(getTools()),
     tool_choice: firstToolChoice ? { type: 'tool', name: firstToolChoice } : { type: 'auto' },
     messages,
   });
@@ -72,8 +95,8 @@ async function runAgentLoop({
     response = await anthropic.messages.create({
       model,
       max_tokens: maxTokens,
-      system: getSystem(),
-      tools: getTools(),
+      system: cacheSystem(getSystem()),
+      tools: cacheTools(getTools()),
       tool_choice: nextForcedTool ? { type: 'tool', name: nextForcedTool } : { type: 'auto' },
       messages,
     });
@@ -89,4 +112,4 @@ async function runAgentLoop({
   return { text, iterations, stopReason: response.stop_reason, pendingPreview };
 }
 
-module.exports = { runAgentLoop };
+module.exports = { runAgentLoop, cacheSystem, cacheTools };

@@ -2,6 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { cacheSystem, cacheTools } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
@@ -345,8 +346,8 @@ async function processLogisticsQuery(query, ctx = {}) {
   let response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    tools,
+    system: cacheSystem(SYSTEM_PROMPT),
+    tools: cacheTools(tools),
     tool_choice: forcedTool ? { type: 'tool', name: forcedTool } : { type: 'auto' },
     messages,
   });
@@ -403,8 +404,8 @@ async function processLogisticsQuery(query, ctx = {}) {
     response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      tools,
+      system: cacheSystem(SYSTEM_PROMPT),
+      tools: cacheTools(tools),
       // Po udanym order — niech model tylko pisze tekst (zero kolejnych tooli).
       tool_choice: orderPlaced ? { type: 'none' } : { type: 'auto' },
       messages,

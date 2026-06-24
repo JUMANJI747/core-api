@@ -2,6 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime');
+const { cacheSystem, cacheTools } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.SUDO_AGENT_MODEL || 'claude-opus-4-7';
@@ -287,8 +288,8 @@ async function processSudoQuery(query, ctx = {}) {
     let response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      tools,
+      system: cacheSystem(SYSTEM_PROMPT),
+      tools: cacheTools(tools),
       messages,
     });
 
@@ -310,8 +311,8 @@ async function processSudoQuery(query, ctx = {}) {
       response = await anthropic.messages.create({
         model: MODEL,
         max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        tools,
+        system: cacheSystem(SYSTEM_PROMPT),
+        tools: cacheTools(tools),
         messages,
       });
     }
