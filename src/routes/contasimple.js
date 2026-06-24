@@ -3152,9 +3152,15 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
   }
   if (status) where.status = status;
   if (fromDate || toDate) {
-    where.invoiceDate = {};
-    if (fromDate) where.invoiceDate.gte = new Date(fromDate);
-    if (toDate) where.invoiceDate.lte = new Date(toDate);
+    const f = fromDate ? new Date(fromDate) : null;
+    const t = toDate ? new Date(toDate) : null;
+    const valid = (d) => d && !isNaN(d.getTime());
+    if (valid(f) || valid(t)) {
+      where.invoiceDate = {};
+      if (valid(f)) where.invoiceDate.gte = f;
+      if (valid(t)) where.invoiceDate.lte = t;
+    }
+    // nieprawidłowe daty (np. placeholder RRRR-MM-DD) — ignorujemy zamiast wywalać
   }
   if (contasimpleOnly === '1' || contasimpleOnly === 'true') {
     where.contasimpleId = { not: null };
