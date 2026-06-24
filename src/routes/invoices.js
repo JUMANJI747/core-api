@@ -406,7 +406,7 @@ function findProductFuzzy(catalog, query) {
 router.post('/ifirma/invoice-preview', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { contractorId, contractorSearch, items, globalPriceNetto, globalPriceBrutto } = req.body;
+    const { contractorId, contractorSearch, items, globalPriceNetto, globalPriceBrutto, globalPrice } = req.body;
     let parsedItems = items;
     if (typeof items === 'string') {
       try { parsedItems = JSON.parse(items); } catch(e) { return res.status(400).json({ error: 'items must be valid JSON array' }); }
@@ -651,6 +651,10 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
         } else if (globalPriceBrutto != null) {
           itemCena = parseFloat(globalPriceBrutto);
           priceSource = 'global_brutto';
+        } else if (globalPrice != null && globalPrice !== '') {
+          // Jedna cena z UI — interpretacja wg waluty: EUR=netto (B2B), PLN=brutto.
+          if (waluta === 'EUR') { itemCenaNetto = parseFloat(globalPrice); priceSource = 'global_eur_netto'; }
+          else { itemCena = parseFloat(globalPrice); priceSource = 'global_pln_brutto'; }
         }
 
         if (priceSource) {
