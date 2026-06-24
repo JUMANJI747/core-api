@@ -15,6 +15,19 @@
 
 const { sanitizeAssistantContent } = require('./agent-runtime');
 
+// Wykrywa „API Anthropic przeciążone" (HTTP 529 / 503 / overloaded_error). Po
+// wyczerpaniu retry SDK chcemy zwrócić CZYTELNY komunikat, a nie generyczny błąd,
+// który mistrz n8n zamienia w bezsensowną odpowiedź — i nikt nie wie, że to overload.
+function isOverloadError(e) {
+  if (!e) return false;
+  const status = e.status || (e.response && e.response.status);
+  if (status === 529 || status === 503 || status === 429) return true;
+  const type = (e.error && e.error.type) || (e.body && e.body.error && e.body.error.type);
+  if (type === 'overloaded_error' || type === 'rate_limit_error') return true;
+  return /overloaded|rate.?limit|too many requests/i.test(e.message || '');
+}
+const OVERLOAD_TEXT = '⚠ Asystent chwilowo niedostępny — API Anthropic jest przeciążone (overloaded). Spróbuj ponownie za kilkadziesiąt sekund. (To NIE błąd danych — sam request był poprawny.)';
+
 // Prompt caching (Anthropic) — duży, powtarzalny prefiks (system + definicje
 // narzędzi) cache'ujemy, żeby kolejne wywołania w pętli i kolejne rozmowy
 // trafiały w cache zamiast płacić za pełny prefiks (oszczędność ~do 56%).
@@ -54,6 +67,7 @@ async function runAgentLoop({
   onToolResult = null,
   logResult = false,
 }) {
+  try {
   let response = await anthropic.messages.create({
     model,
     max_tokens: maxTokens,
@@ -110,6 +124,13 @@ async function runAgentLoop({
     .join('\n')
     .trim();
   return { text, iterations, stopReason: response.stop_reason, pendingPreview };
+  } catch (e) {
+    if (isOverloadError(e)) {
+      console.warn(`${logPrefix} Anthropic OVERLOADED po retry:`, e.status || e.message);
+      return { text: OVERLOAD_TEXT, overloaded: true, iterations: 0, stopReason: 'overloaded', pendingPreview: null };
+    }
+    throw e; // realne błędy nadal się propagują
+  }
 }
 
-module.exports = { runAgentLoop, cacheSystem, cacheTools };
+module.exports = { runAgentLoop, cacheSystem, cacheTools, isOverloadError, OVERLOAD_TEXT };

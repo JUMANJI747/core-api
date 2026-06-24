@@ -9,19 +9,33 @@ const { processCommunicationQuery } = require('../services/communication-agent')
 const { processCommunicationEsQuery } = require('../services/communication-agent-es');
 const { processOperationsQuery } = require('../services/operations-agent');
 const { processSudoQuery } = require('../services/sudo-agent');
+const { isOverloadError, OVERLOAD_TEXT } = require('../services/agent-loop-base');
+
+// Siatka bezpieczeństwa: gdy agent rzuci „overloaded" (Anthropic przeciążone po
+// retry), zwracamy CZYTELNY komunikat zamiast 500 — żeby mistrz n8n nie zrobił
+// z tego bezsensownej odpowiedzi i żeby było JASNE, że to przeciążenie API.
+async function sendAgent(res, fn) {
+  try {
+    res.json(await fn());
+  } catch (e) {
+    if (isOverloadError(e)) {
+      console.warn('[agent] Anthropic OVERLOADED:', e.status || e.message);
+      return res.json({ text: OVERLOAD_TEXT, overloaded: true });
+    }
+    throw e;
+  }
+}
 
 router.post('/agent/logistics', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processLogisticsQuery(query, { chatId });
-  res.json(result);
+  await sendAgent(res, () => processLogisticsQuery(query, { chatId }));
 }));
 
 router.post('/agent/accounting', asyncHandler(async (req, res) => {
   const { query, chatId, previousTurns } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processAccountingQuery(query, { chatId, previousTurns });
-  res.json(result);
+  await sendAgent(res, () => processAccountingQuery(query, { chatId, previousTurns }));
 }));
 
 router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
@@ -30,36 +44,31 @@ router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
   // z 3.). Bez tego każda wiadomość jest bezkontekstowa (problem na Telegram Kanary).
   const { query, chatId, previousTurns } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processAccountingEsQuery(query, { chatId, previousTurns });
-  res.json(result);
+  await sendAgent(res, () => processAccountingEsQuery(query, { chatId, previousTurns }));
 }));
 
 router.post('/agent/communication', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processCommunicationQuery(query, { chatId });
-  res.json(result);
+  await sendAgent(res, () => processCommunicationQuery(query, { chatId }));
 }));
 
 router.post('/agent/communication-es', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processCommunicationEsQuery(query, { chatId });
-  res.json(result);
+  await sendAgent(res, () => processCommunicationEsQuery(query, { chatId }));
 }));
 
 router.post('/agent/operations', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processOperationsQuery(query, { chatId });
-  res.json(result);
+  await sendAgent(res, () => processOperationsQuery(query, { chatId }));
 }));
 
 router.post('/agent/sudo', asyncHandler(async (req, res) => {
   const { query, chatId } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  const result = await processSudoQuery(query, { chatId });
-  res.json(result);
+  await sendAgent(res, () => processSudoQuery(query, { chatId }));
 }));
 
 // POST /api/agent/email-context
@@ -168,8 +177,7 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
 
   // source:'frontend' (gdy brak chatId) → polecenie z CRM: preview/confirm NIE
   // pushują na Telegram, wynik zostaje w CRM.
-  const result = await fn(prefix + query, { chatId, source: chatId ? undefined : 'frontend' });
-  res.json(result);
+  await sendAgent(res, () => fn(prefix + query, { chatId, source: chatId ? undefined : 'frontend' }));
 }));
 
 router.get('/agent/recent-activity', asyncHandler(async (req, res) => {
