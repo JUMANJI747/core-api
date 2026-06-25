@@ -48,6 +48,8 @@ const {
 // Tap w guzik akceptacji mógł przyjść kilka razy / równolegle (Contasimple jest
 // wolne), a bez blokady każdy tap tworzył NOWY dokument. _confirmingEs = w toku,
 // _confirmedEs = już wystawione (zwracamy ten sam wynik zamiast duplikatu).
+// confirm-lock = trwała (DB) wersja powyższego — działa MIĘDZY instancjami.
+const { claimConfirm, completeConfirm, releaseConfirm } = require('../services/confirm-lock');
 const _confirmingEs = new Set();
 const _confirmedEs = new Map(); // previewId -> { result, at }
 const ES_CONFIRM_TTL_MS = 30 * 60 * 1000;
@@ -1506,12 +1508,28 @@ async function confirmEsPreview(stored) {
 }
 
 router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
   const latest = getLatestEsPreview();
   if (!latest) return res.status(404).json({ error: 'Brak aktywnego podglądu ES. Utwórz nowy.' });
+
+  // IDEMPOTENCJA: jeden podgląd => jedna FV. Wcześniej confirm-latest NIE miało
+  // ŻADNEJ blokady — równoległe tapnięcia tworzyły duplikaty. In-memory + DB.
+  sweepConfirmedEs();
+  const dupe = _confirmedEs.get(latest.id);
+  if (dupe) return res.json({ ...dupe.result, duplicate: true, pdfSent: false });
+  if (_confirmingEs.has(latest.id)) return res.status(409).json({ ok: false, error: 'FV z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+
+  const confirmKey = 'es:' + latest.id;
+  const claim = await claimConfirm(prisma, confirmKey);
+  if (claim.state === 'done') return res.json({ ok: true, invoiceNumber: claim.invoiceNumber, invoiceId: claim.invoiceId, duplicate: true, pdfSent: false });
+  if (claim.state === 'in_progress') return res.status(409).json({ ok: false, error: 'FV z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+
+  _confirmingEs.add(latest.id);
   try {
     const result = await confirmEsPreview(latest.data);
     deleteEsPreview(latest.id);
-    res.json({
+    await completeConfirm(prisma, confirmKey, result.invoice.number, result.invoice.id);
+    const payload = {
       ok: true,
       invoiceNumber: result.invoice.number,
       invoiceId: result.invoice.id,
@@ -1521,9 +1539,14 @@ router.post('/invoice-confirm-latest', asyncHandler(async (req, res) => {
       pdfSent: result.pdfSent,
       pdfError: result.pdfError,
       contasimpleResponse: result.invoice,
-    });
+    };
+    _confirmedEs.set(latest.id, { result: { ...payload, pdfSent: undefined }, at: Date.now() });
+    res.json(payload);
   } catch (e) {
+    await releaseConfirm(prisma, confirmKey); // FV nie powstała → pozwól ponowić
     res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
+  } finally {
+    _confirmingEs.delete(latest.id);
   }
 }));
 
@@ -1555,10 +1578,17 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
 
   const stored = getEsPreview(previewId);
   if (!stored) return res.status(404).json({ error: 'preview not found or expired' });
+
+  const confirmKey = 'es:' + previewId;
+  const claim = await claimConfirm(req.app.locals.prisma, confirmKey);
+  if (claim.state === 'done') return res.json({ ok: true, invoiceNumber: claim.invoiceNumber, invoiceId: claim.invoiceId, duplicate: true, pdfSent: false });
+  if (claim.state === 'in_progress') return res.status(409).json({ ok: false, error: 'FV z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+
   _confirmingEs.add(previewId);
   try {
     const result = await confirmEsPreview(stored);
     deleteEsPreview(previewId);
+    await completeConfirm(req.app.locals.prisma, confirmKey, result.invoice.number, result.invoice.id);
     const payload = {
       ok: true,
       invoiceNumber: result.invoice.number,
@@ -1572,6 +1602,7 @@ router.post('/invoice-confirm', asyncHandler(async (req, res) => {
     _confirmedEs.set(previewId, { result: { ...payload, pdfSent: undefined }, at: Date.now() });
     res.json(payload);
   } catch (e) {
+    await releaseConfirm(req.app.locals.prisma, confirmKey);
     res.status(500).json({ ok: false, error: e.message, status: e.status, body: e.body, attemptedPayload: e.attemptedPayload });
   } finally {
     _confirmingEs.delete(previewId);
@@ -2772,20 +2803,53 @@ router.post('/albaran-preview', asyncHandler(async (req, res) => {
 }));
 
 router.post('/albaran-confirm-latest', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
   const latest = getLatestEsAlbaranPreview();
   if (!latest) return res.status(404).json({ error: 'no recent albarán preview (TTL 30 min)' });
-  await confirmAlbaran(req, res, latest.id);
+  // IDEMPOTENCJA (DB, między instancjami) — confirm-latest nie miało blokady.
+  const confirmKey = 'esalb:' + latest.id;
+  const claim = await claimConfirm(prisma, confirmKey);
+  if (claim.state === 'done') return res.json({ ok: true, albaranNumber: claim.invoiceNumber, albaranId: claim.invoiceId, duplicate: true });
+  if (claim.state === 'in_progress') return res.status(409).json({ ok: false, error: 'WZ z tego podglądu jest właśnie wystawiane — poczekaj chwilę.', inProgress: true });
+  try {
+    await confirmAlbaran(req, res, latest.id);
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      const ac = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc-es' } }).catch(() => null);
+      const d = ac && ac.data;
+      await completeConfirm(prisma, confirmKey, d && d.albaranNumber, d && d.albaranContasimpleId);
+    } else {
+      await releaseConfirm(prisma, confirmKey);
+    }
+  } catch (e) {
+    await releaseConfirm(prisma, confirmKey);
+    throw e;
+  }
 }));
 
 router.post('/albaran-confirm', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
   const { previewId } = req.body || {};
   if (!previewId) return res.status(400).json({ error: 'previewId required' });
-  // IDEMPOTENCJA: blokuj równoległe tapnięcia tego samego podglądu WZ.
+  // IDEMPOTENCJA: blokuj równoległe tapnięcia tego samego podglądu WZ (in-memory + DB).
   const key = `alb:${previewId}`;
   if (_confirmingEs.has(key)) return res.status(409).json({ ok: false, error: 'WZ z tego podglądu jest właśnie wystawiane — poczekaj chwilę.', inProgress: true });
+  const confirmKey = 'esalb:' + previewId;
+  const claim = await claimConfirm(prisma, confirmKey);
+  if (claim.state === 'done') return res.json({ ok: true, albaranNumber: claim.invoiceNumber, albaranId: claim.invoiceId, duplicate: true });
+  if (claim.state === 'in_progress') return res.status(409).json({ ok: false, error: 'WZ z tego podglądu jest właśnie wystawiane — poczekaj chwilę.', inProgress: true });
   _confirmingEs.add(key);
   try {
     await confirmAlbaran(req, res, previewId);
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      const ac = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc-es' } }).catch(() => null);
+      const d = ac && ac.data;
+      await completeConfirm(prisma, confirmKey, d && d.albaranNumber, d && d.albaranContasimpleId);
+    } else {
+      await releaseConfirm(prisma, confirmKey);
+    }
+  } catch (e) {
+    await releaseConfirm(prisma, confirmKey);
+    throw e;
   } finally {
     _confirmingEs.delete(key);
   }

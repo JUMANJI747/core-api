@@ -848,3 +848,16 @@ model CostInvoice {
 
   @@index([region, issueDate])
 }
+
+// Trwała (DB) idempotencja wystawiania FV/WZ — działa MIĘDZY instancjami.
+// In-memory Set/Map nie chronią, gdy Railway ma kilka instancji: każda ma
+// własną pamięć, a wolne API (iFirma/Contasimple) zostawia okno, w którym
+// równoległe tapnięcia „Wystaw" tworzą duplikaty (incydent: 4× FV Dreams Shop).
+// Klucz = scope:previewId (np. "pl:<id>", "es:<id>"). Unikalny @id =
+// atomowe „zajęcie" w Postgres: drugie tapnięcie dostaje błąd unikalności.
+model ConfirmLock {
+  key           String   @id
+  invoiceNumber String?
+  invoiceId     String?
+  createdAt     DateTime @default(now())
+}

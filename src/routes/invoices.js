@@ -15,6 +15,7 @@ const { buildPlLinesFromPozycje, resolveProductIdByEan } = require('../services/
 const { runBackfill: runIfirmaLinesBackfill } = require('../services/invoice-lines-from-ifirma-backfill');
 const { fetchWithTimeout } = require('../http');
 const { verifyVat } = require('../vies');
+const { claimConfirm, completeConfirm, releaseConfirm } = require('../services/confirm-lock');
 
 // IDEMPOTENCJA wystawiania FV: jeden previewId => jedna faktura. Tap w guzik
 // "Akceptuj" (callback) albo "tak" przychodzil kilka razy / rownolegle, a iFirma
@@ -813,6 +814,8 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
 router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
   const prisma = req.app.locals.prisma;
   let lockedId = null;
+  let confirmKey = null;
+  let issued = false;
   try {
     const now = Date.now();
     let bestId = null;
@@ -854,6 +857,12 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode } = stored;
     const storedUwagi = stored.uwagi || null;
     const paymentDays = (Number.isFinite(Number(stored.paymentDays)) && Number(stored.paymentDays) > 0) ? Math.round(Number(stored.paymentDays)) : 7;
+
+    // Klucz idempotencji (DB) — stabilny dla tego podglądu, ten sam na każdej
+    // instancji (bestId = previewId z pamięci albo z agentContext). Fallback na
+    // treść, gdy podgląd nie ma id.
+    const _suma = (stored.preview && stored.preview.suma && stored.preview.suma.brutto) || '';
+    confirmKey = 'pl:' + (bestId || `${(contractor.nip || contractor.name || '').toString().trim()}|${_suma}|${waluta || ''}|${rodzaj || ''}|${new Date().toISOString().slice(0, 10)}`);
 
     // Chat docelowy PDF: per-request chatId → chat z podglądu (stored.chatId) →
     // fallback Config (resolveTelegram). Gdy podgląd był z CRM (source=frontend) →
@@ -900,6 +909,18 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
           console.warn('[invoice-confirm] upsertContractor failed (non-fatal):', e.message);
         }
       }
+      // IDEMPOTENCJA MIĘDZY INSTANCJAMI — atomowe zajęcie w DB TUŻ przed
+      // wystawieniem (po pre-checkach jak kod pocztowy). Drugie równoległe
+      // tapnięcie „Wystaw" (także z innej instancji Railway, gdzie in-memory
+      // blokada nie sięga) dostanie 'in_progress'/'done' i NIE zrobi duplikatu.
+      const _claim = await claimConfirm(prisma, confirmKey);
+      if (_claim.state === 'done') {
+        return res.json({ ok: true, invoiceNumber: _claim.invoiceNumber, invoiceId: _claim.invoiceId, duplicate: true, pdfSent: false });
+      }
+      if (_claim.state === 'in_progress') {
+        return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+      }
+
       ifirmaResult = await createInvoice({
         kontrahent: kontrahentPayload,
         pozycje,
@@ -915,6 +936,9 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       const info = raw && raw.response && raw.response.Informacja;
       const humanError = info ? `${info}${kod != null ? ` (kod ${kod})` : ''}` : ifirmaErr.message;
       console.log('[invoice-confirm] iFirma error:', humanError);
+      // iFirma odrzuciła — żadna FV nie powstała. Zwolnij klucz, by user mógł
+      // poprawić i spróbować ponownie z tym samym podglądem.
+      await releaseConfirm(prisma, confirmKey);
       if (tgToken && tgChat) {
         sendTelegram(tgToken, tgChat,
           `❌ Błąd iFirma\n${humanError}\nKontrahent: ${contractor.name}`
@@ -982,6 +1006,11 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       },
     });
     await createInvoiceLineItems(prisma, invoice, pozycje);
+
+    // FV istnieje w bazie → oznacz klucz idempotencji jako wystawiony OD RAZU
+    // (zanim lecą best-effort: PDF/Telegram/tracker). Kolejne tapnięcia → 'done'.
+    await completeConfirm(prisma, confirmKey, pelnyNumer, invoice.id);
+    issued = true;
 
     try {
       const { logActivity } = require('../services/activity-log');
@@ -1055,6 +1084,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent, ifirmaResponse: ifirmaRaw });
   } catch (e) {
+    if (confirmKey && !issued) await releaseConfirm(prisma, confirmKey);
     res.status(500).json({ error: e.message });
   } finally {
     if (lockedId) _confirmingPreviews.delete(lockedId);
@@ -1085,6 +1115,8 @@ router.post('/ifirma/invoice-preview-discard', async (req, res) => {
 router.post('/ifirma/invoice-confirm', async (req, res) => {
   const prisma = req.app.locals.prisma;
   let lockedId = null;
+  let confirmKey = null;
+  let issued = false;
   try {
     const { previewId } = req.body;
     if (!previewId) return res.status(400).json({ error: 'previewId required' });
@@ -1102,6 +1134,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     _confirmingPreviews.add(previewId);
     lockedId = previewId;
+    confirmKey = 'pl:' + previewId; // idempotencja w DB — między instancjami
 
     const { contractorData: contractor, pozycjeData: pozycje, waluta, rodzaj, priceMode: storedPriceMode } = stored;
     const storedUwagi = stored.uwagi || null;
@@ -1128,6 +1161,15 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
         console.warn(`[invoice-confirm/${previewId}] upsertContractor failed (non-fatal):`, e.message);
       }
     }
+    // IDEMPOTENCJA MIĘDZY INSTANCJAMI — atomowe zajęcie w DB tuż przed wystawieniem.
+    const _claim2 = await claimConfirm(prisma, confirmKey);
+    if (_claim2.state === 'done') {
+      return res.json({ ok: true, invoiceNumber: _claim2.invoiceNumber, invoiceId: _claim2.invoiceId, duplicate: true, pdfSent: false });
+    }
+    if (_claim2.state === 'in_progress') {
+      return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
+    }
+
     const ifirmaResp = await createInvoice({
       kontrahent: kontrahentPayload2,
       pozycje,
@@ -1167,6 +1209,11 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       },
     });
     await createInvoiceLineItems(prisma, invoice, pozycje);
+
+    // FV istnieje w bazie → oznacz klucz idempotencji jako wystawiony OD RAZU
+    // (zanim lecą best-effort: PDF/Telegram/tracker). Kolejne tapnięcia → 'done'.
+    await completeConfirm(prisma, confirmKey, pelnyNumer, invoice.id);
+    issued = true;
 
     try {
       const { logActivity } = require('../services/activity-log');
@@ -1224,6 +1271,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     if (lockedId) _confirmedPreviews.set(lockedId, { invoiceNumber: pelnyNumer, invoiceId: invoice.id, ifirmaId, at: Date.now() });
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
   } catch (e) {
+    if (confirmKey && !issued) await releaseConfirm(prisma, confirmKey);
     res.status(500).json({ error: e.message });
   } finally {
     if (lockedId) _confirmingPreviews.delete(lockedId);
