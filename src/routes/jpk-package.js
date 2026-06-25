@@ -66,6 +66,11 @@ router.post('/build-package', async (req, res) => {
       await prisma.monthlyPackage.update({ where: { id: pkg.id }, data: { status: 'building' } });
     }
 
+    // ŚWIEŻE PRZEBUDOWANIE: kasujemy poprzednie CMR z paczki, żeby korekty
+    // (rozłączenia / poprawne sparowania) wchodziły w życie, a stare błędne listy
+    // (np. do Polski) nie zostawały zapamiętane. Listy odtwarzają się z linków/uploadów.
+    await prisma.document.deleteMany({ where: { packageId: pkg.id, type: 'cmr' } }).catch(() => {});
+
     // b) Get WDT matching results for CMR
     let matchResult;
     try {

@@ -2787,6 +2787,27 @@ router.get('/invoices/last-price', async (req, res) => {
   }
 });
 
+// Rozłącz wysyłkę od faktury — czyści zapisane powiązanie (numer/hash/kurier +
+// ewentualny wgrany list), żeby fakturę można było sparować od nowa (np. gdy
+// podpięto błędny list do Polski przy WDT).
+router.post('/invoices/:idOrNumber/unlink-shipment', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+    await prisma.invoice.update({
+      where: { id: inv.id },
+      data: { shipmentNumber: null, shipmentHash: null, shipmentCarrier: null, shipmentDocName: null, shipmentDocMime: null, shipmentDocData: null },
+    });
+    res.json({ ok: true, invoiceNumber: inv.number });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.addGkOrderToCache = addGkOrderToCache;
 router.getGkOrders = getGkOrders;
 module.exports = router;

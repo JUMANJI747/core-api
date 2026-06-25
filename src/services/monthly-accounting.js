@@ -27,7 +27,7 @@ function monthRange(month) {
 async function buildReport(prisma, { from, to }) {
   const plInvoices = await prisma.invoice.findMany({
     where: { ifirmaId: { not: null }, issueDate: { gte: from, lte: to } },
-    select: { id: true, number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, shipmentDocName: true, currency: true, grossAmount: true, contractorName: true, contractorId: true, contractorNip: true, contractorCountry: true, contractorCity: true },
+    select: { id: true, number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, shipmentCarrier: true, shipmentDocName: true, currency: true, grossAmount: true, contractorName: true, contractorId: true, contractorNip: true, contractorCountry: true, contractorCity: true },
     orderBy: { issueDate: 'asc' },
   });
   const total = plInvoices.length;
@@ -40,6 +40,7 @@ async function buildReport(prisma, { from, to }) {
   // liczymy już dopasowań „w locie" po nazwie — to one wstawiały złe listy (do PL).
   const isPaired = (inv) => !!inv.shipmentNumber || !!inv.shipmentDocName;
   const wdtUnpaired = wdt.filter(i => !isPaired(i));
+  const wdtPaired = wdt.filter(isPaired);
 
   return {
     sales: { total, inKsef, toSend: toSend.length, toSendNumbers: toSend.map(i => i.number) },
@@ -49,6 +50,7 @@ async function buildReport(prisma, { from, to }) {
       unpaired: wdtUnpaired.length,
       unpairedNumbers: wdtUnpaired.map(i => i.number),
       unpairedInvoices: wdtUnpaired.map(i => ({ id: i.id, number: i.number, contractorId: i.contractorId, contractorName: i.contractorName, contractorCountry: i.contractorCountry })),
+      pairedInvoices: wdtPaired.map(i => ({ id: i.id, number: i.number, contractorId: i.contractorId, contractorName: i.contractorName, contractorCountry: i.contractorCountry, shipmentNumber: i.shipmentNumber, shipmentCarrier: i.shipmentCarrier, hasDoc: !!i.shipmentDocName })),
     },
     _toSend: toSend,
     _wdtUnpaired: wdtUnpaired,
