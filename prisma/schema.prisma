@@ -92,6 +92,7 @@ model ContractorAddress {
   recipientName   String? // dla GK — kogo wpisac jako odbiorce
   street          String?
   houseNumber     String?
+  apartment       String? // numer mieszkania/lokalu (opcjonalny)
   postalCode      String?
   city            String?
   region          String? // wojewodztwo / provincia / state

@@ -1334,6 +1334,118 @@ router.post('/:id/delivery-address', async (req, res) => {
   }
 });
 
+// ETAP 2 — strukturalny adres: osobno FAKTUROWY (billing) i DOSTAWY (delivery).
+// Pola: ulica, numer, mieszkanie (opc.), kod, miasto, kraj (+ odbiorca dla dostawy).
+// Zapis:
+//  - ContractorAddress (type 'billing'/'delivery') — źródło strukturalne,
+//  - flat Contractor.address/postCode/city/country + extras.billingAddress —
+//    żeby iFirma (payload FV) miała komplet,
+//  - extras.locations[] (dostawa) — żeby GlobKurier brał ten adres przy wycenie.
+// body: { billing:{street,houseNumber,apartment,postCode,city,country},
+//         delivery:{ sameAsBilling?:bool, recipientName?, street,houseNumber,apartment,postCode,city,country } }
+router.post('/:id/structured-address', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const id = req.params.id;
+    const c = await prisma.contractor.findUnique({ where: { id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    const clean = v => (v != null && String(v).trim()) ? String(v).trim() : null;
+    const norm = (a) => {
+      if (!a || typeof a !== 'object') return null;
+      return {
+        street: clean(a.street), houseNumber: clean(a.houseNumber), apartment: clean(a.apartment),
+        postalCode: clean(a.postCode || a.postalCode), city: clean(a.city),
+        country: clean(a.country), recipientName: clean(a.recipientName),
+      };
+    };
+    // "ul. X 12/5" — numer domu + (opc.) mieszkanie po ukośniku.
+    const streetLine = (a) => {
+      const numPart = [a.houseNumber, a.apartment].filter(Boolean).join('/');
+      return [a.street, numPart].filter(Boolean).join(' ').trim() || null;
+    };
+    const fullAddr = (a) => [streetLine(a), [a.postalCode, a.city].filter(Boolean).join(' ').trim(), a.country].filter(Boolean).join(', ');
+
+    const upsertAddr = async (type, a, extra = {}) => {
+      const existing = await prisma.contractorAddress.findFirst({
+        where: { contractorId: id, type }, orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
+      });
+      const data = {
+        type, isPrimary: true, source: 'manual',
+        street: a.street, houseNumber: a.houseNumber, apartment: a.apartment,
+        postalCode: a.postalCode, city: a.city, country: a.country, fullAddress: fullAddr(a), ...extra,
+      };
+      if (existing) await prisma.contractorAddress.update({ where: { id: existing.id }, data });
+      else await prisma.contractorAddress.create({ data: { contractorId: id, ...data } });
+    };
+
+    const b = norm(req.body && req.body.billing);
+    const extras = (typeof c.extras === 'object' && c.extras) || {};
+    const flatData = {};
+
+    // ── BILLING ──
+    if (b && (b.street || b.city || b.postalCode)) {
+      await upsertAddr('billing', b);
+      const billingStreet = streetLine(b);
+      flatData.address = billingStreet;
+      flatData.postCode = b.postalCode;
+      flatData.city = b.city;
+      if (b.country) flatData.country = b.country;
+      extras.billingAddress = {
+        street: billingStreet, city: b.city, postCode: b.postalCode,
+        country: b.country || c.country || null, source: 'manual', updatedAt: new Date().toISOString(),
+      };
+    }
+
+    // ── DELIVERY ──
+    const dRaw = req.body && req.body.delivery;
+    const sameAsBilling = dRaw && (dRaw.sameAsBilling === true || dRaw.sameAsBilling === 'true');
+    if (sameAsBilling || !dRaw) {
+      // Brak osobnej dostawy → kasujemy strukturalny wiersz delivery (fallback do
+      // billing przy GK). NIE ruszamy extras.locations z historii GK.
+      await prisma.contractorAddress.deleteMany({ where: { contractorId: id, type: 'delivery' } }).catch(() => {});
+    } else {
+      const d = norm(dRaw);
+      if (d && (d.street || d.city)) {
+        await upsertAddr('delivery', d, { recipientName: d.recipientName });
+        // Wepnij na początek extras.locations[] (GK wycena czyta stąd). Dedup po ulica+miasto.
+        const locs = Array.isArray(extras.locations) ? [...extras.locations] : [];
+        const n2 = s => (s || '').toString().toLowerCase().trim();
+        const line = streetLine(d);
+        const loc = {
+          street: line, houseNumber: d.houseNumber, city: d.city, postCode: d.postalCode,
+          country: d.country || c.country || null, contactPerson: d.recipientName || null,
+          source: 'manual_delivery', addedAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(),
+        };
+        extras.locations = [loc, ...locs.filter(l => !(n2(l.street) === n2(line) && n2(l.city) === n2(d.city)))];
+      }
+    }
+
+    await prisma.contractor.update({ where: { id }, data: { ...flatData, extras } });
+
+    // Propaguj billing do iFirmy (kolejna FV bez „Brak kodu pocztowego").
+    if (c.nip && b && (b.postalCode || b.street)) {
+      setImmediate(async () => {
+        try {
+          await ifirmaUpsertContractor({
+            name: c.name, nip: c.nip,
+            address: streetLine(b) || '', city: b.city || '', postCode: b.postalCode || '',
+            country: b.country || c.country || 'Polska', email: c.email || '', phone: c.phone || '',
+          });
+          console.log(`[contractors/structured-address] iFirma sync OK: ${c.nip} (postCode=${b.postalCode || '—'})`);
+        } catch (e) {
+          console.warn(`[contractors/structured-address] iFirma sync failed (non-fatal): ${e.message}`);
+        }
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[contractors/structured-address]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Punktowy import GK delivery addresses do KONKRETNEGO kontrahenta po
 // wskazanej nazwie odbiorcy z GK orders. Use case: backfill auto nie
 // zlapal pary (np. GK "ID Logistics Super Pharm" vs CRM "Super Pharm",
