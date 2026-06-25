@@ -208,14 +208,26 @@ firmy. find_contractor zwraca tez matche po extras.contacts[].name
 NIE wybieraj losowo. NIE halucynuj. NIE proponuj nazw firm ktorych
 nie ma w find_contractor response.
 
-⚠ DODAWANIE KONTRAHENTA — ZAWSZE PRZEKAZUJ POSTCODE:
-Gdy uzywasz upsert_contractor PO verify_nip:
-  - verify_nip zwraca PELNY adres np. "Warszawska 5/18, 11-500 Gizycko"
-  - WYCIAGNIJ z tego: address="Warszawska 5/18", postCode="11-500", city="Gizycko"
-  - PRZEKAZ WSZYSTKO do upsert_contractor (name, nip, address, postCode, city, country)
-  - BEZ postCode iFirma odrzuci FV! To NAJCZESTSZA przyczyna bledow.
-  - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE z verify_nip,
-    UZYJ ICH zamiast pytac usera ponownie.
+⚠ DODAWANIE KONTRAHENTA — ROZBIJ ADRES NA OSOBNE POLA (to TY dzielisz, nie backend):
+User wkleja CAŁE dane (z verify_nip, maila, Telegrama) jednym blokiem. Twoim
+zadaniem jest ROZBIĆ je na osobne pola upsert_contractor, żeby nic się nie
+pomieszało ani nie zgubiło:
+  - street = sama ulica (bez numeru), houseNumber = numer domu, apartment = mieszkanie.
+  - "Warszawska 5/18, 11-500 Giżycko" → street="Warszawska", houseNumber="5",
+    apartment="18", postCode="11-500", city="Giżycko". (UKOŚNIK w numerze = dom/mieszkanie.)
+  - "ul. Kwiatowa 34 m. 3, 00-001 Warszawa" → street="ul. Kwiatowa", houseNumber="34",
+    apartment="3", postCode="00-001", city="Warszawa".
+  - "Calle Mayor 12, 28001 Madrid, ES" → street="Calle Mayor", houseNumber="12",
+    postCode="28001", city="Madrid", country="ES".
+  - KOD POCZTOWY ZAWSZE do pola postCode (nigdy nie zostawiaj go w ulicy/mieście) —
+    bez kodu iFirma odrzuca FV. To była NAJCZĘSTSZA przyczyna błędów.
+  - MIASTO bez kodu; ulica bez numeru. Jak masz wątpliwość co jest czym — podziel
+    rozsądnie, ale kod/miasto/ulica MUSZĄ trafić w swoje pola.
+  - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE, użyj ich.
+  - BRAKUJE KLUCZOWEGO POLA dla firmy (kod pocztowy / miasto / ulica)? Odpowiedź
+    upsert_contractor zawiera "missingForInvoice". Jeśli jest niepuste — POWIEDZ
+    userowi WPROST czego brakuje ("Dodałem, ale brakuje kodu pocztowego — podaj go,
+    bo iFirma bez niego nie wystawi FV") zamiast udawać, że wszystko jest OK.
 
 ⚠ POTWIERDZENIE = ZAWSZE WYWOŁAJ NARZĘDZIE NA NOWO:
 Gdy user potwierdza wystawienie ("tak"/"potwierdź"/"dawaj") — ZAWSZE faktycznie
@@ -352,9 +364,12 @@ const tools = [
         name: { type: 'string' }, nip: { type: 'string' },
         type: { type: 'string', description: 'BUSINESS lub PERSON. Default BUSINESS.' },
         country: { type: 'string', description: 'Kraj (Polska, ES, DE, itd.)' },
-        city: { type: 'string', description: 'Miasto (np. "Gizycko")' },
-        address: { type: 'string', description: 'Ulica + numer (np. "ul. Jagielly 1A")' },
-        postCode: { type: 'string', description: 'Kod pocztowy. PL: format "11-500". ES: "35600". WAZNE: ZAWSZE wyciagnij z wiadomosci user-a jak jest podany — bez kodu pocztowego iFirma odrzuca FV (Pole Kontrahent.KodPocztowy jest wymagane).' },
+        city: { type: 'string', description: 'Samo MIASTO, bez kodu (np. "Gizycko", "Madrid"). NIE wklejaj tu kodu pocztowego.' },
+        street: { type: 'string', description: 'Sama ULICA, bez numeru (np. "Jagielly", "ul. Kwiatowa", "Calle Mayor"). ROZBIJ adres — numer domu i mieszkania podaj osobno.' },
+        houseNumber: { type: 'string', description: 'Sam NUMER DOMU/budynku (np. "1A", "34"). Gdy w danych jest "34/3" → houseNumber="34", apartment="3" (ukośnik = dom/mieszkanie). Gdy "12 m. 5" → houseNumber="12", apartment="5".' },
+        apartment: { type: 'string', description: 'OPCJONALNY numer mieszkania/lokalu (część po ukośniku lub po "m."/"lok."). Pomiń gdy brak.' },
+        address: { type: 'string', description: 'FALLBACK: ulica+numer w jednym (gdy nie rozbijasz). Preferuj street/houseNumber/apartment osobno — wtedy nic się nie miesza.' },
+        postCode: { type: 'string', description: 'KOD POCZTOWY, OSOBNE POLE. PL: "11-500". ES: "35600". DE: "10115". ZAWSZE wyciagnij go z wklejonych danych i wstaw TUTAJ (nie zostawiaj w ulicy/mieście). Bez kodu iFirma odrzuca FV.' },
         email: { type: 'string' }, phone: { type: 'string' },
         domain: { type: 'string', description: 'OPCJONALNE: domena firmowa do skojarzenia (np. "euromipe.com"). Maile z tej domeny beda linkowane do tego kontrahenta. Mozna podac sam adres email — domena zostanie wyciagnieta. Gmail/free sa ignorowane.' },
       },

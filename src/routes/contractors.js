@@ -120,6 +120,17 @@ router.post('/upsert', async (req, res) => {
       companyDomain(n.email),
     ].filter(Boolean)));
 
+    // Strukturalne pola adresu od agenta (Sonnet rozbija wklejone dane na osobne
+    // pola — wtedy kod/ulica/numer się nie mieszają). Składamy płaski address =
+    // "ulica numer/mieszkanie"; surowe części trzymamy do ContractorAddress(billing).
+    const sStreet = trim(body.street);
+    const sHouse = trim(body.houseNumber);
+    const sApt = trim(body.apartment);
+    if (sStreet) {
+      const numPart = [sHouse, sApt].filter(Boolean).join('/');
+      n.address = [sStreet, numPart].filter(Boolean).join(' ').trim();
+    }
+
     // Auto-extract postCode + city z address jak agent wkleil caly adres
     // jako jeden string (np. "ul. Jagielly 1A, 11-500 Gizycko"). Helpers
     // w utils/address.js wspoldzielone z services/ifirma-payload.js.
@@ -304,7 +315,42 @@ router.post('/upsert', async (req, res) => {
         },
       });
     }
-    res.json(deliveryAddress ? { ...contractor, deliveryAddressAdded } : contractor);
+
+    // Strukturalny adres fakturowy → ContractorAddress(billing), gdy agent podał
+    // rozbite pola (street/houseNumber). Trzyma split do edytora „Adresy" i do
+    // iFirma payload buildera (czyta ContractorAddress billing).
+    if (sStreet || sHouse) {
+      try {
+        const existingBA = await prisma.contractorAddress.findFirst({
+          where: { contractorId: contractor.id, type: 'billing' }, orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
+        });
+        const baData = {
+          type: 'billing', isPrimary: true, source: 'upsert',
+          street: sStreet || null, houseNumber: sHouse || null, apartment: sApt || null,
+          postalCode: n.postCode || null, city: n.city || null, country: n.country || null,
+        };
+        if (existingBA) await prisma.contractorAddress.update({ where: { id: existingBA.id }, data: baData });
+        else await prisma.contractorAddress.create({ data: { contractorId: contractor.id, ...baData } });
+      } catch (e) {
+        console.warn('[contractors/upsert] billing ContractorAddress failed (non-fatal):', e.message);
+      }
+    }
+
+    // Czego brakuje, by iFirma wystawiła FV (tylko dla firm z NIP) — agent ma to
+    // POWIEDZIEĆ userowi zamiast udawać, że wszystko OK.
+    const missingForInvoice = [];
+    if (contractor.nip) {
+      const ba = (contractor.extras && contractor.extras.billingAddress) || {};
+      if (!contractor.postCode && !ba.postCode) missingForInvoice.push('kod pocztowy');
+      if (!contractor.city && !ba.city) missingForInvoice.push('miasto');
+      if (!contractor.address && !ba.street) missingForInvoice.push('ulica');
+    }
+
+    res.json({
+      ...contractor,
+      ...(deliveryAddress ? { deliveryAddressAdded } : {}),
+      ...(missingForInvoice.length ? { missingForInvoice } : {}),
+    });
     scheduleGeocode(prisma, contractor);
     // Fire-and-forget push do iFirmy (jak NIP istnieje). Zapewnia ze przy
     // pierwszej probie wystawienia FV kontrahent w iFirmie ma juz aktualne
