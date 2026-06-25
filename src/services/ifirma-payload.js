@@ -45,7 +45,8 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
     || cExtras.city
     || '';
 
-  let postCode = (billingAddr && billingAddr.postalCode)
+  let postCode = contractor.postCode
+    || (billingAddr && billingAddr.postalCode)
     || billing.postCode
     || cExtras.postCode
     || cExtras.zipCode

@@ -863,12 +863,61 @@ router.post('/admin/contractor-cleanup', async (req, res) => {
 
     // 1. Update contractor fields
     if (updates && Object.keys(updates).length) {
-      const allowed = ['nip', 'email', 'primaryEmail', 'name', 'country', 'address', 'city', 'phone'];
+      const allowed = ['nip', 'email', 'primaryEmail', 'name', 'country', 'address', 'city', 'phone', 'postCode'];
       const data = {};
       for (const k of allowed) { if (updates[k] !== undefined) data[k] = updates[k]; }
+      // Alias kodu pocztowego + auto-wyciąg gdy user wpisał go w adresie/mieście.
+      const { extractPostCode } = require('../utils/address');
+      if (data.postCode == null && (updates.postalCode || updates.zipCode)) data.postCode = updates.postalCode || updates.zipCode;
+      if (!data.postCode && (data.address || updates.address)) {
+        const zip = extractPostCode(data.address || updates.address);
+        if (zip) data.postCode = zip;
+      }
+      if (!data.postCode && (data.city || updates.city)) {
+        const zip = extractPostCode(data.city || updates.city);
+        if (zip) { data.postCode = zip; if (data.city) data.city = String(data.city).replace(zip, '').replace(/[,\s]+/g, ' ').trim(); }
+      }
       if (Object.keys(data).length) {
-        await prisma.contractor.update({ where: { id: contractorId }, data });
+        // Synchronizuj adres do extras.billingAddress — iFirma payload builder
+        // czyta stąd jako fallback; trzymamy spójnie z kolumną postCode.
+        const eb = (contractor.extras && typeof contractor.extras.billingAddress === 'object' && contractor.extras.billingAddress) || {};
+        const billingAddress = {
+          street: data.address != null ? data.address : (eb.street || contractor.address || null),
+          city: data.city != null ? data.city : (eb.city || contractor.city || null),
+          postCode: data.postCode != null ? data.postCode : (eb.postCode || contractor.postCode || null),
+          country: data.country != null ? data.country : (eb.country || contractor.country || null),
+          source: eb.source || 'edit',
+          updatedAt: new Date().toISOString(),
+        };
+        await prisma.contractor.update({
+          where: { id: contractorId },
+          data: { ...data, extras: { ...(contractor.extras || {}), billingAddress } },
+        });
         result.updated = data;
+
+        // Propaguj poprawione dane (zwłaszcza kod pocztowy) do iFirmy, żeby kolejna
+        // FV nie padła „Brak kodu pocztowego". Best-effort, tylko gdy jest NIP.
+        const nipNow = data.nip || contractor.nip;
+        if (nipNow) {
+          setImmediate(async () => {
+            try {
+              const { upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
+              await ifirmaUpsertContractor({
+                name: data.name || contractor.name,
+                nip: nipNow,
+                address: billingAddress.street || '',
+                city: billingAddress.city || '',
+                postCode: billingAddress.postCode || '',
+                country: billingAddress.country || 'Polska',
+                email: data.email || contractor.email || '',
+                phone: data.phone || contractor.phone || '',
+              });
+              console.log(`[admin/contractor-cleanup] iFirma sync OK: ${nipNow} (postCode=${billingAddress.postCode || '—'})`);
+            } catch (e) {
+              console.warn(`[admin/contractor-cleanup] iFirma sync failed (non-fatal): ${e.message}`);
+            }
+          });
+        }
       }
     }
 

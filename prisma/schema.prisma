@@ -19,6 +19,7 @@ model Contractor {
   country         String?
   city            String?
   address         String?
+  postCode        String? // kod pocztowy (denorm) — iFirma wymaga go do FV; mirror extras.billingAddress.postCode
   notes           String?
   extras          Json      @default("{}")
   tags            String[]  @default([])
