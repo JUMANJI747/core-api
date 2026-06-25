@@ -108,4 +108,53 @@ router.post('/accounting/pair-wdt', async (req, res) => {
   }
 });
 
+// Pojedyncza faktura: AI proponuje JEDEN list (po „Rozłącz" lub gdy auto-paruj
+// nie złapał). NIE zapisuje — zwraca propozycję do potwierdzenia w UI. offset
+// pozwala przeszukać starsze wysyłki (0 = ostatnie 100, 100 = 100–200…).
+router.post('/accounting/pair-wdt-one', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { invoiceId, offset = 0 } = req.body || {};
+    if (!invoiceId) return res.status(400).json({ ok: false, error: 'invoiceId wymagane' });
+    const inv = await prisma.invoice.findUnique({
+      where: { id: String(invoiceId) },
+      select: { id: true, number: true, contractorId: true, contractorName: true, contractorCountry: true, contractorCity: true, contractorNip: true },
+    });
+    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
+
+    const invoicesRouter = require('./invoices');
+    const allGk = await invoicesRouter.getGkOrders();
+    const usedNumbers = new Set(
+      (await prisma.invoice.findMany({ where: { shipmentNumber: { not: null }, NOT: { id: inv.id } }, select: { shipmentNumber: true } }))
+        .map(i => String(i.shipmentNumber)),
+    );
+    const off = Math.max(0, Number(offset) || 0);
+    const orders = (allGk || []).filter(o => o.number && !usedNumbers.has(String(o.number))).slice(off, off + 100);
+    if (!orders.length) return res.json({ ok: true, proposal: null, message: 'Brak wysyłek do przeszukania.' });
+
+    const { pairWdtSmart } = require('../services/wdt-pairing');
+    const { paired, rejected } = await pairWdtSmart([inv], orders);
+    if (paired.length) {
+      const m = paired[0];
+      const a = m.order.receiver || {};
+      return res.json({
+        ok: true,
+        proposal: {
+          shipmentNumber: m.order.number, shipmentHash: m.order.hash || null, carrier: m.order.carrier || null,
+          receiverName: m.order.receiverName, country: a.country || null, city: a.city || null, postCode: a.postCode || null,
+          reason: m.reason || '',
+        },
+      });
+    }
+    return res.json({
+      ok: true, proposal: null, rejected,
+      message: rejected.length
+        ? 'AI znalazł kandydata, ale odrzucił (kraj/Polska). Spróbuj „Szukaj wcześniej".'
+        : (off ? 'AI nie znalazł w starszych (100–200). Sprawdź ręcznie.' : 'AI nie znalazł w ostatnich 100. Spróbuj „Szukaj wcześniej".'),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
