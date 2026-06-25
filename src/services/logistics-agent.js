@@ -66,7 +66,8 @@ ZASADY:
   KROK 4: jeśli found=false → pokaż user-owi reason + matchMethod + scanned. Zaproponuj kolejną opcję.
 - NIE odpowiadaj samym powtórzeniem listy opcji bez wywołania tool — to wieczna pętla. Zawsze próbuj wywołać tool.
 - response.error → DOSŁOWNIE, NIE zgaduj
-- response.ok=true → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
+- ⚠ response.telegramPushed===true → backend JUŻ wysłał na Telegram JEDNĄ wiadomość z ofertami jako GUZIKI (plus warningi). User wszystko widzi i klika. NIE rób żadnego readoutu, NIE powtarzaj ofert/cen/quoteId, NIE pisz "napisz tak". Zwróć PUSTĄ odpowiedź (zero znaków). Każdy dodatkowy tekst = zdublowana wiadomość.
+- response.ok=true I telegramPushed NIE jest true (np. wycena z CRM) → receiver, package (z response, nie zmyślaj!), 3 najtańsze offers, quoteId
 - "tak"/"zamów" po wycenie → order_shipping z quoteId. JEŚLI nie znasz dokładnego quoteId z poprzedniej tury (sub-agent jest stateless, pamięć ograniczona), wyślij quoteId="latest" — backend automatycznie weźmie najnowszy quote ze store. NIGDY nie zmyślaj quoteId z numerów faktury / nazwy kontrahenta ("64/2026_holaola", "UNKNOWN" itp.) — to się nie odnajdzie i polecisz w pętlę.
 
 ⚠ ŻELAZNA ZASADA: order_shipping TYLKO W OSOBNEJ TURZE PO QUOTE.
@@ -357,6 +358,7 @@ async function processLogisticsQuery(query, ctx = {}) {
   const MAX_ITER = 5;
   let orderPlaced = false;
   let quotedThisTurn = false;
+  let quotePushedToTg = false; // backend sam wypchnął oferty-guziki na Telegram
   while (response.stop_reason === 'tool_use' && iterations < MAX_ITER) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
@@ -390,6 +392,7 @@ async function processLogisticsQuery(query, ctx = {}) {
       console.log(`[logistics-agent] tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
       if (tu.name === 'quote_shipping' && result && result.ok !== false) quotedThisTurn = true;
+      if (tu.name === 'quote_shipping' && result && result.telegramPushed === true) quotePushedToTg = true;
       if (tu.name === 'order_shipping' && result && result.ok) orderPlaced = true;
       toolResultBlocks.push({
         type: 'tool_result',
@@ -414,8 +417,13 @@ async function processLogisticsQuery(query, ctx = {}) {
   }
 
   const textBlock = response.content.find(b => b.type === 'text');
+  // Gdy backend sam wypchnął oferty-guziki na Telegram → milczymy: pusty tekst +
+  // suppressReply, żeby n8n NIE wysłał drugiej (i master trzeciej) wiadomości.
+  // Warningi i tak pojechały w wiadomości z guzikami (patrz glob-quote.js).
   return {
-    text: textBlock ? textBlock.text : '',
+    text: quotePushedToTg ? '' : (textBlock ? textBlock.text : ''),
+    telegramPushed: quotePushedToTg,
+    suppressReply: quotePushedToTg,
     iterations,
     stopReason: response.stop_reason,
   };

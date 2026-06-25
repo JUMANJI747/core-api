@@ -909,6 +909,9 @@ router.post('/glob/quote', async (req, res) => {
           const rcvCity = receiver.city || '';
           const head = `📦 Wyceny kuriera → ${rcvName}${rcvCity ? ` (${rcvCity})` : ''}\n` +
             `Paczka: ${weight}kg ${length}×${width}×${height}cm\n` +
+            // Warningi (domyślne wymiary, kraj=PL fallback…) jadą W TEJ wiadomości —
+            // agent przy telegramPushed=true milczy, więc inaczej by zniknęły.
+            (warnings.length ? `⚠ ${warnings.join('\n⚠ ')}\n` : '') +
             `Kliknij ofertę, żeby zamówić (bez dodatkowych pytań):`;
           // Jeden przycisk = jedna oferta (max 8, by zmieścić się w limicie Telegrama).
           const rows = offers.slice(0, 8).map((o) => {
