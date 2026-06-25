@@ -72,7 +72,7 @@ ${text}`;
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       }, {
-        model: 'claude-sonnet-4-20250514',
+        model: process.env.ORDER_PARSER_MODEL || 'claude-sonnet-4-5-20250929',
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });

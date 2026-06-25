@@ -1267,7 +1267,11 @@ async function processAccount(account) {
             if (!parsed) continue;
             const sizeKB = Math.round((parsed.size || 0) / 1024);
             attachmentInfo += `\n📎 ${parsed.filename} (${parsed.type}, ${sizeKB} KB)`;
-            if (parsed.preview && parsed.type !== 'image') {
+            // Pokaż treść załącznika WPROST na Telegramie (np. zamówienie w PDF) —
+            // pełny tekst (do ~1500 znaków), nie tylko 300-znakowy ogryzek.
+            if (parsed.text && (parsed.type === 'pdf' || parsed.type === 'txt' || parsed.type === 'csv' || parsed.type === 'xml')) {
+              attachmentInfo += `\n${parsed.text.substring(0, 1500)}${parsed.text.length > 1500 ? '\n…(dalej w mailu)' : ''}`;
+            } else if (parsed.preview && parsed.type !== 'image') {
               attachmentInfo += `\n${parsed.preview.substring(0, 300)}`;
             }
             if (parsed.text && (parsed.type === 'pdf' || parsed.type === 'txt')) {

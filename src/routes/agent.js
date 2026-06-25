@@ -123,6 +123,18 @@ router.post('/agent/email-context', asyncHandler(async (req, res) => {
     const att = emailContext.attachments.map(a => `${a.filename || '?'} (${a.contentType || '?'}, ${a.size || 0}B)`).join(', ');
     lines.push(`Zalaczniki: ${att}`);
   }
+
+  // Treść załączników maila z bazy (PDF zamówienia itp.) — żeby agent zajrzał do
+  // PDF gdy w treści maila nie ma pozycji („wystaw fakturę" z załącznika).
+  if (emailContext.emailId) {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
+    const attTxt = await extractEmailAttachments(prisma, anthropic, emailContext.emailId);
+    if (attTxt) {
+      lines.push('Tresc zalacznikow (odczytana przez AI):');
+      lines.push(attTxt);
+    }
+  }
   if (emailContext.body) {
     lines.push('Tresc maila:');
     lines.push(String(emailContext.body).slice(0, 2000));
@@ -420,6 +432,32 @@ async function extractAssistantAttachments(anthropic, attachments) {
   return parts.join('\n\n');
 }
 
+// Doczytaj ZAŁĄCZNIKI SAMEGO MAILA z bazy (EmailAttachment.data) i odczytaj ich
+// treść (PDF → tekst, obraz → vision) — żeby agent „widział" zamówienie z PDF,
+// gdy w treści maila go nie ma („wystaw fakturę" a pozycje są w załączniku).
+// Pomija inline obrazki (cid = logo w stopce). Zwraca tekst do doklejenia.
+async function extractEmailAttachments(prisma, anthropic, emailId) {
+  if (!emailId) return '';
+  let rows;
+  try {
+    rows = await prisma.emailAttachment.findMany({ where: { emailId: String(emailId) } });
+  } catch (e) {
+    console.error('[agent] email attachments load failed:', e.message);
+    return '';
+  }
+  const usable = (rows || []).filter(a => a.data && a.data.length && !a.cid);
+  if (!usable.length) return '';
+  const mapped = usable.map(a => ({
+    filename: a.filename,
+    contentType: a.contentType,
+    contentBase64: Buffer.from(a.data).toString('base64'),
+  }));
+  return extractAssistantAttachments(anthropic, mapped).catch(e => {
+    console.error('[agent] email attachment extract failed:', e.message);
+    return '';
+  });
+}
+
 // POST /api/agent/assistant — tani router (Haiku) który decyduje którego
 // agenta (Sonnet) wywołać i łączy wyniki. Dla frontu — zero Opus.
 // Body: { query, context: { contractorId?, ... }, previousTurns?, attachments? }
@@ -440,6 +478,13 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
       return '';
     });
     if (extracted) query = `${query}\n\n[ZAŁĄCZNIKI OD UŻYTKOWNIKA — odczytane przez AI]:\n${extracted}`;
+  }
+
+  // Załączniki SAMEGO MAILA z bazy (np. zamówienie w PDF) — gdy user nie dorzucił
+  // własnych plików, a w treści maila brak pozycji, agent ma zajrzeć do załącznika.
+  if (context.emailId && !attachments.length) {
+    const fromMail = await extractEmailAttachments(prisma, anthropic, context.emailId);
+    if (fromMail) query = `${query}\n\n[ZAŁĄCZNIKI MAILA — odczytane przez AI]:\n${fromMail}`;
   }
 
   // Buduje query z prefixem kontekstu: dane kontrahenta + CALY WATEK rozmowy
