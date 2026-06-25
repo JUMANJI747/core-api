@@ -186,7 +186,7 @@ Odpowiedz TYLKO czystym JSON (bez markdown, bez komentarzy):
     'x-api-key': apiKey,
     'anthropic-version': '2023-06-01',
   }, {
-    model: 'claude-sonnet-4-20250514',
+    model: process.env.WDT_MATCH_MODEL || 'claude-opus-4-8',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   });
@@ -355,8 +355,8 @@ async function performWdtMatching(prisma, y, m) {
   const filteredOrders = allOrders.filter(order => {
     const creationDate = new Date(order.creationDate || order.created_at || order.createdAt || 0);
     if (creationDate < filterFrom || creationDate > nextMonthEnd) return false;
-    const receiver = order.receiverAddress || order.receiver || {};
-    if (receiver.countryId === 1 || receiver.country_id === 1) return false;
+    // (Wcześniej wycinano Hiszpanię countryId===1 — błąd, bo Hiszpania kont. to
+    //  prawidłowe WDT. Poprawność kraju zapewnia teraz weryfikacja przy parowaniu.)
     return true;
   });
 

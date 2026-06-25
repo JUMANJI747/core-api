@@ -27,7 +27,7 @@ function monthRange(month) {
 async function buildReport(prisma, { from, to }) {
   const plInvoices = await prisma.invoice.findMany({
     where: { ifirmaId: { not: null }, issueDate: { gte: from, lte: to } },
-    select: { id: true, number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, shipmentDocName: true, currency: true, grossAmount: true, contractorName: true, contractorId: true },
+    select: { id: true, number: true, ksefNumber: true, type: true, ifirmaType: true, shipmentNumber: true, shipmentDocName: true, currency: true, grossAmount: true, contractorName: true, contractorId: true, contractorNip: true, contractorCountry: true, contractorCity: true },
     orderBy: { issueDate: 'asc' },
   });
   const total = plInvoices.length;
@@ -35,30 +35,20 @@ async function buildReport(prisma, { from, to }) {
   const inKsef = total - toSend.length;
   const wdt = plInvoices.filter(isWdtInvoice);
 
-  // Parowanie WDT liczymy TAK SAMO jak strona Faktury: faktura jest „sparowana"
-  // gdy ma jawny shipmentNumber, ręcznie wgrany list (shipmentDocName) LUB
-  // dopasowanie po nazwie do zamówienia GK (runtime, niezapisane w bazie).
-  // Stan z dopasowań po nazwie bierzemy wprost z GET /api/invoices.
-  let pairedNumbers = null;
-  try {
-    const { selfCall } = require('./agent-runtime');
-    const r = await selfCall('GET', '/api/invoices', { limit: 10000 });
-    const arr = Array.isArray(r.body) ? r.body : null;
-    if (arr) {
-      pairedNumbers = new Set();
-      for (const it of arr) { if (it && it.shipment && it.number) pairedNumbers.add(String(it.number)); }
-    }
-  } catch (_) { /* fallback niżej */ }
-  const isPaired = (inv) => (pairedNumbers ? pairedNumbers.has(String(inv.number)) : !!inv.shipmentNumber) || !!inv.shipmentDocName;
+  // „Sparowana" = ma ZAPISANY w CRM numer wysyłki (shipmentNumber — ustawiany przy
+  // zamawianiu kuriera z faktury / przez „Paruj") lub ręcznie wgrany list. NIE
+  // liczymy już dopasowań „w locie" po nazwie — to one wstawiały złe listy (do PL).
+  const isPaired = (inv) => !!inv.shipmentNumber || !!inv.shipmentDocName;
   const wdtUnpaired = wdt.filter(i => !isPaired(i));
 
   return {
     sales: { total, inKsef, toSend: toSend.length, toSendNumbers: toSend.map(i => i.number) },
     wdt: {
       total: wdt.length,
+      paired: wdt.length - wdtUnpaired.length,
       unpaired: wdtUnpaired.length,
       unpairedNumbers: wdtUnpaired.map(i => i.number),
-      unpairedInvoices: wdtUnpaired.map(i => ({ id: i.id, number: i.number, contractorId: i.contractorId, contractorName: i.contractorName })),
+      unpairedInvoices: wdtUnpaired.map(i => ({ id: i.id, number: i.number, contractorId: i.contractorId, contractorName: i.contractorName, contractorCountry: i.contractorCountry })),
     },
     _toSend: toSend,
     _wdtUnpaired: wdtUnpaired,

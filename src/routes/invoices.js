@@ -53,6 +53,7 @@ function refreshGkOrders() {
           const carrier = (o.carrier && typeof o.carrier === 'object') ? (o.carrier.name || '') : (o.carrier || '');
           orders.push({
             number: String(num),
+            hash: o.hash || o.orderHash || o.id || null,
             status: o.status || o.statusName || null,
             carrier,
             receiverName: recv.companyName || recv.name || recv.contactPerson || '',
@@ -65,6 +66,7 @@ function refreshGkOrders() {
               postCode: recv.postCode || recv.zipCode || recv.postalCode || null,
               city: recv.city || null,
               country: recv.country || recv.countryCode || null,
+              countryId: recv.countryId != null ? recv.countryId : (recv.country_id != null ? recv.country_id : null),
               phone: recv.phone || recv.phoneNumber || null,
               email: recv.email || recv.contactEmail || null,
             },
@@ -2786,4 +2788,5 @@ router.get('/invoices/last-price', async (req, res) => {
 });
 
 router.addGkOrderToCache = addGkOrderToCache;
+router.getGkOrders = getGkOrders;
 module.exports = router;

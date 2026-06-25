@@ -76,6 +76,7 @@ router.post('/build-package', async (req, res) => {
     }
 
     // Download CMR PDFs via glob-client
+    const { isToPoland } = require('../services/wdt-pairing');
     let cmrDownloaded = 0;
     for (const pair of (matchResult.matched || [])) {
       const invoiceNumber = pair.invoice.number;
@@ -83,6 +84,8 @@ router.post('/build-package', async (req, res) => {
       const receiverName = pair.order.receiverName || '';
 
       if (!hash) continue;
+      // WDT/eksport NIE może mieć listu do Polski — pomijamy (to był błąd księgowej).
+      if (isToPoland(pair.order)) { console.warn('[package] pomijam list do PL dla', invoiceNumber); continue; }
 
       const existing = await prisma.document.findFirst({
         where: { packageId: pkg.id, type: 'cmr', invoiceNumber },
@@ -231,6 +234,8 @@ router.post('/build-package', async (req, res) => {
             orders.push({
               hash, number: String(o.number || o.orderNumber || ''),
               name: recv.companyName || recv.name || recv.contactPerson || '',
+              postCode: recv.postCode || recv.zipCode || recv.postalCode || null,
+              country: recv.country || recv.countryCode || null,
               date: o.creationDate || o.created_at || o.createdAt || null,
               status: (o.status || '').toUpperCase(), used: false,
             });
@@ -269,6 +274,7 @@ router.post('/build-package', async (req, res) => {
             ord = best;
           }
           if (!ord) continue;
+          if (isToPoland(ord)) { console.warn('[package] name-match: pomijam list do PL dla', inv.number); continue; }
           ord.used = true;
           try {
             const { status, body: pdfBuffer } = await getOrderLabels(ord.hash, 'A4');
