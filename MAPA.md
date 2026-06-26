@@ -56,6 +56,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/transactions.js` | transakcje (deal cycle) |
 | `/api` | `routes/push.js` | web push (PWA) |
 | `/api/contasimple` | `routes/contasimple.js` | **FV ES/Kanary**: invoice-preview/confirm(-latest), albaran (WZ), delete, products/contractors ES |
+| `/api` | `routes/mk.js` | **Mała Księgowość (mk.app)** — ETAP 0: `mk/ping`, `mk/ksef-fetch` (wyzwól pobranie z KSeF: buy/sell), `mk/ksef-fetch/:ref` (status), `mk/cost-invoices`, `mk/sales-invoices`, `mk/new-ledger-entries`. Reconciliation MK↔baza↔iFirma↔KSeF = ETAP 2 |
 
 ---
 
@@ -65,6 +66,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `contasimple-client.js` — Contasimple (ES): faktury, WZ, formaty numeracji.
 - `glob-client.js` — GlobKurier: getQuote, getOrders, createOrder, labels, receivers, countries, pickupTimeRanges.
 - `ksef-client.js` — KSeF (token RO): pobieranie faktur sprzedaż (Subject1) / koszty (Subject2).
+- `mk-client.js` — **Mała Księgowość (mk.app)**: auth (X-API-Key / login→JWT / data-sharing-key, env `MK_*`), wyzwolenie pobrania z KSeF (`ksefFetch` buy/sell), odczyt ledger (vat-purchase/vat-sales/new-ledger-entries/invoices).
 - `mail-sender.js` — SMTP (wysyłka maili).
 - `vies.js` — walidacja VAT UE (VIES).
 - `telegram-utils.js` — `sendTelegram` / `sendTelegramDocument` / `sendTelegramPhoto`, `answerCallbackQuery`, `editMessageReplyMarkup`.
