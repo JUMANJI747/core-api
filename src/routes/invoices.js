@@ -2856,6 +2856,64 @@ router.post('/invoices/:idOrNumber/unlink-shipment', async (req, res) => {
   }
 });
 
+// Przygotuj DRAFT faktury z maila — do prefill formularza „Nowa faktura" w CRM
+// (zamiast auto-wystawiania przez agenta). Rozwiązuje kontrahenta (po id → mailu
+// → nazwie) i wyłuskuje pozycje (LLM). NIC nie wystawia ani nie zapisuje.
+// body: { text, fromEmail?, contractorName?, contractorId? }
+router.post('/invoice-draft-from-email', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { text, fromEmail, contractorName, contractorId } = req.body || {};
+    let contractor = null;
+    if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: String(contractorId) } }).catch(() => null);
+    if (!contractor && fromEmail) {
+      const fe = String(fromEmail).trim();
+      contractor = await prisma.contractor.findFirst({
+        where: { OR: [{ email: { equals: fe, mode: 'insensitive' } }, { primaryEmail: fe.toLowerCase() }] },
+      }).catch(() => null);
+      if (!contractor) {
+        const c = await prisma.contractorContact.findFirst({ where: { type: 'email', value: { equals: fe, mode: 'insensitive' } }, select: { contractorId: true } }).catch(() => null);
+        if (c) contractor = await prisma.contractor.findUnique({ where: { id: c.contractorId } }).catch(() => null);
+      }
+    }
+    if (!contractor && contractorName) {
+      const scored = await findBestContractors(prisma, contractorName, { minScore: 60 }).catch(() => []);
+      if (scored.length) contractor = scored[0].contractor;
+    }
+
+    let items = [];
+    if (text && String(text).trim()) {
+      try {
+        const { parseOrderWithLLM } = require('../order-llm-parser');
+        const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), (contractor && contractor.name) || contractorName);
+        if (parsed && Array.isArray(parsed.items)) {
+          items = parsed.items
+            .filter(i => i && i.name && Number(i.qty) > 0)
+            .map(i => ({ name: String(i.name).slice(0, 120), qty: Number(i.qty), ean: i.ean || undefined, priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined }));
+        }
+      } catch (e) {
+        console.warn('[invoice-draft-from-email] item parse failed (non-fatal):', e.message);
+      }
+    }
+
+    const country = ((contractor && contractor.country) || '').toString().toLowerCase();
+    const base = ['es', 'hiszpania', 'spain', 'ic', 'canarias', 'islas canarias'].includes(country) ? 'es' : 'pl';
+
+    res.json({
+      ok: true,
+      base,
+      contractor: contractor ? {
+        id: contractor.id, name: contractor.name, nip: contractor.nip || null,
+        country: contractor.country || null, city: contractor.city || null,
+        email: contractor.primaryEmail || contractor.email || null,
+      } : null,
+      items,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.addGkOrderToCache = addGkOrderToCache;
 router.getGkOrders = getGkOrders;
 module.exports = router;
