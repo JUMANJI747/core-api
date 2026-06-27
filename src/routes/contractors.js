@@ -157,6 +157,20 @@ router.post('/upsert', async (req, res) => {
         console.log(`[contractors/upsert] auto-extract city "${city}" z address`);
       }
     }
+    // SIATKA BEZPIECZEŃSTWA: rawAddress = cały wklejony blok od usera. Gdy agent
+    // nie wysłał osobnego postCode/city (slip — np. GR "84300" zostało w bloku),
+    // dociągamy je stąd. To naprawia „kod był podany, a nie trafił do rekordu".
+    const rawAddress = trim(body.rawAddress);
+    if (rawAddress) {
+      if (!n.postCode) {
+        const zip = extractPostCode(rawAddress);
+        if (zip) { n.postCode = zip; console.log(`[contractors/upsert] postCode "${zip}" z rawAddress`); }
+      }
+      if (!n.city && n.postCode) {
+        const city = extractCityAfterPostCode(rawAddress, n.postCode);
+        if (city) { n.city = city; console.log(`[contractors/upsert] city "${city}" z rawAddress`); }
+      }
+    }
 
     // Canonicalize: postCode + address fields trafiaja do extras.billingAddress.
     // Bez tego pole nie ma gdzie usiasc — Contractor model nie ma kolumny

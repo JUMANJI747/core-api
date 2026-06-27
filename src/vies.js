@@ -23,7 +23,8 @@ const SERVICE_ERRORS = new Set([
 //   status='invalid' -> numer NA PEWNO nieaktywny/nieistniejacy (valid=false)
 //   status='unknown' -> nie udalo sie zweryfikowac (usluga niedostepna/limit/
 //                       timeout/blad sieci); valid=null. NIE traktowac jak invalid!
-async function verifyVat(countryCode, vatNumber, timeoutMs = 20000) {
+// Jedna próba weryfikacji (bez retry). Patrz verifyVat niżej.
+async function verifyVatOnce(countryCode, vatNumber, timeoutMs = 20000) {
   const cc = String(countryCode || '').trim().toUpperCase();
   const num = String(vatNumber || '').replace(/[\s.\-]/g, '').toUpperCase();
 
@@ -66,4 +67,25 @@ async function verifyVat(countryCode, vatNumber, timeoutMs = 20000) {
   };
 }
 
-module.exports = { verifyVat, VIES_URL, SERVICE_ERRORS };
+// Weryfikacja z RETRY. Węzły niektórych krajów (zwłaszcza GR/ES/IT) regularnie
+// zwracają MS_UNAVAILABLE / timeout — pojedyncza próba dawała 'unknown', choć
+// ręcznie po chwili NIP się weryfikuje. Ponawiamy TYLKO gdy 'unknown' (usługa
+// niedostępna), NIGDY gdy dostaliśmy jednoznaczne valid/invalid.
+// Konfigurowalne: VIES_RETRIES (domyślnie 3), VIES_RETRY_DELAY_MS (1200).
+async function verifyVat(countryCode, vatNumber, timeoutMs = 20000) {
+  const maxAttempts = Math.max(1, Number(process.env.VIES_RETRIES) || 3);
+  const baseDelay = Number(process.env.VIES_RETRY_DELAY_MS) || 1200;
+  let last;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await verifyVatOnce(countryCode, vatNumber, timeoutMs);
+    if (last.status !== 'unknown') return last; // valid/invalid = pewny wynik
+    if (attempt < maxAttempts) {
+      const wait = baseDelay * attempt; // 1.2s, 2.4s, ...
+      console.log(`[vies] ${countryCode}${vatNumber} unknown (${last.userError || 'no-answer'}) — retry ${attempt + 1}/${maxAttempts} za ${wait}ms`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  return last; // po wszystkich próbach nadal unknown
+}
+
+module.exports = { verifyVat, verifyVatOnce, VIES_URL, SERVICE_ERRORS };

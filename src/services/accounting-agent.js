@@ -224,6 +224,8 @@ pomieszało ani nie zgubiło:
   - MIASTO bez kodu; ulica bez numeru. Jak masz wątpliwość co jest czym — podziel
     rozsądnie, ale kod/miasto/ulica MUSZĄ trafić w swoje pola.
   - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE, użyj ich.
+  - ZAWSZE podawaj też rawAddress = cały wklejony blok adresu (siatka
+    bezpieczeństwa — backend dociągnie kod/miasto, gdyby coś umknęło).
   - BRAKUJE KLUCZOWEGO POLA dla firmy (kod pocztowy / miasto / ulica)? Odpowiedź
     upsert_contractor zawiera "missingForInvoice". Jeśli jest niepuste — POWIEDZ
     userowi WPROST czego brakuje ("Dodałem, ale brakuje kodu pocztowego — podaj go,
@@ -369,7 +371,8 @@ const tools = [
         houseNumber: { type: 'string', description: 'Sam NUMER DOMU/budynku (np. "1A", "34"). Gdy w danych jest "34/3" → houseNumber="34", apartment="3" (ukośnik = dom/mieszkanie). Gdy "12 m. 5" → houseNumber="12", apartment="5".' },
         apartment: { type: 'string', description: 'OPCJONALNY numer mieszkania/lokalu (część po ukośniku lub po "m."/"lok."). Pomiń gdy brak.' },
         address: { type: 'string', description: 'FALLBACK: ulica+numer w jednym (gdy nie rozbijasz). Preferuj street/houseNumber/apartment osobno — wtedy nic się nie miesza.' },
-        postCode: { type: 'string', description: 'KOD POCZTOWY, OSOBNE POLE. PL: "11-500". ES: "35600". DE: "10115". ZAWSZE wyciagnij go z wklejonych danych i wstaw TUTAJ (nie zostawiaj w ulicy/mieście). Bez kodu iFirma odrzuca FV.' },
+        postCode: { type: 'string', description: 'KOD POCZTOWY, OSOBNE POLE. PL: "11-500". ES: "35600". DE: "10115". GR: "84300". ZAWSZE wyciagnij go z wklejonych danych i wstaw TUTAJ (nie zostawiaj w ulicy/mieście). Bez kodu iFirma odrzuca FV.' },
+        rawAddress: { type: 'string', description: 'SIATKA BEZPIECZEŃSTWA: wklej tu CAŁY surowy blok adresu jak podał user (wszystkie linie). Podawaj ZAWSZE przy dodawaniu — backend dociągnie z niego kod pocztowy / miasto, gdyby któreś pole umknęło przy rozbijaniu.' },
         email: { type: 'string' }, phone: { type: 'string' },
         domain: { type: 'string', description: 'OPCJONALNE: domena firmowa do skojarzenia (np. "euromipe.com"). Maile z tej domeny beda linkowane do tego kontrahenta. Mozna podac sam adres email — domena zostanie wyciagnieta. Gmail/free sa ignorowane.' },
       },
