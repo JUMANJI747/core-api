@@ -140,6 +140,10 @@ miesiac chodzi, NIE deleguj do innego sub-agenta.
 FLOW WYSTAWIENIA FV:
 0. NAJPIERW find_contractor z dokładnym fragmentem nazwy którą user podał ("easy
    surf michał lussa" → search="easy surf"; "Awa Surf" → search="awa surf").
+   ⚠ GDY pracujesz z MAILA (jest [KONTEKST MAILA] z adresem "Od: ... <email>") i
+   wyszukiwanie po nazwie zwróci 0 → SPRÓBUJ find_contractor z tym ADRESEM EMAIL
+   (backend szuka też po mailu). Nazwa z pieczątki/OCR bywa inna niż w bazie, ale
+   mail się zgadza. Dopiero gdy i mail zwróci 0 → pytaj o dane / dodaj.
    Jak wynik EMPTY → NIE halucynuj danych. Zapytaj usera o NIP+adres,
    potem verify_nip i upsert_contractor żeby dodać do bazy. DOPIERO POTEM
    invoice_preview z contractorSearch=<dokladna nazwa z find_contractor.name>.
@@ -325,7 +329,7 @@ const tools = [
     input_schema: {
       type: 'object',
       properties: {
-        search: { type: 'string', description: 'Nazwa, fragment, NIP albo combo. Min 2 znaki.' },
+        search: { type: 'string', description: 'Nazwa, fragment, NIP, ALBO ADRES EMAIL. Min 2 znaki. Backend szuka po nazwie, mailu (flat + kontakty) i NIP.' },
         limit: { type: 'number', description: 'Max wynikow (default 10)' },
       },
       required: ['search'],

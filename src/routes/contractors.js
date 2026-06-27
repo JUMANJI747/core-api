@@ -861,7 +861,18 @@ router.get('/', async (req, res) => {
   const { search, country, tag, limit } = req.query;
   const take = parseInt(limit) || 50;
   const where = {};
-  if (search) where.name = { contains: search, mode: 'insensitive' };
+  if (search) {
+    // Szukaj po nazwie ORAZ mailu/NIP — agent woła find_contractor z nazwą firmy,
+    // ale z maila często mamy tylko adres (np. info@nayarhodes.com), a nazwa z
+    // pieczątki/OCR bywa inna niż w bazie. Bez maila kontrahent się nie znajdował.
+    const s = String(search).trim();
+    where.OR = [
+      { name: { contains: s, mode: 'insensitive' } },
+      { email: { contains: s, mode: 'insensitive' } },
+      { primaryEmail: { contains: s.toLowerCase() } },
+      { nip: { contains: s, mode: 'insensitive' } },
+    ];
+  }
   if (country) where.country = { equals: country, mode: 'insensitive' };
   if (tag) where.tags = { has: tag };
   const contractors = await prisma.contractor.findMany({ where, take, orderBy: { updatedAt: 'desc' } });
@@ -903,6 +914,26 @@ router.get('/', async (req, res) => {
         }
       } catch (e) {
         console.warn('[contractors/search] contact-name match failed (non-fatal):', e.message);
+      }
+
+      // Email-only match: adres mailowy bywa zapisany TYLKO w ContractorContact
+      // (type 'email'), nie w polu flat. Gdy user/agent szuka po mailu, dociągnij
+      // też tych kontrahentów.
+      if (searchLower.includes('@')) {
+        try {
+          const contacts = await prisma.contractorContact.findMany({
+            where: { type: 'email', value: { contains: searchLower, mode: 'insensitive' } },
+            select: { contractorId: true }, take: 10,
+          });
+          const ids = [...new Set(contacts.map(c => c.contractorId))].filter(id => !merged.some(m => m.id === id));
+          if (ids.length) {
+            const rows = await prisma.contractor.findMany({ where: { id: { in: ids } } });
+            for (const r of rows) { if (merged.length >= take) break; merged.push({ ...r, matchedBy: 'email_contact' }); }
+            console.log(`[contractors/search] email-contact match: "${search}" → ${rows.length}`);
+          }
+        } catch (e) {
+          console.warn('[contractors/search] email-contact match failed (non-fatal):', e.message);
+        }
       }
     }
   }
