@@ -2330,88 +2330,27 @@ router.get('/invoices', async (req, res) => {
     // Transakcji/dealow (czesto pusta/niezmatchowana) — to byl powod, ze status
     // sie nie pokazywal. Dzieki temu prawie kazda faktura z wysylka pokazuje
     // realny status GK, a guzik "Kurier" zostaje tylko przy tych BEZ wysylki.
-    const shipByInvoiceId = {};
-    const gkByNumber = {}; // numer GK → zamówienie (do jawnego linku FV.shipmentNumber)
+    // Status wysyłki pokazujemy WYŁĄCZNIE z JAWNEGO linku (FV.shipmentNumber —
+    // ustawiany przy zamawianiu kuriera z faktury / „Paruj" WDT / ręcznym
+    // wgraniu listu) albo z ręcznego dokumentu (shipmentDocName).
+    // USUNIĘTE: dopasowanie „po nazwie/dacie" do całego cache GK — zgadywało i
+    // podpinało CUDZE listy do faktur (np. list „Club de Surf Patris" do FV
+    // „ALMARIMA SURF COMPANY SL" — zgadzał się tylko kraj). Brak linku = guzik
+    // „Kurier", nie fałszywy status. Spójne z raportem WDT (też tylko jawne).
+    const gkByNumber = {}; // numer GK → zamówienie (status na żywo dla jawnego linku)
     try {
       const gkOrders = await getGkOrders();
       for (const o of gkOrders) { if (o.number) gkByNumber[String(o.number)] = o; }
-      if (gkOrders.length) {
-        const { normalizeContractorName, scoreContractor } = require('../services/contractor-match');
-        const WINDOW_MS = 45 * 86400000; // paczka zwykle do paru tygodni od FV
-        const gk = gkOrders
-          .filter(o => o.receiverName)
-          .map(o => ({ ...o, key: normalizeContractorName(o.receiverName), used: false }));
-        const gkByKey = {};
-        for (const o of gk) if (o.key) (gkByKey[o.key] ||= []).push(o);
-
-        // Od NAJNOWSZEJ faktury — swiezo wystawiony list trafia do najnowszej
-        // FV kontrahenta bez wysylki (zgodnie z oczekiwaniem usera).
-        const sortedInvs = list
-          .filter(i => i.contractorName)
-          .slice()
-          .sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
-
-        const isCanceled = (s) => ['CANCELED', 'CANCELLED'].includes((s.status || '').toUpperCase());
-        // Najlepszy kandydat z puli: NAJPIERW listy aktywne (nie-anulowane),
-        // dopiero w braku — anulowane; w obrebie grupy najblizsza data.
-        // (Case: 2 listy dla tego samego klienta, jeden anulowany — faktura ma
-        // pokazac AKTYWNY/IN_TRANSIT, nie CANCELED.)
-        const assignNearest = (inv, pool) => {
-          let best = null, bd = Infinity, bestCanceled = true;
-          for (const s of pool) {
-            if (s.used) continue;
-            const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
-            if (d > WINDOW_MS) continue;
-            const c = isCanceled(s);
-            if ((bestCanceled && !c) || (c === bestCanceled && d < bd)) { bd = d; best = s; bestCanceled = c; }
-          }
-          if (best) { best.used = true; shipByInvoiceId[inv.id] = best; return true; }
-          return false;
-        };
-
-        // Pass 1: dokladna nazwa znormalizowana (najczestszy przypadek).
-        for (const inv of sortedInvs) {
-          const k = normalizeContractorName(inv.contractorName);
-          if (k && gkByKey[k]) assignNearest(inv, gkByKey[k]);
-        }
-        // Pass 2: fuzzy dla niezmatchowanych — TYLKO obustronny score>=90
-        // (WSZYSTKIE znaczace slowa jednej nazwy w drugiej). Wczesniejszy prog
-        // 80 = JEDNO wspolne slowo — u nas niemal kazda nazwa ma "surf", wiec
-        // wolny list jednego klienta lapal sie do faktury INNEGO (incydent:
-        // list Club de Surf Patris przypiety do cudzej nowej FV).
-        const unmatched = sortedInvs.filter(i => !shipByInvoiceId[i.id]);
-        const unusedGk = gk.filter(o => !o.used);
-        if (unmatched.length && unusedGk.length) {
-          for (const inv of unmatched) {
-            let best = null, bestScore = 0, bestDiff = Infinity, bestCanceled = true;
-            for (const s of unusedGk) {
-              if (s.used) continue;
-              const d = Math.abs(new Date(inv.issueDate) - new Date(s.date));
-              if (d > WINDOW_MS) continue;
-              const sc = Math.min(
-                scoreContractor({ name: s.receiverName }, inv.contractorName),
-                scoreContractor({ name: inv.contractorName }, s.receiverName)
-              );
-              if (sc < 90) continue;
-              const c = isCanceled(s);
-              const better = (bestCanceled && !c)
-                || (c === bestCanceled && (sc > bestScore || (sc === bestScore && d < bestDiff)));
-              if (better) { bestScore = sc; bestDiff = d; best = s; bestCanceled = c; }
-            }
-            if (best) { best.used = true; shipByInvoiceId[inv.id] = best; }
-          }
-        }
-      }
     } catch (e) {
-      console.error('[GET /invoices] shipment match failed (best-effort):', e.message);
+      console.error('[GET /invoices] GK cache load failed (best-effort):', e.message);
     }
     res.json(list.map(i => {
       // PRIORYTET: jawny link FV→wysyłka (i.shipmentNumber, ustawiony przy
       // zamówieniu kuriera z guzika przy fakturze). Status bierzemy na żywo z GK
       // po numerze; gdy go (jeszcze) nie ma w cache — pokazujemy wysyłkę z
       // zapisanych pól (neutralny status), żeby zniknął guzik "Kurier".
-      let s = shipByInvoiceId[i.id];
-      if (!s && i.shipmentNumber) {
+      let s = null;
+      if (i.shipmentNumber) {
         const live = gkByNumber[String(i.shipmentNumber)];
         s = live || { number: i.shipmentNumber, tracking: null, status: null, carrier: i.shipmentCarrier || null };
       }
