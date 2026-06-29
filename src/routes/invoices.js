@@ -2289,6 +2289,12 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
 
 router.get('/invoices', async (req, res) => {
   const prisma = req.app.locals.prisma;
+  // Auto-parowanie FV↔wysyłka w tle (po kontrahencie + dacie ±7 dni). Zapisuje
+  // jawny link, więc lista pokaże status przy kolejnym odświeżeniu. Fire-and-forget.
+  try {
+    const { autoPairInBackground } = require('../services/auto-pair-shipments');
+    setImmediate(() => autoPairInBackground(prisma, getGkOrders));
+  } catch (_) { /* best-effort */ }
   try {
     const { search, country, status, fromDate, toDate, limit, ifirmaOnly } = req.query;
     const where = {};

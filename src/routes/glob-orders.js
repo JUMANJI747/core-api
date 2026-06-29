@@ -181,6 +181,33 @@ async function handleSearchOrders(req, res) {
       }));
     }
 
+    // Do której FV przypięta jest wysyłka (jawny link Invoice.shipmentNumber) —
+    // żeby w „Wysyłkach" było widać przypisanie i dało się je rozłączyć (x).
+    try {
+      const prisma = req.app.locals.prisma;
+      const numbers = [...new Set(mapped.map(m => m.orderNumber).filter(Boolean).map(String))];
+      if (prisma && numbers.length) {
+        const linked = await prisma.invoice.findMany({
+          where: { shipmentNumber: { in: numbers } },
+          select: { id: true, number: true, shipmentNumber: true, contractorName: true },
+        });
+        const byNum = {};
+        for (const inv of linked) byNum[String(inv.shipmentNumber)] = inv;
+        for (const m of mapped) {
+          const inv = byNum[String(m.orderNumber)];
+          m.linkedInvoice = inv ? { id: inv.id, number: inv.number, contractorName: inv.contractorName } : null;
+        }
+        // Auto-parowanie w tle (po kontrahencie + dacie) — kolejne wejście pokaże linki.
+        try {
+          const { autoPairInBackground } = require('../services/auto-pair-shipments');
+          const { getGkOrders } = require('./invoices');
+          setImmediate(() => autoPairInBackground(prisma, getGkOrders));
+        } catch (_) { /* best-effort */ }
+      }
+    } catch (e) {
+      console.error('[glob/orders] linkedInvoice lookup failed (best-effort):', e.message);
+    }
+
     res.json({ ok: true, orders: mapped, total: mapped.length });
   } catch (err) {
     console.error('[glob/orders]', err.message);
