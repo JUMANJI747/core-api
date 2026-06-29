@@ -123,4 +123,24 @@ async function pairWdtSmart(invoices, orders) {
   return { paired, rejected, proposals: candidates.length };
 }
 
-module.exports = { pairWdtSmart, isToPoland };
+// OGÓLNE podpowiedzi LLM dla JEDNEJ faktury (dowolnej — nie tylko WDT, więc BEZ
+// reguły „musi być za granicę"). Dopasowuje kontrahenta faktury do odbiorców
+// wysyłek (nazwa prawna/handlowa/contactPerson, miasto, NIP) i zwraca kandydatów.
+async function suggestForInvoice(invoice, orders) {
+  if (!invoice || !Array.isArray(orders) || !orders.length) return [];
+  const client = getAnthropic();
+  let matched = [];
+  try { matched = await matchPass(client, [invoice], orders); } catch (_) { matched = []; }
+  const ordByNum = new Map(orders.map(o => [String(o.number), o]));
+  const out = [];
+  const seen = new Set();
+  for (const m of matched) {
+    const o = ordByNum.get(String(m.orderNumber));
+    if (!o || seen.has(String(o.number))) continue;
+    seen.add(String(o.number));
+    out.push({ ...o, reason: m.reason || '' });
+  }
+  return out.slice(0, 5);
+}
+
+module.exports = { pairWdtSmart, isToPoland, suggestForInvoice };

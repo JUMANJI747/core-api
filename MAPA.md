@@ -99,7 +99,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex.
 - `ifirma-sync.js`, `ifirma-pdf-parser.js` — sync i parsowanie PDF iFirma.
 - `monthly-accounting.js` — zakres miesiąca + `buildReport` (pokrycie KSeF + WDT sparowane/niesparowane).
-- `wdt-pairing.js` — **`pairWdtSmart`** (Opus): dopasowanie FV WDT↔wysyłki + weryfikacja kraju (`isToPoland`).
+- `wdt-pairing.js` — **`pairWdtSmart`** (Opus): dopasowanie FV WDT↔wysyłki + weryfikacja kraju (`isToPoland`); **`suggestForInvoice`** — podpowiedzi LLM dla DOWOLNEJ faktury (parowanie „LLM" przy fakturze, bez reguły zagranicy).
 - `confirm-lock.js` — atomowa blokada duplikatów wystawiania (DB).
 - `contasimple-helpers.js` — pomocnicze ES.
 - `invoice-backfill.js`, `invoice-lines-backfill.js`, `invoice-lines-from-ifirma-backfill.js`, `invoice-snapshot-backfill.js`, `es-invoices-backfill.js` — migracje/uzupełnianie pozycji FV.

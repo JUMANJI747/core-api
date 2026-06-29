@@ -2859,6 +2859,44 @@ router.post('/invoice-draft-from-email', async (req, res) => {
   }
 });
 
+// Podpowiedzi LLM wysyłek dla JEDNEJ faktury (parowanie „LLM" przy fakturze).
+// Dowolna faktura (nie tylko WDT) — dopasowanie po kontrahencie, bez reguły
+// „za granicę". Nie zapisuje — zwraca kandydatów; UI łączy przez link-shipment.
+// body: { offset? } (offset 100 = starsze wysyłki).
+router.post('/invoices/:id/suggest-shipments', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const inv = await prisma.invoice.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, number: true, contractorName: true, contractorCountry: true, contractorCity: true, contractorNip: true },
+    });
+    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
+
+    const allGk = await getGkOrders();
+    const used = new Set(
+      (await prisma.invoice.findMany({ where: { shipmentNumber: { not: null }, NOT: { id: inv.id } }, select: { shipmentNumber: true } }))
+        .map(i => String(i.shipmentNumber)),
+    );
+    const off = Math.max(0, Number(req.body && req.body.offset) || 0);
+    const orders = (allGk || []).filter(o => o.number && !used.has(String(o.number))).slice(off, off + 100);
+    if (!orders.length) return res.json({ ok: true, candidates: [], message: 'Brak wysyłek do przeszukania.' });
+
+    const { suggestForInvoice } = require('../services/wdt-pairing');
+    const cands = await suggestForInvoice(inv, orders);
+    res.json({
+      ok: true,
+      candidates: cands.map(o => ({
+        orderNumber: o.number, hash: o.hash || null, carrier: o.carrier || null,
+        receiverName: o.receiverName || null, city: o.receiver && o.receiver.city, country: o.receiver && o.receiver.country,
+        status: o.status || null, date: o.date || null, reason: o.reason || '',
+      })),
+      message: cands.length ? undefined : (off ? 'LLM nie znalazł w starszych (100–200).' : 'LLM nie znalazł pasującej wysyłki w ostatnich 100.'),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.addGkOrderToCache = addGkOrderToCache;
 router.getGkOrders = getGkOrders;
 module.exports = router;
