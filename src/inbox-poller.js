@@ -1114,7 +1114,14 @@ async function processAccount(account) {
         // Try to link contractor
         let contractorId = null;
         let contractorName = null;
-        if (mail.fromEmail) {
+        // NIE dopasowuj kontrahenta po nadawcy, gdy mail jest z NASZEJ domeny
+        // (notyfikacje panelu WooCommerce: From=info@surfstickbell.com). Nadawcą
+        // jesteśmy MY, nie kontrahent — dawne dopasowanie po DOMENIE @surfstickbell.com
+        // podpinało notyfikację do przypadkowego kontrahenta, który ma nasz adres
+        // w kontaktach (np. SO NICE SURF SCHOOL). Prawdziwego klienta (z treści
+        // zamówienia) ustawia processWebOrder poniżej.
+        const fromOwnDomain = String(mail.fromEmail || '').toLowerCase().endsWith('@surfstickbell.com');
+        if (mail.fromEmail && !fromOwnDomain) {
           const fe = String(mail.fromEmail).trim();
           // Dopasuj po dowolnym polu mailowym: plaskie email, primaryEmail
           // (CRM v2) oraz ContractorContact — inaczej zamowienia od klientow,
