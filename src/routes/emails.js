@@ -725,6 +725,23 @@ router.get('/emails/:emailId/attachments', async (req, res) => {
   res.json(attachments);
 });
 
+// Mapowanie rozszerzenie → MIME (gdy w bazie zapisany generyczny/pusty typ, np.
+// octet-stream — iOS wtedy nie wie, czym otworzyć xlsx/docx).
+const EXT_CT = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
+  csv: 'text/csv', txt: 'text/plain', pdf: 'application/pdf', zip: 'application/zip',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+};
+function resolveContentType(ct, ext) {
+  if (ct && ct !== 'application/octet-stream' && !/^binary/i.test(ct)) return ct;
+  return EXT_CT[ext] || ct || 'application/octet-stream';
+}
+
 router.get('/attachment/:id', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
@@ -734,9 +751,19 @@ router.get('/attachment/:id', async (req, res) => {
     // Uint8Array serializuje do JSON (psuje binaria — "Invalid PDF structure").
     // Buffer.from() gwarantuje wyslanie surowych bajtow.
     const buf = Buffer.isBuffer(att.data) ? att.data : Buffer.from(att.data);
-    res.setHeader('Content-Type', att.contentType || 'application/octet-stream');
-    // inline = iOS pokazuje viewer z share button; attachment = silent download
-    res.setHeader('Content-Disposition', `inline; filename="${att.filename}"`);
+    const name = (att.filename || 'plik').replace(/[\r\n"]/g, '_');
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const ct = resolveContentType(att.contentType, ext);
+    res.setHeader('Content-Type', ct);
+    // inline TYLKO dla PDF/obrazów (iOS ma dla nich viewer). Reszta (xlsx/docx/
+    // zip…) → attachment, żeby telefon zaproponował zapis/otwórz w aplikacji,
+    // a nie pokazywał pustej karty. ?download=1 wymusza attachment zawsze.
+    const previewable = ct === 'application/pdf' || ct.startsWith('image/');
+    const forceDl = req.query.download === '1' || req.query.dl === '1';
+    const disp = (previewable && !forceDl) ? 'inline' : 'attachment';
+    // filename* (RFC5987) — nazwy z polskimi znakami psuły nagłówek/odpowiedź.
+    const ascii = name.replace(/[^\x20-\x7E]/g, '_');
+    res.setHeader('Content-Disposition', `${disp}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`);
     res.setHeader('Content-Length', buf.length);
     res.end(buf);
   } catch (e) {
