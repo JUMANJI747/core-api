@@ -138,3 +138,9 @@ RISKY (za zgodą usera):
 5. ✅ AUTH: proxy + middleware weryfikują seal sesji (koniec „zmyślone cookie = dostęp"). [frontend]
 6. ✅ ifirma-sync: guard anty-masowe-kasowanie FV.
 7. ✅ poller: guard re-entrancy (koniec nakładających się cykli).
+8. ✅ maile draft→wyślij: zachowuje załączniki + HTML + pełną treść (był mail bez PDF, ucięty).
+9. ✅ communication-agent-es: regex „wyślij" kotwiczony (nie wysyła starego draftu).
+10. ✅ geocode: `postCode` zamiast `postalCode` + selecty (poprawne piny na mapie).
+
+POZOSTAJE (nie ruszone): dedup maili (wasRecentlySent ignoruje body + oznacza
+niewysłany jako OUTBOUND); reszta ⬜/⚠️ powyżej.
