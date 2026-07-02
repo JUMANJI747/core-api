@@ -17,7 +17,9 @@ async function rateLimit() {
 
 function buildQuery(c) {
   // Direct columns first — strongest signal.
-  const direct = [c.address, c.postalCode, c.city, c.province, c.country]
+  // Model PL ma kolumnę `postCode` (nie `postalCode`) — przez literówkę kod
+  // pocztowy nigdy nie trafiał do zapytania Nominatim (zły pin na mapie).
+  const direct = [c.address, c.postCode || c.postalCode, c.city, c.province, c.country]
     .filter(Boolean).map(s => String(s).trim());
   if (direct.length >= 2 || (direct.length === 1 && c.address)) return direct.join(', ');
 

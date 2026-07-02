@@ -412,7 +412,7 @@ router.post('/geocode-all', async (req, res) => {
       : { OR: [{ geocodingStatus: null }, { geocodingStatus: 'error' }] };
     const pl = await prisma.contractor.findMany({
       where: plWhere,
-      select: { id: true, name: true, address: true, city: true, country: true, extras: true },
+      select: { id: true, name: true, address: true, city: true, postCode: true, country: true, extras: true },
     });
 
     const esWhere = force
@@ -590,7 +590,7 @@ router.post('/geocode-llm-fallback', async (req, res) => {
     if (which === 'pl' || which === 'both') {
       const pl = await prisma.contractor.findMany({
         where: { geocodingStatus: { in: ['not_found', 'error'] } },
-        select: { id: true, name: true, address: true, city: true, country: true, extras: true },
+        select: { id: true, name: true, address: true, city: true, postCode: true, country: true, extras: true },
         ...(limit ? { take: limit } : {}),
       });
       await processBatch(pl, 'pl', 'contractor');

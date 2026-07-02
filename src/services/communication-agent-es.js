@@ -268,7 +268,10 @@ const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
 const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
 const PARSE_INTENT = /\bparsuj zal|otw[oó]rz zal|sprawd[zź] zal/iu;
 const CHECK_SENT_INTENT = /\bczy (fakt|fv).{0,40}(wysy[lł]ana|wys[lł]aliśmy|by[lł]a wys)/iu;
-const CONFIRM_INTENT = /^\s*(tak|ok|potwierd|akceptu|wy[sś]lij( go| j[ąa])?)\b/iu;
+// Samo "wyślij"/"wyślij go/ją" = confirm TYLKO gdy to cała wiadomość — inaczej
+// "wyślij fakturę..."/"wyślij ofertę..." było brane za confirm i wysyłało stary
+// draft zamiast właściwej akcji (jak w wersji PL).
+const CONFIRM_INTENT = /^\s*(?:(?:tak|ok|potwierd|akceptu)\b|wy[sś]lij(?: go| j[ąa])?\s*$)/iu;
 
 async function processCommunicationEsQuery(query, ctx = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
