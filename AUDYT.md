@@ -62,7 +62,7 @@ Legenda wagi: 🔴 HIGH · 🟠 MED · 🟡 LOW.
 - ✅🔴 1328: parseWebOrder na bodyFull(2000) → długie zamówienia gubiły pozycje/Total/adres. **NAPRAWIONE** (mail.bodyText).
 - ✅🟠 634: parseEuroAmount separator tysięcy ("1.234,56"→1.234). **NAPRAWIONE**.
 - ✅🟠 597: gałąź invalid bez `status:'invalid'` → Telegram "nie zweryfikowano" zamiast "NIEWAŻNY". **NAPRAWIONE**.
-- ⬜🔴 1683: brak guardu re-entrancy w setInterval(pollAll) → nakładające się cykle = podwójny LLM, dublowane notyfikacje. Flaga isPolling.
+- ✅🔴 1683: brak guardu re-entrancy w pollAll → nakładające się cykle. **NAPRAWIONE** (flaga pollInFlight).
 - ⚠️🔴 1660/1720: godzinny rescan omija filtr newslettera+AI → odfiltrowany spam wraca do CRM. Wywołać filtry w rescanie.
 - ⚠️🔴 487-516: prompt injection z treści maila → summary_pl wklejane nad `[ctx:]` do agenta z akcjami. Wycinać `[ctx:`/`[MAIL]` z summary.
 - ⬜🟠 986/1055/1426: `maxUid` podbijany PRZED sukcesem → błąd AI = mail bez klasyfikacji/notyfikacji. Nie podbijać przy błędzie.
@@ -115,7 +115,7 @@ Legenda wagi: 🔴 HIGH · 🟠 MED · 🟡 LOW.
 ## Serwisy + klienty
 - ⬜🔴 communication-agent-es.js 271: CONFIRM_INTENT "wyślij" bez `$` → każde "wyślij X" wysyła stary draft. Regex jak PL.
 - ⚠️🔴 sudo-agent/operations-agent: prompt injection z treści maili → mutate_db/call_endpoint (confirm ustawia model). Confirm out-of-band, allowlista.
-- ⚠️🔴 ifirma-sync.js 149-179: FAZA 2.5 kasuje lokalne FV nieobecne w niepełnej odpowiedzi iFirmy → utrata historii FV. Guard gdy 0/mało wyników.
+- ✅🔴 ifirma-sync.js 149-179: FAZA 2.5 kasowała lokalne FV przy niepełnej odpowiedzi iFirmy. **NAPRAWIONE** (guard: pomiń gdy iFirma=0 a lokalne są, lub gdy skasowałoby >50% z ≥5).
 - ⬜🟠 ifirma-sync 184: N+1 email.updateMany per kontrahent (full scan). Batch/świeże.
 - ⬜🟠 auto-pair-shipments 33: `used` bez okna → pełny skan Invoice na każdym GET. Okno lookback.
 - ⬜🟠 contractor-match 62: pusty/krótki search → `nip.includes('')`=true → score 50 losowy. Wymagać len≥5.
@@ -127,8 +127,14 @@ Legenda wagi: 🔴 HIGH · 🟠 MED · 🟡 LOW.
 
 ---
 
-## Zrobione w tej sesji (SAFE, wdrożone na main)
+## Zrobione w tej sesji (wdrożone na main)
+SAFE:
 1. ✅ kurier: ReferenceError `contractor` w /glob/order (duplikaty listów).
 2. ✅ FV z Telegrama nie zapisuje 'UNKNOWN' (parsowanie odpowiedzi iFirmy).
 3. ✅ GET /config nie wycieka sekretów (tokeny Telegram, Web Push).
 4. ✅ poller: pełna treść zamówień, kwoty EU z tysiącami, status invalid, catch sent-rescan.
+
+RISKY (za zgodą usera):
+5. ✅ AUTH: proxy + middleware weryfikują seal sesji (koniec „zmyślone cookie = dostęp"). [frontend]
+6. ✅ ifirma-sync: guard anty-masowe-kasowanie FV.
+7. ✅ poller: guard re-entrancy (koniec nakładających się cykli).
