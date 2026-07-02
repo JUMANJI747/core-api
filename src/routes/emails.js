@@ -887,13 +887,30 @@ router.post('/send-email', async (req, res) => {
           toEmail: to,
           subject: subject || null,
           bodyPreview: (body || '').slice(0, 300),
-          bodyFull: (body || '').slice(0, 2000),
+          bodyFull: body || '',        // PEŁNA treść — było ucinane do 2000 → confirm wysyłał ucięty mail
+          bodyHtml: html || null,      // HTML (inline obrazki cid) — bez tego confirm gubił formatowanie
           inReplyTo: inReplyTo || null,
           references: references || null,
           contractorId,
           ...(cc ? { extras: { cc } } : {}),
         },
       });
+
+      // Zapisz załączniki draftu (composer/uploady) jako EmailAttachment —
+      // confirm wysyła załączniki WŁAŚNIE stąd. Bez tego draft→wyślij szedł
+      // BEZ załączników (klient nie dostawał np. PDF).
+      if (mailAttachments.length) {
+        await prisma.emailAttachment.createMany({
+          data: mailAttachments.map(a => ({
+            emailId: saved.id,
+            filename: a.filename,
+            contentType: a.contentType || 'application/octet-stream',
+            size: a.content.length,
+            data: a.content,
+            cid: a.cid || null,
+          })),
+        });
+      }
 
       // Preview tlumaczenie PL — gdy draft jest w obcym jezyku, dorzucamy
       // tlumaczenie zeby user mogl zweryfikowac co bot napisal PRZED
@@ -991,10 +1008,11 @@ router.post('/send-email/confirm', async (req, res) => {
       cc: (email.extras && email.extras.cc) || undefined,
       subject: email.subject || '',
       body: email.bodyFull || '',
+      html: email.bodyHtml || undefined,
       inReplyTo: email.inReplyTo || undefined,
       references: email.references || undefined,
       attachments: draftAtts.length
-        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType, ...(a.cid ? { cid: a.cid } : {}) }))
         : undefined,
     });
 
@@ -1036,10 +1054,11 @@ router.post('/send-email/confirm-latest', async (req, res) => {
         cc: (draft.extras && draft.extras.cc) || undefined,
         subject: draft.subject || '',
         body: draft.bodyFull || '',
+        html: draft.bodyHtml || undefined,
         inReplyTo: draft.inReplyTo || undefined,
         references: draft.references || undefined,
         attachments: draftAtts.length
-          ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+          ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType, ...(a.cid ? { cid: a.cid } : {}) }))
           : undefined,
       });
     } catch (sendErr) {
@@ -1090,10 +1109,11 @@ router.post('/send-email/:id/confirm', async (req, res) => {
       cc: (email.extras && email.extras.cc) || undefined,
       subject: email.subject || '',
       body: email.bodyFull || '',
+      html: email.bodyHtml || undefined,
       inReplyTo: email.inReplyTo || undefined,
       references: email.references || undefined,
       attachments: draftAtts.length
-        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType }))
+        ? draftAtts.map(a => ({ filename: a.filename, content: Buffer.from(a.data), contentType: a.contentType, ...(a.cid ? { cid: a.cid } : {}) }))
         : undefined,
     });
 
