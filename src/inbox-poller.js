@@ -1648,7 +1648,17 @@ async function processSentItems(account) {
 let pollCycleCount = 0;
 const RESCAN_EVERY_N_CYCLES = 12;
 
+let pollInFlight = false;
 async function pollAll() {
+  // Anty-nakładanie: cykl potrafi przekroczyć interwał (LLM + VIES + załączniki).
+  // Bez guardu dwa cykle czytały ten sam lastUid → podwójny koszt LLM i
+  // dublowane maile bez messageId (2× Telegram).
+  if (pollInFlight) {
+    console.warn('[inbox-poller] poprzedni cykl wciąż trwa — pomijam ten tick');
+    return;
+  }
+  pollInFlight = true;
+  try {
   const accounts = getAccounts();
   if (accounts.length === 0) {
     console.log('[inbox-poller] No IMAP_ACCOUNTS configured, skipping');
@@ -1677,6 +1687,9 @@ async function pollAll() {
   }
   if (shouldRescan) {
     console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
+  }
+  } finally {
+    pollInFlight = false;
   }
 }
 
