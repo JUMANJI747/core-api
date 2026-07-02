@@ -2925,6 +2925,37 @@ router.post('/invoices/:id/suggest-shipments', async (req, res) => {
   }
 });
 
+// Diagnostyka: pokaż faktury z „podejrzanym" numerem (UNKNOWN dowolna wielkość
+// liter / null / puste) + kilka ostatnich dla kontekstu. GET /invoices/unknown-diagnostic
+router.get('/invoices/unknown-diagnostic', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const suspicious = await prisma.invoice.findMany({
+      where: { OR: [
+        { number: { contains: 'unknown', mode: 'insensitive' } },
+        { number: null },
+        { number: '' },
+      ] },
+      select: { id: true, number: true, ifirmaId: true, issueDate: true, contractorName: true, source: true, type: true, grossAmount: true, currency: true },
+      orderBy: { issueDate: 'desc' }, take: 40,
+    });
+    const recentSample = await prisma.invoice.findMany({
+      select: { number: true, ifirmaId: true, source: true, type: true, issueDate: true },
+      orderBy: { createdAt: 'desc' }, take: 8,
+    });
+    res.json({
+      ok: true,
+      suspiciousCount: suspicious.length,
+      withIfirmaId: suspicious.filter(s => s.ifirmaId != null).length,
+      withoutIfirmaId: suspicious.filter(s => s.ifirmaId == null).length,
+      suspicious,
+      recentSample,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Nadrób numery faktur zapisanych jako 'UNKNOWN' (efekt starego buga
 // invoice-confirm) — dobiera numer z iFirmy po ifirmaId. Uruchom z Konsoli API:
 //   POST /invoices/fix-unknown-numbers
@@ -2932,10 +2963,10 @@ router.post('/invoices/fix-unknown-numbers', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const unknowns = await prisma.invoice.findMany({
-      where: { number: 'UNKNOWN', ifirmaId: { not: null } },
+      where: { number: { contains: 'unknown', mode: 'insensitive' }, ifirmaId: { not: null } },
       select: { id: true, ifirmaId: true, issueDate: true },
     });
-    if (!unknowns.length) return res.json({ ok: true, total: 0, fixed: 0, message: 'Brak faktur z numerem UNKNOWN (z ifirmaId).' });
+    if (!unknowns.length) return res.json({ ok: true, total: 0, fixed: 0, message: 'Brak faktur z numerem UNKNOWN (z ifirmaId). Odpal GET /invoices/unknown-diagnostic żeby zobaczyć co jest w bazie.' });
 
     // Grupuj po dniu wystawienia — jedno zapytanie do iFirmy na dzień.
     const byDay = {};
