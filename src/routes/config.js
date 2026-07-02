@@ -33,12 +33,20 @@ function internalPost(path, apiKey, bodyObj) {
 
 // ============ CONFIG ============
 
+// Klucze-sekrety NIE wychodzą przez API (tokeny botów Telegram, subskrypcje
+// Web Push z kluczami auth). Odpowiedź konsumuje UI/proxy, więc bez filtra
+// każdy z dostępem do proxy dostawał tokeny botów.
+const CONFIG_SECRET_RE = /token|secret|password|passwd|push_subscriptions/i;
 router.get('/config', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  const configs = await prisma.config.findMany();
-  const obj = {};
-  configs.forEach((c) => (obj[c.key] = c.value));
-  res.json(obj);
+  try {
+    const prisma = req.app.locals.prisma;
+    const configs = await prisma.config.findMany();
+    const obj = {};
+    configs.forEach((c) => { if (!CONFIG_SECRET_RE.test(c.key)) obj[c.key] = c.value; });
+    res.json(obj);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.put('/config/:key', async (req, res) => {

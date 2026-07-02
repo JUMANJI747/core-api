@@ -1180,9 +1180,17 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       uwagi: storedUwagi,
     });
 
-    const ifirmaInvoice = ifirmaResp.response && ifirmaResp.response.Wynik;
-    const pelnyNumer = ifirmaInvoice && (ifirmaInvoice.PelnyNumer || ifirmaInvoice.Numer) || 'UNKNOWN';
-    const ifirmaId = ifirmaInvoice && ifirmaInvoice.FakturaId || null;
+    // createInvoice() zwraca {invoiceNumber, ifirmaId, ifirmaRaw} — parsuj to,
+    // nie nieistniejące ifirmaResp.response.Wynik (przez to każde potwierdzenie
+    // FV z Telegrama zapisywało number='UNKNOWN' i wywalało PDF na 500).
+    const ifirmaRaw = ifirmaResp.ifirmaRaw;
+    const pelnyNumer = ifirmaResp.invoiceNumber
+      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && (ifirmaRaw.response.Wynik.PelnyNumer || ifirmaRaw.response.Wynik.Numer))
+      || 'UNKNOWN';
+    const ifirmaId = ifirmaResp.ifirmaId
+      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId)
+      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Identyfikator)
+      || null;
 
     const brutto = stored.preview.suma.brutto;
 
