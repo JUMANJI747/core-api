@@ -1582,7 +1582,7 @@ router.post('/glob/order', async (req, res) => {
         };
         await trackShipment(prisma, fakeOrder, {
           source: 'glob/order',
-          contractor: contractor || null,
+          contractor: contractorForReceiver || null,
           itemsSummary: summary,
           itemsDetails: itemsForSummary,
         });
@@ -1599,7 +1599,7 @@ router.post('/glob/order', async (req, res) => {
           type: 'shipment.created',
           summary: `Paczka GK${result.number || orderHash} ${selectedOffer ? selectedOffer.carrier : ''} → ${(receiver && (receiver.name || receiver.city)) || '?'}`,
           source: 'gk',
-          contractorId: (receiver && receiver.contractorId) || (contractor && contractor.id) || null,
+          contractorId: (receiver && receiver.contractorId) || (contractorForReceiver && contractorForReceiver.id) || null,
           shipmentNumber: result.number || null,
           actorType: 'user',
           actorId: req.body && req.body.chatId ? String(req.body.chatId) : null,
@@ -1617,7 +1617,7 @@ router.post('/glob/order', async (req, res) => {
       // upsertujemy do ContractorContact/Address. Receiver moze byc
       // przepisany na innego niz orginalny kontrahent (np. dropshipping)
       // → preferujemy receiver.contractorId, fallback do contractor.id.
-      const crmContractorId = (receiver && receiver.contractorId) || (contractor && contractor.id);
+      const crmContractorId = (receiver && receiver.contractorId) || (contractorForReceiver && contractorForReceiver.id);
       if (crmContractorId) {
         try {
           if (receiver && receiver.phone) {
