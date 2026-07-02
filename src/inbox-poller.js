@@ -594,7 +594,7 @@ async function checkVat(rawVat) {
     if (res.status === 404 || !res.data?.result?.subject) {
       console.log(`[inbox-poller] VAT check: ${vatNumber} → invalid`);
       vatCache.set(vatNumber, { valid: false, name: null, timestamp: Date.now() });
-      return { vatNumber, valid: false, name: null };
+      return { vatNumber, valid: false, status: 'invalid', name: null };
     }
     const s = res.data.result.subject;
     const valid = s.statusVat === 'Czynny';
@@ -633,7 +633,10 @@ function parseSpanishId(id) {
 
 function parseEuroAmount(str) {
   if (!str) return null;
-  const clean = String(str).replace(/\s|€|EUR/gi, '').replace(',', '.');
+  let clean = String(str).replace(/\s|€|EUR/gi, '');
+  // Format EU: kropki = separator tysięcy, przecinek = dziesiętny. Wcześniej
+  // "1.234,56" → replace(',','.') dawało "1.234.56" → parseFloat = 1.234.
+  if (clean.includes(',')) clean = clean.replace(/\./g, '').replace(',', '.');
   const n = parseFloat(clean);
   return isNaN(n) ? null : n;
 }
@@ -1324,13 +1327,17 @@ async function processAccount(account) {
           continue;
         }
 
-        // Web order detection — intercept BEFORE standard notification
-        if (isWebOrder(mail.subject, bodyFull, mail.inReplyTo)) {
+        // Web order detection — intercept BEFORE standard notification.
+        // Parsujemy PEŁNĄ treść (mail.bodyText), nie bodyFull uciętego do 2000 —
+        // zamówienia WooCommerce z wieloma pozycjami/adresem przekraczają 2000
+        // znaków i gubiły pozycje, Total i Billing address.
+        const orderBody = mail.bodyText || bodyFull || '';
+        if (isWebOrder(mail.subject, orderBody, mail.inReplyTo)) {
           try {
-            if (!bodyFull || bodyFull.length < 50) {
+            if (orderBody.length < 50) {
               console.warn('[web-order] Order mail with empty body — skipping parse:', mail.subject);
             } else {
-              const parsed = parseWebOrder(bodyFull);
+              const parsed = parseWebOrder(orderBody);
               console.log('[web-order] Parsed order:', parsed.orderNumber, '| items:', parsed.items.length, '| total:', parsed.total);
               const orderResult = await processWebOrder(prisma, savedEmail, parsed);
               if (tgToken && tgChat) {

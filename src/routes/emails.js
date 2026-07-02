@@ -2359,7 +2359,7 @@ router.post('/emails/sent-rescan', async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error('[sent-rescan] error:', e.message);
-    res.status(500).json(result);
+    res.status(500).json({ error: e.message });
   }
 });
 
