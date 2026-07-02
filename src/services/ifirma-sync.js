@@ -156,15 +156,23 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
     const ifirmaIds = new Set(invoices.map(i => i.FakturaId).filter(Boolean));
     const ifirmaNumbers = new Set(invoices.map(i => i.PelnyNumer).filter(Boolean));
 
-    for (const local of localInvoices) {
-      let foundInIfirma = false;
-      if (local.ifirmaId) {
-        foundInIfirma = ifirmaIds.has(local.ifirmaId);
-      } else {
-        foundInIfirma = ifirmaNumbers.has(local.number);
-      }
+    const toDelete = localInvoices.filter(local =>
+      local.ifirmaId ? !ifirmaIds.has(local.ifirmaId) : !ifirmaNumbers.has(local.number),
+    );
 
-      if (!foundInIfirma) {
+    // GUARD anty-masowe-kasowanie: pusta odpowiedź iFirmy przy niepustej lokalnej
+    // bazie, albo kasowanie >50% lokalnych FV (gdy jest ich ≥5) to prawie na pewno
+    // NIE "wszystko usunięte w iFirmie", tylko błąd API / przerwana paginacja.
+    // Lepiej zostawić stary rekord niż skasować realną fakturę (kaskadowo
+    // powiązania). Kasujemy tylko przy wiarygodnej odpowiedzi.
+    const suspicious =
+      (invoices.length === 0 && localInvoices.length > 0) ||
+      (localInvoices.length >= 5 && toDelete.length / localInvoices.length > 0.5);
+
+    if (suspicious) {
+      console.warn(`[sync] FAZA 2.5 POMINIĘTA (ochrona): iFirma=${invoices.length} FV, lokalnych=${localInvoices.length}, do skasowania=${toDelete.length} dla ${dataOd}..${dataDo} — prawdopodobnie niepełna odpowiedź iFirmy, NIE kasuję.`);
+    } else {
+      for (const local of toDelete) {
         if (!dryRun) {
           try {
             await prisma.invoice.delete({ where: { id: local.id } });
