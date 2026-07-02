@@ -1180,17 +1180,37 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       uwagi: storedUwagi,
     });
 
-    // createInvoice() zwraca {invoiceNumber, ifirmaId, ifirmaRaw} — parsuj to,
-    // nie nieistniejące ifirmaResp.response.Wynik (przez to każde potwierdzenie
-    // FV z Telegrama zapisywało number='UNKNOWN' i wywalało PDF na 500).
+    // createInvoice() zwraca {invoiceNumber, ifirmaId, ifirmaRaw}. iFirma często
+    // zwraca w odpowiedzi TYLKO FakturaId (bez numeru) — numer dobieramy z listy
+    // po ifirmaId (retry), tak jak confirm-latest. Bez tego zapisywało 'UNKNOWN'.
     const ifirmaRaw = ifirmaResp.ifirmaRaw;
-    const pelnyNumer = ifirmaResp.invoiceNumber
-      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && (ifirmaRaw.response.Wynik.PelnyNumer || ifirmaRaw.response.Wynik.Numer))
-      || 'UNKNOWN';
     const ifirmaId = ifirmaResp.ifirmaId
       || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && ifirmaRaw.response.Wynik.FakturaId)
       || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Identyfikator)
       || null;
+    let pelnyNumer = ifirmaResp.invoiceNumber
+      || (ifirmaRaw && ifirmaRaw.response && ifirmaRaw.response.Wynik && (ifirmaRaw.response.Wynik.PelnyNumer || ifirmaRaw.response.Wynik.Numer))
+      || null;
+    if (!pelnyNumer && ifirmaId) {
+      for (let attempt = 1; attempt <= 3 && !pelnyNumer; attempt++) {
+        try {
+          if (attempt > 1) await new Promise(r => setTimeout(r, 1500));
+          const today = new Date().toISOString().slice(0, 10);
+          const todayInvoices = await fetchIfirmaInvoices({ dataOd: today, dataDo: today });
+          const matched = todayInvoices.find(inv => String(inv.FakturaId) === String(ifirmaId));
+          if (matched) {
+            pelnyNumer = matched.PelnyNumer || matched.Numer || null;
+            console.log(`[invoice-confirm] recovered number on attempt ${attempt}: ${pelnyNumer}`);
+          }
+        } catch (lookupErr) {
+          console.error(`[invoice-confirm] lookup attempt ${attempt} error:`, lookupErr.message);
+        }
+      }
+    }
+    if (!pelnyNumer) {
+      pelnyNumer = 'UNKNOWN';
+      console.error('[invoice-confirm] FAILED to resolve invoice number after retries — saving UNKNOWN. ifirmaId=' + ifirmaId);
+    }
 
     const brutto = stored.preview.suma.brutto;
 
@@ -2900,6 +2920,52 @@ router.post('/invoices/:id/suggest-shipments', async (req, res) => {
       })),
       message: cands.length ? undefined : (off ? 'LLM nie znalazł w starszych (100–200).' : 'LLM nie znalazł pasującej wysyłki w ostatnich 100.'),
     });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Nadrób numery faktur zapisanych jako 'UNKNOWN' (efekt starego buga
+// invoice-confirm) — dobiera numer z iFirmy po ifirmaId. Uruchom z Konsoli API:
+//   POST /invoices/fix-unknown-numbers
+router.post('/invoices/fix-unknown-numbers', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const unknowns = await prisma.invoice.findMany({
+      where: { number: 'UNKNOWN', ifirmaId: { not: null } },
+      select: { id: true, ifirmaId: true, issueDate: true },
+    });
+    if (!unknowns.length) return res.json({ ok: true, total: 0, fixed: 0, message: 'Brak faktur z numerem UNKNOWN (z ifirmaId).' });
+
+    // Grupuj po dniu wystawienia — jedno zapytanie do iFirmy na dzień.
+    const byDay = {};
+    for (const inv of unknowns) {
+      const day = new Date(inv.issueDate).toISOString().slice(0, 10);
+      (byDay[day] ||= []).push(inv);
+    }
+    let fixed = 0;
+    const stillUnknown = [];
+    for (const [day, invs] of Object.entries(byDay)) {
+      let list = [];
+      try {
+        list = await fetchIfirmaInvoices({ dataOd: day, dataDo: day });
+      } catch (e) {
+        stillUnknown.push({ day, error: e.message, count: invs.length });
+        continue;
+      }
+      const byId = new Map(list.map(x => [String(x.FakturaId), x]));
+      for (const inv of invs) {
+        const m = byId.get(String(inv.ifirmaId));
+        const num = m && (m.PelnyNumer || m.Numer);
+        if (num) {
+          await prisma.invoice.update({ where: { id: inv.id }, data: { number: num } });
+          fixed++;
+        } else {
+          stillUnknown.push({ id: inv.id, ifirmaId: inv.ifirmaId, day });
+        }
+      }
+    }
+    res.json({ ok: true, total: unknowns.length, fixed, stillUnknown });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

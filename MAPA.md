@@ -38,7 +38,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/mailing` | `routes/mailing.js` | kampanie mailingowe |
 | `/api/products` | `routes/products.js` | produkty (katalog PL) |
 | `/api` | `routes/config.js` | Config (klucze konfiguracyjne w DB) |
-| `/api` | `routes/invoices.js` | **FV PL (iFirma)**: invoice-preview / invoice-confirm(-latest), pay, ksef-status, shipment-doc, last-price, link/unlink-shipment, **invoice-draft-from-email** (prefill formularza FV z maila), cache zamówień GK |
+| `/api` | `routes/invoices.js` | **FV PL (iFirma)**: invoice-preview / invoice-confirm(-latest), pay, ksef-status, shipment-doc, last-price, link/unlink-shipment, **invoice-draft-from-email** (prefill formularza FV z maila), **fix-unknown-numbers** (nadrób numery FV zapisane jako UNKNOWN), cache zamówień GK |
 | `/api/jpk` | `routes/jpk.js` | JPK + dopasowanie WDT (`performWdtMatching`) |
 | `/api/jpk` | `routes/jpk-package.js` | paczka WDT/eksport (CMR) — build/send do księgowej |
 | `/api` | `routes/parse-document.js` | parsowanie dokumentów |
