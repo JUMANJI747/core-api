@@ -437,10 +437,16 @@ router.post('/customers', asyncHandler(async (req, res) => {
   }
   // countryId: jeśli podano kraj, weź id ze znanej mapy (España=1, Reino Unido=79,
   // Polonia=179…). Bez kraju → domyślnie Hiszpania (=1). NIE zgadujemy (205=Senegal!).
+  const knownCountryId = countryIdFor(data.country);
   if (!data.countryId) {
-    data.countryId = countryIdFor(data.country) || await resolveEsDefaultCountryId();
+    data.countryId = knownCountryId || await resolveEsDefaultCountryId();
   }
-  if (!data.country) data.country = 'España';
+  // Contasimple oczekuje NAZWY kraju, nie kodu ISO — front z "Odczytaj" podaje
+  // "ES", co Contasimple odrzucał. Normalizuj do kanonicznej nazwy, ale TYLKO gdy
+  // kraj rozpoznany (nie nadpisujemy nieznanych nazw blankietowym España).
+  const CANON_COUNTRY = { 1: 'España', 79: 'Reino Unido', 179: 'Polonia' };
+  if (knownCountryId && CANON_COUNTRY[knownCountryId]) data.country = CANON_COUNTRY[knownCountryId];
+  else if (!data.country) data.country = 'España';
   // KOLEJNOSC: NAJPIERW CRM (Kanary / EsContractor) — zrodlo prawdy z pelnymi
   // danymi — POTEM push do Contasimple (z polami, ktore jego endpoint przyjmuje).
   // Dzieki temu kontrahent JEST w CRM nawet gdy push do Contasimple sie nie uda;
