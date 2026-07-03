@@ -871,6 +871,12 @@ router.get('/', async (req, res) => {
       { email: { contains: s, mode: 'insensitive' } },
       { primaryEmail: { contains: s.toLowerCase() } },
       { nip: { contains: s, mode: 'insensitive' } },
+      // ALIASY: user dodaje alias (np. "cocolita" dla Shoko) jako tag albo do
+      // extras.aliases[]. Bez tego wyszukiwarka ich nie znajdowała.
+      { tags: { has: s } },
+      { tags: { has: s.toLowerCase() } },
+      { extras: { path: ['aliases'], array_contains: s } },
+      { extras: { path: ['aliases'], array_contains: s.toLowerCase() } },
     ];
   }
   if (country) where.country = { equals: country, mode: 'insensitive' };
