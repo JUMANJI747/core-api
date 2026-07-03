@@ -2925,6 +2925,28 @@ router.post('/invoices/:id/suggest-shipments', async (req, res) => {
   }
 });
 
+// Rozbij wklejone zamówienie (dowolny format) na pozycje + ceny (Sonnet) — dla
+// pola „Wklej zamówienie" w formularzu FV (jak w Telegramie). body: {text, contractorName?}
+router.post('/invoices/parse-order', async (req, res) => {
+  try {
+    const { text, contractorName } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ ok: false, error: 'Brak tekstu zamówienia.' });
+    const { parseOrderWithLLM } = require('../order-llm-parser');
+    const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), contractorName);
+    const items = (parsed && Array.isArray(parsed.items) ? parsed.items : [])
+      .filter(i => i && i.name && Number(i.qty) > 0)
+      .map(i => ({
+        name: String(i.name).slice(0, 120),
+        qty: Number(i.qty),
+        ean: i.ean || undefined,
+        priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined,
+      }));
+    res.json({ ok: true, items, note: items.length ? undefined : 'Nie rozpoznałem pozycji — sprawdź tekst albo dodaj ręcznie.' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostyka: pokaż faktury z „podejrzanym" numerem (UNKNOWN dowolna wielkość
 // liter / null / puste) + kilka ostatnich dla kontekstu. GET /invoices/unknown-diagnostic
 router.get('/invoices/unknown-diagnostic', async (req, res) => {
