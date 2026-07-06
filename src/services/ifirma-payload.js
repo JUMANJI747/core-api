@@ -33,13 +33,13 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
     orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
   }).catch(() => null);
 
-  const street = contractor.address
+  let street = contractor.address
     || (billingAddr && billingAddr.street)
     || billing.street
     || cExtras.street
     || '';
 
-  const city = contractor.city
+  let city = contractor.city
     || (billingAddr && billingAddr.city)
     || billing.city
     || cExtras.city
@@ -57,10 +57,46 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
     postCode = extractPostCode(blob) || '';
   }
 
-  const country = contractor.country
+  let country = contractor.country
     || (billingAddr && billingAddr.country)
     || billing.country
     || '';
+
+  // ODZYSKIWANIE danych adresowych, gdy TEGO rekordu brakuje (np. duplikat
+  // „Surf Point" bez kodu, a pełne dane są na „Surfpoint Sp. z o.o."). Firma
+  // była już fakturowana → kod jest albo na duplikacie po tym samym NIP
+  // (lokalnie), albo w iFirmie (po NIP). Dociągamy, zamiast od razu wywalać
+  // „Brak kodu pocztowego".
+  if ((!postCode || !city || !street) && contractor.nip) {
+    // 1) Lokalny duplikat po NIP
+    try {
+      const siblings = await prisma.contractor.findMany({
+        where: { nip: contractor.nip, NOT: { id: contractor.id } },
+        select: { address: true, city: true, postCode: true, country: true, extras: true },
+      });
+      for (const s of siblings) {
+        const sBa = (s.extras && s.extras.billingAddress && typeof s.extras.billingAddress === 'object') ? s.extras.billingAddress : {};
+        postCode = postCode || s.postCode || sBa.postCode || '';
+        city = city || s.city || sBa.city || '';
+        street = street || s.address || sBa.street || '';
+        country = country || s.country || sBa.country || '';
+        if (postCode && city && street) break;
+      }
+    } catch (e) { console.warn('[ifirma-payload] recovery (duplikat NIP) nieudane:', e.message); }
+    // 2) iFirma po NIP (firma była fakturowana → ma tam pełny adres)
+    if (!postCode) {
+      try {
+        const ifc = require('../ifirma-client');
+        const remote = await ifc.findContractorInList(contractor.nip);
+        if (remote) {
+          postCode = postCode || remote.KodPocztowy || '';
+          city = city || remote.Miejscowosc || '';
+          street = street || remote.Ulica || '';
+        }
+      } catch (e) { console.warn('[ifirma-payload] recovery (iFirma po NIP) nieudane:', e.message); }
+    }
+    if (postCode) console.log(`[ifirma-payload] odzyskano adres dla NIP ${contractor.nip} (${contractor.name}): kod=${postCode} miasto=${city}`);
+  }
 
   const ifirmaId = cExternalIds.ifirmaIdentifier
     || cExtras.ifirmaId

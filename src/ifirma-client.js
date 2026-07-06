@@ -894,7 +894,7 @@ async function sendInvoiceToKsef({ ifirmaId, rodzaj, waluta }) {
 }
 
 module.exports = {
-  generateAuth, fetchInvoices, fetchNbpRate, searchContractor, upsertContractor,
+  generateAuth, fetchInvoices, fetchNbpRate, searchContractor, findContractorInList, upsertContractor,
   createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
   registerPayment, setAccountingMonth,
   getAccountingMonth, trySetAccountingMonth,
