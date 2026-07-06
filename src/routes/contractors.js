@@ -9,6 +9,7 @@ const { findAddressInContractorEmails, saveAddressToContractorLocations } = requ
 const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders');
 const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
 const { scoreContractor, findBestContractors, sameContractorName } = require('../services/contractor-match');
+const { mergeContractors, normalizeNipKey } = require('../services/contractor-merge');
 const { geocodeAndSave } = require('../services/geocode');
 const { geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
@@ -90,7 +91,8 @@ router.post('/upsert', async (req, res) => {
     const trim = v => (v && typeof v === 'string' && v.trim()) ? v.trim() : null;
     const n = {
       name: trim(body.name),
-      nip: trim(body.nip),
+      nip: normalizeNipKey(trim(body.nip)) || null, // kanoniczny NIP (bez spacji/myślników) → koniec duplikatów przez format
+
       phone: trim(body.phone),
       email: trim(body.email),
       country: trim(body.country),
@@ -235,19 +237,32 @@ router.post('/upsert', async (req, res) => {
       return { list, added: true };
     }
 
-    // Find existing: by NIP, then by email, then by ZNORMALIZOWANA nazwa.
+    // Rozwiązanie istniejącego: rekord z tym NIP-em ORAZ dopasowanie po mailu/
+    // nazwie. Gdy NIP należy do jednego rekordu, a mail/nazwa do INNEGO — to dwa
+    // rekordy tej samej firmy → AUTO-MERGE (jeden NIP = jeden rekord).
     let existing = null;
-    if (n.nip) existing = await prisma.contractor.findUnique({ where: { nip: n.nip } });
-    if (!existing && n.email) existing = await prisma.contractor.findFirst({ where: { email: { equals: n.email, mode: 'insensitive' } } });
-    // Match po nazwie ZAWSZE gdy nic nie znaleziono (nie tylko gdy brak NIP) —
-    // inaczej request z nowym/blednym NIP tworzyl duplikat istniejacej firmy.
-    // Prefilter fuzzy (90) + symetryczna ROWNOSC zbioru slow (sameContractorName)
-    // => "EUROMIPE" == "EUROMIPE SL" == "Kitewave Store S.A." reuse, ale
-    // "EUROMIPE" != "EUROMIPE TRADING GROUP" (brak falszywego scalenia).
-    if (!existing && n.name) {
+    const byNipRec = n.nip ? await prisma.contractor.findUnique({ where: { nip: n.nip } }) : null;
+    let byOther = null;
+    if (n.email) byOther = await prisma.contractor.findFirst({ where: { email: { equals: n.email, mode: 'insensitive' } } });
+    // Match po nazwie ZAWSZE gdy nic po mailu (nie tylko gdy brak NIP) — inaczej
+    // request z nowym/błędnym NIP tworzył duplikat. Prefilter fuzzy (90) +
+    // symetryczna RÓWNOŚĆ zbioru słów (sameContractorName): "EUROMIPE" ==
+    // "EUROMIPE SL" reuse, ale "EUROMIPE" != "EUROMIPE TRADING GROUP".
+    if (!byOther && n.name) {
       const cands = await findBestContractors(prisma, n.name, { minScore: 90, limit: 5 });
       const dup = cands.find(c => sameContractorName(n.name, c.contractor.name));
-      if (dup) existing = await prisma.contractor.findUnique({ where: { id: dup.contractor.id } });
+      if (dup) byOther = await prisma.contractor.findUnique({ where: { id: dup.contractor.id } });
+    }
+    existing = byNipRec || byOther;
+    if (byNipRec && byOther && byNipRec.id !== byOther.id) {
+      try {
+        await mergeContractors(prisma, byNipRec.id, byOther.id); // keep = rekord z NIP
+        existing = await prisma.contractor.findUnique({ where: { id: byNipRec.id } });
+        console.log(`[upsert] auto-merge po NIP ${n.nip}: scalono "${byOther.name}" → "${byNipRec.name}"`);
+      } catch (e) {
+        console.error('[upsert] auto-merge po NIP nieudany:', e.message);
+        existing = byNipRec;
+      }
     }
 
     let contractor;

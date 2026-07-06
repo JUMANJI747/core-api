@@ -50,7 +50,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/ksef.js` | KSeF: sync sprzedaży (status) i kosztów |
 | `/api` | `routes/costs.js` | faktury kosztowe |
 | `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report, send-month-to-ksef, pair-wdt, pair-wdt-one |
-| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), vies-check, backfille |
+| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, backfille |
 | `/api` | `routes/activity.js` | oś zdarzeń (ActivityEvent) |
 | `/api` | `routes/cron.js` | zadania cykliczne (raport miesięczny, sync) |
 | `/api` | `routes/transactions.js` | transakcje (deal cycle) |
@@ -106,6 +106,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 
 ### Kontrahenci / CRM
 - `contractor-match.js` — `findBestContractors`, `sameContractorName` (fuzzy).
+- `contractor-merge.js` — `mergeContractors(keep,drop)` (przepina FK/kontakty/adresy/aliasy, kasuje drop) + `normalizeNipKey`. Używane przez admin/merge, admin/dedupe-nip i **auto-merge w contractors/upsert** (jeden NIP = jeden rekord).
 - `contractor-sync-helpers.js`, `contractor-contacts-backfill.js`, `contractor-v2-backfill.js` — normalizacja CRM v2.
 - `match-gk-order-to-contractor.js`, `find-address-in-gk-orders.js`, `address-from-emails.js` — szukanie adresu dostawy.
 - `dedup-locations.js`, `country-helper.js`, `owner-derive.js`.

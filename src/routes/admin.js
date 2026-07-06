@@ -522,6 +522,61 @@ router.post('/admin/contractors/merge', async (req, res) => {
   }
 });
 
+// POST /api/admin/contractors/dedupe-nip
+//   body { confirm: true }  albo  { dryRun: true } (podgląd bez zmian)
+// Znajduje kontrahentów o TYM SAMYM (znormalizowanym) NIP i scala ich w jeden
+// (keep = najwięcej faktur, potem najstarszy). Kanonizuje NIP keepa. Jednorazowe
+// sprzątanie istniejących duplikatów (nowe blokuje już auto-merge w /upsert).
+router.post('/admin/contractors/dedupe-nip', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { confirm, dryRun } = req.body || {};
+  try {
+    const { mergeContractors, normalizeNipKey } = require('../services/contractor-merge');
+    const all = await prisma.contractor.findMany({
+      where: { nip: { not: null } },
+      select: { id: true, nip: true, name: true, createdAt: true },
+    });
+    const groups = new Map();
+    for (const c of all) {
+      const key = normalizeNipKey(c.nip);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    const dups = [...groups.entries()].filter(([, arr]) => arr.length > 1);
+    if (!dups.length) return res.json({ ok: true, groups: 0, merged: 0, message: 'Brak duplikatów po NIP.' });
+
+    const ids = dups.flatMap(([, arr]) => arr.map(c => c.id));
+    const invCounts = await prisma.invoice.groupBy({ by: ['contractorId'], where: { contractorId: { in: ids } }, _count: { _all: true } });
+    const invMap = new Map(invCounts.map(r => [r.contractorId, r._count._all]));
+    const rank = (a, b) => (invMap.get(b.id) || 0) - (invMap.get(a.id) || 0) || new Date(a.createdAt) - new Date(b.createdAt);
+
+    if (dryRun === true) {
+      return res.json({
+        ok: true, dryRun: true, groups: dups.length,
+        plan: dups.map(([key, arr]) => ({ nip: key, keep: [...arr].sort(rank)[0].name, records: [...arr].sort(rank).map(c => ({ id: c.id, name: c.name, invoices: invMap.get(c.id) || 0 })) })),
+      });
+    }
+    if (confirm !== true) return res.status(400).json({ ok: false, error: 'wymaga confirm:true (destruktywne) albo dryRun:true' });
+
+    let merged = 0;
+    const results = [];
+    for (const [key, arr] of dups) {
+      arr.sort(rank);
+      const keep = arr[0];
+      for (const drop of arr.slice(1)) {
+        try { await mergeContractors(prisma, keep.id, drop.id); merged++; results.push({ nip: key, kept: keep.name, dropped: drop.name }); }
+        catch (e) { results.push({ nip: key, kept: keep.name, dropError: `${drop.name}: ${e.message}` }); }
+      }
+      // Po scaleniu (drops skasowane) kanonizuj NIP keepa — teraz `key` jest wolny.
+      try { await prisma.contractor.update({ where: { id: keep.id }, data: { nip: key } }); } catch (_) { /* noop */ }
+    }
+    res.json({ ok: true, groups: dups.length, merged, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/admin/contractors/:id/link-es
 //   body { esContractorId, confirm: true }
 // Ustawia Contractor.linkedEsContractorId. Sprawdza ze PL nie jest juz
