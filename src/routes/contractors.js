@@ -10,8 +10,7 @@ const { findAddressInGkOrders } = require('../services/find-address-in-gk-orders
 const { backfillShippingFromGk } = require('../services/shipping-backfill-from-gk');
 const { scoreContractor, findBestContractors, sameContractorName } = require('../services/contractor-match');
 const { mergeContractors, normalizeNipKey } = require('../services/contractor-merge');
-const { geocodeAndSave } = require('../services/geocode');
-const { geocodeContractor } = require('../services/geocode');
+const { geocodeAndSave, geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
 const { searchContractor: ifirmaSearchContractor, upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
 const { extractPostCode, extractCityAfterPostCode } = require('../utils/address');
@@ -724,8 +723,8 @@ router.post('/verify-nip', async (req, res) => {
   try {
     let { nip, country } = req.body;
     if (!nip) return res.status(400).json({ error: 'nip required' });
-    nip = nip.trim().replace(/[\s\-]/g, '').toUpperCase();
-    if (country) country = country.trim().toUpperCase();
+    nip = String(nip).trim().replace(/[\s\-]/g, '').toUpperCase(); // agent/n8n bywa wysyła NIP jako number → .trim() bez String() = 500
+    if (country) country = String(country).trim().toUpperCase();
 
     const hasPrefix = /^[A-Z]{2}/.test(nip);
     if (!hasPrefix) {

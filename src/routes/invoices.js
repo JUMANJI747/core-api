@@ -553,14 +553,17 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
     // Auto-persist znormalizowanego ISO-2 gdy w bazie był pełny tekst
     // ("Polska"/"Hiszpania") albo pusto a wykryliśmy non-PL przez NIP.
     // Robimy update tylko gdy nowa wartość różni się od obecnej.
-    if (effectiveCountry && contractor.country !== effectiveCountry) {
+    // Utrwalamy TYLKO WYKRYTY kraj (derived.country), nie domyślne 'PL'. Inaczej
+    // kontrahent bez sygnału (brak kraju/NIP/adresu) dostawał 'PL' na stałe →
+    // później, po dodaniu NIP UE, i tak szła krajowa 23% zamiast WDT 0%.
+    if (derived.country && contractor.country !== derived.country) {
       try {
         await prisma.contractor.update({
           where: { id: contractor.id },
-          data: { country: effectiveCountry },
+          data: { country: derived.country },
         });
-        contractor = { ...contractor, country: effectiveCountry };
-        console.log(`[invoice-preview] normalize country: ${derived.source} → ${effectiveCountry} on ${contractor.name}`);
+        contractor = { ...contractor, country: derived.country };
+        console.log(`[invoice-preview] normalize country: ${derived.source} → ${derived.country} on ${contractor.name}`);
       } catch (e) {
         console.error('[invoice-preview] persist country failed:', e.message);
       }
