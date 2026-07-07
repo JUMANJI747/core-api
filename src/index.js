@@ -1,5 +1,15 @@
 'use strict';
 
+// Siatka bezpieczeństwa: część async-handlerów (Express 4) nie ma try/catch, a
+// odrzucony Promise (błąd Anthropic/Prisma/sieci) bez tego kładł CAŁY proces.
+// Logujemy i żyjemy dalej (pojedynczy request najwyżej zawiśnie, ale serwer stoi).
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', (reason && reason.stack) || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', (err && err.stack) || err);
+});
+
 const express = require('express');
 const prisma = require('./db');
 
