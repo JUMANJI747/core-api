@@ -3281,7 +3281,9 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
 // LOKALNYM id (UUID z EsInvoice). Rozwiazuje contasimpleId + period z bazy
 // (period z daty gdy brak), pobiera PDF z Contasimple i streamuje inline —
 // tak samo jak PL /api/invoices/:id/pdf, zeby front mial guzik "PDF".
-router.get('/local-invoices/:id/pdf', asyncHandler(async (req, res) => {
+// Druga ścieżka z nazwą pliku na końcu URL (iOS nazywa PDF wg ostatniego
+// segmentu ścieżki). :fn kosmetyczny.
+router.get(['/local-invoices/:id/pdf', '/local-invoices/:id/pdf/:fn'], asyncHandler(async (req, res) => {
   const row = await prisma.esInvoice.findUnique({
     where: { id: req.params.id },
     select: { contasimpleId: true, period: true, invoiceDate: true, number: true },

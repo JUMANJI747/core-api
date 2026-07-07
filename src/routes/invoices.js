@@ -2268,7 +2268,11 @@ router.post('/ifirma/_diag-month', async (req, res) => {
 // GET /api/invoices?search=&country=&status=&fromDate=&toDate=&limit=&ifirmaOnly=1
 // Returns local Invoice rows ordered by issueDate desc. Used by CRM frontend.
 // PDF faktury z iFirmy — otwierany guzikiem w zakladce Faktury (jak listy w wysylce).
-router.get('/invoices/:invoiceId/pdf', async (req, res) => {
+// Druga ścieżka z KOSMETYCZNĄ nazwą pliku na końcu (…/pdf/faktura_157_2026.pdf).
+// iOS Safari nazywa pobrany/udostępniony PDF wg OSTATNIEGO segmentu URL (ignoruje
+// Content-Disposition, a blob:-URL nie ma nazwy → „Unknown"). :fn jest ignorowany
+// serwerowo — liczy się tylko, że URL kończy się właściwą nazwą.
+router.get(['/invoices/:invoiceId/pdf', '/invoices/:invoiceId/pdf/:fn'], async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const key = String(req.params.invoiceId || '');
