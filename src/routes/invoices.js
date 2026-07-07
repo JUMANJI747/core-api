@@ -819,6 +819,8 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
   let lockedId = null;
   let confirmKey = null;
   let issued = false;
+  let claimed = false; // czy TEN request zajął klucz (żeby nie zwolnić cudzego)
+  let ifirmaCreated = false; // czy FV POWSTAŁA w iFirmie (żeby nie zwolnić klucza → retry = duplikat)
   try {
     const now = Date.now();
     let bestId = null;
@@ -923,6 +925,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
       if (_claim.state === 'in_progress') {
         return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
       }
+      claimed = true; // state === 'fresh' → to MY trzymamy klucz
 
       ifirmaResult = await createInvoice({
         kontrahent: kontrahentPayload,
@@ -933,15 +936,17 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         paymentDays,
         uwagi: storedUwagi,
       });
+      ifirmaCreated = true; // FV powstała w iFirmie
     } catch (ifirmaErr) {
       const raw = ifirmaErr.ifirmaRaw || null;
       const kod = raw && raw.response && raw.response.Kod;
       const info = raw && raw.response && raw.response.Informacja;
       const humanError = info ? `${info}${kod != null ? ` (kod ${kod})` : ''}` : ifirmaErr.message;
       console.log('[invoice-confirm] iFirma error:', humanError);
-      // iFirma odrzuciła — żadna FV nie powstała. Zwolnij klucz, by user mógł
-      // poprawić i spróbować ponownie z tym samym podglądem.
-      await releaseConfirm(prisma, confirmKey);
+      // iFirma odrzuciła — żadna FV nie powstała. Zwolnij klucz TYLKO jeśli to MY
+      // go zajęliśmy (claimed) — inaczej moglibyśmy zwolnić lock innej instancji,
+      // która właśnie wystawia → duplikat.
+      if (claimed) await releaseConfirm(prisma, confirmKey);
       if (tgToken && tgChat) {
         sendTelegram(tgToken, tgChat,
           `❌ Błąd iFirma\n${humanError}\nKontrahent: ${contractor.name}`
@@ -1087,7 +1092,16 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
 
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent, ifirmaResponse: ifirmaRaw });
   } catch (e) {
-    if (confirmKey && !issued) await releaseConfirm(prisma, confirmKey);
+    if (confirmKey && !issued) {
+      if (ifirmaCreated) {
+        // FV POWSTAŁA w iFirmie, ale wysypał się zapis do bazy/PDF — NIE zwalniaj
+        // klucza (retry zrobiłby DRUGĄ FV). Domknij lock, żeby kolejne tapnięcie
+        // dostało 'done'. Numer zsynchronizuje się później z iFirmy.
+        try { await completeConfirm(prisma, confirmKey, 'ISSUED', null); } catch (_) { /* noop */ }
+      } else if (claimed) {
+        await releaseConfirm(prisma, confirmKey);
+      }
+    }
     res.status(500).json({ error: e.message });
   } finally {
     if (lockedId) _confirmingPreviews.delete(lockedId);
@@ -1120,6 +1134,8 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
   let lockedId = null;
   let confirmKey = null;
   let issued = false;
+  let claimed = false; // czy TEN request zajął klucz (żeby nie zwolnić cudzego)
+  let ifirmaCreated = false; // czy FV POWSTAŁA w iFirmie (żeby nie zwolnić klucza → retry = duplikat)
   try {
     const { previewId } = req.body;
     if (!previewId) return res.status(400).json({ error: 'previewId required' });
@@ -1172,6 +1188,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     if (_claim2.state === 'in_progress') {
       return res.status(409).json({ ok: false, error: 'Faktura z tego podglądu jest właśnie wystawiana — poczekaj chwilę.', inProgress: true });
     }
+    claimed = true; // state === 'fresh' → to MY trzymamy klucz
 
     const ifirmaResp = await createInvoice({
       kontrahent: kontrahentPayload2,
@@ -1182,6 +1199,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
       paymentDays,
       uwagi: storedUwagi,
     });
+    ifirmaCreated = true; // FV powstała w iFirmie
 
     // createInvoice() zwraca {invoiceNumber, ifirmaId, ifirmaRaw}. iFirma często
     // zwraca w odpowiedzi TYLKO FakturaId (bez numeru) — numer dobieramy z listy
@@ -1302,7 +1320,16 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     if (lockedId) _confirmedPreviews.set(lockedId, { invoiceNumber: pelnyNumer, invoiceId: invoice.id, ifirmaId, at: Date.now() });
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
   } catch (e) {
-    if (confirmKey && !issued) await releaseConfirm(prisma, confirmKey);
+    if (confirmKey && !issued) {
+      if (ifirmaCreated) {
+        // FV POWSTAŁA w iFirmie, ale wysypał się zapis do bazy/PDF — NIE zwalniaj
+        // klucza (retry zrobiłby DRUGĄ FV). Domknij lock, żeby kolejne tapnięcie
+        // dostało 'done'. Numer zsynchronizuje się później z iFirmy.
+        try { await completeConfirm(prisma, confirmKey, 'ISSUED', null); } catch (_) { /* noop */ }
+      } else if (claimed) {
+        await releaseConfirm(prisma, confirmKey);
+      }
+    }
     res.status(500).json({ error: e.message });
   } finally {
     if (lockedId) _confirmingPreviews.delete(lockedId);
