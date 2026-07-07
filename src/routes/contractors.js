@@ -240,7 +240,22 @@ router.post('/upsert', async (req, res) => {
     // nazwie. Gdy NIP należy do jednego rekordu, a mail/nazwa do INNEGO — to dwa
     // rekordy tej samej firmy → AUTO-MERGE (jeden NIP = jeden rekord).
     let existing = null;
-    const byNipRec = n.nip ? await prisma.contractor.findUnique({ where: { nip: n.nip } }) : null;
+    // NIP z/bez prefiksu kraju to TEN SAM numer ("29494914J" == "ES29494914J") —
+    // szukamy exact, potem po ogonie bez prefiksu (sameNip odrzuca sprzeczne
+    // prefiksy typu PL vs DE). Bez tego drugi zapis robił duplikat kontrahenta.
+    let byNipRec = n.nip ? await prisma.contractor.findUnique({ where: { nip: n.nip } }) : null;
+    if (!byNipRec && n.nip) {
+      const { stripNipCountryPrefix, sameNip } = require('../services/contractor-merge');
+      const tail = stripNipCountryPrefix(n.nip);
+      if (tail && tail.length >= 6) {
+        const cands = await prisma.contractor.findMany({
+          where: { nip: { endsWith: tail, mode: 'insensitive' } },
+          take: 5,
+        });
+        byNipRec = cands.find(c => sameNip(c.nip, n.nip)) || null;
+        if (byNipRec) console.log(`[upsert] NIP match po ogonie bez prefiksu: "${n.nip}" ≈ "${byNipRec.nip}" (${byNipRec.name})`);
+      }
+    }
     let byOther = null;
     if (n.email) byOther = await prisma.contractor.findFirst({ where: { email: { equals: n.email, mode: 'insensitive' } } });
     // Match po nazwie ZAWSZE gdy nic po mailu (nie tylko gdy brak NIP) — inaczej

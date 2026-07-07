@@ -531,19 +531,28 @@ router.post('/admin/contractors/dedupe-nip', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { confirm, dryRun } = req.body || {};
   try {
-    const { mergeContractors, normalizeNipKey } = require('../services/contractor-merge');
+    const { mergeContractors, normalizeNipKey, stripNipCountryPrefix, sameNip } = require('../services/contractor-merge');
     const all = await prisma.contractor.findMany({
       where: { nip: { not: null } },
       select: { id: true, nip: true, name: true, createdAt: true },
     });
+    // Grupuj po kluczu BEZ prefiksu kraju ("29494914J" == "ES29494914J"), ale
+    // scalaj tylko pary zgodne wg sameNip (PL123 vs DE123 zostają osobno).
     const groups = new Map();
     for (const c of all) {
-      const key = normalizeNipKey(c.nip);
+      const key = stripNipCountryPrefix(normalizeNipKey(c.nip));
       if (!key) continue;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
-    const dups = [...groups.entries()].filter(([, arr]) => arr.length > 1);
+    const dups = [...groups.entries()]
+      .map(([key, arr]) => {
+        if (arr.length < 2) return null;
+        // odfiltruj sprzeczne prefiksy: zostaw tylko rekordy zgodne z pierwszym
+        const compatible = arr.filter(c => sameNip(c.nip, arr[0].nip));
+        return compatible.length > 1 ? [key, compatible] : null;
+      })
+      .filter(Boolean);
     if (!dups.length) return res.json({ ok: true, groups: 0, merged: 0, message: 'Brak duplikatów po NIP.' });
 
     const ids = dups.flatMap(([, arr]) => arr.map(c => c.id));
@@ -568,8 +577,10 @@ router.post('/admin/contractors/dedupe-nip', async (req, res) => {
         try { await mergeContractors(prisma, keep.id, drop.id); merged++; results.push({ nip: key, kept: keep.name, dropped: drop.name }); }
         catch (e) { results.push({ nip: key, kept: keep.name, dropError: `${drop.name}: ${e.message}` }); }
       }
-      // Po scaleniu (drops skasowane) kanonizuj NIP keepa — teraz `key` jest wolny.
-      try { await prisma.contractor.update({ where: { id: keep.id }, data: { nip: key } }); } catch (_) { /* noop */ }
+      // Po scaleniu kanonizuj NIP keepa na NAJBOGATSZY wariant grupy (z prefiksem
+      // kraju, jeśli ktoryś rekord go miał) — key jest bez prefiksu, nie nadpisuj nim.
+      const withPrefix = arr.map(c => normalizeNipKey(c.nip)).find(k => k !== key) || normalizeNipKey(keep.nip) || key;
+      try { await prisma.contractor.update({ where: { id: keep.id }, data: { nip: withPrefix } }); } catch (_) { /* noop */ }
     }
     res.json({ ok: true, groups: dups.length, merged, results });
   } catch (e) {

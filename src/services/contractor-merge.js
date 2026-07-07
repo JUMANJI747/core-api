@@ -162,4 +162,27 @@ function normalizeNipKey(nip) {
   return String(nip).replace(/[\s.\-/]/g, '').toUpperCase();
 }
 
-module.exports = { mergeContractors, normalizeNipKey };
+// Klucz BEZ prefiksu kraju — do dopasowania "29494914J" == "ES29494914J"
+// (ten sam numer zapisany raz z, raz bez prefiksu robił duplikat kontrahenta).
+// Prefiks zdejmujemy tylko gdy wygląda na ISO-2 (2 litery) i coś po nim zostaje.
+function stripNipCountryPrefix(nipKey) {
+  const k = normalizeNipKey(nipKey);
+  const m = k.match(/^([A-Z]{2})([A-Z0-9]{6,})$/);
+  return m ? m[2] : k;
+}
+
+// Czy dwa NIP-y to TEN SAM numer: równość kanoniczna ALBO równość po zdjęciu
+// prefiksu, o ile prefiksy nie są SPRZECZNE (PL123 vs DE123 to co innego;
+// 123 vs ES123 — to samo).
+function sameNip(a, b) {
+  const ka = normalizeNipKey(a), kb = normalizeNipKey(b);
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  const sa = stripNipCountryPrefix(ka), sb = stripNipCountryPrefix(kb);
+  if (sa !== sb) return false;
+  const pa = ka === sa ? '' : ka.slice(0, 2);
+  const pb = kb === sb ? '' : kb.slice(0, 2);
+  return !pa || !pb || pa === pb;
+}
+
+module.exports = { mergeContractors, normalizeNipKey, stripNipCountryPrefix, sameNip };

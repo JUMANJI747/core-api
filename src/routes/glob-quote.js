@@ -1231,6 +1231,18 @@ router.post('/glob/order', async (req, res) => {
       }, '').trim();
     }
 
+    // GK odrzuca adresy ze znakami: . , " % & + ( ) / [ ] ; ! (walidacja pól
+    // receiverAddress[...]). Adresy z bazy bywają "Nuevo Portil, Cartaya, Huelva"
+    // czy "casa n° 115" → zamieniamy niedozwolone na spacje i zwężamy. Lepiej
+    // lekko zubożony adres niż odrzucone zamówienie.
+    function sanitizeGkText(s) {
+      if (!s) return s;
+      return String(s)
+        .replace(/[.,"%&+()/\[\];!°ºª]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
     const DEFAULT_SENDER_PHONE = '+48502189886';
     const DEFAULT_SENDER_EMAIL = 'delivery@surfstickbell.com';
     const DEFAULT_RECEIVER_PHONE = '000000000';
@@ -1252,11 +1264,11 @@ router.post('/glob/order', async (req, res) => {
     const senderPhone = senderExtras.phone || sender.phone || DEFAULT_SENDER_PHONE;
     const senderEmail = senderExtras.email || sender.email || DEFAULT_SENDER_EMAIL;
 
-    const receiverName = trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || 'Receiver');
-    const receiverStreet = receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || '';
-    const receiverHouse = receiver.houseNumber || cGkData.houseNumber || '';
+    const receiverName = sanitizeGkText(trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || 'Receiver'));
+    const receiverStreet = sanitizeGkText(receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || '');
+    const receiverHouse = sanitizeGkText(receiver.houseNumber || cGkData.houseNumber || '');
     const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || '';
-    const receiverCity = receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || '';
+    const receiverCity = sanitizeGkText(receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || '');
     const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
     // Mail odbiorcy: sprawdz primaryEmail i ContractorContact (CRM v2), nie tylko
     // plaskie .email — inaczej maile z auto-importu/backfillu "znikaja" i wpada
