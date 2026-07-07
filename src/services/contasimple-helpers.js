@@ -22,6 +22,7 @@ async function findEsContractor(prisma, search) {
   const all = await prisma.esContractor.findMany({
     select: {
       id: true,
+      contasimpleId: true, // BEZ tego fast-path (best.contractor.contasimpleId) był ZAWSZE undefined → każde wyszukanie klienta ES ciągnęło pełną listę z wolnego API CS
       name: true,
       organization: true,
       nif: true,

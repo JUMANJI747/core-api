@@ -986,10 +986,13 @@ router.get('/', async (req, res) => {
         }
       }
 
-      // 2. ContractorAddress (CRM v2) - shipping > billing
+      // 2. ContractorAddress (CRM v2) — preferuj shipping/delivery nad billing.
+      // 'desc' po type daje shipping > delivery > billing (alfabetycznie), więc
+      // billing jest OSTATNI — inaczej ('asc') auto-fill wysyłki brał adres
+      // FAKTUROWY zamiast dostawy.
       const addr = await prisma.contractorAddress.findFirst({
         where: { contractorId: c.id, type: { in: ['shipping', 'delivery', 'billing'] } },
-        orderBy: [{ type: 'asc' }, { isPrimary: 'desc' }, { updatedAt: 'desc' }],
+        orderBy: [{ type: 'desc' }, { isPrimary: 'desc' }, { updatedAt: 'desc' }],
       }).catch(() => null);
       if (addr && (addr.street || addr.city)) {
         return {

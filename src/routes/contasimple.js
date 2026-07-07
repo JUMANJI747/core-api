@@ -622,21 +622,15 @@ router.get('/contractors', asyncHandler(async (req, res) => {
   if (owner === 'rogacz') {
     where.owner = 'rogacz';
   } else if (owner === 'nikodem') {
-    where.OR = [...(where.OR || []), { owner: null }, { owner: { not: 'rogacz' } }];
-    // simpler: NOT { owner: 'rogacz' }
-    delete where.OR;
-    where.NOT = { owner: 'rogacz' };
-    if (search) {
-      where.AND = [
-        { NOT: { owner: 'rogacz' } },
-        { OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { organization: { contains: search, mode: 'insensitive' } },
-          { nif: { contains: search, mode: 'insensitive' } },
-          { email: { contains: search, mode: 'insensitive' } },
-        ] },
-      ];
-      delete where.NOT;
+    // „poza Rogaczem" = null LUB != 'rogacz'. UWAGA: `NOT: {owner:'rogacz'}`
+    // wyklucza owner=null (SQL NULL<>'rogacz' nie jest TRUE) → gubiło domyślnych
+    // (null) kontrahentów Nikodema. Jawny OR z {owner:null}.
+    const ownerOr = [{ owner: null }, { owner: { not: 'rogacz' } }];
+    if (where.OR) {
+      where.AND = [{ OR: where.OR }, { OR: ownerOr }];
+      delete where.OR;
+    } else {
+      where.OR = ownerOr;
     }
   }
   const take = limit ? Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000)) : undefined;
@@ -3241,12 +3235,19 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
   if (owner === 'rogacz') {
     where.contractor = { owner: 'rogacz' };
   } else if (owner === 'nikodem') {
-    where.OR = [
-      ...(where.OR || []),
+    const ownerOr = [
       { contractor: null },
       { contractor: { owner: null } },
       { contractor: { owner: { not: 'rogacz' } } },
     ];
+    if (where.OR) {
+      // search już zajął where.OR — łączymy przez AND, inaczej fraza była
+      // OR-owana z ownerem i wyszukiwanie było ignorowane (wpadały cudze FV).
+      where.AND = [{ OR: where.OR }, { OR: ownerOr }];
+      delete where.OR;
+    } else {
+      where.OR = ownerOr;
+    }
   }
   const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
   const wantLines = withLines === '1' || withLines === 'true';
