@@ -155,8 +155,16 @@ RISKY (za zgodą usera):
 20. ✅ Kanary: /delete-preview guard (koniec kasowania kwartału), confirmAlbaran await.
 21. ✅ transactions rematch wymaga zgodnej kwoty (komis nie łapie cudzej FV).
 
-POZOSTAJE (⚠️/⬜ powyżej, jeszcze nie ruszone): emails draft attachments/HTML już ✅
-wcześniej; do zrobienia m.in.: poller rescan wpuszcza spam (⚠️), UIDVALIDITY,
-payments/match paid-przed-iFirmą (⚠️), confirm-lock release/claimed (⚠️),
-cena brutto-jako-netto + backfill (⚠️), N+1 w contractors GET/search (perf),
-duplikat confirm/confirm-latest → issueFromPreview, stary /merge-contractors (⚠️).
+22. ✅ confirm-lock: claimed + ifirmaCreated — koniec okien na duplikat FV.
+23. ✅ /payments/match: iFirma-first + Kod + próg 70 — koniec fałszywego 'paid'.
+
+POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
+- ⚠️ cena brutto zapisywana jako netto (last-price +23%, analityka) — FIX prosty,
+  ale trzeba BACKFILL istniejących InvoiceLineItem/extras. Do uzgodnienia.
+- ⚠️ poller rescan wpuszcza odfiltrowany spam (wymaga zapisu decyzji SPAM/newsletter).
+- ⚠️ UIDVALIDITY ignorowane (reset skrzynki → główna ścieżka nie pobiera).
+- ⚠️ glob-sync match odbiorcy po 1. słowie; stary /merge-contractors (usunąć).
+- ⬜ perf: contractors GET/search take:2000 + N+1 enrich; backfill-location 300k
+  wywołań GK; duplikat confirm/confirm-latest → wspólny issueFromPreview.
+- ⬜ drobne: async-handlery bez asyncHandler (guard globalny już łapie crash),
+  martwe importy/gałęzie, timeouty httpsGet w pollerze.
