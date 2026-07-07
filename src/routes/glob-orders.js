@@ -136,6 +136,8 @@ async function handleSearchOrders(req, res) {
         receiver: {
           name: recv.companyName || recv.name,
           contactPerson: recv.contactPerson,
+          street: recv.street || recv.address || null,       // do „Ponów" (pełny adres ze starej wysyłki)
+          houseNumber: recv.houseNumber || recv.buildingNumber || null,
           city: recv.city,
           postCode: recv.postCode || recv.zipCode,
           countryId: recv.countryId || null,
