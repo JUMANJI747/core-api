@@ -1080,6 +1080,10 @@ async function processAccount(account) {
             console.error(`[inbox-poller] ${inbox}: fallback translate failed:`, e.message);
           }
         }
+        // ANTY-INJECTION: summary_pl pochodzi z treści maila (niezaufane). Wycinamy
+        // markery sterujące, żeby nadawca nie podrobił [ctx:]/[MAIL]/[ALERT] i nie
+        // przekierował akcji agenta, który te znaczniki parsuje.
+        if (summaryPlOut) summaryPlOut = String(summaryPlOut).replace(/\[\s*(ctx|MAIL|ALERT)\b[^\]]*\]/gi, '');
 
         // Context inheritance: fill in UNKNOWN country/language from previous mail by same sender
         let effectiveCountry = country;

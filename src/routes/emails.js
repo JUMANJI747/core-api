@@ -64,6 +64,11 @@ async function wasRecentlySent(prisma, to, subject, body) {
       direction: 'OUTBOUND',
       toEmail: to,
       subject: subject || '',
+      // Dedup MUSI uwzględniać treść — inaczej dwa RÓŻNE maile do tego samego
+      // adresu z tym samym tematem (np. „Re: Zamówienie") w <2 min: drugi był
+      // oznaczany jako wysłany BEZ wysyłki. Z bodyFull deduplikujemy tylko
+      // realny duplikat (identyczna treść = double-submit).
+      ...(body != null ? { bodyFull: body } : {}),
       createdAt: { gte: twoMinAgo },
     },
   });
