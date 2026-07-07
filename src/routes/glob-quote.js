@@ -2,7 +2,7 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPickupSlots, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { findBestContractors } = require('../services/contractor-match');
 const {
@@ -868,7 +868,9 @@ router.post('/glob/quote', async (req, res) => {
     resolvedDeclaredValue = Math.round(resolvedDeclaredValue * 100) / 100;
 
     const quoteStore = req.app.locals.quoteStore = req.app.locals.quoteStore || {};
-    const quoteId = Date.now().toString();
+    // sufiks losowy — dwie wyceny w tej samej ms miały ten sam id i drugą
+    // nadpisywała pierwszą w quoteStore (a prisma.quote.create padał na dup id).
+    const quoteId = `${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
     quoteStore[quoteId] = { sender, receiver, quoteParams, offers, preset: preset || null, pickupDate, collectionType, deliveryType, declaredValue: resolvedDeclaredValue, invoiceNumber: invoiceNumber || (foundInvoice && foundInvoice.number) || null, createdAt: new Date() };
     for (const k of Object.keys(quoteStore)) {
       if (Date.now() - new Date(quoteStore[k].createdAt).getTime() > 30 * 60 * 1000) delete quoteStore[k];
@@ -1440,12 +1442,13 @@ router.post('/glob/order', async (req, res) => {
               receiverCity: (receiver && receiver.city) || '',
               date: tryDate,
             });
-            const list = Array.isArray(times)
-              ? times
-              : (times && (times.results || times.items || times.data)) || [];
+            // GK zwraca sloty {date, timeFrom, timeTo} — czasem jako goły obiekt,
+            // czasem lista. extractPickupSlots ogarnia oba kształty; wcześniej
+            // czytaliśmy list[0].from/.to (nie istnieją) → ZAWSZE „brak terminów".
+            const list = extractPickupSlots(times);
             if (list.length > 0) {
-              timeFrom = list[0].from;
-              timeTo = list[0].to;
+              timeFrom = list[0].timeFrom || list[0].from || null;
+              timeTo = list[0].timeTo || list[0].to || null;
             }
           } catch (err) {
             console.log('[glob/order] getPickupTimes failed for', tryDate, err.message);
@@ -1757,9 +1760,12 @@ router.post('/glob/order', async (req, res) => {
                 const items = Array.isArray(gkRes) && gkRes.length === 1 && gkRes[0] && Array.isArray(gkRes[0].results)
                   ? gkRes[0].results
                   : (Array.isArray(gkRes) ? gkRes : (gkRes && (gkRes.results || gkRes.items || gkRes.data)) || []);
+                // TYLKO dokładne trafienie po numerze — getOrders ignoruje
+                // `search`, więc items to najnowsze zamówienia; `|| items[0]`
+                // brałoby tracking CUDZEJ (najnowszej) paczki.
                 const shipment = items.find(o =>
                   String(o.number || o.orderNumber || '').trim() === String(orderNumberForTracking).trim()
-                ) || items[0];
+                );
                 const cand = shipment && (shipment.trackingNumber || shipment.tracking);
                 if (cand && String(cand).trim()) {
                   trackingNumber = String(cand).trim();

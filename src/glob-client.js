@@ -339,4 +339,4 @@ async function getCountries(acceptLanguage = 'pl') {
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, getCustomRequiredFields, getCountries };
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, extractPickupSlots, getCustomRequiredFields, getCountries };
