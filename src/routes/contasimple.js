@@ -1645,6 +1645,13 @@ router.post('/delete-preview', asyncHandler(async (req, res) => {
     nifFilter = r.contractor.nif;
   }
 
+  // GUARD anty-masowe-kasowanie: bez ŻADNEGO zawężenia (kontrahent/numer/daty)
+  // preview objąłby CAŁY kwartał (do 300 FV), a delete-confirm-latest skasowałby
+  // je po jednym „tak" (np. literówka w polu → invoiceNumber zamiast number).
+  if (!nifFilter && !body.number && !body.fromDate && !body.toDate && body.allowAll !== true) {
+    return res.status(400).json({ ok: false, error: 'Za szerokie: podaj kontrahenta, numer albo zakres dat. Aby skasować cały kwartał, ustaw allowAll:true.' });
+  }
+
   const filters = {
     numRows: 300,
     nif: nifFilter,
@@ -3017,7 +3024,9 @@ async function confirmAlbaran(req, res, previewId) {
     console.error('[cs albaran-confirm] PDF fetch threw:', e.message);
   }
 
-  prisma.agentContext.upsert({
+  // AWAIT — /albaran-confirm-latest zaraz potem czyta ten agentContext, żeby
+  // wyciągnąć albaranNumber. Bez await odczyt wyprzedzał zapis → albaranNumber null.
+  await prisma.agentContext.upsert({
     where: { id: 'ksiegowosc-es' },
     update: { data: { lastAction: 'albaran-confirmed', albaranContasimpleId: albaran.id, albaranNumber: albaran.number, contractor: { name: contractor.name, nif: contractor.nif }, timestamp: Date.now() } },
     create: { id: 'ksiegowosc-es', data: { lastAction: 'albaran-confirmed', albaranContasimpleId: albaran.id, albaranNumber: albaran.number, contractor: { name: contractor.name, nif: contractor.nif }, timestamp: Date.now() } },
