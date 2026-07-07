@@ -1944,8 +1944,9 @@ router.post('/payments/match', async (req, res) => {
     const tgToken = tg.token;
     const tgChat = tg.chatId;
 
-    // Find contractor by sender
-    const scored = await findBestContractors(prisma, sender, { minScore: 40 });
+    // Find contractor by sender. minScore 70 (nie 40 — 40 to wspólny 4-znakowy
+    // prefiks JEDNEGO słowa → „Nordwind" łapało „Nordsøen" i cudza FV szła 'paid').
+    const scored = await findBestContractors(prisma, sender, { minScore: 70 });
 
     if (!scored.length) {
       const msg = `WPŁATA: ${amount} ${currency} od ${sender} → nieznany nadawca`;
@@ -1981,24 +1982,34 @@ router.post('/payments/match', async (req, res) => {
       return res.json({ ok: true, matched: false, invoice: null, contractor: contractor.name, ifirma: null, message: msg });
     }
 
-    // Update invoice in DB
-    await prisma.invoice.update({
-      where: { id: bestInvoice.id },
-      data: { status: 'paid', paidAmount: amount },
-    });
-
-    // Register payment in iFirma
+    // NAJPIERW iFirma, POTEM baza — nie oznaczamy 'paid' w bazie zanim iFirma
+    // realnie przyjmie wpłatę (inaczej rozjazd: baza opłacona, iFirma nie).
+    // Sprawdzamy Kod (0/undefined = OK), jak w /invoices/:id/pay — samo HTTP 200
+    // nie znaczy sukcesu.
     const invoiceType = bestInvoice.type || (currency === 'EUR' ? 'wdt' : 'krajowa');
     let ifirmaResp = null;
     let ifirmaOk = false;
     try {
       ifirmaResp = await registerPayment(bestInvoice.number, invoiceType, amount, currency, date);
-      ifirmaOk = ifirmaResp && ifirmaResp.status === 200;
+      const r = ifirmaResp && ifirmaResp.body && ifirmaResp.body.response ? ifirmaResp.body.response : (ifirmaResp && ifirmaResp.body);
+      const kod = r && (r.Kod !== undefined ? r.Kod : r.kod);
+      ifirmaOk = !!ifirmaResp && ifirmaResp.status >= 200 && ifirmaResp.status < 300 && (kod === 0 || kod === undefined);
     } catch (e) {
       console.error('[payments/match] iFirma error:', e.message);
     }
 
-    const msg = `WPŁATA: ${amount} ${currency} od ${sender} → FV ${bestInvoice.number} opłacona (iFirma: ${ifirmaOk ? 'OK' : 'BŁĄD'})`;
+    // Oznacz 'paid' w bazie TYLKO gdy iFirma przyjęła. Przy błędzie zostawiamy
+    // status bez zmian (lepiej ponowić niż fałszywe 'opłacona').
+    if (ifirmaOk) {
+      await prisma.invoice.update({
+        where: { id: bestInvoice.id },
+        data: { status: 'paid', paidAmount: amount },
+      });
+    }
+
+    const msg = ifirmaOk
+      ? `WPŁATA: ${amount} ${currency} od ${sender} → FV ${bestInvoice.number} opłacona (iFirma OK)`
+      : `⚠️ WPŁATA: ${amount} ${currency} od ${sender} → FV ${bestInvoice.number} NIE oznaczona (iFirma odrzuciła — sprawdź ręcznie)`;
     console.log('[payments/match]', msg);
     if (tgToken && tgChat) sendTelegram(tgToken, tgChat, msg).catch(e => console.error('[payments/match] tg error:', e.message));
 
