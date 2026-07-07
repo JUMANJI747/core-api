@@ -112,11 +112,15 @@ async function getOrderLabels(orderHash, format = 'A4') {
       method: 'GET',
       headers: { 'X-Auth-Token': token, 'Accept-Language': 'pl' },
     };
-    https.get(options, (res) => {
+    const req = https.get(options, (res) => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    // GK potrafi wisieć 40s+ — bez timeoutu handler /glob/order i /glob/send-label
+    // wisiał bez końca. 25s jak w httpsRequest.
+    req.setTimeout(25000, () => { req.destroy(new Error('getOrderLabels timeout 25s')); });
   });
 }
 

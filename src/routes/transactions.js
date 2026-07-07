@@ -586,7 +586,11 @@ router.post('/transactions/rematch', async (req, res) => {
         // Sprawdź czy ta invoice nie jest już w innej Transaction
         const taken = await prisma.transaction.findFirst({ where: { invoiceId: inv.id } });
         if (taken) continue;
-        const amountMatch = !tx.amount || !inv.grossAmount ||
+        // WYMAGAJ zgodnej kwoty (obie strony obecne, ±5%). Wcześniej `!tx.amount`
+        // = true dla transakcji bez kwoty (np. komis) → parowały się z DOWOLNĄ
+        // FV kontrahenta po samej dacie i dostawały cudzą kwotę.
+        const amountMatch = tx.amount != null && inv.grossAmount != null &&
+          Number(inv.grossAmount) !== 0 &&
           Math.abs(Number(tx.amount) - Number(inv.grossAmount)) / Number(inv.grossAmount) < 0.05;
         if (!amountMatch) continue;
         if (!dryRun) {
