@@ -142,5 +142,21 @@ RISKY (za zgodą usera):
 9. ✅ communication-agent-es: regex „wyślij" kotwiczony (nie wysyła starego draftu).
 10. ✅ geocode: `postCode` zamiast `postalCode` + selecty (poprawne piny na mapie).
 
-POZOSTAJE (nie ruszone): dedup maili (wasRecentlySent ignoruje body + oznacza
-niewysłany jako OUTBOUND); reszta ⬜/⚠️ powyżej.
+## Zrobione — sesja 2 (Fable, wdrożone na main)
+11. ✅ Kanary: filtr owner=nikodem (null-included) + AND z search — /contractors i /local-invoices.
+12. ✅ contractors enrich: orderBy type 'desc' (shipping>billing) — auto-fill wysyłki brał billing.
+13. ✅ contasimple-helpers fast-path: select +contasimpleId (przestaje ciągnąć pełną listę CS).
+14. ✅ kurier: terminy odbioru (extractPickupSlots + timeFrom/timeTo), tracking tylko exact, quoteId bez kolizji, getOrderLabels timeout.
+15. ✅ index.js: globalny guard unhandledRejection/uncaughtException (koniec crashy z async-handlerów).
+16. ✅ emails: dedup po bodyFull (koniec „wysłany" bez wysyłki).
+17. ✅ poller: anty-injection — czyszczenie [ctx:]/[MAIL]/[ALERT] z summary_pl.
+18. ✅ invoices: utrwalanie tylko WYKRYTEGO kraju (nie 'PL' na siłę → WDT działa).
+19. ✅ verify-nip String(nip); jeden require geocode.
+20. ✅ Kanary: /delete-preview guard (koniec kasowania kwartału), confirmAlbaran await.
+21. ✅ transactions rematch wymaga zgodnej kwoty (komis nie łapie cudzej FV).
+
+POZOSTAJE (⚠️/⬜ powyżej, jeszcze nie ruszone): emails draft attachments/HTML już ✅
+wcześniej; do zrobienia m.in.: poller rescan wpuszcza spam (⚠️), UIDVALIDITY,
+payments/match paid-przed-iFirmą (⚠️), confirm-lock release/claimed (⚠️),
+cena brutto-jako-netto + backfill (⚠️), N+1 w contractors GET/search (perf),
+duplikat confirm/confirm-latest → issueFromPreview, stary /merge-contractors (⚠️).
