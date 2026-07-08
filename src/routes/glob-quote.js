@@ -1255,6 +1255,14 @@ router.post('/glob/order', async (req, res) => {
     const cExtras = (contractorForReceiver && typeof contractorForReceiver.extras === 'object' && contractorForReceiver.extras) || {};
     const cBilling = cExtras.billingAddress || {};
     const cGkData = cExtras.globKurierReceiverData || {};
+    // Poprzednie wysyłki tego kontrahenta (backfill z GK → extras.locations[]).
+    // To jest źródło "weź z poprzednich wysyłek": gdy w bieżącym zamówieniu
+    // czegoś brakuje (albo dane są nieprawidłowe, np. zły telefon), sięgamy
+    // po ostatnią użytą lokację. Sortujemy malejąco po addedAt (najświeższa).
+    const cLocations = (Array.isArray(cExtras.locations) ? cExtras.locations : []).filter(Boolean);
+    const prevLocs = cLocations.slice().sort((a, b) =>
+      String(b && b.addedAt || '').localeCompare(String(a && a.addedAt || '')));
+    const prevLoc = prevLocs[0] || {};
 
     const senderName = trimName(senderExtras.name || sender.companyName || sender.name || 'Surf Stick Bell');
     const senderStreet = senderExtras.street || sender.street || '';
@@ -1264,12 +1272,11 @@ router.post('/glob/order', async (req, res) => {
     const senderPhone = senderExtras.phone || sender.phone || DEFAULT_SENDER_PHONE;
     const senderEmail = senderExtras.email || sender.email || DEFAULT_SENDER_EMAIL;
 
-    const receiverName = sanitizeGkText(trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || 'Receiver'));
-    const receiverStreet = sanitizeGkText(receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || '');
-    const receiverHouse = sanitizeGkText(receiver.houseNumber || cGkData.houseNumber || '');
-    const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || '';
-    const receiverCity = sanitizeGkText(receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || '');
-    const receiverPhone = receiver.phone || cGkData.phone || (contractorForReceiver && contractorForReceiver.phone) || DEFAULT_RECEIVER_PHONE;
+    const receiverName = sanitizeGkText(trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || prevLoc.name || 'Receiver'));
+    const receiverStreet = sanitizeGkText(receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || prevLoc.street || '');
+    const receiverHouse = sanitizeGkText(receiver.houseNumber || cGkData.houseNumber || prevLoc.houseNumber || '');
+    const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || prevLoc.postCode || '';
+    const receiverCity = sanitizeGkText(receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || prevLoc.city || '');
     // Mail odbiorcy: sprawdz primaryEmail i ContractorContact (CRM v2), nie tylko
     // plaskie .email — inaczej maile z auto-importu/backfillu "znikaja" i wpada
     // DEFAULT (nasz delivery@), przez co tracking idzie sam do siebie.
@@ -1291,7 +1298,7 @@ router.post('/glob/order', async (req, res) => {
         } catch (_) {}
       }
     }
-    const receiverEmail = receiver.email || cGkData.email || contractorBestEmail || DEFAULT_RECEIVER_EMAIL;
+    const receiverEmail = receiver.email || cGkData.email || contractorBestEmail || prevLoc.email || DEFAULT_RECEIVER_EMAIL;
 
     // Mapowanie ISO-2 → numeryczny kod telefoniczny (subset E.164). Używamy
     // do normalizacji telefonu odbiorcy gdy zaczyna się wiodącym '0' a kraj
@@ -1303,19 +1310,51 @@ router.post('/glob/order', async (req, res) => {
       SI: '386', LT: '370', LV: '371', EE: '372', GR: '30', CY: '357', MT: '356',
       LU: '352', CH: '41', AE: '971',
     };
-    function sanitizePhone(phone, countryIso, fallback) {
-      if (!phone) return fallback;
-      let cleaned = String(phone).replace(/[^\d+]/g, '');
-      if (cleaned.length < 7 || /^0+$/.test(cleaned)) return fallback;
-      // Wiodące '0' w numerze lokalnym + non-PL kraj → konwersja na E.164.
-      // Np. DE '01725788429' → '+491725788429'.
-      if (cleaned.startsWith('0') && !cleaned.startsWith('00') && countryIso && countryIso !== 'PL') {
-        const dial = PHONE_DIAL_CODES[countryIso];
-        if (dial) cleaned = '+' + dial + cleaned.slice(1);
+    // Normalizuje numer do E.164 względem kraju odbiorcy. GK wymaga pełnego
+    // formatu międzynarodowego (+49..., +33...) — lokalny '0...' albo sam
+    // numer krajowy bez kierunkowego jest odrzucany dla DE/FR/IT itd.
+    function normalizePhoneE164(phone, countryIso) {
+      if (!phone) return null;
+      // usuń wszystko poza cyframi/plusem, zostaw tylko wiodący '+'
+      let cleaned = String(phone).replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+      if (!cleaned) return null;
+      const dial = countryIso ? PHONE_DIAL_CODES[countryIso] : null;
+      if (cleaned.startsWith('00')) {
+        cleaned = '+' + cleaned.slice(2);
+      } else if (cleaned.startsWith('0')) {
+        // lokalny numer krajowy — podmień trunk '0' na +kierunkowy
+        if (dial) cleaned = '+' + dial + cleaned.replace(/^0+/, '');
+      } else if (!cleaned.startsWith('+')) {
+        // sam numer krajowy bez '+': dołóż kierunkowy (chyba że już go zawiera)
+        if (dial && cleaned.startsWith(dial)) cleaned = '+' + cleaned;
+        else if (dial) cleaned = '+' + dial + cleaned;
+        else cleaned = '+' + cleaned;
       }
-      // '00...' (international prefix) → '+...'
-      if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
-      return cleaned;
+      return cleaned.startsWith('+') ? cleaned : null;
+    }
+    // Czy numer jest wiarygodny dla kraju odbiorcy: E.164, właściwy kierunkowy,
+    // sensowna długość. Odrzuca śmieci typu '+688734123' (688 nie jest
+    // kierunkowym DE/FR/IT) → dzięki temu przechodzimy do kolejnego kandydata.
+    function isPlausibleE164(phone, countryIso) {
+      if (!phone || phone[0] !== '+') return false;
+      const digits = phone.slice(1);
+      if (!/^\d{8,15}$/.test(digits)) return false;
+      const dial = countryIso ? PHONE_DIAL_CODES[countryIso] : null;
+      if (dial) {
+        if (!digits.startsWith(dial)) return false;
+        if (digits.length - dial.length < 5) return false;
+      }
+      return true;
+    }
+    // Wybiera pierwszy wiarygodny numer z listy kandydatów (bieżący →
+    // GK-data → kontrahent → poprzednie wysyłki). Fallback: nasz numer PL,
+    // który GK zawsze akceptuje.
+    function pickReceiverPhone(candidates, countryIso) {
+      for (const cand of candidates) {
+        const norm = normalizePhoneE164(cand, countryIso);
+        if (isPlausibleE164(norm, countryIso)) return norm;
+      }
+      return DEFAULT_SENDER_PHONE;
     }
     // GK odrzuca w polach name/street znaki specjalne: / , ; ( ) [ ] & % + " "
     // Zamieniamy '/' na '-' (najczęstszy case: 'Surfstylefever / Stefan' →
@@ -1324,8 +1363,16 @@ router.post('/glob/order', async (req, res) => {
       if (!s) return s;
       return String(s).replace(/\s*\/\s*/g, ' - ').replace(/[,;()\[\]&%+"”""]/g, '').trim();
     }
-    const cleanReceiverPhone = sanitizePhone(receiverPhone, receiver.country, DEFAULT_SENDER_PHONE);
-    const cleanSenderPhone = sanitizePhone(senderPhone, sender.country, DEFAULT_SENDER_PHONE);
+    const cleanReceiverPhone = pickReceiverPhone([
+      receiver.phone,
+      cGkData.phone,
+      contractorForReceiver && contractorForReceiver.phone,
+      ...prevLocs.map(l => l && l.phone),
+    ], receiver.country);
+    const cleanSenderPhone = (() => {
+      const norm = normalizePhoneE164(senderPhone, sender.country);
+      return isPlausibleE164(norm, sender.country) ? norm : DEFAULT_SENDER_PHONE;
+    })();
     const cleanReceiverHouse = receiverHouse || (receiverStreet ? '1' : '1');
 
     const orderPayload = {
@@ -1385,7 +1432,7 @@ router.post('/glob/order', async (req, res) => {
         if (field.includes('pickup') && /nie jest możliwe|niemożliw/i.test(msg)) {
           problems.push('Brak dostępnych terminów odbioru dla tego kuriera. Spróbuj innego (np. DPD zamiast InPost).');
         } else if (fieldLow.includes('phone')) {
-          problems.push(`Telefon ${who || 'odbiorcy'} (${receiverPhone}) odrzucony przez GK: "${msg}". DE/FR/IT wymagają E.164 (+49.../+33...). Sprawdź lub podaj prawidłowy numer.`);
+          problems.push(`Telefon ${who || 'odbiorcy'} (${who === 'nadawcy' ? cleanSenderPhone : cleanReceiverPhone}) odrzucony przez GK: "${msg}". DE/FR/IT wymagają E.164 (+49.../+33...). Sprawdź lub podaj prawidłowy numer.`);
         } else if (fieldLow.includes('street') || fieldLow.includes('housenumber') || fieldLow.includes('address')) {
           problems.push(`Adres ${who || 'odbiorcy'} odrzucony: "${msg}". Sprawdź ulicę/numer domu (bez znaków specjalnych jak / , ; & % + ( ) [ ]).`);
         } else if (fieldLow.includes('email')) {
