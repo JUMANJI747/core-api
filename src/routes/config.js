@@ -297,7 +297,12 @@ router.post('/confirm-latest', async (req, res) => {
     if (agentCtx && agentCtx.data && agentCtx.data.lastAction === 'preview') {
       const ts = agentCtx.data.timestamp;
       if (ts && (now - ts) < thirtyMin) {
-        invoiceTimestamp = ts;
+        // Guard: podgląd bywa oznaczony 'preview' mimo że FV już wystawiono
+        // (race zapisów agentContext / ścieżka bez zapisu 'confirmed'). Zanim
+        // uznamy to za pending, sprawdź czy FV dla tego kontrahenta już powstała.
+        const { invoicePreviewAlreadyIssued } = require('../services/pending-preview');
+        const issued = await invoicePreviewAlreadyIssued(prisma, agentCtx.data);
+        if (!issued) invoiceTimestamp = ts;
       }
     }
 

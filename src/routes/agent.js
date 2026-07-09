@@ -324,14 +324,20 @@ router.post('/agent/resolve-confirmation', asyncHandler(async (req, res) => {
     const acct = await prisma.agentContext.findUnique({ where: { id: 'ksiegowosc' } });
     const d = acct && acct.data;
     if (d && d.lastAction === 'preview' && d.timestamp && Date.now() - d.timestamp < 30 * 60 * 1000) {
-      candidates.push({
-        action: 'issue_invoice',
-        ts: new Date(d.timestamp),
-        previewId: d.previewId || null,
-        contractor: d.contractor || null,
-        suma: d.suma || null,
-        waluta: d.waluta || null,
-      });
+      // Guard: nie proponuj wystawienia FV, która już powstała (race zapisów
+      // agentContext / ścieżka confirm bez zapisu 'confirmed').
+      const { invoicePreviewAlreadyIssued } = require('../services/pending-preview');
+      const alreadyIssued = await invoicePreviewAlreadyIssued(prisma, d);
+      if (!alreadyIssued) {
+        candidates.push({
+          action: 'issue_invoice',
+          ts: new Date(d.timestamp),
+          previewId: d.previewId || null,
+          contractor: d.contractor || null,
+          suma: d.suma || null,
+          waluta: d.waluta || null,
+        });
+      }
     }
   } catch (e) { console.error('[resolve-confirmation] preview probe error:', e.message); }
 

@@ -1318,6 +1318,13 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
 
     invoicePreviews.delete(previewId);
     if (lockedId) _confirmedPreviews.set(lockedId, { invoiceNumber: pelnyNumer, invoiceId: invoice.id, ifirmaId, at: Date.now() });
+    // Zamknij podgląd w agentContext (jak confirm-latest) — inaczej lastAction
+    // zostaje 'preview' i bot pyta „potwierdź FV", choć właśnie ją wystawił.
+    await prisma.agentContext.upsert({
+      where: { id: 'ksiegowosc' },
+      update: { data: { lastAction: 'confirmed', invoiceNumber: pelnyNumer, invoiceId: invoice.id, contractor: { name: contractor.name }, timestamp: Date.now() } },
+      create: { id: 'ksiegowosc', data: { lastAction: 'confirmed', invoiceNumber: pelnyNumer, invoiceId: invoice.id, contractor: { name: contractor.name }, timestamp: Date.now() } },
+    }).catch(e => console.error('[invoice-confirm] AgentContext save error:', e.message));
     res.json({ ok: true, invoiceNumber: pelnyNumer, invoiceId: invoice.id, pdfSent });
   } catch (e) {
     if (confirmKey && !issued) {
