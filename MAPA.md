@@ -42,7 +42,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/jpk` | `routes/jpk.js` | JPK + dopasowanie WDT (`performWdtMatching`) |
 | `/api/jpk` | `routes/jpk-package.js` | paczka WDT/eksport (CMR) — build/send do księgowej |
 | `/api` | `routes/parse-document.js` | parsowanie dokumentów |
-| `/api` | `routes/analytics.js` | analityka sprzedaży |
+| `/api` | `routes/analytics.js` | analityka sprzedaży (`/revenue` zwraca też `paid` per bucket = zapłacona część obrotu: PL SUM paidAmount/status, ES totalPayedAmount/status) |
 | `/api` | `routes/glob.js` → `glob-sync`, `glob-orders`, `glob-quote` | **GlobKurier**: senders, orders, **quote**, **order**, send-label, delete-order, presets, calculate-package |
 | `/api` | `routes/agent.js` | **agenci AI**: /agent/{logistics,accounting,accounting-es,communication,communication-es,operations,sudo}, /agent/assistant (router Haiku), /agent/email-context |
 | `/api` | `routes/upload.js` | upload plików |

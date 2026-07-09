@@ -369,6 +369,8 @@ router.get('/analytics/revenue', async (req, res) => {
           to_char(date_trunc(${trunc}, "issueDate"), 'YYYY-MM-DD')      AS period,
           currency,
           SUM("grossAmount")::text                                      AS amount,
+          SUM(CASE WHEN status IN ('paid','payed') THEN "grossAmount"
+                   ELSE LEAST(COALESCE("paidAmount",0), "grossAmount") END)::text AS paid,
           COUNT(*)::int                                                 AS invoice_count
         FROM "Invoice"
         WHERE "issueDate" BETWEEN ${from} AND ${to}
@@ -393,6 +395,7 @@ router.get('/analytics/revenue', async (req, res) => {
             to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')   AS period,
             currency,
             SUM("totalGross")::text                                      AS amount,
+            COALESCE(SUM("totalGross" * COALESCE((SELECT CASE WHEN inv.status = 'Payed' THEN 1 ELSE COALESCE(inv."totalPayedAmount" / NULLIF(inv."totalAmount", 0), 0) END FROM "EsInvoice" inv WHERE inv.id = "EsInvoiceLineItem"."esInvoiceId"), 0)), 0)::text AS paid,
             COUNT(DISTINCT "esInvoiceId")::int                           AS invoice_count
           FROM "EsInvoiceLineItem"
           WHERE "invoiceDate" BETWEEN ${from} AND ${to}
@@ -414,6 +417,8 @@ router.get('/analytics/revenue', async (req, res) => {
             to_char(date_trunc(${trunc}, "invoiceDate"), 'YYYY-MM-DD')    AS period,
             currency,
             SUM("totalAmount")::text                                      AS amount,
+            SUM(CASE WHEN status = 'Payed' THEN COALESCE("totalAmount",0)
+                     ELSE LEAST(COALESCE("totalPayedAmount",0), COALESCE("totalAmount",0)) END)::text AS paid,
             COUNT(*)::int                                                 AS invoice_count
           FROM "EsInvoice"
           WHERE "invoiceDate" BETWEEN ${from} AND ${to}
