@@ -75,7 +75,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 ### Odbiór maili
 - `inbox-poller.js` — IMAP co 5 min: filtry (spam/bounce/newsletter), klasyfikacja AI (Haiku), zapis Email + załączniki, **powiadomienie Telegram**; ścieżki specjalne: **web-order** (`isWebOrder`) i **attachment-order** (PDF → `order-llm-parser.js` → „📋 ZAMÓWIENIE Z ZAŁĄCZNIKA"). Health-alert skrzynki.
 - `imap-sent.js` — skan folderu Wysłane.
-- `order-llm-parser.js` — LLM parser zamówień z tekstu PDF (model `ORDER_PARSER_MODEL`).
+- `order-llm-parser.js` — LLM parser zamówień z tekstu PDF (model `ORDER_PARSER_MODEL`). Dostaje NASZ katalog (`getActiveCatalog`) i mapuje pozycje na nasze produkty (zwraca nasz ean+nazwę, nie łączy dwóch produktów w jedną pozycję). `parse-order` dodatkowo domyka każdą pozycję przez `findProductFuzzy` (koszyk = nasze nazwy+EAN jak z guzików).
 
 ### Stany podglądów (in-memory, TTL 30 min)
 - `stores.js` — podglądy FV PL (`invoicePreviews`). `es-stores.js` — podglądy FV/WZ ES.

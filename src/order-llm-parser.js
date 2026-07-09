@@ -27,12 +27,19 @@ function httpsPost(url, headers, body) {
   });
 }
 
-async function parseOrderWithLLM(text, contractorName) {
+async function parseOrderWithLLM(text, contractorName, catalog) {
   const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
   if (!apiKey) {
     console.log('[order-llm] ANTHROPIC_API_KEY not set');
     return null;
   }
+
+  // Lista NASZYCH produktów (ean | nazwa wariant) — model ma mapować pozycje
+  // zamówienia na nasz katalog (jak klikanie naszych guzików), a nie przepisywać
+  // nazwy z zamówienia. Bez tego preview zwracał "product not found".
+  const catalogText = Array.isArray(catalog) && catalog.length
+    ? catalog.map(p => `- ${p.ean} | ${[p.name, p.variant].filter(Boolean).join(' ')}`).join('\n')
+    : '';
 
   const prompt = `Przeanalizuj tekst dokumentu i wyciągnij dane zamówienia.
 
@@ -42,9 +49,9 @@ Zwróć TYLKO czysty JSON (bez markdown, bez komentarzy):
   "orderNumber": "numer zamówienia lub null",
   "items": [
     {
-      "name": "pełna nazwa produktu",
+      "name": "NASZA nazwa z katalogu (nazwa + wariant), NIE nazwa z zamówienia",
+      "ean": "EAN z NASZEGO katalogu (dokładnie jak niżej) lub null gdy brak dopasowania",
       "qty": liczba_sztuk,
-      "ean": "kod EAN 13 cyfr lub null",
       "priceNetto": cena_jednostkowa_netto_lub_null,
       "totalNetto": wartosc_netto_pozycji_lub_null,
       "totalBrutto": wartosc_brutto_pozycji_lub_null
@@ -59,7 +66,14 @@ Zwróć TYLKO czysty JSON (bez markdown, bez komentarzy):
   "notes": "uwagi, termin realizacji itp. lub null"
 }
 
-Produkty SurfStickBell rozpoznaj jako: Surf Stick (kolory: Blue/Pink/Purple/Mint/White/Skin), Surf Girl Mascara (kolory: Blue/Mint/Pink/Black), Surf Gel, Surf Daily, Surf Care, Surf Lip Balm.
+WAŻNE — mapuj na NASZ katalog (tak jakbyś klikał nasze guziki, NIE przepisuj nazw z zamówienia):
+- Każdą pozycję zamówienia dopasuj do DOKŁADNIE JEDNEGO produktu z katalogu poniżej — po znaczeniu/kolorze/typie, nie po dosłownej nazwie (np. "Surf Extreme Waterproof Gel" → nasz Surf Gel; "Lip Balm SPF 50" → nasz Surf Lip Balm; kolory sticków/mascary dopasuj do wariantu).
+- Zwróć NASZ "ean" i NASZĄ nazwę z katalogu (nazwa + wariant).
+- NIGDY nie łącz dwóch różnych produktów w jedną pozycję. "X & Y", "X + Y", "X i Y" to DWIE osobne pozycje.
+- Ilości i ceny bierz z zamówienia. Jeśli pozycji NIE da się dopasować do katalogu — ustaw ean=null i zostaw oryginalną nazwę (użytkownik poprawi ręcznie).
+
+NASZ KATALOG (ean | nazwa wariant):
+${catalogText || '(katalog niedostępny — rozpoznaj: Surf Stick Blue/Pink/Purple/Mint/White/Skin, Surf Girl Mascara Blue/Mint/Pink/Black, Surf Gel, Surf Daily, Surf Care, Surf Lip Balm)'}
 
 Jeśli dokument NIE jest zamówieniem — zwróć {"isOrder": false}.
 

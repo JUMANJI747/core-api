@@ -2980,20 +2980,41 @@ router.post('/invoices/:id/suggest-shipments', async (req, res) => {
 // Rozbij wklejone zamówienie (dowolny format) na pozycje + ceny (Sonnet) — dla
 // pola „Wklej zamówienie" w formularzu FV (jak w Telegramie). body: {text, contractorName?}
 router.post('/invoices/parse-order', async (req, res) => {
+  const prisma = req.app.locals.prisma;
   try {
     const { text, contractorName } = req.body || {};
     if (!text || !String(text).trim()) return res.status(400).json({ ok: false, error: 'Brak tekstu zamówienia.' });
     const { parseOrderWithLLM } = require('../order-llm-parser');
-    const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), contractorName);
+    // Katalog do LLM (mapowanie na nasze produkty) i do post-dopasowania.
+    const catalog = await getActiveCatalog(prisma).catch(() => []);
+    const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), contractorName, catalog);
+
+    // Sieć bezpieczeństwa: model bywa niedokładny, więc KAŻDĄ pozycję domykamy
+    // przez ten sam matcher co /invoice-preview (findProductFuzzy). Cel: koszyk
+    // ma NASZĄ nazwę + EAN (tak jak z guzików), a nie nazwę z zamówienia —
+    // inaczej preview leci "product not found".
+    const unmatched = [];
     const items = (parsed && Array.isArray(parsed.items) ? parsed.items : [])
       .filter(i => i && i.name && Number(i.qty) > 0)
-      .map(i => ({
-        name: String(i.name).slice(0, 120),
-        qty: Number(i.qty),
-        ean: i.ean || undefined,
-        priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined,
-      }));
-    res.json({ ok: true, items, note: items.length ? undefined : 'Nie rozpoznałem pozycji — sprawdź tekst albo dodaj ręcznie.' });
+      .map(i => {
+        let product = i.ean ? catalog.find(p => p.ean === i.ean) : null;
+        if (!product) {
+          const query = [i.name, i.variant, i.color].filter(Boolean).join(' ');
+          product = findProductFuzzy(catalog, query);
+        }
+        if (!product) unmatched.push(String(i.name).slice(0, 60));
+        return {
+          name: product ? [product.name, product.variant].filter(Boolean).join(' ') : String(i.name).slice(0, 120),
+          qty: Number(i.qty),
+          ean: product ? product.ean : undefined,
+          matched: !!product,
+          priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined,
+        };
+      });
+    const note = !items.length
+      ? 'Nie rozpoznałem pozycji — sprawdź tekst albo dodaj ręcznie.'
+      : (unmatched.length ? `Nie dopasowałem do katalogu: ${unmatched.join(', ')} — popraw ręcznie w koszyku.` : undefined);
+    res.json({ ok: true, items, note });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
