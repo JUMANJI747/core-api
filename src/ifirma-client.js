@@ -518,15 +518,24 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     return { StawkaVat: 0.23, TypStawkiVat: 'PRC', ...base };
   });
 
+  // Kraj na fakturze KRAJOWEJ: domyślnie 'Polska', ALE dla ZAGRANICZNEGO
+  // kontrahenta (np. duński klient „Nordsøen ApS" fakturowany w PLN z VAT 23%)
+  // musimy podać jego kraj — inaczej iFirma waliduje kod pocztowy jako polski
+  // ("Wartość pola 'Kod pocztowy' jest niepoprawna dla Polski"). WDT bez zmian.
+  const { toIfirmaKraj } = require('./services/country-helper');
+  const _krajKrajowa = toIfirmaKraj(_country); // 'Polska' gdy PL/pusty
+  if (!isWdt && _krajKrajowa !== 'Polska') {
+    console.log(`[ifirma] FV krajowa dla zagranicznego kontrahenta → Kraj='${_krajKrajowa}' (kod ${_kod})`);
+  }
   const Kontrahent = {
     Nazwa: kontrahent.name,
     ...(_nip ? { NIP: _nip } : {}),
     ...(_ulica ? { Ulica: _ulica } : {}),
     ...(_kod ? { KodPocztowy: _kod } : {}),
     ...(_miasto ? { Miejscowosc: _miasto } : {}),
-    // fakturakraj (tez w EUR) trzyma Kraj 'Polska' — bezpieczne dla iFirmy.
-    // Tylko WDT (osobny endpoint) uzywa prawdziwego kraju kontrahenta.
-    Kraj: isWdt ? (_country || '') : 'Polska',
+    // WDT (osobny endpoint) — prawdziwy kraj (ISO). Krajowa — polska nazwa kraju
+    // dla zagranicznego kontrahenta, inaczej 'Polska'.
+    Kraj: isWdt ? (_country || '') : _krajKrajowa,
   };
 
   const body = {

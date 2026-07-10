@@ -166,13 +166,36 @@ function legalFormToCountry(name) {
   return null;
 }
 
+// ISO-2 → polska nazwa kraju (dla iFirma pole Kraj na fakturze krajowej dla
+// ZAGRANICZNEGO kontrahenta — iFirma wymaga nazwy kraju, inaczej waliduje kod
+// pocztowy jako polski).
+const ISO_TO_PL_NAME = {
+  PL: 'Polska', ES: 'Hiszpania', DE: 'Niemcy', FR: 'Francja', IT: 'Włochy',
+  NL: 'Holandia', PT: 'Portugalia', BE: 'Belgia', AT: 'Austria', DK: 'Dania',
+  SE: 'Szwecja', IE: 'Irlandia', CZ: 'Czechy', SK: 'Słowacja', HU: 'Węgry',
+  RO: 'Rumunia', BG: 'Bułgaria', HR: 'Chorwacja', SI: 'Słowenia', LT: 'Litwa',
+  LV: 'Łotwa', EE: 'Estonia', FI: 'Finlandia', CY: 'Cypr', MT: 'Malta',
+  LU: 'Luksemburg', GR: 'Grecja', NO: 'Norwegia', CH: 'Szwajcaria', GB: 'Wielka Brytania',
+};
+
+// Zwraca wartość pola iFirma "Kraj" dla ZAGRANICZNEGO kontrahenta (polska nazwa
+// kraju). Dla PL / pustego / nieznanego → 'Polska'. Przyjmuje ISO-2 albo nazwę.
+function toIfirmaKraj(country) {
+  const c = String(country || '').trim();
+  if (!c || /^(pl|polska|poland)$/i.test(c)) return 'Polska';
+  const iso = normalizeIso(c) || c.toUpperCase();
+  return ISO_TO_PL_NAME[iso] || c;
+}
+
 module.exports = {
   EU_VAT_PREFIXES,
   COUNTRY_NAME_TO_ISO,
+  ISO_TO_PL_NAME,
   LEGAL_FORM_TO_COUNTRY,
   EU_VAT_REGEX,
   normalizeIso,
   normalizeIsoLoose,
   nipPrefixToCountry,
   legalFormToCountry,
+  toIfirmaKraj,
 };

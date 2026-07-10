@@ -98,6 +98,18 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
     if (postCode) console.log(`[ifirma-payload] odzyskano adres dla NIP ${contractor.nip} (${contractor.name}): kod=${postCode} miasto=${city}`);
   }
 
+  // Gdy kraju brak w danych, a kontrahent jest ewidentnie zagraniczny — dobierz
+  // z prefiksu NIP UE (np. DK...) lub sufiksu formy prawnej (ApS → Dania).
+  // Potrzebne, by FV krajowa dla zagranicznego klienta (np. duński w PLN) miała
+  // poprawny Kraj i iFirma nie odrzuciła kodu pocztowego jako polskiego.
+  if (!country) {
+    try {
+      const { nipPrefixToCountry, legalFormToCountry } = require('./country-helper');
+      country = nipPrefixToCountry(contractor.nip) || legalFormToCountry(contractor.name) || '';
+      if (country) console.log(`[ifirma-payload] kraj dobrany z sygnału (NIP/forma prawna) dla ${contractor.name}: ${country}`);
+    } catch (_) { /* nieistotne */ }
+  }
+
   const ifirmaId = cExternalIds.ifirmaIdentifier
     || cExtras.ifirmaId
     || null;

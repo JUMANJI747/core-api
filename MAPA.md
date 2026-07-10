@@ -96,7 +96,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `sudo-agent.js` — administracyjny (call_endpoint).
 
 ### Faktury / księgowość
-- `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex.
+- `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex. Kraj: gdy pusty a kontrahent zagraniczny — dobiera z prefiksu NIP UE / formy prawnej (ApS→DK). Na FV **krajowej** dla zagranicznego klienta iFirma dostaje `Kraj`=polska nazwa (`country-helper.toIfirmaKraj`), inaczej odrzuca kod pocztowy jako polski.
 - `ifirma-sync.js`, `ifirma-pdf-parser.js` — sync i parsowanie PDF iFirma.
 - `monthly-accounting.js` — zakres miesiąca + `buildReport` (pokrycie KSeF + WDT sparowane/niesparowane).
 - `wdt-pairing.js` — **`pairWdtSmart`** (Opus): dopasowanie FV WDT↔wysyłki + weryfikacja kraju (`isToPoland`); **`suggestForInvoice`** — podpowiedzi LLM dla DOWOLNEJ faktury (parowanie „LLM" przy fakturze, bez reguły zagranicy).
