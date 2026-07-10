@@ -513,14 +513,26 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
 
     const derived = await deriveCountry(contractor);
     const effectiveCountry = derived.country || 'PL';
-    const waluta = effectiveCountry === 'PL' ? 'PLN' : 'EUR';
-    let rodzaj = waluta === 'EUR' ? 'wdt' : 'krajowa';
+    // Override waluty/rodzaju z „z ostatniej FV" (front wysyła currency+rodzaj
+    // z ostatniej faktury tego kontrahenta) — nowa FV ma być 1:1 jak poprzednia
+    // (ta sama waluta i ten sam typ: WDT 0% / krajowa VAT). Bez override — jak dotąd
+    // wyliczamy z kraju kontrahenta.
+    const overrideCurrency = ['PLN', 'EUR'].includes(String(req.body.currency || '').toUpperCase())
+      ? String(req.body.currency).toUpperCase() : null;
+    const overrideRodzaj = ['wdt', 'krajowa'].includes(String(req.body.rodzaj || '').toLowerCase())
+      ? String(req.body.rodzaj).toLowerCase() : null;
+    const waluta = overrideCurrency || (effectiveCountry === 'PL' ? 'PLN' : 'EUR');
+    let rodzaj = overrideRodzaj || (waluta === 'EUR' ? 'wdt' : 'krajowa');
+    if (overrideCurrency || overrideRodzaj) {
+      console.log(`[invoice-preview] override z ostatniej FV: waluta=${waluta} rodzaj=${rodzaj} dla ${contractor.name}`);
+    }
 
     // Per-kontrahent override: klient z UE bez aktywnego VIES (np. stowarzyszenie)
     // — na zyczenie usera wystawiamy NORMALNA FV z VAT 23% (krajowa), nie WDT 0%.
     // Flaga: contractor.extras.vatMode === 'domestic'. Waluta zostaje EUR.
+    // Pomijamy, gdy user JAWNIE narzucił rodzaj z ostatniej FV.
     const _cExtras = (typeof contractor.extras === 'object' && contractor.extras) ? contractor.extras : {};
-    if (_cExtras.vatMode === 'domestic' && rodzaj === 'wdt') {
+    if (!overrideRodzaj && _cExtras.vatMode === 'domestic' && rodzaj === 'wdt') {
       rodzaj = 'krajowa';
       console.log(`[invoice-preview] vatMode=domestic → wymuszam krajowa VAT 23% (waluta ${waluta}) dla ${contractor.name}`);
     }
@@ -2848,7 +2860,10 @@ router.get('/invoices/last-price', async (req, res) => {
       // Zwracamy cenę NETTO/szt (to wartość, którą wpisano przy wystawianiu —
       // dla 16 netto NIE zamieniamy na 19,68 brutto). isNetto=true → front wyśle
       // ją jako globalPriceNetto, więc nowa FV odtworzy tę samą pozycję.
-      return res.json({ ok: true, price: Number(li.unitPriceNetto), currency: cur, isNetto: true, invoiceNumber: inv.number });
+      // type (rodzaj: wdt/krajowa) → front dołoży do preview, żeby nowa FV miała
+      // tę samą walutę i ten sam VAT (WDT 0% / krajowa) co ostatnia.
+      const typ = ['wdt', 'krajowa'].includes(String(inv.type || '').toLowerCase()) ? String(inv.type).toLowerCase() : null;
+      return res.json({ ok: true, price: Number(li.unitPriceNetto), currency: cur, isNetto: true, type: typ, invoiceNumber: inv.number });
     }
     // fallback: zapamiętana cena na kontrahencie
     const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { extras: true } });
