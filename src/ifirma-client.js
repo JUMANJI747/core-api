@@ -562,18 +562,20 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     // (dwujezyczny PL/EN), tak jak WDT.
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() }
       : isEur ? { Jezyk: 'en' } : {}),
-    // Konto bankowe: faktury w EUR (WDT oraz krajowa-walutowa) -> konto EUR;
-    // krajowa w PLN -> konto zlotowkowe.
-    NumerKontaBankowego: (isWdt || isEur) ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
+    // Konto bankowe: faktury w EUR -> konto EUR; PLN (w tym WDT w złotówkach)
+    // -> konto złotówkowe.
+    NumerKontaBankowego: isEur ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',
     Kontrahent,
     Pozycje,
-    ...((isWdt || isEur) ? {
+    // Pole Waluta: dla EUR (WDT-EUR albo krajowa-walutowa) -> 'EUR' + kurs NBP.
+    // Dla WDT w PLN -> 'PLN' bez kursu (to waluta krajowa). Krajowa PLN -> bez pola.
+    ...(isEur ? {
       Waluta: 'EUR',
       KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: await fetchNbpRate(today),
       // fakturawaluta obsluguje 2 typy (WYSYLKOWA / KRAJOWA) — dla nas krajowa
       // z cena w walucie obcej. To pole jest WYMAGANE na tym endpoincie.
-      ...(isEur && !isWdt ? { KursWalutyWidoczny: true, TypSprzedazy: 'KRAJOWA' } : {}),
-    } : {}),
+      ...(!isWdt ? { KursWalutyWidoczny: true, TypSprzedazy: 'KRAJOWA' } : {}),
+    } : (isWdt ? { Waluta: 'PLN' } : {})),
   };
 
   const postOnce = async () => {

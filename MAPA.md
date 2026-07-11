@@ -38,7 +38,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/mailing` | `routes/mailing.js` | kampanie mailingowe |
 | `/api/products` | `routes/products.js` | produkty (katalog PL) |
 | `/api` | `routes/config.js` | Config (klucze konfiguracyjne w DB) |
-| `/api` | `routes/invoices.js` | **FV PL (iFirma)**: invoice-preview / invoice-confirm(-latest), pay, ksef-status, shipment-doc, last-price (zwraca cenę+walutę+typ z ostatniej FV; preview przyjmuje override `currency`/`rodzaj` → nowa FV 1:1 jak ostatnia: PLN/EUR + WDT 0%/krajowa), link/unlink-shipment, **invoice-draft-from-email** (prefill formularza FV z maila), **parse-order** (rozbij wklejone zamówienie na pozycje+ceny, Sonnet), **fix-unknown-numbers** (nadrób numery FV zapisane jako UNKNOWN), cache zamówień GK |
+| `/api` | `routes/invoices.js` | **FV PL (iFirma)**: invoice-preview / invoice-confirm(-latest), pay, ksef-status, shipment-doc, last-price (zwraca cenę+walutę+typ z ostatniej FV; preview przyjmuje override `currency`/`rodzaj` → dowolna forma FV, w tym **WDT w złotówkach** — `ifirma-client.createInvoice` przy WDT-PLN idzie na fakturawdt.json z Walutą PLN, konto PLN, VAT 0% NP), link/unlink-shipment, **invoice-draft-from-email** (prefill formularza FV z maila), **parse-order** (rozbij wklejone zamówienie na pozycje+ceny, Sonnet), **fix-unknown-numbers** (nadrób numery FV zapisane jako UNKNOWN), cache zamówień GK |
 | `/api/jpk` | `routes/jpk.js` | JPK + dopasowanie WDT (`performWdtMatching`) |
 | `/api/jpk` | `routes/jpk-package.js` | paczka WDT/eksport (CMR) — build/send do księgowej |
 | `/api` | `routes/parse-document.js` | parsowanie dokumentów |
