@@ -62,7 +62,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 
 ## 3. Klienci zewnętrznych API (`src/*.js`)
 
-- `ifirma-client.js` — iFirma (HMAC). `createInvoice`, `upsertContractor`, `registerPayment` (Opłacono), pobranie listy FV i PDF.
+- `ifirma-client.js` — iFirma (HMAC). `createInvoice` (WDT też w PLN), `upsertContractor` (**rozdziela prefiks UE od NIP → PrefiksUE + NIP osobno**, inaczej KSeF odrzuca zagraniczne; `country-helper.splitEuVat`), `registerPayment` (Opłacono), pobranie listy FV i PDF.
 - `contasimple-client.js` — Contasimple (ES): faktury, WZ, formaty numeracji.
 - `glob-client.js` — GlobKurier: getQuote, getOrders, createOrder, labels, receivers, countries, pickupTimeRanges.
 - `ksef-client.js` — KSeF (token RO): pobieranie faktur sprzedaż (Subject1) / koszty (Subject2).

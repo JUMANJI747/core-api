@@ -369,11 +369,16 @@ async function upsertContractor({ name, nip, address, postCode, city, country, e
     }
   }
 
+  // Rozdziel prefiks UE od numeru — iFirma wymaga OSOBNO (pole PrefiksUE + NIP),
+  // inaczej KSeF odrzuca faktury zagraniczne (prefiks wpisany razem z NIP).
+  const { splitEuVat } = require('./services/country-helper');
+  const { prefix: uePrefix, number: nipNumber } = splitEuVat(nip);
+
   const body = {
     Nazwa: (name || (existing && existing.Nazwa) || '').slice(0, 100),
     Identyfikator: null,
-    PrefiksUE: (existing && existing.PrefiksUE) || null,
-    NIP: String(nip),
+    PrefiksUE: uePrefix || (existing && existing.PrefiksUE) || null,
+    NIP: nipNumber || String(nip),
     Ulica: address || (existing && existing.Ulica) || '',
     KodPocztowy: postCode || (existing && existing.KodPocztowy) || '',
     Kraj: country || (existing && existing.Kraj) || 'Polska',

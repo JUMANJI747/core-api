@@ -187,6 +187,18 @@ function toIfirmaKraj(country) {
   return ISO_TO_PL_NAME[iso] || c;
 }
 
+// Rozdziela NIP UE na { prefix, number }. iFirma wymaga OSOBNO prefiksu UE
+// (pole PrefiksUE) i samego numeru (pole NIP) — inaczej KSeF odrzuca faktury
+// zagraniczne. "ESG75117341" → { prefix:'ES', number:'G75117341' }.
+// PL / bez prefiksu → { prefix:null, number:cyfry }.
+function splitEuVat(nip) {
+  const raw = String(nip || '').replace(/[\s-]/g, '').toUpperCase();
+  const m = raw.match(/^([A-Z]{2})([0-9A-Z].*)$/);
+  if (m && EU_VAT_PREFIXES.has(m[1])) return { prefix: m[1], number: m[2] };
+  if (/^PL\d/.test(raw)) return { prefix: null, number: raw.slice(2) }; // krajowy — bez prefiksu
+  return { prefix: null, number: raw };
+}
+
 module.exports = {
   EU_VAT_PREFIXES,
   COUNTRY_NAME_TO_ISO,
@@ -198,4 +210,5 @@ module.exports = {
   nipPrefixToCountry,
   legalFormToCountry,
   toIfirmaKraj,
+  splitEuVat,
 };
