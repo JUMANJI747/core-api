@@ -115,6 +115,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 
 ### Logistyka / wysyłki
 - `tracking-notify.js`, `tracking-urls.js` — powiadomienia trackingu do klienta.
+- `label-tracking.js` — **`extractTrackingFromLabel(hash)`**: numer kuriera z PDF etykiety GK (gdy API GK jeszcze go nie zwraca, a list już jest). Używane w `glob-quote` (post-order draft) i `emails.js send-tracking-email` (fallback przed „no carrier tracking number").
 - `auto-pair-shipments.js` — **auto-parowanie FV↔wysyłka po TOŻSAMOŚCI kontrahenta** (dokładna nazwa / zapisany adres kod+miasto) + data ±7 dni; zapisuje jawny link (fire-and-forget z GET /invoices i /glob/orders).
 - `transaction-tracker.js` — `trackInvoice`/`trackShipment` (deal cycle).
 - `shipping-backfill-from-gk.js`, `match-shipments-by-query.js`.

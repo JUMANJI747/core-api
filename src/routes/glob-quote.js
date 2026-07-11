@@ -1835,28 +1835,13 @@ router.post('/glob/order', async (req, res) => {
               }
             }
 
-            // 2) PDF labels fallback
+            // 2) PDF labels fallback (wspólny helper — używa go też send-tracking-email)
             if (!trackingNumber && orderHash) {
-              try {
-                const labelResp = await getOrderLabels(orderHash, 'A4');
-                if (labelResp && labelResp.body && labelResp.body.length > 100) {
-                  const { PDFParse } = require('pdf-parse');
-                  const parser = new PDFParse({ data: labelResp.body });
-                  const parsed = await parser.getText();
-                  const labelText = (parsed.text || '').replace(/\s+/g, ' ');
-                  const candidates = labelText.match(/\b(?!GK\d+|26\d{6,8}\b)([A-Z0-9]{10,30})\b/g) || [];
-                  const tracking = candidates
-                    .filter(c => !/^GK/.test(c))
-                    .filter(c => !/^(26|25|24|23|22|21|20)\d{6,8}$/.test(c))
-                    .filter(c => /\d/.test(c))
-                    .sort((a, b) => b.length - a.length)[0];
-                  if (tracking) {
-                    trackingNumber = tracking;
-                    console.log(`[glob/order] tracking z PDF labels: ${trackingNumber}`);
-                  }
-                }
-              } catch (e) {
-                console.log('[glob/order] PDF tracking extract failed (fallback do polling):', e.message);
+              const { extractTrackingFromLabel } = require('../services/label-tracking');
+              const fromLabel = await extractTrackingFromLabel(orderHash);
+              if (fromLabel) {
+                trackingNumber = fromLabel;
+                console.log(`[glob/order] tracking z PDF labels: ${trackingNumber}`);
               }
             }
 

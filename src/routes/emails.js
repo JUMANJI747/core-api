@@ -1889,6 +1889,18 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
             console.error(`[send-tracking-email] getOrderTracking proba ${i + 1} failed:`, e.message);
           }
         }
+        // Fallback: numer kuriera bywa już NA ETYKIECIE (liście przewozowym),
+        // zanim GK API zacznie go zwracać — parsujemy PDF etykiety (jak w
+        // glob/order). Bez tego "tracking-send blocked: no carrier tracking
+        // number", choć list z numerem da się pobrać.
+        if (!trackingNumber && shipment.hash) {
+          const { extractTrackingFromLabel } = require('../services/label-tracking');
+          const fromLabel = await extractTrackingFromLabel(shipment.hash);
+          if (fromLabel) {
+            trackingNumber = fromLabel;
+            console.log(`[send-tracking-email] tracking z PDF etykiety: ${trackingNumber}`);
+          }
+        }
         // Świeży number z GK — zapisz trwale do Transaction, by kolejne
         // wywolania mialy go od reki.
         if (trackingNumber) {
