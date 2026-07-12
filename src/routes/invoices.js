@@ -344,7 +344,10 @@ function findProductFuzzy(catalog, query) {
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
-  const q = normalize(query);
+  // Dopiski w nawiasach ("(wariant nieznany)", "(unknown variant)") wywalały
+  // dopasowanie — reguła 3 wymaga WSZYSTKICH słów w nazwie produktu. Usuwamy
+  // zawartość nawiasów: "Surf Stick (wariant nieznany)" → "Surf Stick" → generic.
+  const q = normalize(String(query).replace(/\([^)]*\)/g, ' '));
   if (!q) return null;
 
   // 0. EAN match — case-insensitive, with/without hyphens (e.g. "stick generic" → "STICK-GENERIC")
@@ -2925,11 +2928,25 @@ router.post('/invoice-draft-from-email', async (req, res) => {
     if (text && String(text).trim()) {
       try {
         const { parseOrderWithLLM } = require('../order-llm-parser');
-        const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), (contractor && contractor.name) || contractorName);
+        // Katalog do LLM + fuzzy-domknięcie KAŻDEJ pozycji (jak w parse-order):
+        // koszyk ma dostać NASZĄ nazwę+EAN. Bez tego LLM zwracał np.
+        // "Surf Stick (wariant nieznany)" i preview waliło 404 — a "Surf Stick"
+        // bez koloru powinien iść jako generic (Dowolny).
+        const catalog = await getActiveCatalog(prisma).catch(() => []);
+        const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), (contractor && contractor.name) || contractorName, catalog);
         if (parsed && Array.isArray(parsed.items)) {
           items = parsed.items
             .filter(i => i && i.name && Number(i.qty) > 0)
-            .map(i => ({ name: String(i.name).slice(0, 120), qty: Number(i.qty), ean: i.ean || undefined, priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined }));
+            .map(i => {
+              let product = i.ean ? catalog.find(p => p.ean === i.ean) : null;
+              if (!product) product = findProductFuzzy(catalog, [i.name, i.variant, i.color].filter(Boolean).join(' '));
+              return {
+                name: product ? [product.name, product.variant].filter(Boolean).join(' ') : String(i.name).slice(0, 120),
+                qty: Number(i.qty),
+                ean: product ? product.ean : (i.ean || undefined),
+                priceNetto: i.priceNetto != null ? Number(i.priceNetto) : undefined,
+              };
+            });
         }
       } catch (e) {
         console.warn('[invoice-draft-from-email] item parse failed (non-fatal):', e.message);
