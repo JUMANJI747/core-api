@@ -2752,6 +2752,25 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
     if (!inv.ifirmaId) return res.status(400).json({ ok: false, error: 'Faktura nie z iFirmy — nie zarejestruję wpłaty przez iFirma API.' });
 
+    // ODŚWIEŻ kwotę z iFirmy przed wpłatą — fakturę można było edytować w
+    // iFirmie (np. zmniejszona kwota) i lokalny grossAmount jest wtedy
+    // nieaktualny → iFirma odrzucała wpłatę na starą (wyższą) kwotę.
+    // Świeże brutto zapisujemy też do lokalnego rekordu.
+    try {
+      const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
+      const cand = det && (det.Brutto ?? det.KwotaBrutto ?? det.SumaBrutto ?? (det.Suma && det.Suma.Brutto));
+      const freshGross = Number(cand);
+      if (cand != null && Number.isFinite(freshGross) && freshGross > 0) {
+        if (Math.abs(freshGross - Number(inv.grossAmount)) > 0.005) {
+          console.log(`[invoices/pay] kwota FV ${inv.number} odświeżona z iFirmy: ${inv.grossAmount} → ${freshGross}`);
+          await prisma.invoice.update({ where: { id: inv.id }, data: { grossAmount: freshGross } });
+          inv = { ...inv, grossAmount: freshGross };
+        }
+      }
+    } catch (e) {
+      console.warn('[invoices/pay] fetchInvoiceDetails nieudane (płacę wg lokalnej kwoty):', e.message);
+    }
+
     const today = new Date().toISOString().slice(0, 10);
     const date = (req.body && req.body.date) || today;
     const amount = (req.body && req.body.amount != null && req.body.amount !== '')
