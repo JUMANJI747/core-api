@@ -513,16 +513,25 @@ async function runOpenDealScan(prisma, { days = 120, apply = true } = {}) {
       candidates.push({ ...g, lastAt: g.mails[g.mails.length - 1].createdAt });
     }
     candidates.sort((a, b) => b.lastAt - a.lastAt);
-    const MAXC = 60;
-    const sliced = candidates.slice(0, MAXC);
-    if (!sliced.length) return { ok: true, scanned: inbound.length, candidates: 0, deals: [], marked: 0, applied: apply };
+    // Faktyczny zasięg danych — jak baza maili nie sięga pełnych `days` wstecz
+    // (import zaczął się później), raport to pokaże zamiast udawać pełny skan.
+    const oldestMailAt = inbound.length ? inbound[0].createdAt : null;
+    if (!candidates.length) return { ok: true, scanned: inbound.length, candidates: 0, deals: [], marked: 0, applied: apply, oldestMailAt };
 
-    const digest = sliced.map((g, i) => {
-      const lines = g.mails.slice(-3).map(m => `  - ${m.createdAt.toISOString().slice(0, 10)} "${(m.subject || '').slice(0, 80)}": ${(m.bodyPreview || '').slice(0, 160)}`).join('\n');
-      return `#${i} ${g.contractorName || g.fromName || g.fromEmail} <${g.fromEmail}> (maili: ${g.mails.length}, ostatni: ${new Date(g.lastAt).toISOString().slice(0, 10)})\n${lines}`;
-    }).join('\n\n');
+    // WSZYSCY kandydaci, w partiach po 50 na call LLM (wcześniej tylko 60
+    // najnowszych wątków — starsze tematy w ogóle nie trafiały do oceny).
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
+    const BATCH = 50;
+    const deals = []; // { g, reason }
+    for (let off = 0; off < candidates.length; off += BATCH) {
+      const batch = candidates.slice(off, off + BATCH);
+      const digest = batch.map((g, i) => {
+        const lines = g.mails.slice(-3).map(m => `  - ${m.createdAt.toISOString().slice(0, 10)} "${(m.subject || '').slice(0, 80)}": ${(m.bodyPreview || '').slice(0, 160)}`).join('\n');
+        return `#${i} ${g.contractorName || g.fromName || g.fromEmail} <${g.fromEmail}> (maili: ${g.mails.length}, ostatni: ${new Date(g.lastAt).toISOString().slice(0, 10)})\n${lines}`;
+      }).join('\n\n');
 
-    const prompt = `Jesteś asystentem sprzedaży firmy Surf Stick Bell (kosmetyki surfingowe B2B: sticki przeciwsłoneczne, mascary, kremy). Poniżej wątki mailowe z ostatnich ${days} dni, które NIE skończyły się fakturą. Wskaż, które to NIEDOMKNIĘTE DEALE — realne zainteresowanie zakupem/współpracą (pytania o produkty, ceny, zamówienia, próbki, dystrybucję, hurt), gdzie temat umarł i warto wrócić do klienta.
+      const prompt = `Jesteś asystentem sprzedaży firmy Surf Stick Bell (kosmetyki surfingowe B2B: sticki przeciwsłoneczne, mascary, kremy). Poniżej wątki mailowe z ostatnich ${days} dni, które NIE skończyły się fakturą. Wskaż, które to NIEDOMKNIĘTE DEALE — realne zainteresowanie zakupem/współpracą (pytania o produkty, ceny, zamówienia, próbki, dystrybucję, hurt), gdzie temat umarł i warto wrócić do klienta.
 NIE są dealami: spam, oferty usług DLA NAS (marketing, SEO, rekrutacja, logistyka), automaty, potwierdzenia, urzędy, nasi dostawcy.
 
 Zwróć TYLKO czysty JSON (bez markdown): {"deals":[{"index":N,"reason":"krótko po polsku, czego dotyczył"}]}
@@ -530,25 +539,30 @@ Zwróć TYLKO czysty JSON (bez markdown): {"deals":[{"index":N,"reason":"krótko
 WĄTKI:
 ${digest}`;
 
-    const Anthropic = require('@anthropic-ai/sdk');
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
-    const llm = await anthropic.messages.create({
-      model: process.env.DEAL_SCAN_MODEL || process.env.ORDER_PARSER_MODEL || 'claude-sonnet-4-5-20250929',
-      max_tokens: 1500,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const text = (llm.content && llm.content[0] && llm.content[0].text) || '';
-    const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    let out;
-    try { out = JSON.parse(clean); } catch (_) {
-      throw new Error('LLM zwrócił nieczytelny JSON: ' + text.slice(0, 200));
+      let text = '';
+      try {
+        const llm = await anthropic.messages.create({
+          model: process.env.DEAL_SCAN_MODEL || process.env.ORDER_PARSER_MODEL || 'claude-sonnet-4-5-20250929',
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        text = (llm.content && llm.content[0] && llm.content[0].text) || '';
+        const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const out = JSON.parse(clean);
+        for (const d of (Array.isArray(out.deals) ? out.deals : [])) {
+          if (Number.isInteger(d.index) && batch[d.index]) deals.push({ g: batch[d.index], reason: d.reason || '' });
+        }
+        console.log(`[scan-open-deals] partia ${off / BATCH + 1}/${Math.ceil(candidates.length / BATCH)}: +${(out.deals || []).length} deali`);
+      } catch (e) {
+        // Jedna zepsuta partia nie ubija całego skanu — log i dalej.
+        console.error(`[scan-open-deals] partia od #${off} nieudana:`, e.message, text.slice(0, 150));
+      }
     }
-    const deals = Array.isArray(out.deals) ? out.deals.filter(d => Number.isInteger(d.index) && sliced[d.index]) : [];
 
     let marked = 0;
     const report = [];
     for (const d of deals) {
-      const g = sliced[d.index];
+      const g = d.g;
       report.push({ who: g.contractorName || g.fromName || g.fromEmail, email: g.fromEmail, contractorId: g.contractorId || null, lastAt: g.lastAt, mails: g.mails.length, reason: d.reason || '' });
       if (!apply) continue;
       try {
@@ -571,7 +585,7 @@ ${digest}`;
         console.error('[scan-open-deals] mark failed:', e.message);
       }
     }
-    return { ok: true, scanned: inbound.length, candidates: sliced.length, truncated: Math.max(0, candidates.length - MAXC), deals: report, marked, applied: apply };
+    return { ok: true, scanned: inbound.length, candidates: candidates.length, deals: report, marked, applied: apply, oldestMailAt };
   }
 }
 
