@@ -27,7 +27,7 @@ Legenda wagi: 🔴 HIGH · 🟠 MED · 🟡 LOW.
 
 ## invoices.js
 - ✅🔴 /ifirma/invoice-confirm 1183: parsował `ifirmaResp.response.Wynik` (nie istnieje) → FV z Telegrama zapisywana jako 'UNKNOWN' + PDF 500. **NAPRAWIONE**.
-- ⚠️🔴 132-138: cena brutto zapisywana jako netto (`buildPlLinesFromPozycje` traktuje jako netto) → last-price +23%, analityka zawyżona. Wymaga backfillu istniejących.
+- ✅ 132-138: cena brutto zapisywana jako netto → NAPRAWIONE (pkt 24: trueUnitNetto + fix-brutto-as-netto backfill endpoint).
 - ⬜🟠 556: auto-persist kraju zapisuje domyślne 'PL' (nie tylko wykryte) → UE bez adresu dostaje 'PL' na stałe → 23% zamiast WDT. Warunek `if (derived.country && ...)`.
 - ⬜🟠 941/1087/1274: `releaseConfirm` gdy request nie zajął klucza → może skasować cudzy lock → duplikat FV. Flaga `claimed`.
 - ⚠️🟠 924→986: błąd DB PO createInvoice → release locka mimo że FV powstała → duplikat przy retry. W catchu completeConfirm gdy ifirmaResult istnieje.
@@ -158,9 +158,15 @@ RISKY (za zgodą usera):
 22. ✅ confirm-lock: claimed + ifirmaCreated — koniec okien na duplikat FV.
 23. ✅ /payments/match: iFirma-first + Kod + próg 70 — koniec fałszywego 'paid'.
 
+24. ✅ cena brutto zapisywana jako netto — FIX forward (`trueUnitNetto`:
+    krajowa brutto/1.23, WDT bez zmian, jawne netto nietknięte) w confirm
+    (extras.pozycje/items, InvoiceLineItem, tracker) + `inferVatRatePl` liczy
+    VAT z Invoice.type (WDT-PLN=0%, krajowa-EUR=23%), nie z waluty.
+    Backfill istniejących: **POST /invoices/fix-brutto-as-netto** (dryRun
+    domyślnie, {"confirm":true} naprawia) — detekcja po Σ totalGross ≈
+    gross×1.23. URUCHOMIĆ Z KONSOLI API (najpierw dryRun!).
+
 POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
-- ⚠️ cena brutto zapisywana jako netto (last-price +23%, analityka) — FIX prosty,
-  ale trzeba BACKFILL istniejących InvoiceLineItem/extras. Do uzgodnienia.
 - ⚠️ poller rescan wpuszcza odfiltrowany spam (wymaga zapisu decyzji SPAM/newsletter).
 - ⚠️ UIDVALIDITY ignorowane (reset skrzynki → główna ścieżka nie pobiera).
 - ⚠️ glob-sync match odbiorcy po 1. słowie; stary /merge-contractors (usunąć).

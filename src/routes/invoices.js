@@ -117,6 +117,18 @@ function addGkOrderToCache(o) {
 // Rozgrzej na starcie procesu.
 refreshGkOrders();
 
+// Prawdziwa cena NETTO/szt z pozycji preview. Pozycja ma cenaNetto (gdy user
+// podał netto) ALBO cena (w trybie brutto = BRUTTO). Wcześniej confirm pchał
+// p.cena wprost w pola *netto* (unitPriceNetto, extras.pozycje pricePLN/EUR,
+// items.priceNetto) → przy krajowej 23% wszystko zawyżone o VAT ("z ostatniej
+// FV" podstawiało 18 jako netto, analityka liczyła 22,14 brutto od brutto).
+function trueUnitNetto(p, rodzaj) {
+  if (p.cenaNetto != null) return Number(p.cenaNetto);
+  const cena = Number(p.cena) || 0;
+  // krajowa → cena brutto z VAT 23%; wdt/eksport 0% → brutto == netto.
+  return rodzaj === 'krajowa' ? Math.round((cena / 1.23) * 100) / 100 : cena;
+}
+
 // Sync write: po Invoice.create budujemy InvoiceLineItem z preview pozycji.
 // Tym samym builderem co backfill — jeden zrodlo prawdy. Best-effort, nie
 // rzucamy bo glowna sciezka (create FV + send Telegram) jest wazniejsza.
@@ -126,15 +138,16 @@ async function createInvoiceLineItems(prisma, invoice, pozycje) {
     const stub = {
       currency: invoice.currency,
       grossAmount: invoice.grossAmount,
+      type: invoice.type, // VAT pozycji wg rodzaju FV (WDT w PLN = 0%), nie waluty
     };
-    // pozycje shape z confirm-flow: {ean, nazwa, ilosc, cena, wariant?}.
-    // builder oczekuje {ean, nazwa, ilosc, pricePLN|priceEUR}.
+    // pozycje shape z confirm-flow: {ean, nazwa, ilosc, cena, cenaNetto, wariant?}.
+    // builder oczekuje {ean, nazwa, ilosc, pricePLN|priceEUR} = ceny NETTO.
     const mapped = pozycje.map(p => ({
       ean: p.ean,
       nazwa: p.nazwa,
       ilosc: p.ilosc,
-      pricePLN: invoice.currency === 'PLN' ? p.cena : undefined,
-      priceEUR: invoice.currency !== 'PLN' ? p.cena : undefined,
+      pricePLN: invoice.currency === 'PLN' ? trueUnitNetto(p, invoice.type) : undefined,
+      priceEUR: invoice.currency !== 'PLN' ? trueUnitNetto(p, invoice.type) : undefined,
     }));
     const lines = buildPlLinesFromPozycje(stub, mapped);
     const productCache = new Map();
@@ -1023,8 +1036,10 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         contractorCountry: contractor.country || null,
         contractorCity: contractor.city || null,
         extras: {
-          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })),
-          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: p.cena })),
+          // pricePLN/priceEUR i priceNetto to ceny NETTO (tak czytają je
+          // buildPlLinesFromPozycje i last-price). bruttoUnit = oryginał do śladu.
+          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: trueUnitNetto(p, rodzaj), priceEUR: trueUnitNetto(p, rodzaj), bruttoUnit: p.cenaNetto == null ? p.cena : null })),
+          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: trueUnitNetto(p, rodzaj) })),
         },
       },
     });
@@ -1065,7 +1080,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
         itemsSummary: pozycje && pozycje.length
           ? pozycje.map(p => `${p.ilosc}× ${p.nazwa}${p.wariant ? ' ' + p.wariant : ''}`).slice(0, 3).join(', ') + (pozycje.length > 3 ? `, +${pozycje.length - 3}` : '')
           : null,
-        itemsDetails: pozycje && pozycje.length ? pozycje.map(p => ({ name: p.nazwa, variant: p.wariant, qty: p.ilosc, priceNetto: p.cena })) : null,
+        itemsDetails: pozycje && pozycje.length ? pozycje.map(p => ({ name: p.nazwa, variant: p.wariant, qty: p.ilosc, priceNetto: trueUnitNetto(p, rodzaj) })) : null,
       });
     } catch (e) {
       console.error('[invoice-confirm] tracker error:', e.message);
@@ -1267,8 +1282,10 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
         contractorCountry: contractor.country || null,
         contractorCity: contractor.city || null,
         extras: {
-          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: p.cena, priceEUR: p.cena })),
-          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: p.cena })),
+          // pricePLN/priceEUR i priceNetto to ceny NETTO (tak czytają je
+          // buildPlLinesFromPozycje i last-price). bruttoUnit = oryginał do śladu.
+          pozycje: pozycje.map(p => ({ ean: p.ean, nazwa: p.nazwa, ilosc: p.ilosc, pricePLN: trueUnitNetto(p, rodzaj), priceEUR: trueUnitNetto(p, rodzaj), bruttoUnit: p.cenaNetto == null ? p.cena : null })),
+          items: pozycje.map(p => ({ name: p.nazwa, variant: p.wariant || null, qty: p.ilosc, ean: p.ean, priceNetto: trueUnitNetto(p, rodzaj) })),
         },
       },
     });
@@ -3124,6 +3141,87 @@ router.post('/invoices/fix-unknown-numbers', async (req, res) => {
       }
     }
     res.json({ ok: true, total: unknowns.length, fixed, stillUnknown });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Naprawa historycznych pozycji, gdzie BRUTTO zapisano jako netto (stary bug:
+// confirm w trybie brutto pchał p.cena w pola *netto*). Wykrywanie po
+// spójności: Σ totalGross pozycji ≈ grossAmount×1.23, a powinno = grossAmount.
+// Domyślnie dryRun (raport); napraw przez body {"confirm":true}.
+//   POST /invoices/fix-brutto-as-netto  body: { confirm?: true, limit?: 500 }
+router.post('/invoices/fix-brutto-as-netto', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const confirm = !!(req.body && req.body.confirm);
+  const limit = Math.min(2000, Number(req.body && req.body.limit) || 500);
+  const round2 = n => Math.round(Number(n) * 100) / 100;
+  try {
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        currency: 'PLN',
+        OR: [{ type: 'krajowa' }, { type: null }],
+        lineItems: { some: {} },
+      },
+      include: { lineItems: true },
+      orderBy: { issueDate: 'desc' },
+      take: limit,
+    });
+    const broken = [];
+    for (const inv of invoices) {
+      const gross = Number(inv.grossAmount) || 0;
+      if (!gross) continue;
+      const sumGross = inv.lineItems.reduce((s, li) => s + Number(li.totalGross || 0), 0);
+      const expectBroken = gross * 1.23;
+      // tolerancja 1% na zaokrąglenia per pozycja
+      if (Math.abs(sumGross - expectBroken) <= expectBroken * 0.01 && Math.abs(sumGross - gross) > gross * 0.01) {
+        broken.push(inv);
+      }
+    }
+    const report = broken.map(inv => ({
+      number: inv.number,
+      issueDate: inv.issueDate,
+      grossAmount: String(inv.grossAmount),
+      sumLineGross: round2(inv.lineItems.reduce((s, li) => s + Number(li.totalGross || 0), 0)),
+      lines: inv.lineItems.length,
+    }));
+    if (!confirm) {
+      return res.json({
+        ok: true, dryRun: true, scanned: invoices.length, broken: broken.length, invoices: report,
+        hint: 'POST z {"confirm":true} naprawi: unitPriceNetto/1.23 + przeliczenie VAT/totali + extras (pozycje/items).',
+      });
+    }
+    let fixedLines = 0;
+    for (const inv of broken) {
+      for (const li of inv.lineItems) {
+        const unit = round2(Number(li.unitPriceNetto) / 1.23);
+        const qty = Number(li.qty) || 1;
+        const totalNetto = round2(unit * qty);
+        const vatAmount = round2(totalNetto * 0.23);
+        await prisma.invoiceLineItem.update({
+          where: { id: li.id },
+          data: {
+            unitPriceNetto: unit, totalNetto, vatAmount, totalGross: round2(totalNetto + vatAmount),
+            extras: { ...(li.extras && typeof li.extras === 'object' ? li.extras : {}), bruttoAsNettoFixed: true, prevUnitPriceNetto: String(li.unitPriceNetto) },
+          },
+        });
+        fixedLines++;
+      }
+      // extras faktury: pricePLN/priceEUR/priceNetto też były brutto → /1.23
+      const ex = (inv.extras && typeof inv.extras === 'object') ? inv.extras : {};
+      const fixPoz = Array.isArray(ex.pozycje) ? ex.pozycje.map(p => ({
+        ...p,
+        pricePLN: p.pricePLN != null ? round2(Number(p.pricePLN) / 1.23) : p.pricePLN,
+        priceEUR: p.priceEUR != null ? round2(Number(p.priceEUR) / 1.23) : p.priceEUR,
+        bruttoUnit: p.bruttoUnit != null ? p.bruttoUnit : (p.pricePLN != null ? Number(p.pricePLN) : p.priceEUR),
+      })) : ex.pozycje;
+      const fixItems = Array.isArray(ex.items) ? ex.items.map(it => ({
+        ...it,
+        priceNetto: it.priceNetto != null ? round2(Number(it.priceNetto) / 1.23) : it.priceNetto,
+      })) : ex.items;
+      await prisma.invoice.update({ where: { id: inv.id }, data: { extras: { ...ex, pozycje: fixPoz, items: fixItems, bruttoAsNettoFixed: true } } });
+    }
+    res.json({ ok: true, fixedInvoices: broken.length, fixedLines, invoices: report });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

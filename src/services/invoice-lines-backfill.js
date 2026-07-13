@@ -39,7 +39,13 @@
  * Wolane z POST /api/admin/backfill/invoice-lines.
  */
 
-function inferVatRatePl(currency) {
+// VAT pozycji: najpierw z RODZAJU faktury (Invoice.type: wdt/eksport → 0%,
+// krajowa → 23% — także krajowa w EUR i WDT w PLN), fallback z waluty
+// (historyczne rekordy bez type).
+function inferVatRatePl(currency, type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'wdt' || /eksport|dostawa_ue/.test(t)) return '0';
+  if (t === 'krajowa') return '23';
   if (!currency) return '23';
   return currency.toUpperCase() === 'PLN' ? '23' : '0';
 }
@@ -56,7 +62,7 @@ function round2(n) {
 }
 
 function buildPlLinesFromPozycje(invoice, pozycje) {
-  const vatRate = inferVatRatePl(invoice.currency);
+  const vatRate = inferVatRatePl(invoice.currency, invoice.type);
   const factor = vatFactor(vatRate);
   return pozycje.map((p, idx) => {
     const qty = Number(p.ilosc || p.qty || 1);
@@ -88,7 +94,7 @@ function buildPlLinesFromPozycje(invoice, pozycje) {
 function buildPlLinesFromItemsProportional(invoice, items) {
   // Mamy tylko qty + name (ifirma-sync items minimal). Cene per pozycja
   // wyliczamy proporcjonalnie do qty z Invoice.grossAmount → priceInferred.
-  const vatRate = inferVatRatePl(invoice.currency);
+  const vatRate = inferVatRatePl(invoice.currency, invoice.type);
   const factor = vatFactor(vatRate);
   const gross = Number(invoice.grossAmount) || 0;
   const totalQty = items.reduce((s, it) => s + (Number(it.qty || it.ilosc || 1)), 0) || 1;
