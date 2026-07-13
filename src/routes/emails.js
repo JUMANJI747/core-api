@@ -458,6 +458,129 @@ router.patch('/emails/:id/deal', async (req, res) => {
   }
 });
 
+// LLM-skan WSTECZ: znajdź niedomknięte deale w historii maili i oznacz je.
+// Kandydaci deterministycznie (INBOUND w oknie, bez kurierów/automatów/naszych,
+// bez kontrahentów z FV wystawioną po rozpoczęciu rozmowy, bez już oznaczonych),
+// werdykt jednym zbiorczym callem LLM. body: { days?: 120, apply?: true }.
+router.post('/emails/scan-open-deals', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY not configured' });
+    const days = Math.min(365, Number(req.body && req.body.days) || 120);
+    const apply = !(req.body && req.body.apply === false); // domyślnie oznacza
+    const since = new Date(Date.now() - days * 24 * 3600 * 1000);
+
+    const SKIP_FROM = /noreply|no-reply|newsletter|mailer|daemon|globkurier|dpd\.|dhl|inpost|gls|fedex|ups\.|pocztex|furgonetka|apaczka|surfstickbell\.com|ifirma|ksef|podatki\.gov|vercel|github|google\.com|apple\.com|paypal|stripe|allegro|pgf/i;
+
+    const inbound = await prisma.email.findMany({
+      where: {
+        direction: 'INBOUND',
+        createdAt: { gte: since },
+        NOT: { tags: { hasSome: ['archived', 'trash', 'pgf', 'deal-open'] } },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true, fromEmail: true, fromName: true, subject: true, bodyPreview: true,
+        createdAt: true, contractorId: true,
+        contractor: { select: { id: true, name: true, extras: true } },
+      },
+    });
+
+    // Wątek = kontrahent albo adres nadawcy.
+    const groups = new Map();
+    for (const e of inbound) {
+      const from = String(e.fromEmail || '').toLowerCase();
+      if (!from || SKIP_FROM.test(from)) continue;
+      if (e.contractor && e.contractor.extras && e.contractor.extras.openDeal) continue; // już oznaczony
+      const key = e.contractorId || from;
+      const g = groups.get(key) || { key, contractorId: e.contractorId, contractorName: e.contractor && e.contractor.name, fromEmail: from, fromName: e.fromName, mails: [] };
+      g.mails.push(e);
+      groups.set(key, g);
+    }
+
+    // Kontrahent z FV wystawioną PO rozpoczęciu rozmowy = deal domknięty.
+    const contractorIds = [...groups.values()].map(g => g.contractorId).filter(Boolean);
+    const invs = contractorIds.length ? await prisma.invoice.findMany({
+      where: { contractorId: { in: contractorIds }, issueDate: { gte: since } },
+      select: { contractorId: true, issueDate: true },
+    }) : [];
+    const lastInvoiceAt = new Map();
+    for (const i of invs) {
+      const t = lastInvoiceAt.get(i.contractorId);
+      if (!t || i.issueDate > t) lastInvoiceAt.set(i.contractorId, i.issueDate);
+    }
+
+    const candidates = [];
+    for (const g of groups.values()) {
+      const inv = g.contractorId && lastInvoiceAt.get(g.contractorId);
+      if (inv && inv >= g.mails[0].createdAt) continue;
+      candidates.push({ ...g, lastAt: g.mails[g.mails.length - 1].createdAt });
+    }
+    candidates.sort((a, b) => b.lastAt - a.lastAt);
+    const MAXC = 60;
+    const sliced = candidates.slice(0, MAXC);
+    if (!sliced.length) return res.json({ ok: true, scanned: inbound.length, candidates: 0, deals: [], marked: 0, applied: apply });
+
+    const digest = sliced.map((g, i) => {
+      const lines = g.mails.slice(-3).map(m => `  - ${m.createdAt.toISOString().slice(0, 10)} "${(m.subject || '').slice(0, 80)}": ${(m.bodyPreview || '').slice(0, 160)}`).join('\n');
+      return `#${i} ${g.contractorName || g.fromName || g.fromEmail} <${g.fromEmail}> (maili: ${g.mails.length}, ostatni: ${new Date(g.lastAt).toISOString().slice(0, 10)})\n${lines}`;
+    }).join('\n\n');
+
+    const prompt = `Jesteś asystentem sprzedaży firmy Surf Stick Bell (kosmetyki surfingowe B2B: sticki przeciwsłoneczne, mascary, kremy). Poniżej wątki mailowe z ostatnich ${days} dni, które NIE skończyły się fakturą. Wskaż, które to NIEDOMKNIĘTE DEALE — realne zainteresowanie zakupem/współpracą (pytania o produkty, ceny, zamówienia, próbki, dystrybucję, hurt), gdzie temat umarł i warto wrócić do klienta.
+NIE są dealami: spam, oferty usług DLA NAS (marketing, SEO, rekrutacja, logistyka), automaty, potwierdzenia, urzędy, nasi dostawcy.
+
+Zwróć TYLKO czysty JSON (bez markdown): {"deals":[{"index":N,"reason":"krótko po polsku, czego dotyczył"}]}
+
+WĄTKI:
+${digest}`;
+
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
+    const llm = await anthropic.messages.create({
+      model: process.env.DEAL_SCAN_MODEL || process.env.ORDER_PARSER_MODEL || 'claude-sonnet-4-5-20250929',
+      max_tokens: 1500,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = (llm.content && llm.content[0] && llm.content[0].text) || '';
+    const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    let out;
+    try { out = JSON.parse(clean); } catch (_) {
+      return res.status(502).json({ ok: false, error: 'LLM zwrócił nieczytelny JSON', raw: text.slice(0, 300) });
+    }
+    const deals = Array.isArray(out.deals) ? out.deals.filter(d => Number.isInteger(d.index) && sliced[d.index]) : [];
+
+    let marked = 0;
+    const report = [];
+    for (const d of deals) {
+      const g = sliced[d.index];
+      report.push({ who: g.contractorName || g.fromName || g.fromEmail, email: g.fromEmail, contractorId: g.contractorId || null, lastAt: g.lastAt, mails: g.mails.length, reason: d.reason || '' });
+      if (!apply) continue;
+      try {
+        if (g.contractorId) {
+          const c = await prisma.contractor.findUnique({ where: { id: g.contractorId }, select: { extras: true } });
+          const ex = (c && typeof c.extras === 'object' && c.extras) || {};
+          await prisma.contractor.update({
+            where: { id: g.contractorId },
+            data: { extras: { ...ex, openDeal: true, openDealAt: new Date().toISOString(), dealSource: 'llm-scan', dealReason: (d.reason || '').slice(0, 200) } },
+          });
+        } else {
+          const last = g.mails[g.mails.length - 1];
+          const em = await prisma.email.findUnique({ where: { id: last.id }, select: { tags: true } });
+          if (em && !(em.tags || []).includes('deal-open')) {
+            await prisma.email.update({ where: { id: last.id }, data: { tags: [...(em.tags || []), 'deal-open'] } });
+          }
+        }
+        marked++;
+      } catch (e) {
+        console.error('[scan-open-deals] mark failed:', e.message);
+      }
+    }
+    res.json({ ok: true, scanned: inbound.length, candidates: sliced.length, truncated: Math.max(0, candidates.length - MAXC), deals: report, marked, applied: apply });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.patch('/emails/:id/trash', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const email = await prisma.email.findUnique({ where: { id: req.params.id }, select: { tags: true } });

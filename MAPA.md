@@ -34,7 +34,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK) |
 | `/api/deals` | `routes/deals.js` | deale |
 | `/api/consignments` | `routes/consignments.js` | komisy/konsygnacje |
-| `/api` | `routes/emails.js` | maile: lista (limit≤1000 + `offset`; filtr `openDeal=1` = niedomknięte deale), wątki, send-email, translate, read, bulk, **PATCH :id/deal** (flaga openDeal na kontrahencie / tag deal-open; FV zamyka deal — `closeOpenDealOnInvoice` w confirm) |
+| `/api` | `routes/emails.js` | maile: lista (limit≤1000 + `offset`; filtr `openDeal=1` = niedomknięte deale), wątki, send-email, translate, read, bulk, **PATCH :id/deal** (flaga openDeal na kontrahencie / tag deal-open; FV zamyka deal — `closeOpenDealOnInvoice` w confirm), **POST /emails/scan-open-deals** (LLM-skan wstecz: kandydaci deterministycznie → jeden zbiorczy call Sonnet → auto-oznaczenie deali; body `{days,apply}`) |
 | `/api/mailing` | `routes/mailing.js` | kampanie mailingowe |
 | `/api/products` | `routes/products.js` | produkty (katalog PL) |
 | `/api` | `routes/config.js` | Config (klucze konfiguracyjne w DB) |
