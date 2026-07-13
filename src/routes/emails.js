@@ -461,13 +461,9 @@ router.patch('/emails/:id/deal', async (req, res) => {
 // LLM-skan WSTECZ: znajdź niedomknięte deale w historii maili i oznacz je.
 // Kandydaci deterministycznie (INBOUND w oknie, bez kurierów/automatów/naszych,
 // bez kontrahentów z FV wystawioną po rozpoczęciu rozmowy, bez już oznaczonych),
-// werdykt jednym zbiorczym callem LLM. body: { days?: 120, apply?: true }.
-router.post('/emails/scan-open-deals', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  try {
-    if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY not configured' });
-    const days = Math.min(365, Number(req.body && req.body.days) || 120);
-    const apply = !(req.body && req.body.apply === false); // domyślnie oznacza
+// werdykt jednym zbiorczym callem LLM.
+async function runOpenDealScan(prisma, { days = 120, apply = true } = {}) {
+  {
     const since = new Date(Date.now() - days * 24 * 3600 * 1000);
 
     const SKIP_FROM = /noreply|no-reply|newsletter|mailer|daemon|globkurier|dpd\.|dhl|inpost|gls|fedex|ups\.|pocztex|furgonetka|apaczka|surfstickbell\.com|ifirma|ksef|podatki\.gov|vercel|github|google\.com|apple\.com|paypal|stripe|allegro|pgf/i;
@@ -519,7 +515,7 @@ router.post('/emails/scan-open-deals', async (req, res) => {
     candidates.sort((a, b) => b.lastAt - a.lastAt);
     const MAXC = 60;
     const sliced = candidates.slice(0, MAXC);
-    if (!sliced.length) return res.json({ ok: true, scanned: inbound.length, candidates: 0, deals: [], marked: 0, applied: apply });
+    if (!sliced.length) return { ok: true, scanned: inbound.length, candidates: 0, deals: [], marked: 0, applied: apply };
 
     const digest = sliced.map((g, i) => {
       const lines = g.mails.slice(-3).map(m => `  - ${m.createdAt.toISOString().slice(0, 10)} "${(m.subject || '').slice(0, 80)}": ${(m.bodyPreview || '').slice(0, 160)}`).join('\n');
@@ -545,7 +541,7 @@ ${digest}`;
     const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     let out;
     try { out = JSON.parse(clean); } catch (_) {
-      return res.status(502).json({ ok: false, error: 'LLM zwrócił nieczytelny JSON', raw: text.slice(0, 300) });
+      throw new Error('LLM zwrócił nieczytelny JSON: ' + text.slice(0, 200));
     }
     const deals = Array.isArray(out.deals) ? out.deals.filter(d => Number.isInteger(d.index) && sliced[d.index]) : [];
 
@@ -575,10 +571,44 @@ ${digest}`;
         console.error('[scan-open-deals] mark failed:', e.message);
       }
     }
-    res.json({ ok: true, scanned: inbound.length, candidates: sliced.length, truncated: Math.max(0, candidates.length - MAXC), deals: report, marked, applied: apply });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    return { ok: true, scanned: inbound.length, candidates: sliced.length, truncated: Math.max(0, candidates.length - MAXC), deals: report, marked, applied: apply };
   }
+}
+
+// POST startuje skan W TLE i odpowiada od razu — synchroniczny wariant
+// przekraczał limit proxy (60 s) i iOS ucinał żądanie ("Load failed").
+// Wynik ląduje w AgentContext 'deal-scan'; front odpytuje GET .../status.
+// body: { days?: 120, apply?: true, sync?: false }.
+router.post('/emails/scan-open-deals', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY not configured' });
+  const days = Math.min(365, Number(req.body && req.body.days) || 120);
+  const apply = !(req.body && req.body.apply === false);
+  if (req.body && req.body.sync) {
+    try { return res.json(await runOpenDealScan(prisma, { days, apply })); }
+    catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+  const saveState = (data) => prisma.agentContext.upsert({
+    where: { id: 'deal-scan' }, update: { data }, create: { id: 'deal-scan', data },
+  });
+  await saveState({ status: 'running', startedAt: new Date().toISOString(), days });
+  setImmediate(async () => {
+    try {
+      const result = await runOpenDealScan(prisma, { days, apply });
+      await saveState({ status: 'done', finishedAt: new Date().toISOString(), days, result });
+      console.log(`[scan-open-deals] done: ${result.marked}/${result.candidates} oznaczonych`);
+    } catch (e) {
+      console.error('[scan-open-deals] background error:', e.message);
+      await saveState({ status: 'error', finishedAt: new Date().toISOString(), error: e.message }).catch(() => {});
+    }
+  });
+  res.json({ ok: true, started: true });
+});
+
+router.get('/emails/scan-open-deals/status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const row = await prisma.agentContext.findUnique({ where: { id: 'deal-scan' } }).catch(() => null);
+  res.json({ ok: true, ...(row && row.data ? row.data : { status: 'never' }) });
 });
 
 router.patch('/emails/:id/trash', async (req, res) => {
