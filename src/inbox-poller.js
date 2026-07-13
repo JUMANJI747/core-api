@@ -229,10 +229,16 @@ function connectImap(account) {
   });
 }
 
-function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
+function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX', meta = null) {
   return new Promise((resolve, reject) => {
     imap.openBox(folderName, true, (err, box) => {
       if (err) return reject(err);
+      // meta out-param: uidValidity + uidNext (max UID + 1) — do wykrycia
+      // resetu numeracji UID przez dostawcę (UIDVALIDITY change).
+      if (meta && box) {
+        meta.uidValidity = box.uidvalidity != null ? Number(box.uidvalidity) : null;
+        meta.uidNext = box.uidnext != null ? Number(box.uidnext) : null;
+      }
 
       const totalMessages = box.messages.total;
       if (totalMessages === 0) return resolve([]);
@@ -980,9 +986,40 @@ async function processAccount(account) {
 
     // Connect and fetch
     imap = await connectImap(account);
-    const mails = await fetchMailsFromUid(imap, lastUid);
+    const boxMeta = {};
+    const mails = await fetchMailsFromUid(imap, lastUid, 'INBOX', boxMeta);
     imap.end();
     imap = null;
+
+    // UIDVALIDITY reset — lastUid odnosi się do STAREJ numeracji, więc fetch
+    // wyżej mógł zwrócić śmieci albo nic. Odrzucamy wynik, ustawiamy lastUid
+    // na szczyt NOWEJ numeracji (uidNext-1) i nadrabiamy treść rescanem po
+    // dacie (dedup po messageId + EmailSkip; bez powiadomień — degraded mode).
+    const storedValidity = state ? state.uidValidity : null;
+    if (boxMeta.uidValidity != null && storedValidity != null && boxMeta.uidValidity !== storedValidity) {
+      console.warn(`[inbox-poller] ${inbox}: UIDVALIDITY ${storedValidity} → ${boxMeta.uidValidity} (reset skrzynki u dostawcy) — reset lastUid + rescan 3 dni`);
+      const newLastUid = boxMeta.uidNext != null ? Math.max(0, boxMeta.uidNext - 1) : 0;
+      await prisma.imapState.update({
+        where: { inbox },
+        data: { lastUid: newLastUid, uidValidity: boxMeta.uidValidity },
+      });
+      try {
+        const r = await rescanInboxSince(inbox, 3);
+        console.log(`[inbox-poller] ${inbox}: catch-up po UIDVALIDITY: +${r.added} maili (dedup ${r.dedupedExisting})`);
+      } catch (e) {
+        console.error(`[inbox-poller] ${inbox}: catch-up rescan po UIDVALIDITY nieudany:`, e.message);
+      }
+      await markInboxOk(inbox);
+      return;
+    }
+    // Pierwsze poznanie uidValidity — zapisz (bez resetu).
+    if (boxMeta.uidValidity != null && storedValidity == null) {
+      await prisma.imapState.upsert({
+        where: { inbox },
+        update: { uidValidity: boxMeta.uidValidity },
+        create: { inbox, lastUid, uidValidity: boxMeta.uidValidity },
+      }).catch(e => console.error(`[inbox-poller] ${inbox}: zapis uidValidity nieudany:`, e.message));
+    }
 
     if (mails.length === 0) {
       console.log(`[inbox-poller] ${inbox}: no new mails`);

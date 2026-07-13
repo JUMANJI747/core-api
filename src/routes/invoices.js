@@ -117,6 +117,25 @@ function addGkOrderToCache(o) {
 // Rozgrzej na starcie procesu.
 refreshGkOrders();
 
+// „Niedomknięty deal" domyka się SAM przy wystawieniu FV: czyścimy flagę
+// extras.openDeal kontrahenta (ustawianą z maili — PATCH /emails/:id/deal).
+// Best-effort — nie blokuje wystawiania.
+async function closeOpenDealOnInvoice(prisma, contractorId, invoiceNumber) {
+  if (!contractorId) return;
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { extras: true, name: true } });
+    const ex = (c && typeof c.extras === 'object' && c.extras) || {};
+    if (!ex.openDeal) return;
+    await prisma.contractor.update({
+      where: { id: contractorId },
+      data: { extras: { ...ex, openDeal: false, dealClosedAt: new Date().toISOString(), dealClosedByInvoice: invoiceNumber || null } },
+    });
+    console.log(`[invoice-confirm] zamknięto otwarty deal kontrahenta ${c && c.name} (FV ${invoiceNumber})`);
+  } catch (e) {
+    console.error('[invoice-confirm] closeOpenDealOnInvoice failed:', e.message);
+  }
+}
+
 // Prawdziwa cena NETTO/szt z pozycji preview. Pozycja ma cenaNetto (gdy user
 // podał netto) ALBO cena (w trybie brutto = BRUTTO). Wcześniej confirm pchał
 // p.cena wprost w pola *netto* (unitPriceNetto, extras.pozycje pricePLN/EUR,
@@ -1049,6 +1068,7 @@ router.post('/ifirma/invoice-confirm-latest', async (req, res) => {
     // (zanim lecą best-effort: PDF/Telegram/tracker). Kolejne tapnięcia → 'done'.
     await completeConfirm(prisma, confirmKey, pelnyNumer, invoice.id);
     issued = true;
+    closeOpenDealOnInvoice(prisma, contractor.id, pelnyNumer); // fire-and-forget
 
     try {
       const { logActivity } = require('../services/activity-log');
@@ -1295,6 +1315,7 @@ router.post('/ifirma/invoice-confirm', async (req, res) => {
     // (zanim lecą best-effort: PDF/Telegram/tracker). Kolejne tapnięcia → 'done'.
     await completeConfirm(prisma, confirmKey, pelnyNumer, invoice.id);
     issued = true;
+    closeOpenDealOnInvoice(prisma, contractor.id, pelnyNumer); // fire-and-forget
 
     try {
       const { logActivity } = require('../services/activity-log');

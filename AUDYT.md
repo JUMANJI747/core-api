@@ -172,7 +172,10 @@ POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
     w modelu `EmailSkip` (newsletter/AI-SPAM/AUTO_REPLY zapisują messageId);
     rescan stosuje newsletterFilter + sprawdza EmailSkip przed dodaniem.
 
-- ⚠️ UIDVALIDITY ignorowane (reset skrzynki → główna ścieżka nie pobiera).
+26. ✅ UIDVALIDITY — poller zapisuje uidValidity w ImapState; przy zmianie
+    (reset skrzynki u dostawcy) resetuje lastUid do nowej numeracji
+    (uidNext-1) i nadrabia treść rescanem SINCE 3 dni (dedup+EmailSkip).
+
 - ⚠️ glob-sync match odbiorcy po 1. słowie; stary /merge-contractors (usunąć).
 - ⬜ perf: contractors GET/search take:2000 + N+1 enrich; backfill-location 300k
   wywołań GK; duplikat confirm/confirm-latest → wspólny issueFromPreview.

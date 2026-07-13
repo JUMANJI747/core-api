@@ -34,7 +34,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK) |
 | `/api/deals` | `routes/deals.js` | deale |
 | `/api/consignments` | `routes/consignments.js` | komisy/konsygnacje |
-| `/api` | `routes/emails.js` | maile: lista, wątki, send-email, translate, read, bulk |
+| `/api` | `routes/emails.js` | maile: lista (limit≤1000 + `offset`; filtr `openDeal=1` = niedomknięte deale), wątki, send-email, translate, read, bulk, **PATCH :id/deal** (flaga openDeal na kontrahencie / tag deal-open; FV zamyka deal — `closeOpenDealOnInvoice` w confirm) |
 | `/api/mailing` | `routes/mailing.js` | kampanie mailingowe |
 | `/api/products` | `routes/products.js` | produkty (katalog PL) |
 | `/api` | `routes/config.js` | Config (klucze konfiguracyjne w DB) |
@@ -73,7 +73,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `http.js` — `fetchWithTimeout`. `asyncHandler.js` — opakowanie błędów Express. `db.js` — klient Prisma.
 
 ### Odbiór maili
-- `inbox-poller.js` — IMAP co 5 min: filtry (spam/bounce/newsletter), klasyfikacja AI (Haiku), zapis Email + załączniki, **powiadomienie Telegram**; ścieżki specjalne: **web-order** (`isWebOrder`) i **attachment-order** (PDF → `order-llm-parser.js` → „📋 ZAMÓWIENIE Z ZAŁĄCZNIKA"). Decyzje odfiltrowania trwałe w `EmailSkip` (rescan stosuje te same filtry + EmailSkip — nie wpuszcza spamu z powrotem). Health-alert skrzynki.
+- `inbox-poller.js` — IMAP co 5 min: filtry (spam/bounce/newsletter), klasyfikacja AI (Haiku), zapis Email + załączniki, **powiadomienie Telegram**; ścieżki specjalne: **web-order** (`isWebOrder`) i **attachment-order** (PDF → `order-llm-parser.js` → „📋 ZAMÓWIENIE Z ZAŁĄCZNIKA"). Decyzje odfiltrowania trwałe w `EmailSkip` (rescan stosuje te same filtry + EmailSkip — nie wpuszcza spamu z powrotem). **UIDVALIDITY** w `ImapState` — reset skrzynki wykrywany, lastUid przestawiany na nową numerację + catch-up rescanem. Health-alert skrzynki.
 - `imap-sent.js` — skan folderu Wysłane.
 - `order-llm-parser.js` — LLM parser zamówień z tekstu PDF (model `ORDER_PARSER_MODEL`). Dostaje NASZ katalog (`getActiveCatalog`) i mapuje pozycje na nasze produkty (zwraca nasz ean+nazwę, nie łączy dwóch produktów w jedną pozycję). `parse-order` dodatkowo domyka każdą pozycję przez `findProductFuzzy` (koszyk = nasze nazwy+EAN jak z guzików).
 

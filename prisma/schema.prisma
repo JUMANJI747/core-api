@@ -417,6 +417,10 @@ model Memory {
 model ImapState {
   inbox     String   @id
   lastUid   Int      @default(0)
+  // UIDVALIDITY skrzynki — gdy dostawca ją zresetuje, lastUid odnosi się do
+  // STAREJ numeracji i poller mógłby pomijać nowe maile. Poller wykrywa zmianę
+  // i robi catch-up po dacie (rescan) + reset lastUid do nowej numeracji.
+  uidValidity Int?
   updatedAt DateTime @updatedAt
 }
 

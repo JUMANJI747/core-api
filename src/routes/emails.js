@@ -173,8 +173,19 @@ router.get('/emails/check-sent', async (req, res) => {
 
 router.get('/emails', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { inbox, direction, isRead, limit, fromEmail, search, contractorId, folder, important } = req.query;
+  const { inbox, direction, isRead, limit, fromEmail, search, contractorId, folder, important, openDeal, offset } = req.query;
   const where = {};
+  // Filtr „niedomknięte deale": maile kontrahentów z extras.openDeal=true
+  // (oznaczone ręcznie, auto-zamykane przy wystawieniu FV) LUB maile bez
+  // kontrahenta otagowane 'deal-open'.
+  if (openDeal === '1' || openDeal === 'true') {
+    where.AND = [...(where.AND || []), {
+      OR: [
+        { tags: { has: 'deal-open' } },
+        { contractor: { is: { extras: { path: ['openDeal'], equals: true } } } },
+      ],
+    }];
+  }
   if (inbox) where.inbox = inbox;
   if (direction) where.direction = direction;
   if (isRead !== undefined) where.isRead = isRead === 'true';
@@ -246,7 +257,10 @@ router.get('/emails', async (req, res) => {
     }
     where.OR = or;
   }
-  const take = Math.min(parseInt(limit) || 20, 100);
+  // Cap 1000 (było 100 — lista „kończyła się" i nie dało się dojść do starszych).
+  // offset → paginacja / „Załaduj starsze".
+  const take = Math.min(parseInt(limit) || 20, 1000);
+  const skip = Math.max(0, parseInt(offset) || 0);
   const emails = await prisma.email.findMany({
     where,
     include: {
@@ -254,6 +268,7 @@ router.get('/emails', async (req, res) => {
       attachments: { select: { id: true, filename: true, contentType: true, size: true } },
     },
     take,
+    skip,
     orderBy: { createdAt: 'desc' },
   });
 
@@ -404,6 +419,43 @@ router.patch('/emails/:id/archive', async (req, res) => {
   const tags = has ? (email.tags || []).filter(t => t !== 'archived') : [...(email.tags || []), 'archived'];
   const updated = await prisma.email.update({ where: { id: req.params.id }, data: { tags } });
   res.json({ ok: true, archived: !has, email: updated });
+});
+
+// „Niedomknięty deal": oznacz/odznacz wątek klienta. Gdy mail ma kontrahenta →
+// flaga na KONTRAHENCIE (extras.openDeal) — wszystkie jego maile wpadają do
+// filtra i FLAGA GAŚNIE SAMA przy wystawieniu mu faktury. Bez kontrahenta →
+// tag 'deal-open' na samym mailu (nowy klient spoza bazy; zamykasz ręcznie).
+// body: { open: true|false } (brak body = toggle).
+router.patch('/emails/:id/deal', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const email = await prisma.email.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, tags: true, contractorId: true },
+    });
+    if (!email) return res.status(404).json({ error: 'not found' });
+
+    if (email.contractorId) {
+      const c = await prisma.contractor.findUnique({ where: { id: email.contractorId }, select: { extras: true, name: true } });
+      const ex = (c && typeof c.extras === 'object' && c.extras) || {};
+      const open = req.body && typeof req.body.open === 'boolean' ? req.body.open : !ex.openDeal;
+      await prisma.contractor.update({
+        where: { id: email.contractorId },
+        data: { extras: { ...ex, openDeal: open, ...(open ? { openDealAt: new Date().toISOString() } : { dealClosedAt: new Date().toISOString() }) } },
+      });
+      return res.json({ ok: true, scope: 'contractor', contractorId: email.contractorId, contractorName: c && c.name, open });
+    }
+
+    const has = (email.tags || []).includes('deal-open');
+    const open = req.body && typeof req.body.open === 'boolean' ? req.body.open : !has;
+    const tags = open
+      ? (has ? email.tags : [...(email.tags || []), 'deal-open'])
+      : (email.tags || []).filter(t => t !== 'deal-open');
+    await prisma.email.update({ where: { id: email.id }, data: { tags } });
+    res.json({ ok: true, scope: 'email', open });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 router.patch('/emails/:id/trash', async (req, res) => {
