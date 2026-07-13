@@ -364,6 +364,22 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX') {
   });
 }
 
+// Zapisz decyzję pominięcia maila (newsletter / SPAM / AUTO_REPLY), żeby
+// rescan jej nie cofnął. Best-effort: brak messageId → nie ma jak dedupować,
+// trudno (rescan i tak przefiltruje newslettery heurystyką).
+async function recordSkip(messageId, inbox, fromEmail, reason) {
+  if (!messageId) return;
+  try {
+    await prisma.emailSkip.upsert({
+      where: { messageId },
+      update: {},
+      create: { messageId, inbox: inbox || null, fromEmail: fromEmail || null, reason: String(reason).slice(0, 200) },
+    });
+  } catch (e) {
+    console.error('[inbox-poller] recordSkip failed:', e.message);
+  }
+}
+
 // Fetch po dacie (SINCE) zamiast UID — przydatne gdy lastUid w bazie jest
 // rozjechany z faktycznym stanem skrzynki (UIDValidity reset, reorg).
 // Używane przez /inbox-rescan żeby ratować pominięte maile.
@@ -1042,6 +1058,7 @@ async function processAccount(account) {
         const newsletterReason = newsletterFilter(mail);
         if (newsletterReason) {
           console.log(`[inbox-poller] filtered (newsletter) uid=${mail.uid} from=${mail.fromEmail} reason=${newsletterReason}`);
+          await recordSkip(mail.messageId, inbox, mail.fromEmail, `newsletter:${newsletterReason}`);
           continue;
         }
 
@@ -1108,8 +1125,10 @@ async function processAccount(account) {
           }
         }
 
-        // Skip spam and auto-reply — don't save, don't notify
+        // Skip spam and auto-reply — don't save, don't notify. Decyzja
+        // ZAPISANA (EmailSkip), żeby rescan nie wpuścił maila z powrotem.
         if (category === 'SPAM' || category === 'AUTO_REPLY') {
+          await recordSkip(mail.messageId, inbox, mail.fromEmail, `ai:${category}`);
           continue;
         }
 
@@ -1747,6 +1766,14 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         if (!mail.fromEmail) continue;
         if (!hardFilter(mail)) { filteredOut++; continue; }
         if (bounceFilter(mail)) { filteredOut++; continue; }
+        // Te same filtry co główny poller — wcześniej rescan pomijał
+        // newsletterFilter i decyzje AI (SPAM/AUTO_REPLY nie są w Email,
+        // więc dedup ich nie łapał) → odfiltrowany spam wracał co godzinę.
+        if (newsletterFilter(mail)) { filteredOut++; continue; }
+        if (mail.messageId) {
+          const skipped = await prisma.emailSkip.findUnique({ where: { messageId: mail.messageId } }).catch(() => null);
+          if (skipped) { filteredOut++; continue; }
+        }
 
         // Dedup po messageId — JEZELI istnieje, to sprawdz czy createdAt
         // wymaga update'u na podstawie maila headera (poprzednie rescany

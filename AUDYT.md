@@ -164,10 +164,14 @@ RISKY (za zgodą usera):
     VAT z Invoice.type (WDT-PLN=0%, krajowa-EUR=23%), nie z waluty.
     Backfill istniejących: **POST /invoices/fix-brutto-as-netto** (dryRun
     domyślnie, {"confirm":true} naprawia) — detekcja po Σ totalGross ≈
-    gross×1.23. URUCHOMIĆ Z KONSOLI API (najpierw dryRun!).
+    gross×1.23. WYKONANO 2026-07-13: naprawiono 13 FV / 100 pozycji
+    (52,54,56,63,83,96,99,100,146,157,164,166,168/2026).
 
 POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
-- ⚠️ poller rescan wpuszcza odfiltrowany spam (wymaga zapisu decyzji SPAM/newsletter).
+25. ✅ poller rescan wpuszczał odfiltrowany spam — decyzje pominięcia trwałe
+    w modelu `EmailSkip` (newsletter/AI-SPAM/AUTO_REPLY zapisują messageId);
+    rescan stosuje newsletterFilter + sprawdza EmailSkip przed dodaniem.
+
 - ⚠️ UIDVALIDITY ignorowane (reset skrzynki → główna ścieżka nie pobiera).
 - ⚠️ glob-sync match odbiorcy po 1. słowie; stary /merge-contractors (usunąć).
 - ⬜ perf: contractors GET/search take:2000 + N+1 enrich; backfill-location 300k

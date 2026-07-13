@@ -73,7 +73,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `http.js` — `fetchWithTimeout`. `asyncHandler.js` — opakowanie błędów Express. `db.js` — klient Prisma.
 
 ### Odbiór maili
-- `inbox-poller.js` — IMAP co 5 min: filtry (spam/bounce/newsletter), klasyfikacja AI (Haiku), zapis Email + załączniki, **powiadomienie Telegram**; ścieżki specjalne: **web-order** (`isWebOrder`) i **attachment-order** (PDF → `order-llm-parser.js` → „📋 ZAMÓWIENIE Z ZAŁĄCZNIKA"). Health-alert skrzynki.
+- `inbox-poller.js` — IMAP co 5 min: filtry (spam/bounce/newsletter), klasyfikacja AI (Haiku), zapis Email + załączniki, **powiadomienie Telegram**; ścieżki specjalne: **web-order** (`isWebOrder`) i **attachment-order** (PDF → `order-llm-parser.js` → „📋 ZAMÓWIENIE Z ZAŁĄCZNIKA"). Decyzje odfiltrowania trwałe w `EmailSkip` (rescan stosuje te same filtry + EmailSkip — nie wpuszcza spamu z powrotem). Health-alert skrzynki.
 - `imap-sent.js` — skan folderu Wysłane.
 - `order-llm-parser.js` — LLM parser zamówień z tekstu PDF (model `ORDER_PARSER_MODEL`). Dostaje NASZ katalog (`getActiveCatalog`) i mapuje pozycje na nasze produkty (zwraca nasz ean+nazwę, nie łączy dwóch produktów w jedną pozycję). `parse-order` dodatkowo domyka każdą pozycję przez `findProductFuzzy` (koszyk = nasze nazwy+EAN jak z guzików).
 
@@ -135,7 +135,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - **Sprzedaż/logistyka:** `Deal`, `Transaction`, `Consignment` + `ConsignmentItem` + `ConsignmentReturn`, `Sender`, `Quote` (trwałe wyceny GK), `MonthlyPackage` (paczka WDT), `Document` (CMR/PDF).
 - **Maile:** `Email`, `EmailAttachment`, `MailingContact`.
 - **Produkty:** `Product` (PL), `EsProduct` (ES).
-- **Infra:** `Config`, `Memory`, `ImapState`, `AgentContext` (ostatni preview/draft per agent), `Activity`/`ActivityEvent`, `SystemEvent`, `AuditLog`, **`ConfirmLock`** (idempotencja wystawiania).
+- **Infra:** `Config`, `Memory`, `ImapState`, **`EmailSkip`** (decyzje pominięcia maili: newsletter/AI-SPAM/AUTO_REPLY — rescan ich nie cofa), `AgentContext` (ostatni preview/draft per agent), `Activity`/`ActivityEvent`, `SystemEvent`, `AuditLog`, **`ConfirmLock`** (idempotencja wystawiania).
 
 ---
 

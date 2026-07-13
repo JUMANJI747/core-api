@@ -420,6 +420,19 @@ model ImapState {
   updatedAt DateTime @updatedAt
 }
 
+// Decyzje pominięcia maili (newsletter / AI SPAM / AUTO_REPLY) z głównego
+// pollera. Bez tego godzinny rescan (SINCE 2 dni) wpuszczał z powrotem to,
+// co już raz odfiltrowano — odfiltrowany mail nie istnieje w Email, więc
+// dedup po messageId go nie łapał.
+model EmailSkip {
+  id        String   @id @default(uuid())
+  messageId String   @unique
+  inbox     String?
+  fromEmail String?
+  reason    String
+  createdAt DateTime @default(now())
+}
+
 // ============ PRODUKTY ============
 
 model Product {
