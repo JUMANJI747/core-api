@@ -2991,8 +2991,22 @@ router.post('/invoice-draft-from-email', async (req, res) => {
       }
     }
 
-    const country = ((contractor && contractor.country) || '').toString().toLowerCase();
-    const base = ['es', 'hiszpania', 'spain', 'ic', 'canarias', 'islas canarias'].includes(country) ? 'es' : 'pl';
+    // Baza: kontrahent z NASZEJ tabeli PL (Contractor) → ZAWSZE iFirma —
+    // Hiszpania kontynentalna (jak HOLA OLA z Ribadeo) to WDT z polskiej firmy,
+    // nie Contasimple. (Wcześniej kraj 'ES' pchał do Contasimple → 'contractor
+    // not found', bo tam jest osobna baza kanaryjska.) Contasimple TYLKO gdy
+    // klient realnie istnieje w bazie kanaryjskiej (EsContractor).
+    let base = 'pl';
+    let esContractor = null;
+    if (!contractor && (fromEmail || contractorName)) {
+      try {
+        const or = [];
+        if (fromEmail) or.push({ email: { contains: String(fromEmail).trim(), mode: 'insensitive' } });
+        if (contractorName) or.push({ name: { contains: String(contractorName).trim(), mode: 'insensitive' } });
+        esContractor = or.length ? await prisma.esContractor.findFirst({ where: { OR: or } }) : null;
+        if (esContractor) base = 'es';
+      } catch (e) { console.warn('[invoice-draft-from-email] EsContractor lookup failed:', e.message); }
+    }
 
     res.json({
       ok: true,
@@ -3001,7 +3015,11 @@ router.post('/invoice-draft-from-email', async (req, res) => {
         id: contractor.id, name: contractor.name, nip: contractor.nip || null,
         country: contractor.country || null, city: contractor.city || null,
         email: contractor.primaryEmail || contractor.email || null,
-      } : null,
+      } : (esContractor ? {
+        id: esContractor.id, name: esContractor.name, nip: esContractor.nif || null,
+        country: esContractor.country || 'ES', city: esContractor.city || null,
+        email: esContractor.email || null,
+      } : null),
       items,
     });
   } catch (e) {
