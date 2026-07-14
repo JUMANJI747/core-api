@@ -1416,6 +1416,22 @@ router.get('/:id/shipment-addresses', async (req, res) => {
   try {
     const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
     if (!c) return res.status(404).json({ error: 'contractor not found' });
+
+    // DUPLIKATY: kontrahent bywa w bazie 2× (np. „SAS B B D" z adresem i bez),
+    // a wysyłki wiszą na TYM DRUGIM rekordzie. Zbieramy adresy z c + rodzeństwa
+    // po tym samym NIP-ie lub identycznej nazwie — obojętne, którego duplikata
+    // user tapnie.
+    let ids = [c.id];
+    try {
+      const or = [];
+      if (c.nip) or.push({ nip: c.nip });
+      if (c.name) or.push({ name: { equals: c.name, mode: 'insensitive' } });
+      if (or.length) {
+        const sibs = await prisma.contractor.findMany({ where: { NOT: { id: c.id }, OR: or }, select: { id: true }, take: 5 });
+        ids = [c.id, ...sibs.map(s => s.id)];
+      }
+    } catch (_) {}
+
     const out = [];
     const seen = new Set();
     const push = (a) => {
@@ -1429,7 +1445,7 @@ router.get('/:id/shipment-addresses', async (req, res) => {
     // 1) ContractorAddress (delivery), najnowsze najpierw
     try {
       const rows = await prisma.contractorAddress.findMany({
-        where: { contractorId: c.id, type: 'delivery' },
+        where: { contractorId: { in: ids }, type: 'delivery' },
         orderBy: { updatedAt: 'desc' }, take: 10,
       });
       for (const r of rows) push({
@@ -1439,8 +1455,14 @@ router.get('/:id/shipment-addresses', async (req, res) => {
       });
     } catch (_) {}
 
-    // 2) extras.locations (najświeższe użycie najpierw)
-    const locs = Array.isArray(c.extras && c.extras.locations) ? c.extras.locations.slice() : [];
+    // 2) extras.locations (c + duplikaty), najświeższe użycie najpierw
+    let locs = Array.isArray(c.extras && c.extras.locations) ? c.extras.locations.slice() : [];
+    if (ids.length > 1) {
+      try {
+        const sibRows = await prisma.contractor.findMany({ where: { id: { in: ids.slice(1) } }, select: { extras: true } });
+        for (const s of sibRows) if (Array.isArray(s.extras && s.extras.locations)) locs = locs.concat(s.extras.locations);
+      } catch (_) {}
+    }
     locs.sort((a, b) => String((b && (b.lastUsedAt || b.addedAt)) || '').localeCompare(String((a && (a.lastUsedAt || a.addedAt)) || '')));
     for (const l of locs) push({
       street: l.street || '', houseNumber: l.houseNumber || '', postCode: l.postCode || '',
@@ -1448,12 +1470,13 @@ router.get('/:id/shipment-addresses', async (req, res) => {
       source: `baza (locations${l.source ? ': ' + l.source : ''})`, date: l.lastUsedAt || l.addedAt || null,
     });
 
-    // 3) Wysyłki POWIĄZANE (Transaction + Invoice po contractorId) → adres z GK po numerze
+    // 3) Wysyłki POWIĄZANE (Transaction + Invoice po contractorId, z duplikatami)
+    //    → adres z GK po numerze
     if (out.length < 5) {
       try {
         const [txs, invs] = await Promise.all([
-          prisma.transaction.findMany({ where: { contractorId: c.id, shipmentNumber: { not: null } }, orderBy: { createdAt: 'desc' }, take: 6, select: { shipmentNumber: true } }),
-          prisma.invoice.findMany({ where: { contractorId: c.id, shipmentNumber: { not: null } }, orderBy: { issueDate: 'desc' }, take: 6, select: { shipmentNumber: true } }),
+          prisma.transaction.findMany({ where: { contractorId: { in: ids }, shipmentNumber: { not: null } }, orderBy: { createdAt: 'desc' }, take: 6, select: { shipmentNumber: true } }),
+          prisma.invoice.findMany({ where: { contractorId: { in: ids }, shipmentNumber: { not: null } }, orderBy: { issueDate: 'desc' }, take: 6, select: { shipmentNumber: true } }),
         ]);
         const numbers = [...new Set([...txs, ...invs].map(x => String(x.shipmentNumber)).filter(Boolean))].slice(0, 5);
         if (numbers.length) {

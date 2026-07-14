@@ -31,7 +31,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | Prefix URL | Plik | Obszar |
 |---|---|---|
 | `/` | `routes/map.js` | health/landing |
-| `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK), **GET :id/shipment-addresses** (adresy dostaw ze WSZYSTKICH źródeł: ContractorAddress → extras.locations → wysyłki powiązane przez Transaction/Invoice → adres paczki z GK po NUMERZE — działa gdy nazwa odbiorcy ≠ nazwa kontrahenta) |
+| `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK), **GET :id/shipment-addresses** (adresy dostaw ze WSZYSTKICH źródeł: ContractorAddress → extras.locations → wysyłki powiązane przez Transaction/Invoice → adres paczki z GK po NUMERZE — działa gdy nazwa odbiorcy ≠ nazwa kontrahenta; zbiera też z DUPLIKATÓW po NIP/nazwie) |
 | `/api/deals` | `routes/deals.js` | deale |
 | `/api/consignments` | `routes/consignments.js` | komisy/konsygnacje |
 | `/api` | `routes/emails.js` | maile: lista (limit≤1000 + `offset`; filtr `openDeal=1` = niedomknięte deale), wątki, send-email, translate, read, bulk, **PATCH :id/deal** (flaga openDeal na kontrahencie / tag deal-open; FV zamyka deal — `closeOpenDealOnInvoice` w confirm), **POST /emails/scan-open-deals** (LLM-skan wstecz W TLE: kandydaci deterministycznie → WSZYSCY w partiach po 50 na call Sonnet → auto-oznaczenie; raport z oldestMailAt (realny zasięg danych); wynik w AgentContext deal-scan, odczyt **GET .../status**; `{days,apply,sync}`) |
