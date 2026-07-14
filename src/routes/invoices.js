@@ -2852,6 +2852,48 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
   }
 });
 
+// DEBUG: surowe odpowiedzi iFirmy dla faktury — do diagnozy rozjazdów wpłat
+// (np. 'Suma pól Zapłacono większa od brutto' przy Zaplacono=0 na liście).
+// GET /invoices/153_2026/ifirma-debug (podkreślnik zamiast '/'). Zwraca:
+// lokalny rekord + surowy detail (fakturakraj/:id) + surowy wiersz z listy.
+router.get('/invoices/:idOrNumber/ifirma-debug', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const key = req.params.idOrNumber;
+    const isUuid = /^[0-9a-f]{8}-/i.test(key);
+    let inv = isUuid ? await prisma.invoice.findUnique({ where: { id: key } }) : null;
+    if (!inv) inv = await prisma.invoice.findFirst({ where: { number: key }, orderBy: { createdAt: 'desc' } });
+    if (!inv && key.includes('_')) inv = await prisma.invoice.findFirst({ where: { number: key.replace(/_/g, '/') }, orderBy: { createdAt: 'desc' } });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
+
+    const detail = inv.ifirmaId
+      ? await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type).catch(e => ({ __error: e.message }))
+      : null;
+    let listMatch = null; let listCount = 0; let listError = null;
+    try {
+      const day = new Date(inv.issueDate).toISOString().slice(0, 10);
+      const list = await fetchIfirmaInvoices({ dataOd: day, dataDo: day });
+      listCount = (list || []).length;
+      listMatch = (list || []).find(x => String(x.FakturaId) === String(inv.ifirmaId)) || null;
+    } catch (e) { listError = e.message; }
+
+    res.json({
+      ok: true,
+      local: {
+        number: inv.number, ifirmaId: inv.ifirmaId, type: inv.type, ifirmaType: inv.ifirmaType,
+        grossAmount: String(inv.grossAmount), paidAmount: String(inv.paidAmount), status: inv.status,
+        issueDate: inv.issueDate, currency: inv.currency,
+      },
+      detail,
+      listMatch,
+      listCount,
+      listError,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Wgranie ręcznego LISTU PRZEWOZOWEGO do faktury (wysyłka spoza GlobKuriera).
 // Body JSON: { base64, fileName, mimeType }. Obecność pliku oznacza fakturę jako
 // „ma wysyłkę" — znika z listy WDT bez wysyłki.
