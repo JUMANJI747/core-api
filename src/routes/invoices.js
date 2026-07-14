@@ -2758,9 +2758,16 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     // pełne brutto od zera i iFirma odrzucała: „Suma pól 'Zapłacono' pozycji
     // zapłaty jest większa od wartości sumy brutto faktury".
     let alreadyPaid = Number(inv.paidAmount) || 0;
+    let korektaNumer = null;
     try {
       const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
-      const cand = det && (det.Brutto ?? det.KwotaBrutto ?? det.SumaBrutto ?? (det.Suma && det.Suma.Brutto));
+      // FAKTURA Z KOREKTĄ: brutto oryginału ≠ kwota do zapłaty (korekta zmienia
+      // sumę, a oryginał dalej raportuje stare brutto i Zaplacono=0). Wpłata
+      // pełnego brutto wywala 'Suma pól Zapłacono... większa od brutto'.
+      if (det && (det.PelnyNumerKorekty || det.NumerKorekty != null)) {
+        korektaNumer = det.PelnyNumerKorekty || String(det.NumerKorekty);
+      }
+      const cand = det && (det.Brutto ?? det.KwotaBrutto ?? det.SumaBrutto ?? det.WartoscBrutto ?? (det.Suma && det.Suma.Brutto));
       const freshGross = Number(cand);
       if (cand != null && Number.isFinite(freshGross) && freshGross > 0) {
         if (Math.abs(freshGross - Number(inv.grossAmount)) > 0.005) {
@@ -2801,6 +2808,17 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     if (remaining <= 0.005 && !(req.body && req.body.amount)) {
       await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: inv.grossAmount } });
       return res.json({ ok: true, invoiceNumber: inv.number, amount: 0, currency: inv.currency || 'PLN', date: (req.body && req.body.date) || new Date().toISOString().slice(0, 10), info: 'Faktura już w całości opłacona w iFirmie — zsynchronizowano status w CRM (bez nowej wpłaty).', alreadyPaid: true });
+    }
+
+    // Korekta bez jawnej kwoty → nie zgadujemy (nie znamy brutto po korekcie).
+    // User podaje kwotę w polu przy guziku Opłać.
+    if (korektaNumer && !(req.body && req.body.amount)) {
+      return res.status(200).json({
+        ok: false,
+        needsAmount: true,
+        korekta: korektaNumer,
+        error: `Faktura ma korektę ${korektaNumer} — kwota do zapłaty różni się od brutto oryginału (${inv.grossAmount} ${inv.currency || 'PLN'}). Wpisz kwotę PO KOREKCIE w polu przy guziku Opłać i zatwierdź ponownie.`,
+      });
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -2844,9 +2862,16 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
       const diag = ` [brutto=${inv.grossAmount} ${currency}, wykryte wpłaty w iFirmie=${alreadyPaid}, próbowano dopłacić=${amount}]`;
       return res.status(200).json({ ok: false, error: (info || `iFirma HTTP ${ifirmaResp.status}`) + diag, ifirma: ifirmaResp.body });
     }
-    const totalPaid = round2(Math.min(Number(inv.grossAmount), alreadyPaid + amount));
-    await prisma.invoice.update({ where: { id: inv.id }, data: { status: totalPaid >= Number(inv.grossAmount) - 0.005 ? 'paid' : 'partial', paidAmount: totalPaid } });
-    res.json({ ok: true, invoiceNumber: inv.number, amount, currency, date, info: info || 'wpłata zarejestrowana' });
+    if (korektaNumer && req.body && req.body.amount) {
+      // Wpłata wg kwoty po korekcie = faktura rozliczona. Wyrównaj też lokalne
+      // brutto do kwoty efektywnej (oryginał + korekta), żeby listy/dashboard
+      // nie pokazywały starej sumy.
+      await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: amount, grossAmount: amount } });
+    } else {
+      const totalPaid = round2(Math.min(Number(inv.grossAmount), alreadyPaid + amount));
+      await prisma.invoice.update({ where: { id: inv.id }, data: { status: totalPaid >= Number(inv.grossAmount) - 0.005 ? 'paid' : 'partial', paidAmount: totalPaid } });
+    }
+    res.json({ ok: true, invoiceNumber: inv.number, amount, currency, date, info: (info || 'wpłata zarejestrowana') + (korektaNumer ? ` (FV z korektą ${korektaNumer})` : '') });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
