@@ -2823,8 +2823,24 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     const info = r && (r.Informacja || r.informacja);
     const ok = ifirmaResp.status >= 200 && ifirmaResp.status < 300 && (kod === 0 || kod === undefined);
     if (!ok) {
-      // Diagnostyka w komunikacie: co wykryliśmy i co próbowaliśmy zapłacić —
-      // bez tego "Suma pól Zapłacono..." nie mówi, skąd rozjazd.
+      // "Suma pól 'Zapłacono'... większa od brutto" = iFirma MA już pozycje
+      // zapłaty pokrywające fakturę (endpoint wplaty DODAJE pozycję, walidacja:
+      // Σ pozycji ≤ brutto). Zweryfikuj z listy (to samo źródło co ifirma-sync)
+      // i zsynchronizuj status zamiast zwracać błąd.
+      if (/Suma p[oó]l.*Zap[łl]acono.*wi[eę]ksza/i.test(String(info || ''))) {
+        try {
+          const day = new Date(inv.issueDate).toISOString().slice(0, 10);
+          const list = await fetchIfirmaInvoices({ dataOd: day, dataDo: day });
+          const m = (list || []).find(x => String(x.FakturaId) === String(inv.ifirmaId));
+          const zapl = m && Number(m.Zaplacono);
+          const brut = m && m.Brutto != null ? Number(m.Brutto) : Number(inv.grossAmount);
+          if (m && Number.isFinite(zapl) && zapl >= brut - 0.005) {
+            await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: brut, grossAmount: brut } });
+            return res.json({ ok: true, invoiceNumber: inv.number, amount: 0, currency, date, info: `iFirma ma już pełne wpłaty (${zapl} ${currency}) — zsynchronizowano status w CRM, bez nowej wpłaty.`, alreadyPaid: true });
+          }
+        } catch (e2) { console.warn('[invoices/pay] auto-heal po błędzie sumy wpłat nieudany:', e2.message); }
+      }
+      // Diagnostyka w komunikacie: co wykryliśmy i co próbowaliśmy zapłacić.
       const diag = ` [brutto=${inv.grossAmount} ${currency}, wykryte wpłaty w iFirmie=${alreadyPaid}, próbowano dopłacić=${amount}]`;
       return res.status(200).json({ ok: false, error: (info || `iFirma HTTP ${ifirmaResp.status}`) + diag, ifirma: ifirmaResp.body });
     }
