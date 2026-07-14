@@ -2772,10 +2772,24 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
       const candPaid = det && (det.Zaplacono ?? det.KwotaZaplacona ?? det.Zaplata);
       if (candPaid != null && Number.isFinite(Number(candPaid))) {
         alreadyPaid = Number(candPaid);
-        console.log(`[invoices/pay] FV ${inv.number}: w iFirmie zapłacono już ${alreadyPaid} z ${inv.grossAmount}`);
+        console.log(`[invoices/pay] FV ${inv.number}: w iFirmie zapłacono już ${alreadyPaid} z ${inv.grossAmount} (detail)`);
+      } else {
+        // Detail nie zwraca 'Zaplacono' — pewne źródło: LISTA faktur z dnia
+        // wystawienia (fetchInvoices zwraca Zaplacono; tego używa ifirma-sync).
+        const day = new Date(inv.issueDate).toISOString().slice(0, 10);
+        const list = await fetchIfirmaInvoices({ dataOd: day, dataDo: day });
+        const m = (list || []).find(x => String(x.FakturaId) === String(inv.ifirmaId));
+        if (m && m.Zaplacono != null && Number.isFinite(Number(m.Zaplacono))) {
+          alreadyPaid = Number(m.Zaplacono);
+          console.log(`[invoices/pay] FV ${inv.number}: w iFirmie zapłacono już ${alreadyPaid} z ${inv.grossAmount} (lista)`);
+          if (m.Brutto != null && Number.isFinite(Number(m.Brutto)) && Math.abs(Number(m.Brutto) - Number(inv.grossAmount)) > 0.005) {
+            await prisma.invoice.update({ where: { id: inv.id }, data: { grossAmount: Number(m.Brutto) } });
+            inv = { ...inv, grossAmount: Number(m.Brutto) };
+          }
+        }
       }
     } catch (e) {
-      console.warn('[invoices/pay] fetchInvoiceDetails nieudane (płacę wg lokalnej kwoty):', e.message);
+      console.warn('[invoices/pay] odczyt wpłat z iFirmy nieudany (płacę wg lokalnej kwoty):', e.message);
     }
 
     const round2 = n => Math.round(Number(n) * 100) / 100;
@@ -2809,7 +2823,10 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     const info = r && (r.Informacja || r.informacja);
     const ok = ifirmaResp.status >= 200 && ifirmaResp.status < 300 && (kod === 0 || kod === undefined);
     if (!ok) {
-      return res.status(200).json({ ok: false, error: info || `iFirma HTTP ${ifirmaResp.status}`, ifirma: ifirmaResp.body });
+      // Diagnostyka w komunikacie: co wykryliśmy i co próbowaliśmy zapłacić —
+      // bez tego "Suma pól Zapłacono..." nie mówi, skąd rozjazd.
+      const diag = ` [brutto=${inv.grossAmount} ${currency}, wykryte wpłaty w iFirmie=${alreadyPaid}, próbowano dopłacić=${amount}]`;
+      return res.status(200).json({ ok: false, error: (info || `iFirma HTTP ${ifirmaResp.status}`) + diag, ifirma: ifirmaResp.body });
     }
     const totalPaid = round2(Math.min(Number(inv.grossAmount), alreadyPaid + amount));
     await prisma.invoice.update({ where: { id: inv.id }, data: { status: totalPaid >= Number(inv.grossAmount) - 0.005 ? 'paid' : 'partial', paidAmount: totalPaid } });
