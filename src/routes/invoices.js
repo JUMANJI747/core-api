@@ -2752,10 +2752,12 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
     if (!inv.ifirmaId) return res.status(400).json({ ok: false, error: 'Faktura nie z iFirmy — nie zarejestruję wpłaty przez iFirma API.' });
 
-    // ODŚWIEŻ kwotę z iFirmy przed wpłatą — fakturę można było edytować w
-    // iFirmie (np. zmniejszona kwota) i lokalny grossAmount jest wtedy
-    // nieaktualny → iFirma odrzucała wpłatę na starą (wyższą) kwotę.
-    // Świeże brutto zapisujemy też do lokalnego rekordu.
+    // ODŚWIEŻ kwotę i WPŁATY z iFirmy przed rejestracją — fakturę można było
+    // edytować w iFirmie (inne brutto) ALBO część/całość wpłaty jest już tam
+    // zarejestrowana (auto-match z banku, ręcznie). Bez tego rejestrowaliśmy
+    // pełne brutto od zera i iFirma odrzucała: „Suma pól 'Zapłacono' pozycji
+    // zapłaty jest większa od wartości sumy brutto faktury".
+    let alreadyPaid = Number(inv.paidAmount) || 0;
     try {
       const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
       const cand = det && (det.Brutto ?? det.KwotaBrutto ?? det.SumaBrutto ?? (det.Suma && det.Suma.Brutto));
@@ -2767,14 +2769,31 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
           inv = { ...inv, grossAmount: freshGross };
         }
       }
+      const candPaid = det && (det.Zaplacono ?? det.KwotaZaplacona ?? det.Zaplata);
+      if (candPaid != null && Number.isFinite(Number(candPaid))) {
+        alreadyPaid = Number(candPaid);
+        console.log(`[invoices/pay] FV ${inv.number}: w iFirmie zapłacono już ${alreadyPaid} z ${inv.grossAmount}`);
+      }
     } catch (e) {
       console.warn('[invoices/pay] fetchInvoiceDetails nieudane (płacę wg lokalnej kwoty):', e.message);
     }
 
+    const round2 = n => Math.round(Number(n) * 100) / 100;
+    const remaining = round2(Math.max(0, Number(inv.grossAmount) - alreadyPaid));
+
+    // Już w pełni opłacona w iFirmie → nie rejestruj drugiej wpłaty, tylko
+    // zsynchronizuj status w CRM (to naprawia rozjazd „paid w iFirmie,
+    // po terminie w CRM").
+    if (remaining <= 0.005 && !(req.body && req.body.amount)) {
+      await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: inv.grossAmount } });
+      return res.json({ ok: true, invoiceNumber: inv.number, amount: 0, currency: inv.currency || 'PLN', date: (req.body && req.body.date) || new Date().toISOString().slice(0, 10), info: 'Faktura już w całości opłacona w iFirmie — zsynchronizowano status w CRM (bez nowej wpłaty).', alreadyPaid: true });
+    }
+
     const today = new Date().toISOString().slice(0, 10);
     const date = (req.body && req.body.date) || today;
+    // Domyślnie płacimy TYLKO brakującą resztę (brutto − już zapłacone).
     const amount = (req.body && req.body.amount != null && req.body.amount !== '')
-      ? Number(req.body.amount) : Number(inv.grossAmount);
+      ? Number(req.body.amount) : remaining;
     if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ ok: false, error: 'Nieprawidłowa kwota.' });
     const currency = inv.currency || 'PLN';
     const type = inv.ifirmaType || inv.type || (currency === 'EUR' ? 'wdt' : 'krajowa');
@@ -2792,7 +2811,8 @@ router.post('/invoices/:idOrNumber/pay', async (req, res) => {
     if (!ok) {
       return res.status(200).json({ ok: false, error: info || `iFirma HTTP ${ifirmaResp.status}`, ifirma: ifirmaResp.body });
     }
-    await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'paid', paidAmount: amount } });
+    const totalPaid = round2(Math.min(Number(inv.grossAmount), alreadyPaid + amount));
+    await prisma.invoice.update({ where: { id: inv.id }, data: { status: totalPaid >= Number(inv.grossAmount) - 0.005 ? 'paid' : 'partial', paidAmount: totalPaid } });
     res.json({ ok: true, invoiceNumber: inv.number, amount, currency, date, info: info || 'wpłata zarejestrowana' });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
