@@ -1405,6 +1405,83 @@ router.post('/:id/alias', async (req, res) => {
   }
 });
 
+// Adresy dostaw kontrahenta z WSZYSTKICH źródeł w bazie — do prefill formularza
+// wysyłki. Kolejność: ContractorAddress(delivery) → extras.locations →
+// wysyłki POWIĄZANE z kontrahentem (Transaction/Invoice.shipmentNumber →
+// odczyt adresu paczki z GK po NUMERZE). Kluczowe, bo nazwa odbiorcy paczki
+// bywa INNA niż nazwa kontrahenta z faktury (sklep vs firma) — szukanie po
+// nazwie w GK nie trafia, a powiązania w bazie tak.
+router.get('/:id/shipment-addresses', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
+    if (!c) return res.status(404).json({ error: 'contractor not found' });
+    const out = [];
+    const seen = new Set();
+    const push = (a) => {
+      if (!a || (!a.street && !a.postCode && !a.city)) return;
+      const key = `${(a.street || '').toLowerCase()}|${a.postCode || ''}|${(a.city || '').toLowerCase()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(a);
+    };
+
+    // 1) ContractorAddress (delivery), najnowsze najpierw
+    try {
+      const rows = await prisma.contractorAddress.findMany({
+        where: { contractorId: c.id, type: 'delivery' },
+        orderBy: { updatedAt: 'desc' }, take: 10,
+      });
+      for (const r of rows) push({
+        street: r.street || '', houseNumber: r.houseNumber || '', postCode: r.postalCode || '',
+        city: r.city || '', country: r.country || '', phone: '', email: '',
+        source: 'baza (adres dostawy)', date: r.updatedAt,
+      });
+    } catch (_) {}
+
+    // 2) extras.locations (najświeższe użycie najpierw)
+    const locs = Array.isArray(c.extras && c.extras.locations) ? c.extras.locations.slice() : [];
+    locs.sort((a, b) => String((b && (b.lastUsedAt || b.addedAt)) || '').localeCompare(String((a && (a.lastUsedAt || a.addedAt)) || '')));
+    for (const l of locs) push({
+      street: l.street || '', houseNumber: l.houseNumber || '', postCode: l.postCode || '',
+      city: l.city || '', country: l.country || '', phone: l.phone || '', email: l.email || '',
+      source: `baza (locations${l.source ? ': ' + l.source : ''})`, date: l.lastUsedAt || l.addedAt || null,
+    });
+
+    // 3) Wysyłki POWIĄZANE (Transaction + Invoice po contractorId) → adres z GK po numerze
+    if (out.length < 5) {
+      try {
+        const [txs, invs] = await Promise.all([
+          prisma.transaction.findMany({ where: { contractorId: c.id, shipmentNumber: { not: null } }, orderBy: { createdAt: 'desc' }, take: 6, select: { shipmentNumber: true } }),
+          prisma.invoice.findMany({ where: { contractorId: c.id, shipmentNumber: { not: null } }, orderBy: { issueDate: 'desc' }, take: 6, select: { shipmentNumber: true } }),
+        ]);
+        const numbers = [...new Set([...txs, ...invs].map(x => String(x.shipmentNumber)).filter(Boolean))].slice(0, 5);
+        if (numbers.length) {
+          const { getOrders } = require('../glob-client');
+          const unwrap = (d) => Array.isArray(d) && d.length === 1 && d[0] && Array.isArray(d[0].results) ? d[0].results : (Array.isArray(d) ? d : (d && (d.results || d.items || d.data)) || []);
+          for (const num of numbers) {
+            try {
+              const got = unwrap(await getOrders({ search: num, limit: 5 }));
+              const hit = got.find(o => String(o.number || o.orderNumber || '').trim() === num);
+              const rc = hit && (hit.receiverAddress || hit.receiver);
+              if (rc) push({
+                street: rc.street || '', houseNumber: rc.houseNumber || '', postCode: rc.postCode || '',
+                city: rc.city || '', country: rc.country || '', phone: rc.phone || '', email: rc.email || '',
+                source: `wysyłka ${num}${rc.name ? ' → ' + rc.name : ''}`, date: hit.creationDate || hit.orderDate || null,
+              });
+            } catch (e) { console.warn(`[shipment-addresses] GK lookup ${num} failed:`, e.message); }
+            if (out.length >= 6) break;
+          }
+        }
+      } catch (e) { console.warn('[shipment-addresses] linked shipments lookup failed:', e.message); }
+    }
+
+    res.json({ ok: true, contractorId: c.id, addresses: out.slice(0, 6) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Append a delivery address to extras.locations[] (idempotent on
 // street+city+postCode). Body fields are all optional individually but at
 // least street or city must be present. Used by the agent after pulling
