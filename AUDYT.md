@@ -188,5 +188,8 @@ POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
 
 - ⬜ perf: backfill-location do 300k wywołań GK; duplikat confirm/
   confirm-latest → wspólny issueFromPreview.
+29. ✅ poller: timeouty httpsGet (30 s — MF whitelist) i httpsPost (120 s —
+    Anthropic) — wiszący request nie blokuje już cyklu w nieskończoność.
+
 - ⬜ drobne: async-handlery bez asyncHandler (guard globalny już łapie crash),
-  martwe importy/gałęzie, timeouty httpsGet w pollerze.
+  martwe importy/gałęzie.

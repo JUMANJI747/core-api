@@ -449,11 +449,15 @@ function fetchMailsSince(imap, sinceDate, folderName = 'INBOX') {
 
 // ============ AI CLASSIFICATION ============
 
+// Timeouty (audyt): bez nich wiszący request (MF whitelist / Anthropic przy
+// awarii sieci) blokował CAŁY cykl pollera w nieskończoność.
+const HTTP_TIMEOUT_MS = 30000;
+
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search };
-    https.get(options, res => {
+    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search, timeout: HTTP_TIMEOUT_MS };
+    const req = https.get(options, res => {
       let chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -464,6 +468,7 @@ function httpsGet(url) {
         }
       });
     }).on('error', reject);
+    req.on('timeout', () => req.destroy(new Error(`httpsGet timeout ${HTTP_TIMEOUT_MS}ms: ${parsed.hostname}`)));
   });
 }
 
@@ -475,6 +480,7 @@ function httpsPost(url, headers, body) {
       hostname: parsed.hostname,
       path: parsed.pathname,
       method: 'POST',
+      timeout: 120000, // Anthropic z długim mailem bywa wolny, ale nie wieczny
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data),
@@ -493,6 +499,7 @@ function httpsPost(url, headers, body) {
       });
     });
     req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error(`httpsPost timeout: ${parsed.hostname}`)));
     req.write(data);
     req.end();
   });
