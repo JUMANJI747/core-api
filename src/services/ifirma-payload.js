@@ -95,7 +95,51 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
         }
       } catch (e) { console.warn('[ifirma-payload] recovery (iFirma po NIP) nieudane:', e.message); }
     }
+    // 3) Szczegóły OSTATNIEJ faktury tego kontrahenta w iFirmie — detail FV
+    //    zawiera PEŁNY blok Kontrahent (KodPocztowy/Ulica/NumerDomu/
+    //    Miejscowosc/Kraj). Kluczowe dla kontrahentów z importu historii
+    //    (sync-history): lista FV nie ma adresów, a lista kontrahentów w
+    //    iFirmie bywa niedopasowywalna po NIP z literami (np. IE 9667773J).
+    if (!postCode && contractor.id) {
+      try {
+        const histInv = await prisma.invoice.findFirst({
+          where: { contractorId: contractor.id, ifirmaId: { not: null } },
+          orderBy: { issueDate: 'desc' },
+          select: { ifirmaId: true, ifirmaType: true, type: true },
+        });
+        if (histInv) {
+          const { fetchInvoiceDetails } = require('../ifirma-client');
+          const det = await fetchInvoiceDetails(histInv.ifirmaId, histInv.ifirmaType || histInv.type);
+          const k = det && det.Kontrahent;
+          if (k) {
+            postCode = postCode || k.KodPocztowy || '';
+            city = city || k.Miejscowosc || '';
+            street = street || [k.Ulica, k.NumerDomu].filter(Boolean).join(' ') || '';
+            country = country || k.Kraj || '';
+            if (postCode) console.log(`[ifirma-payload] adres odzyskany z detali FV ${histInv.ifirmaId} dla ${contractor.name}`);
+          }
+        }
+      } catch (e) { console.warn('[ifirma-payload] recovery (detal FV) nieudane:', e.message); }
+    }
     if (postCode) console.log(`[ifirma-payload] odzyskano adres dla NIP ${contractor.nip} (${contractor.name}): kod=${postCode} miasto=${city}`);
+
+    // UTRWAL odzyskany adres na kontrahencie (best-effort) — karta przestaje
+    // świecić „Adresy: Brak" i następne wystawienie nie musi znów pytać iFirmy.
+    if (postCode && contractor.id && !contractor.postCode) {
+      try {
+        const { normalizeIso } = require('./country-helper');
+        await prisma.contractor.update({
+          where: { id: contractor.id },
+          data: {
+            postCode,
+            ...(city && !contractor.city ? { city } : {}),
+            ...(street && !contractor.address ? { address: street } : {}),
+            ...(country && !contractor.country ? { country: normalizeIso(country) || country } : {}),
+          },
+        });
+        console.log(`[ifirma-payload] odzyskany adres utrwalony na kontrahencie ${contractor.name}`);
+      } catch (e) { console.warn('[ifirma-payload] utrwalenie adresu nieudane:', e.message); }
+    }
   }
 
   // Gdy kraju brak w danych, a kontrahent jest ewidentnie zagraniczny — dobierz
