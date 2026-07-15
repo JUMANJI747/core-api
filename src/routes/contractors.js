@@ -2135,6 +2135,41 @@ router.post('/backfill-location-last-used', async (req, res) => {
       errors: [],
     };
 
+    // Historia GK pobierana RAZ (audyt #30: wcześniej do 100k zamówień PER
+    // KONTRAHENT = setki tysięcy wywołań GK przy pełnym przebiegu). Mapa:
+    // znormalizowana nazwa odbiorcy → zamówienia. maxOrders ogranicza
+    // głębokość historii (default 2000, cap 20000), dławik 150 ms/stronę.
+    const pageSize = 100;
+    const maxOrders = Math.min(20000, Number(body.maxOrders) || 2000);
+    const allOrders = [];
+    for (let offset = 0; offset < maxOrders; offset += pageSize) {
+      let data;
+      try {
+        data = await getOrders({ limit: pageSize, offset });
+      } catch (e) {
+        console.log(`[backfill-location-last-used] page offset=${offset} error: ${e.message}`);
+        stats.errors.push(`page ${offset}: ${e.message}`);
+        break;
+      }
+      const batch = extractOrders(data);
+      if (!batch.length) break;
+      allOrders.push(...batch);
+      if (batch.length < pageSize) break;
+      await new Promise(r => setTimeout(r, 150));
+    }
+    console.log(`[backfill-location-last-used] pobrano ${allOrders.length} zamówień GK (maxOrders=${maxOrders})`);
+    stats.gkOrdersFetched = allOrders.length;
+    const ordersByName = new Map();
+    for (const o of allOrders) {
+      const r = o.receiverAddress || o.receiver || {};
+      const keys = new Set([r.name, o.delivery && o.delivery.receiverName, o.delivery && o.delivery.name]
+        .map(n => norm(n)).filter(Boolean));
+      for (const k of keys) {
+        if (!ordersByName.has(k)) ordersByName.set(k, []);
+        ordersByName.get(k).push(o);
+      }
+    }
+
     for (const c of allContractors) {
       stats.scanned += 1;
       if (stats.scanned % 20 === 0) {
@@ -2148,31 +2183,8 @@ router.post('/backfill-location-last-used', async (req, res) => {
       const targetName = norm(c.name);
       if (!targetName) continue;
 
-      // Pobierz GK ordery (paging po 100).
-      const pageSize = 100;
-      const targetTotal = 100000;
-      const orders = [];
-      for (let offset = 0; offset < targetTotal; offset += pageSize) {
-        let data;
-        try {
-          data = await getOrders({ limit: pageSize, offset });
-        } catch (e) {
-          console.log(`[backfill-location-last-used] contractor=${c.id} page offset=${offset} error: ${e.message}`);
-          stats.errors.push(`contractor ${c.id} page ${offset}: ${e.message}`);
-          break;
-        }
-        const batch = extractOrders(data);
-        if (batch.length === 0) break;
-        orders.push(...batch);
-        if (batch.length < pageSize) break;
-      }
-
-      // Filtruj ordery po nazwie odbiorcy (exact lowercased).
-      const matched = orders.filter(o => {
-        const r = o.receiverAddress || o.receiver || {};
-        const candidates = [r.name, o.delivery && o.delivery.receiverName, o.delivery && o.delivery.name];
-        return candidates.some(n => norm(n) === targetName);
-      });
+      // Zamówienia tego odbiorcy z mapy (historia pobrana raz przed pętlą).
+      const matched = ordersByName.get(targetName) || [];
       if (!matched.length) continue;
 
       // Build map fp -> latest date among matched orders.
@@ -2313,9 +2325,9 @@ router.post('/backfill-location-last-used-llm', async (req, res) => {
 
     console.log(`[backfill-loc-llm] start: contractors=${allContractors.length} (raw=${allContractorsRaw.length}), dryRun=${dryRun}, threshold=${confidenceThreshold}, onlyMissing=${onlyMissing}`);
 
-    // Pobierz GK ordery raz.
+    // Pobierz GK ordery raz — z capem i dławikiem (audyt #30).
     const pageSize = 100;
-    const targetTotal = 100000;
+    const targetTotal = Math.min(20000, Number(body.maxOrders) || 2000);
     const allOrders = [];
     for (let offset = 0; offset < targetTotal; offset += pageSize) {
       let data;
@@ -2329,6 +2341,7 @@ router.post('/backfill-location-last-used-llm', async (req, res) => {
       if (batch.length === 0) break;
       allOrders.push(...batch);
       if (batch.length < pageSize) break;
+      await new Promise(r => setTimeout(r, 150));
     }
     console.log(`[backfill-loc-llm] fetched orders=${allOrders.length}`);
 

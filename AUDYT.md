@@ -186,8 +186,13 @@ POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
     (prefetchBestAddresses) zamiast findFirst per wiersz (N+1). Scan
     take:2000 pod contact-match zostaje (tylko przy search, select wąski).
 
-- ⬜ perf: backfill-location do 300k wywołań GK; duplikat confirm/
-  confirm-latest → wspólny issueFromPreview.
+30. ✅ backfill-location: historia GK pobierana RAZ (mapa nazwa→zamówienia)
+    zamiast do 100k zamówień PER KONTRAHENT; cap maxOrders (default 2000,
+    max 20000) + dławik 150 ms/stronę — w obu wariantach (zwykły i LLM).
+
+- ⬜ duplikat confirm/confirm-latest → wspólny issueFromPreview (czysty
+  refaktor najgorętszej ścieżki — robić gdy user może od razu przetestować
+  wystawienie FV).
 29. ✅ poller: timeouty httpsGet (30 s — MF whitelist) i httpsPost (120 s —
     Anthropic) — wiszący request nie blokuje już cyklu w nieskończoność.
 
