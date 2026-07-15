@@ -223,6 +223,10 @@ pomieszało ani nie zgubiło:
     apartment="3", postCode="00-001", city="Warszawa".
   - "Calle Mayor 12, 28001 Madrid, ES" → street="Calle Mayor", houseNumber="12",
     postCode="28001", city="Madrid", country="ES".
+  - "370 Clontarf Rd, Clontarf East, Dublin, D03 YK40" → street="Clontarf Rd",
+    houseNumber="370", postCode="D03 YK40", city="Dublin", country="IE".
+    KODY Z LITERAMI (irlandzki Eircode, brytyjski, holenderski) to TEŻ kody
+    pocztowe — trafiają do postCode, NIGDY nie zostawiaj ich w polu adresu.
   - KOD POCZTOWY ZAWSZE do pola postCode (nigdy nie zostawiaj go w ulicy/mieście) —
     bez kodu iFirma odrzuca FV. To była NAJCZĘSTSZA przyczyna błędów.
   - MIASTO bez kodu; ulica bez numeru. Jak masz wątpliwość co jest czym — podziel
@@ -375,7 +379,7 @@ const tools = [
         houseNumber: { type: 'string', description: 'Sam NUMER DOMU/budynku (np. "1A", "34"). Gdy w danych jest "34/3" → houseNumber="34", apartment="3" (ukośnik = dom/mieszkanie). Gdy "12 m. 5" → houseNumber="12", apartment="5".' },
         apartment: { type: 'string', description: 'OPCJONALNY numer mieszkania/lokalu (część po ukośniku lub po "m."/"lok."). Pomiń gdy brak.' },
         address: { type: 'string', description: 'FALLBACK: ulica+numer w jednym (gdy nie rozbijasz). Preferuj street/houseNumber/apartment osobno — wtedy nic się nie miesza.' },
-        postCode: { type: 'string', description: 'KOD POCZTOWY, OSOBNE POLE. PL: "11-500". ES: "35600". DE: "10115". GR: "84300". ZAWSZE wyciagnij go z wklejonych danych i wstaw TUTAJ (nie zostawiaj w ulicy/mieście). Bez kodu iFirma odrzuca FV.' },
+        postCode: { type: 'string', description: 'KOD POCZTOWY, OSOBNE POLE. PL: "11-500". ES: "35600". DE: "10115". GR: "84300". IE (Eircode, Z LITERAMI): "D03 YK40". UK: "SW1A 1AA". NL: "1012 AB". ZAWSZE wyciagnij go z wklejonych danych i wstaw TUTAJ (nie zostawiaj w ulicy/mieście) — także gdy zawiera litery. Bez kodu iFirma odrzuca FV.' },
         rawAddress: { type: 'string', description: 'SIATKA BEZPIECZEŃSTWA: wklej tu CAŁY surowy blok adresu jak podał user (wszystkie linie). Podawaj ZAWSZE przy dodawaniu — backend dociągnie z niego kod pocztowy / miasto, gdyby któreś pole umknęło przy rozbijaniu.' },
         email: { type: 'string' }, phone: { type: 'string' },
         domain: { type: 'string', description: 'OPCJONALNE: domena firmowa do skojarzenia (np. "euromipe.com"). Maile z tej domeny beda linkowane do tego kontrahenta. Mozna podac sam adres email — domena zostanie wyciagnieta. Gmail/free sa ignorowane.' },

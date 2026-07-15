@@ -20,7 +20,17 @@ function extractPostCode(text) {
   if (m) return m[1];
   m = text.match(/\b(\d{4}-\d{3})\b/);        // PT
   if (m) return m[1];
-  const five = text.match(/\b\d{5}\b/g);       // ES/DE/FR/IT/NL itd.
+  // IE Eircode: klucz trasowania (litera+2 cyfry, np. D03/A65, specjalny D6W)
+  // + 4 znaki alfanum. — "D03 YK40". Litera na starcie odróżnia od numeru domu.
+  m = text.match(/\b((?:[A-Z]\d{2}|D6W)\s?[A-Z0-9]{4})\b/i);
+  if (m) return m[1].toUpperCase();
+  // UK: "SW1A 1AA", "M1 1AE", "B33 8TH" (część zewn. + spacja + cyfra+2 litery)
+  m = text.match(/\b([A-Z]{1,2}\d[A-Z\d]?\s\d[A-Z]{2})\b/i);
+  if (m) return m[1].toUpperCase();
+  // NL: "1012 AB" (4 cyfry + 2 litery jako CAŁE słowo — "9240 Ljutomer" nie łapie)
+  m = text.match(/\b(\d{4}\s?[A-Z]{2})\b/i);
+  if (m) return m[1].toUpperCase();
+  const five = text.match(/\b\d{5}\b/g);       // ES/DE/FR/IT itd.
   if (five && five.length) return five[five.length - 1];
   // 4-cyfrowe: tylko gdy przylega do nazwy miasta — "9240 Ljutomer" albo
   // "Ljutomer 9240" — by NIE zlapac numeru domu ("ulica 4" ma 1 cyfre, ale
