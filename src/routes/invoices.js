@@ -335,6 +335,89 @@ router.post('/ifirma/sync-full', async (req, res) => {
   }
 });
 
+// PEŁNY IMPORT HISTORII z iFirmy — wszystkie faktury i kontrahenci od
+// fromDate (default 2024-01-01) do dziś, miesiąc po miesiącu, W TLE (długi
+// import padał na timeoutach). Idempotentny (FV po ifirmaId, kontrahenci po
+// NIP — istniejący dostają tylko alias). Postęp w AgentContext
+// 'ifirma-history-sync', odczyt: GET /ifirma/sync-history/status.
+// body: { fromDate?: 'YYYY-MM-DD', toDate?: 'YYYY-MM-DD' }
+router.post('/ifirma/sync-history', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const body = req.body || {};
+  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(body.fromDate || '') ? body.fromDate : '2024-01-01';
+  const toDate = /^\d{4}-\d{2}-\d{2}$/.test(body.toDate || '') ? body.toDate : new Date().toISOString().slice(0, 10);
+
+  const saveState = (data) => prisma.agentContext.upsert({
+    where: { id: 'ifirma-history-sync' }, update: { data }, create: { id: 'ifirma-history-sync', data },
+  });
+
+  // Miesiące od fromDate do toDate.
+  const months = [];
+  {
+    const end = new Date(toDate + 'T00:00:00Z');
+    let cur = new Date(fromDate.slice(0, 7) + '-01T00:00:00Z');
+    while (cur <= end) {
+      const y = cur.getUTCFullYear(); const m = cur.getUTCMonth() + 1;
+      const dataOd = `${y}-${String(m).padStart(2, '0')}-01`;
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const monthEnd = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      months.push({ dataOd, dataDo: monthEnd < toDate ? monthEnd : toDate });
+      cur = new Date(Date.UTC(y, m, 1));
+    }
+  }
+  if (!months.length) return res.status(400).json({ ok: false, error: 'Pusty zakres dat.' });
+
+  await saveState({ status: 'running', startedAt: new Date().toISOString(), fromDate, toDate, monthsTotal: months.length, monthsDone: 0 });
+
+  setImmediate(async () => {
+    const totals = { fetched: 0, contractorsCreated: 0, contractorsSkipped: 0, invoicesCreated: 0, invoicesUpdated: 0, monthErrors: [] };
+    for (let i = 0; i < months.length; i++) {
+      const { dataOd, dataDo } = months[i];
+      try {
+        const invoices = await fetchIfirmaInvoices({ dataOd, dataDo });
+        // skipDelete: import historii NICZEGO nie kasuje; skipLink: maile
+        // linkujemy raz na końcu (nie 24× tą samą pełną pętlą).
+        const r = await processIfirmaInvoices(invoices, prisma, { dataOd, dataDo, silent: true, skipDelete: true, skipLink: true });
+        totals.fetched += invoices.length;
+        totals.contractorsCreated += r.contractors.created;
+        totals.contractorsSkipped += r.contractors.skipped;
+        totals.invoicesCreated += r.invoices.created;
+        totals.invoicesUpdated += r.invoices.updated;
+        console.log(`[ifirma/sync-history] ${dataOd}..${dataDo}: fetched=${invoices.length} +FV=${r.invoices.created} +kontrah=${r.contractors.created}`);
+      } catch (e) {
+        console.error(`[ifirma/sync-history] ${dataOd}..${dataDo} FAILED:`, e.message);
+        totals.monthErrors.push({ month: dataOd.slice(0, 7), error: e.message });
+      }
+      await saveState({ status: 'running', startedAt: new Date().toISOString(), fromDate, toDate, monthsTotal: months.length, monthsDone: i + 1, totals });
+      await new Promise(r2 => setTimeout(r2, 500)); // dławik między miesiącami
+    }
+    // Jednorazowe linkowanie maili do (nowych) kontrahentów na końcu.
+    let linked = 0;
+    try {
+      const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
+      for (const contractor of allContractors) {
+        if (!contractor.name || contractor.name.length < 4) continue;
+        const updated = await prisma.email.updateMany({
+          where: { contractorId: null, fromName: { contains: contractor.name, mode: 'insensitive' } },
+          data: { contractorId: contractor.id },
+        });
+        linked += updated.count;
+      }
+    } catch (e) { console.error('[ifirma/sync-history] linkowanie maili nieudane:', e.message); }
+    totals.emailsLinked = linked;
+    await saveState({ status: 'done', finishedAt: new Date().toISOString(), fromDate, toDate, monthsTotal: months.length, monthsDone: months.length, totals });
+    console.log(`[ifirma/sync-history] DONE: FV +${totals.invoicesCreated}/~${totals.invoicesUpdated}, kontrahenci +${totals.contractorsCreated}, maile linked=${linked}`);
+  });
+
+  res.json({ ok: true, started: true, fromDate, toDate, months: months.length, statusUrl: '/api/ifirma/sync-history/status' });
+});
+
+router.get('/ifirma/sync-history/status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const row = await prisma.agentContext.findUnique({ where: { id: 'ifirma-history-sync' } }).catch(() => null);
+  res.json({ ok: true, ...(row && row.data ? row.data : { status: 'never' }) });
+});
+
 router.get('/ifirma/sync/preview', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {

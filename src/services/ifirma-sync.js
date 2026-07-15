@@ -17,7 +17,9 @@ function guessCountryFromInv(inv) {
 }
 
 async function processIfirmaInvoices(invoices, prisma, opts = {}) {
-  const { dataOd, dataDo, dryRun = false, silent = false } = opts;
+  // skipDelete/skipLink — dla importu historycznego (sync-history): kasowanie
+  // per-miesiąc i pełne linkowanie maili nie mają tam sensu (linkujemy raz na końcu).
+  const { dataOd, dataDo, dryRun = false, silent = false, skipDelete = false, skipLink = false } = opts;
 
   // ============ FAZA 1: KONTRAHENCI ============
   const nipToInv = new Map();
@@ -148,7 +150,7 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
 
   // ============ FAZA 2.5: USUWANIE NIEISTNIEJĄCYCH W IFIRMA ============
   const deleted = [];
-  if (dataOd && dataDo) {
+  if (dataOd && dataDo && !skipDelete) {
     const localInvoices = await prisma.invoice.findMany({
       where: { issueDate: { gte: new Date(dataOd), lte: new Date(dataDo + 'T23:59:59Z') } },
     });
@@ -188,7 +190,7 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
 
   // ============ FAZA 3: LINKOWANIE EMAILI ============
   let linked = 0;
-  if (!dryRun) {
+  if (!dryRun && !skipLink) {
     const allContractors = await prisma.contractor.findMany({ select: { id: true, name: true } });
     for (const contractor of allContractors) {
       if (!contractor.name || contractor.name.length < 4) continue;
