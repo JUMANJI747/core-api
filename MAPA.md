@@ -43,7 +43,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api/jpk` | `routes/jpk-package.js` | paczka WDT/eksport (CMR) — build/send do księgowej |
 | `/api` | `routes/parse-document.js` | parsowanie dokumentów |
 | `/api` | `routes/analytics.js` | analityka sprzedaży (`/revenue` zwraca też `paid` per bucket = zapłacona część obrotu: PL SUM paidAmount/status, ES totalPayedAmount/status) |
-| `/api` | `routes/glob.js` → `glob-sync`, `glob-orders`, `glob-quote` | **GlobKurier**: senders, orders, **quote**, **order**, send-label, delete-order, presets, calculate-package |
+| `/api` | `routes/glob.js` → `glob-sync`, `glob-orders`, `glob-quote` | **GlobKurier**: senders, orders, **quote**, **order**, send-label, delete-order, presets, calculate-package. sync-receivers dopasowuje kontrahenta scorerem (minScore 75), nie po 1. słowie nazwy |
 | `/api` | `routes/agent.js` | **agenci AI**: /agent/{logistics,accounting,accounting-es,communication,communication-es,operations,sudo}, /agent/assistant (router Haiku), /agent/email-context |
 | `/api` | `routes/upload.js` | upload plików |
 | `/api` | `routes/telegram-callback.js` | **tapnięcia guzików Telegram** (zatwierdź FV, zamów kuriera, odrzuć) |

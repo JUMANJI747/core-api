@@ -103,16 +103,19 @@ router.post('/glob/sync-receivers', async (req, res) => {
       }
 
       if (!contractor && recName) {
-        const nameWords = recName.split(/\s+/).filter(w => w.length > 3);
-        if (nameWords.length > 0) {
-          contractor = await prisma.contractor.findFirst({
-            where: {
-              OR: [
-                { name: { contains: recName, mode: 'insensitive' } },
-                { name: { contains: nameWords[0], mode: 'insensitive' } },
-              ],
-            },
-          });
+        // Pełna nazwa zawarta w nazwie kontrahenta — bezpieczne.
+        contractor = await prisma.contractor.findFirst({
+          where: { name: { contains: recName, mode: 'insensitive' } },
+        });
+        // Fuzzy przez wspólny scorer z WYSOKIM progiem — sync NADPISUJE
+        // kontrahentowi globKurierReceiverData (fallback adresowy przy
+        // wycenach), więc lepiej nie dopasować niż dopasować źle.
+        // (Wcześniej: contains po PIERWSZYM słowie nazwy — "Surf School X"
+        // łapało pierwszego kontrahenta z "Surf" i nadpisywało mu adres.)
+        if (!contractor) {
+          const { findBestContractors } = require('../services/contractor-match');
+          const scored = await findBestContractors(prisma, recName, { minScore: 75, limit: 1 }).catch(() => []);
+          if (scored.length) contractor = scored[0].contractor;
         }
       }
 

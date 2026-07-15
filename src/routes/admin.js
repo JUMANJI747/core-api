@@ -697,86 +697,21 @@ router.post('/admin/contractors/:id/unlink-es', async (req, res) => {
   }
 });
 
-// POST /api/admin/merge-contractors — zlacz dwoch kontrahentow w jednego.
-// primaryId zostaje (zachowuje nazwe), secondaryId jest wchlaniane i kasowane.
-// Dane fakturowania (NIP, adres billing) z secondary trafiaja do primary.extras.billingAddress.
-// Wszystkie FV, maile, transakcje, deale przepinane na primary.
+// POST /api/admin/merge-contractors — STARY interfejs (primaryId/secondaryId),
+// deleguje do wspólnego services/contractor-merge (ten sam kod co
+// /admin/contractors/merge i dedupe-nip: kontakty, adresy, FK, aliasy,
+// externalIds, AuditLog). Wcześniej miał własną, słabszą kopię logiki
+// (gubiła ContractorContact/ContractorAddress/InvoiceLineItem) — audyt #27.
 router.post('/admin/merge-contractors', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { primaryId, secondaryId } = req.body || {};
     if (!primaryId || !secondaryId) return res.status(400).json({ error: 'primaryId + secondaryId required' });
     if (primaryId === secondaryId) return res.status(400).json({ error: 'cannot merge with self' });
-
-    const primary = await prisma.contractor.findUnique({ where: { id: primaryId } });
-    const secondary = await prisma.contractor.findUnique({ where: { id: secondaryId } });
-    if (!primary) return res.status(404).json({ error: 'primary not found' });
-    if (!secondary) return res.status(404).json({ error: 'secondary not found' });
-
-    const report = { invoices: 0, emails: 0, transactions: 0, deals: 0, consignments: 0 };
-
-    // 1. Zachowaj dane fakturowania secondary w primary.extras.billingAddress
-    const extras = primary.extras && typeof primary.extras === 'object' ? { ...primary.extras } : {};
-    extras.billingAddress = {
-      name: secondary.name,
-      nip: secondary.nip,
-      address: secondary.address,
-      city: secondary.city,
-      postCode: secondary.postCode || null,
-      country: secondary.country,
-      source: `merged from ${secondary.id} (${secondary.name})`,
-    };
-    // Merge aliasów
-    extras.aliases = Array.from(new Set([
-      ...(extras.aliases || []),
-      secondary.name,
-      ...(secondary.extras?.aliases || []),
-    ]));
-    // Adoptuj NIP jesli primary nie ma
-    const nipUpdate = (!primary.nip && secondary.nip) ? secondary.nip : primary.nip;
-    // Adoptuj email jesli primary nie ma
-    const emailUpdate = (!primary.email && secondary.email) ? secondary.email : primary.email;
-    const phoneUpdate = (!primary.phone && secondary.phone) ? secondary.phone : primary.phone;
-    const countryUpdate = (!primary.country && secondary.country) ? secondary.country : primary.country;
-
-    // 2. Przepnij wszystkie rekordy z secondary na primary
-    const invoiceResult = await prisma.invoice.updateMany({ where: { contractorId: secondaryId }, data: { contractorId: primaryId } });
-    report.invoices = invoiceResult.count;
-
-    const emailResult = await prisma.email.updateMany({ where: { contractorId: secondaryId }, data: { contractorId: primaryId } });
-    report.emails = emailResult.count;
-
-    const txResult = await prisma.transaction.updateMany({ where: { contractorId: secondaryId }, data: { contractorId: primaryId, contractorName: primary.name } });
-    report.transactions = txResult.count;
-
-    try {
-      const dealResult = await prisma.deal.updateMany({ where: { contractorId: secondaryId }, data: { contractorId: primaryId } });
-      report.deals = dealResult.count;
-    } catch (_) {}
-
-    try {
-      const consResult = await prisma.consignment.updateMany({ where: { contractorId: secondaryId }, data: { contractorId: primaryId } });
-      report.consignments = consResult.count;
-    } catch (_) {}
-
-    // 3. Update primary z extras + adoptowane pola
-    await prisma.contractor.update({
-      where: { id: primaryId },
-      data: { extras, nip: nipUpdate, email: emailUpdate, phone: phoneUpdate, country: countryUpdate },
-    });
-
-    // 4. Kasuj secondary
-    await prisma.contractor.delete({ where: { id: secondaryId } });
-
-    res.json({
-      ok: true,
-      primaryId,
-      primaryName: primary.name,
-      secondaryId,
-      secondaryName: secondary.name,
-      billingData: extras.billingAddress,
-      ...report,
-    });
+    const { mergeContractors } = require('../services/contractor-merge');
+    const result = await mergeContractors(prisma, primaryId, secondaryId);
+    // Liczniki top-level dla kompatybilności ze starym UI (r.invoices/r.emails/r.transactions).
+    res.json({ ok: true, primaryId, secondaryId, ...result.moved, moved: result.moved, stats: result.stats, contractor: result.contractor });
   } catch (e) {
     console.error('[admin/merge-contractors]', e.message);
     res.status(500).json({ ok: false, error: e.message });

@@ -176,7 +176,12 @@ POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
     (reset skrzynki u dostawcy) resetuje lastUid do nowej numeracji
     (uidNext-1) i nadrabia treść rescanem SINCE 3 dni (dedup+EmailSkip).
 
-- ⚠️ glob-sync match odbiorcy po 1. słowie; stary /merge-contractors (usunąć).
+27. ✅ glob-sync: match odbiorcy po 1. słowie ZASTĄPIONY scorerem
+    (findBestContractors, minScore 75) — koniec nadpisywania
+    globKurierReceiverData złemu kontrahentowi. Stary /merge-contractors
+    przepięty na wspólny services/contractor-merge (kontakty/adresy/FK/audit),
+    stara słabsza kopia logiki usunięta.
+
 - ⬜ perf: contractors GET/search take:2000 + N+1 enrich; backfill-location 300k
   wywołań GK; duplikat confirm/confirm-latest → wspólny issueFromPreview.
 - ⬜ drobne: async-handlery bez asyncHandler (guard globalny już łapie crash),
