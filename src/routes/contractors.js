@@ -973,10 +973,25 @@ router.get('/', async (req, res) => {
     }
   }
 
+  // Prefetch najlepszego adresu (shipping>delivery>billing) dla WSZYSTKICH
+  // wierszy JEDNYM zapytaniem — wcześniej findFirst per wiersz (N+1: lista
+  // 50-2000 kontrahentów = tyle samo zapytań o adresy).
+  async function prefetchBestAddresses(rows) {
+    const ids = [...new Set(rows.map(c => c.id))];
+    if (!ids.length) return new Map();
+    const addrs = await prisma.contractorAddress.findMany({
+      where: { contractorId: { in: ids }, type: { in: ['shipping', 'delivery', 'billing'] } },
+      orderBy: [{ type: 'desc' }, { isPrimary: 'desc' }, { updatedAt: 'desc' }],
+    }).catch(() => []);
+    const byId = new Map();
+    for (const a of addrs) if (!byId.has(a.contractorId)) byId.set(a.contractorId, a); // pierwszy wg sortu = najlepszy
+    return byId;
+  }
+
   // Enrich kazdy wiersz o shippingAddress (merged: ContractorAddress shipping/billing,
   // extras.locations[0], extras.billingAddress, fallback Contractor.address/city/country).
   // Frontend /shipments uzywa tego do auto-fill po klik "Znajdz".
-  async function enrichWithShippingAddress(c) {
+  function enrichWithShippingAddress(c, addrMap) {
     try {
       const cExtras = c.extras || {};
 
@@ -1000,14 +1015,10 @@ router.get('/', async (req, res) => {
         }
       }
 
-      // 2. ContractorAddress (CRM v2) — preferuj shipping/delivery nad billing.
-      // 'desc' po type daje shipping > delivery > billing (alfabetycznie), więc
-      // billing jest OSTATNI — inaczej ('asc') auto-fill wysyłki brał adres
-      // FAKTUROWY zamiast dostawy.
-      const addr = await prisma.contractorAddress.findFirst({
-        where: { contractorId: c.id, type: { in: ['shipping', 'delivery', 'billing'] } },
-        orderBy: [{ type: 'desc' }, { isPrimary: 'desc' }, { updatedAt: 'desc' }],
-      }).catch(() => null);
+      // 2. ContractorAddress (CRM v2) — preferuj shipping/delivery nad billing
+      // ('desc' po type: shipping > delivery > billing). Z prefetchowanej mapy
+      // (jedno zapytanie na całą listę), nie findFirst per wiersz.
+      const addr = (addrMap && addrMap.get(c.id)) || null;
       if (addr && (addr.street || addr.city)) {
         return {
           ...c,
@@ -1081,13 +1092,13 @@ router.get('/', async (req, res) => {
       .slice(0, take);
     if (scored.length) {
       console.log(`[contractors/search] fuzzy fallback: "${search}" → ${scored.length} match(es), top: "${scored[0].c.name}" (score ${scored[0].score})`);
-      const enrichedFuzzy = await Promise.all(scored.map(x => enrichWithShippingAddress(x.c)));
-      return res.json(enrichedFuzzy);
+      const fuzzyMap = await prefetchBestAddresses(scored.map(x => x.c));
+      return res.json(scored.map(x => enrichWithShippingAddress(x.c, fuzzyMap)));
     }
   }
 
-  const enriched = await Promise.all(merged.map(c => enrichWithShippingAddress(c)));
-  res.json(enriched);
+  const addrMap = await prefetchBestAddresses(merged);
+  res.json(merged.map(c => enrichWithShippingAddress(c, addrMap)));
 });
 
 // GET /api/contractors/map-points — dokladne dane (lat, lng, last invoice,

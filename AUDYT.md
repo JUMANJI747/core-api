@@ -182,7 +182,11 @@ POZOSTAJE (wymaga DECYZJI/backfillu lub większego refaktoru):
     przepięty na wspólny services/contractor-merge (kontakty/adresy/FK/audit),
     stara słabsza kopia logiki usunięta.
 
-- ⬜ perf: contractors GET/search take:2000 + N+1 enrich; backfill-location 300k
-  wywołań GK; duplikat confirm/confirm-latest → wspólny issueFromPreview.
+28. ✅ perf: contractors GET/search — enrich adresów JEDNYM zapytaniem
+    (prefetchBestAddresses) zamiast findFirst per wiersz (N+1). Scan
+    take:2000 pod contact-match zostaje (tylko przy search, select wąski).
+
+- ⬜ perf: backfill-location do 300k wywołań GK; duplikat confirm/
+  confirm-latest → wspólny issueFromPreview.
 - ⬜ drobne: async-handlery bez asyncHandler (guard globalny już łapie crash),
   martwe importy/gałęzie, timeouty httpsGet w pollerze.
