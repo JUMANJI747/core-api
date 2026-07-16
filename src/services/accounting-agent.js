@@ -231,6 +231,16 @@ pomieszało ani nie zgubiło:
     bez kodu iFirma odrzuca FV. To była NAJCZĘSTSZA przyczyna błędów.
   - MIASTO bez kodu; ulica bez numeru. Jak masz wątpliwość co jest czym — podziel
     rozsądnie, ale kod/miasto/ulica MUSZĄ trafić w swoje pola.
+  - NIP/VAT Z MAILA: numer bywa zapisany jako "Numéro TVA", "USt-IdNr", "P.IVA",
+    "VAT no", "BTW", "NIF/CIF" — przeszukaj CAŁĄ treść i stopkę. Gdy w kontekście
+    jest linia "NIP/VAT UE ZNALEZIONE W TREŚCI MAILA" — UŻYJ tego numeru (nip w
+    upsert_contractor + verify_nip). Gdy numeru nie widzisz → NAJPIERW extract_nip
+    {fromDomain: domena nadawcy} (skanuje pełne treści wszystkich maili od nadawcy)
+    i DOPIERO gdy i to nic nie da, napisz userowi, że VAT-u nie podali.
+  - DWIE NAZWY W MAILU (prawna z formą SAS/SARL/GmbH/SL/BV/SRL + handlowa sklepu):
+    NIP należy do podmiotu PRAWNEGO — na fakturze musi być nazwa prawna. Do name
+    daj nazwę prawną, handlową dopisz w nawiasie, np. "SAS SURF MOBILE (Cap Ferret
+    Surf Shop)". Email/domena/adres dostawy mogą być od nazwy handlowej.
   - Jak user pisze "tak podaj" / "wpisz sam" / "uzupelnij" → MASZ DANE, użyj ich.
   - ZAWSZE podawaj też rawAddress = cały wklejony blok adresu (siatka
     bezpieczeństwa — backend dociągnie kod/miasto, gdyby coś umknęło).
@@ -349,6 +359,18 @@ const tools = [
         country: { type: 'string', description: 'ISO-2, opcjonalne. Bez = PL.' },
       },
       required: ['nip'],
+    },
+  },
+  {
+    name: 'extract_nip',
+    description: 'Przeszukuje TREŚĆ (bodyFull) WSZYSTKICH maili od nadawcy/domeny po regex NIP-ów UE (FR/DE/IT/ES/NL/AT/CZ/PL...). UŻYWAJ ZANIM napiszesz "brak NIP/VAT w mailu" przy dodawaniu kontrahenta z maila — kontekst maila w rozmowie bywa PRZYCIĘTY i numer ze stopki ("Numéro TVA", "USt-IdNr", "P.IVA", "VAT no", "BTW") może być dalej. Zwraca znalezione NIP-y + pełną treść maila, w którym pierwszy raz wystąpiły.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fromEmail: { type: 'string', description: 'Adres email nadawcy (lub fragment, np. "capferretsurfshop")' },
+        fromDomain: { type: 'string', description: 'Domena nadawcy (np. "capferretsurfshop.com") — alternatywnie do fromEmail' },
+        search: { type: 'string', description: 'Fragment nazwy nadawcy / firmy do szerszego przeszukiwania (gdy fromEmail nieznany)' },
+      },
     },
   },
   {
@@ -648,6 +670,7 @@ const ENDPOINT_MAP = {
   get_context: ['GET', '/api/agent-context/ksiegowosc'],
   find_contractor: ['GET', '/api/contractors'],
   verify_nip: ['POST', '/api/contractors/verify-nip'],
+  extract_nip: ['POST', '/api/emails/extract-nip'],
   upsert_contractor: ['POST', '/api/contractors/upsert'],
   set_vat_mode: ['POST', '/api/contractors/vat-mode'],
   ifirma_contractor_get: ['GET', '/api/ifirma/contractors/:nip'],

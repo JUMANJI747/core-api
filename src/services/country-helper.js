@@ -199,6 +199,26 @@ function splitEuVat(nip) {
   return { prefix: null, number: raw };
 }
 
+// Znajdź WSZYSTKIE NIP-y/VAT UE w dowolnym tekście (mail, wątek, stopka).
+// Skanuje surowy tekst, a dodatkowo linie z hasłem VAT-owym ("Numéro TVA",
+// "USt-IdNr", "P.IVA", "VAT no", "BTW"...) po zbiciu spacji/kropek/myślników —
+// żeby "TVA: FR 32 504 391 988" też się łapało. Zwraca unikalne, uppercase.
+function findEuVatsInText(text) {
+  if (!text) return [];
+  const found = new Set();
+  const scan = (s) => {
+    const matches = String(s).match(EU_VAT_REGEX) || [];
+    for (const m of matches) found.add(m.toUpperCase());
+  };
+  scan(text);
+  for (const line of String(text).split(/\r?\n/)) {
+    if (/(tva|vat|ust[-\s.]?id|p\.?\s?iva|nip|btw|moms|cif|intracom)/i.test(line)) {
+      scan(line.replace(/[\s.\-]/g, ''));
+    }
+  }
+  return [...found];
+}
+
 module.exports = {
   EU_VAT_PREFIXES,
   COUNTRY_NAME_TO_ISO,
@@ -211,4 +231,5 @@ module.exports = {
   legalFormToCountry,
   toIfirmaKraj,
   splitEuVat,
+  findEuVatsInText,
 };

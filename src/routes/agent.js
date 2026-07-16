@@ -493,6 +493,16 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     if (fromMail) query = `${query}\n\n[ZAŁĄCZNIKI MAILA — odczytane przez AI]:\n${fromMail}`;
   }
 
+  // NIP-y/VAT UE znalezione regexem w PEŁNEJ treści maila/wątku — deterministyczna
+  // siatka bezpieczeństwa. Wątek do modelu jest przycinany (2500 zn/mail, 8000
+  // łącznie), a numer bywa w stopce dalej — agent dodawał kontrahenta „bez NIP",
+  // choć w mailu było "Numéro TVA: FR...". Tu skanujemy CAŁOŚĆ i podajemy wprost.
+  const { findEuVatsInText } = require('../services/country-helper');
+  const vatsInMail = findEuVatsInText([context.emailBody, context.thread].filter(Boolean).join('\n'));
+  const vatsCtxLine = vatsInMail.length
+    ? `NIP/VAT UE ZNALEZIONE W TREŚCI MAILA (regex, pełny tekst): ${vatsInMail.join(', ')} — użyj przy dodawaniu/aktualizacji kontrahenta (verify_nip + upsert_contractor). NIE pisz, że w mailu nie podali NIP.`
+    : '';
+
   // Buduje query z prefixem kontekstu: dane kontrahenta + CALY WATEK rozmowy
   // (zamowienie bywa w starszym mailu niz otwarty) + historia maili kontrahenta
   // z bazy (gdy czegos brak w watku — inne watki/zamowienia). Async, bo dociaga
@@ -506,6 +516,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     // Caly watek ma priorytet nad pojedynczym otwartym mailem.
     if (context.thread) ctxLines.push(`WATEK ROZMOWY (chronologicznie, najstarszy pierwszy):\n${String(context.thread).slice(0, 8000)}`);
     else if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+    if (vatsCtxLine) ctxLines.push(vatsCtxLine);
     // Historia z bazy — agent ma "szukac w bazie kontrahenta" jak czegos brak.
     if (context.contractorId) {
       try {
@@ -597,6 +608,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
         if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
         if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+        if (vatsCtxLine) ctxLines.push(vatsCtxLine);
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
         const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-8) });
@@ -673,6 +685,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
       if (context.contractorNip) ctxLines.push(`NIP: ${context.contractorNip}`);
       if (context.contractorEmail) ctxLines.push(`Email: ${context.contractorEmail}`);
       if (context.emailBody) ctxLines.push(`Tresc maila:\n${String(context.emailBody).slice(0, 1500)}`);
+      if (vatsCtxLine) ctxLines.push(vatsCtxLine);
       const ctxStr = ctxLines.join('\n');
 
       const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;

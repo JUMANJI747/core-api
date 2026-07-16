@@ -44,7 +44,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/parse-document.js` | parsowanie dokumentów |
 | `/api` | `routes/analytics.js` | analityka sprzedaży (`/revenue` zwraca też `paid` per bucket = zapłacona część obrotu: PL SUM paidAmount/status, ES totalPayedAmount/status) |
 | `/api` | `routes/glob.js` → `glob-sync`, `glob-orders`, `glob-quote` | **GlobKurier**: senders, orders, **quote**, **order**, send-label, delete-order, presets, calculate-package. sync-receivers dopasowuje kontrahenta scorerem (minScore 75), nie po 1. słowie nazwy |
-| `/api` | `routes/agent.js` | **agenci AI**: /agent/{logistics,accounting,accounting-es,communication,communication-es,operations,sudo}, /agent/assistant (router Haiku), /agent/email-context |
+| `/api` | `routes/agent.js` | **agenci AI**: /agent/{logistics,accounting,accounting-es,communication,communication-es,operations,sudo}, /agent/assistant (router Haiku; do kontekstu sub-agentów wstrzykuje NIP-y/VAT UE znalezione regexem w PEŁNEJ treści maila/wątku — `country-helper.findEuVatsInText`), /agent/email-context |
 | `/api` | `routes/upload.js` | upload plików |
 | `/api` | `routes/telegram-callback.js` | **tapnięcia guzików Telegram** (zatwierdź FV, zamów kuriera, odrzuć) |
 | `/api` | `routes/ksef.js` | KSeF: sync sprzedaży (status) i kosztów |
@@ -89,7 +89,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `agent-loop-base.js` — pętla narzędzi, prompt caching, obsługa overloaded (`OVERLOAD_TEXT`).
 - `agent-runtime.js` — `buildExecuteTool`, `selfCall` (wewn. HTTP), sanitizacja.
 - `logistics-agent.js` — kurier (quote/order/track/label/delete, szukanie adresu). Model `LOGISTICS_AGENT_MODEL`.
-- `accounting-agent.js` — FV PL, NIP/VIES, **upsert_contractor** (rozbija adres na pola).
+- `accounting-agent.js` — FV PL, NIP/VIES, **upsert_contractor** (rozbija adres na pola; nazwa prawna > handlowa), **extract_nip** (skan pełnych treści maili nadawcy zanim powie „brak VAT").
 - `accounting-agent-es.js` — FV ES/Kanary.
 - `communication-agent.js` / `communication-agent-es.js` — maile/odpowiedzi/tłumaczenia.
 - `operations-agent.js` — deale, transakcje, matching FV↔wysyłka, Google Sheets.
