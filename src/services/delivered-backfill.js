@@ -46,14 +46,24 @@ function extractDeliveredDate(tracking) {
 const _inFlight = new Set();
 let _bgRunning = false;
 
+// Negative-cache: paczki, których historia GK NIE ma zdarzenia doręczenia —
+// nie ma czego zapisać do bazy, więc bez tego byłyby odpytywane przy każdym
+// wejściu na listę. Pamiętamy „sprawdzone, brak daty" i ponawiamy najwcześniej
+// po TTL (in-memory — restart backendu czyści, to OK dla jednorazowych braków).
+const _noDate = new Map(); // orderNumber → timestamp ostatniej próby
+const NO_DATE_RETRY_MS = 6 * 60 * 60 * 1000;
+
 async function processOne(prisma, item) {
   const num = String(item.orderNumber);
   if (_inFlight.has(num)) return null;
+  const lastMiss = _noDate.get(num);
+  if (lastMiss && Date.now() - lastMiss < NO_DATE_RETRY_MS) return null;
   _inFlight.add(num);
   try {
     const t = await getOrderTracking(num);
     const d = extractDeliveredDate(t);
-    if (!d) return null;
+    if (!d) { _noDate.set(num, Date.now()); return null; }
+    _noDate.delete(num);
     const tx = await prisma.transaction.findFirst({
       where: { shipmentNumber: num },
       orderBy: { occurredAt: 'desc' },
