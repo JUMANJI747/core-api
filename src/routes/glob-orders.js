@@ -236,6 +236,17 @@ async function handleSearchOrders(req, res) {
       console.error('[glob/orders] linkedInvoice lookup failed (best-effort):', e.message);
     }
 
+    // Szczegół trackingu dla paczek W DRODZE — ostatnie zdarzenie przewoźnika
+    // ("W trakcie dostarczania" / "Gotowa do odbioru w punkcie" + lokalizacja).
+    // Cache w pamięci (TTL 20 min), kilka inline, reszta w tle.
+    try {
+      const { latestTrackingEvents } = require('../services/tracking-status');
+      const evs = await latestTrackingEvents(mapped.map(m => ({ orderNumber: m.orderNumber, status: m.status })));
+      for (const m of mapped) m.lastEvent = evs.get(String(m.orderNumber)) || null;
+    } catch (e) {
+      console.error('[glob/orders] tracking-status lookup failed (best-effort):', e.message);
+    }
+
     res.json({ ok: true, orders: mapped, total: mapped.length });
   } catch (err) {
     console.error('[glob/orders]', err.message);
