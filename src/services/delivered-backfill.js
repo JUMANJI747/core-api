@@ -93,8 +93,10 @@ async function processOne(prisma, item) {
 // Zwraca Map orderNumber → Date dla numerów dociągniętych INLINE (limit
 // równoległych wywołań GK — nie blokujemy listy dziesiątkami requestów).
 // Reszta (do bgLimit) leci w tle po kolei z throttlem — kolejne wejście na
-// listę przeczyta ją już z bazy.
-async function backfillDeliveredDates(prisma, items, { limit = 8, bgLimit = 40, throttleMs = 300 } = {}) {
+// listę przeczyta ją już z bazy. bgLimit 200 = całe jedno wejście na listę
+// (100 wysyłek + faktury) dociąga się za jednym razem; to jednorazowy
+// backfill, potem daty są w bazie.
+async function backfillDeliveredDates(prisma, items, { limit = 8, bgLimit = 200, throttleMs = 300 } = {}) {
   const need = (items || []).filter(i =>
     i && i.orderNumber && !i.deliveredAt && /^deliver/i.test(String(i.status || '')));
   const found = new Map();
