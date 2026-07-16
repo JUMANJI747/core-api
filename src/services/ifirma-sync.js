@@ -33,7 +33,25 @@ async function processIfirmaInvoices(invoices, prisma, opts = {}) {
   const nipToContractorId = new Map();
 
   for (const [nip, inv] of nipToInv) {
-    const existing = await prisma.contractor.findUnique({ where: { nip } });
+    let existing = await prisma.contractor.findUnique({ where: { nip } });
+    // NIP z/bez prefiksu kraju to TEN SAM numer — iFirma po rozdzieleniu
+    // PrefiksUE+NIP zwraca "ES78884986T", a u nas bywa "78884986T" (exact
+    // match nie łapał → sync tworzył DUPLIKAT po każdym wystawieniu FV).
+    // Ten sam tail-match co w /contractors/upsert.
+    if (!existing) {
+      try {
+        const { stripNipCountryPrefix, sameNip } = require('./contractor-merge');
+        const tail = stripNipCountryPrefix(nip);
+        if (tail && tail.length >= 6) {
+          const cands = await prisma.contractor.findMany({
+            where: { nip: { endsWith: tail, mode: 'insensitive' } },
+            take: 5,
+          });
+          existing = cands.find(c => sameNip(c.nip, nip)) || null;
+          if (existing) console.log(`[sync] NIP match po ogonie bez prefiksu: "${nip}" ≈ "${existing.nip}" (${existing.name})`);
+        }
+      } catch (e) { console.warn('[sync] tail-match NIP nieudany:', e.message); }
+    }
     if (existing) {
       contractorsSkipped++;
       nipToContractorId.set(nip, existing.id);

@@ -905,6 +905,12 @@ router.post('/admin/contractor-cleanup', async (req, res) => {
       const allowed = ['nip', 'email', 'primaryEmail', 'name', 'country', 'address', 'city', 'phone', 'postCode'];
       const data = {};
       for (const k of allowed) { if (updates[k] !== undefined) data[k] = updates[k]; }
+      // Zmiana email BEZ jawnego primaryEmail → aktualizuj OBA. Lista i wysyłka
+      // trackingu czytają primaryEmail w pierwszej kolejności — po edycji samego
+      // email „z wierzchu" dalej wisiał stary adres.
+      if (data.email !== undefined && updates.primaryEmail === undefined) {
+        data.primaryEmail = data.email ? String(data.email).trim().toLowerCase() : null;
+      }
       // Alias kodu pocztowego + auto-wyciąg gdy user wpisał go w adresie/mieście.
       const { extractPostCode } = require('../utils/address');
       if (data.postCode == null && (updates.postalCode || updates.zipCode)) data.postCode = updates.postalCode || updates.zipCode;
