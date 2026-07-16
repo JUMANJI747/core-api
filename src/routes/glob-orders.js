@@ -199,6 +199,16 @@ async function handleSearchOrders(req, res) {
           const inv = byNum[String(m.orderNumber)];
           m.linkedInvoice = inv ? { id: inv.id, number: inv.number, contractorName: inv.contractorName } : null;
         }
+        // Data doręczenia z trackera — do "DELIVERED · X dni temu" na liście
+        // (GK nie zwraca jej w liście zamówień). Jeden batch.
+        try {
+          const txs = await prisma.transaction.findMany({
+            where: { shipmentNumber: { in: numbers }, deliveredAt: { not: null } },
+            select: { shipmentNumber: true, deliveredAt: true },
+          });
+          const delivBy = new Map(txs.map(t => [String(t.shipmentNumber), t.deliveredAt]));
+          for (const m of mapped) m.deliveredAt = delivBy.get(String(m.orderNumber)) || null;
+        } catch (e) { console.error('[glob/orders] deliveredAt lookup failed (best-effort):', e.message); }
         // Auto-parowanie w tle (po kontrahencie + dacie) — kolejne wejście pokaże linki.
         try {
           const { autoPairInBackground } = require('../services/auto-pair-shipments');

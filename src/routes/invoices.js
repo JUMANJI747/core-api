@@ -2566,6 +2566,19 @@ router.get('/invoices', async (req, res) => {
     } catch (e) {
       console.error('[GET /invoices] GK cache load failed (best-effort):', e.message);
     }
+    // Data doręczenia z trackera (Transaction.deliveredAt) — GK w liście jej
+    // nie daje, a badge ma pokazywać "DELIVERED · X dni temu". Jeden batch.
+    const deliveredByNumber = {};
+    try {
+      const nums = [...new Set(list.map(i => i.shipmentNumber).filter(Boolean).map(String))];
+      if (nums.length) {
+        const txs = await prisma.transaction.findMany({
+          where: { shipmentNumber: { in: nums }, deliveredAt: { not: null } },
+          select: { shipmentNumber: true, deliveredAt: true },
+        });
+        for (const t of txs) deliveredByNumber[String(t.shipmentNumber)] = t.deliveredAt;
+      }
+    } catch (e) { console.error('[GET /invoices] deliveredAt lookup failed (best-effort):', e.message); }
     res.json(list.map(i => {
       // PRIORYTET: jawny link FV→wysyłka (i.shipmentNumber, ustawiony przy
       // zamówieniu kuriera z guzika przy fakturze). Status bierzemy na żywo z GK
@@ -2592,6 +2605,9 @@ router.get('/invoices', async (req, res) => {
           delivered: st === 'DELIVERED',
           shipped: !!st && !['NEW', 'CREATED', 'CANCELED', 'CANCELLED'].includes(st),
           manualDoc: !!s.manualDoc,
+          // Do liczby dni na badge'u: nadanie (z cache GK) + doręczenie (tracker).
+          creationDate: s.date || null,
+          deliveredAt: deliveredByNumber[String(s.number)] || null,
         },
       };
     }));
