@@ -1386,10 +1386,34 @@ router.delete('/:id/contacts/:contactId', async (req, res) => {
   try {
     const existing = await prisma.contractorContact.findFirst({
       where: { id: contactId, contractorId: id },
-      select: { id: true },
+      select: { id: true, type: true, value: true },
     });
     if (!existing) return res.status(404).json({ ok: false, error: 'contact not found for this contractor' });
     await prisma.contractorContact.delete({ where: { id: contactId } });
+    // Usunięty ADRES E-MAIL nie może zostać „z tyłu" w kolumnach primaryEmail/
+    // email — wysyłka trackingu czyta NAJPIERW primaryEmail (karta nie pokazuje
+    // go wprost), więc po skasowaniu kontaktu mail dalej szedł na usunięty
+    // adres. Czyścimy kolumny równe usuniętej wartości; gdy został inny kontakt
+    // e-mail, wskakuje on jako nowy primary.
+    if (existing.type === 'email' && existing.value) {
+      const removed = String(existing.value).trim().toLowerCase();
+      const c = await prisma.contractor.findUnique({ where: { id }, select: { email: true, primaryEmail: true } });
+      const data = {};
+      if (c && c.primaryEmail && c.primaryEmail.trim().toLowerCase() === removed) data.primaryEmail = null;
+      if (c && c.email && c.email.trim().toLowerCase() === removed) data.email = null;
+      if (Object.keys(data).length) {
+        const alt = await prisma.contractorContact.findFirst({
+          where: { contractorId: id, type: 'email' },
+          orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+          select: { value: true },
+        });
+        const altVal = alt && alt.value && alt.value.trim().toLowerCase() !== removed ? alt.value.trim() : null;
+        if ('primaryEmail' in data && altVal) data.primaryEmail = altVal.toLowerCase();
+        if ('email' in data && altVal) data.email = altVal;
+        await prisma.contractor.update({ where: { id }, data });
+        console.log(`[contractors/:id/contacts] usunięty email "${removed}" wyczyszczony z kolumn (nowy primary: ${data.primaryEmail || '—'})`);
+      }
+    }
     console.log(`[contractors/:id/contacts] deleted contact ${contactId} from contractor ${id}`);
     res.json({ ok: true });
   } catch (e) {

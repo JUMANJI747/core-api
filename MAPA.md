@@ -50,7 +50,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/ksef.js` | KSeF: sync sprzedaży (status) i kosztów |
 | `/api` | `routes/costs.js` | faktury kosztowe |
 | `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report, send-month-to-ksef, pair-wdt, pair-wdt-one |
-| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, **transactions/reassign-by-invoice** (przepnij transakcję do kontrahenta z FV — sprzątanie po starym fuzzy-parowaniu), backfille |
+| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, **transactions/reassign-by-invoice** (przepnij transakcję do kontrahenta z FV — sprzątanie po starym fuzzy-parowaniu), **contractors/split** (ROZKLEJENIE błędnie scalonych: przenosi FV po numerach + transakcje + maile po adresie/domenie na innego/nowego kontrahenta; dryRun→confirm), backfille |
 | `/api` | `routes/activity.js` | oś zdarzeń (ActivityEvent) |
 | `/api` | `routes/cron.js` | zadania cykliczne (raport miesięczny, sync) |
 | `/api` | `routes/transactions.js` | transakcje (deal cycle) |

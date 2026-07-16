@@ -1025,6 +1025,161 @@ router.post('/admin/contractor-cleanup', async (req, res) => {
   }
 });
 
+// POST /api/admin/contractors/split — ROZKLEJENIE błędnie scalonych kontrahentów.
+// Przenosi wskazane FV (po numerach) + ich transakcje + maile (po adresach/
+// domenach) ze źródłowego kontrahenta na docelowego (istniejącego po id albo
+// nowego z podanych danych). Usuwa przenoszone adresy z kontaktów/kolumn źródła.
+// body: {
+//   fromContractorId: string,
+//   invoiceNumbers: ["169/2026", ...],
+//   to: { contractorId } ALBO { name, nip?, email?, phone?, country?, city?, address?, postCode? },
+//   moveEmails?: ["adres@x.gr"], moveDomains?: ["kymasurf.gr"],
+//   dryRun: true (default) | confirm: true
+// }
+router.post('/admin/contractors/split', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { fromContractorId, invoiceNumbers = [], to = {}, moveEmails = [], moveDomains = [], confirm } = req.body || {};
+    const dryRun = !confirm;
+    if (!fromContractorId) return res.status(400).json({ ok: false, error: 'fromContractorId required' });
+    if (!Array.isArray(invoiceNumbers)) return res.status(400).json({ ok: false, error: 'invoiceNumbers must be an array' });
+
+    const from = await prisma.contractor.findUnique({ where: { id: fromContractorId } });
+    if (!from) return res.status(404).json({ ok: false, error: 'source contractor not found' });
+
+    // Target: istniejący po id, istniejący po NIP, albo (przy confirm) nowy.
+    let target = null;
+    let targetPlan = null;
+    if (to.contractorId) {
+      target = await prisma.contractor.findUnique({ where: { id: to.contractorId } });
+      if (!target) return res.status(404).json({ ok: false, error: 'target contractor not found' });
+    } else if (to.name) {
+      if (to.nip) target = await prisma.contractor.findUnique({ where: { nip: String(to.nip).trim() } });
+      if (!target) {
+        targetPlan = {
+          name: String(to.name).trim(),
+          nip: to.nip ? String(to.nip).trim() : null,
+          email: to.email ? String(to.email).trim() : null,
+          primaryEmail: to.email ? String(to.email).trim().toLowerCase() : null,
+          phone: to.phone || null,
+          country: to.country || from.country || null,
+          city: to.city || null,
+          address: to.address || null,
+          postCode: to.postCode || null,
+          type: 'BUSINESS',
+        };
+        if (!dryRun) target = await prisma.contractor.create({ data: targetPlan });
+      }
+    } else {
+      return res.status(400).json({ ok: false, error: 'to.contractorId or to.name required' });
+    }
+
+    // FV do przeniesienia — TYLKO z konta źródłowego, dokładne numery.
+    const invoices = await prisma.invoice.findMany({
+      where: { contractorId: from.id, number: { in: invoiceNumbers.map(String) } },
+      select: { id: true, number: true, issueDate: true, grossAmount: true, currency: true },
+    });
+    const notFound = invoiceNumbers.filter(n => !invoices.some(i => i.number === String(n)));
+
+    // Maile do przepięcia: po pełnym adresie i/lub domenie (fromEmail/toEmail).
+    const emailOr = [];
+    for (const a of moveEmails) {
+      emailOr.push({ fromEmail: { equals: String(a).trim(), mode: 'insensitive' } });
+      emailOr.push({ toEmail: { equals: String(a).trim(), mode: 'insensitive' } });
+    }
+    for (const d of moveDomains) {
+      const dom = '@' + String(d).trim().replace(/^@/, '');
+      emailOr.push({ fromEmail: { endsWith: dom, mode: 'insensitive' } });
+      emailOr.push({ toEmail: { endsWith: dom, mode: 'insensitive' } });
+    }
+    const emailWhere = emailOr.length ? { contractorId: from.id, OR: emailOr } : null;
+    const emailsCount = emailWhere ? await prisma.email.count({ where: emailWhere }) : 0;
+
+    const invIds = invoices.map(i => i.id);
+    const txWhere = invIds.length
+      ? { OR: [{ invoiceId: { in: invIds } }, { invoiceNumber: { in: invoices.map(i => i.number) } }] }
+      : null;
+    const txCount = txWhere ? await prisma.transaction.count({ where: txWhere }) : 0;
+
+    if (dryRun) {
+      return res.json({
+        ok: true, dryRun: true,
+        from: { id: from.id, name: from.name, nip: from.nip },
+        target: target ? { id: target.id, name: target.name, nip: target.nip } : { CREATE: targetPlan },
+        wouldMove: {
+          invoices: invoices.map(i => `${i.number} (${i.grossAmount} ${i.currency}, ${i.issueDate ? String(i.issueDate).slice(0, 10) : '—'})`),
+          invoiceNumbersNotFoundOnSource: notFound,
+          transactions: txCount,
+          emails: emailsCount,
+          emailAddressesRemovedFromSource: moveEmails,
+        },
+        note: 'To jest podgląd. Wykonanie: to samo body z {"confirm":true}.',
+      });
+    }
+
+    // ===== WYKONANIE =====
+    const moved = { invoices: 0, transactions: 0, emails: 0 };
+    if (invIds.length) {
+      const r = await prisma.invoice.updateMany({
+        where: { id: { in: invIds } },
+        data: { contractorId: target.id, contractorName: target.name },
+      });
+      moved.invoices = r.count;
+    }
+    if (txWhere) {
+      const r = await prisma.transaction.updateMany({
+        where: txWhere,
+        data: { contractorId: target.id, contractorName: target.name },
+      });
+      moved.transactions = r.count;
+    }
+    if (emailWhere) {
+      const r = await prisma.email.updateMany({ where: emailWhere, data: { contractorId: target.id } });
+      moved.emails = r.count;
+    }
+    // Przenoszone adresy: precz z kontaktów i kolumn ŹRÓDŁA, na cel gdy pusty.
+    for (const a of moveEmails) {
+      const val = String(a).trim();
+      await prisma.contractorContact.deleteMany({
+        where: { contractorId: from.id, type: 'email', value: { equals: val, mode: 'insensitive' } },
+      });
+      const fresh = await prisma.contractor.findUnique({ where: { id: from.id }, select: { email: true, primaryEmail: true } });
+      const data = {};
+      if (fresh.primaryEmail && fresh.primaryEmail.trim().toLowerCase() === val.toLowerCase()) data.primaryEmail = null;
+      if (fresh.email && fresh.email.trim().toLowerCase() === val.toLowerCase()) data.email = null;
+      if (Object.keys(data).length) await prisma.contractor.update({ where: { id: from.id }, data });
+      if (!target.primaryEmail && !target.email) {
+        await prisma.contractor.update({ where: { id: target.id }, data: { email: val, primaryEmail: val.toLowerCase() } });
+        target = await prisma.contractor.findUnique({ where: { id: target.id } });
+      }
+    }
+    // Domeny firmowe: przenieś z extras.domains źródła na cel.
+    if (moveDomains.length) {
+      const doms = moveDomains.map(d => String(d).trim().replace(/^@/, '').toLowerCase());
+      const srcEx = { ...(from.extras || {}) };
+      if (Array.isArray(srcEx.domains)) {
+        srcEx.domains = srcEx.domains.filter(d => !doms.includes(String(d).toLowerCase()));
+        await prisma.contractor.update({ where: { id: from.id }, data: { extras: srcEx } });
+      }
+      const tgtFresh = await prisma.contractor.findUnique({ where: { id: target.id } });
+      const tgtEx = { ...(tgtFresh.extras || {}) };
+      tgtEx.domains = Array.from(new Set([...(Array.isArray(tgtEx.domains) ? tgtEx.domains : []), ...doms]));
+      await prisma.contractor.update({ where: { id: target.id }, data: { extras: tgtEx } });
+    }
+    console.log(`[admin/contractors/split] ${from.name} → ${target.name}: FV=${moved.invoices}, tx=${moved.transactions}, maile=${moved.emails}`);
+    res.json({
+      ok: true, dryRun: false,
+      from: { id: from.id, name: from.name },
+      target: { id: target.id, name: target.name, nip: target.nip, email: target.primaryEmail || target.email },
+      moved,
+      invoiceNumbersNotFoundOnSource: notFound,
+    });
+  } catch (e) {
+    console.error('[admin/contractors/split]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/admin/vies-check — sprawdz NIP w VIES (pomijajac cache)
 router.post('/admin/vies-check', async (req, res) => {
   const { vatNumber: raw } = req.body || {};
