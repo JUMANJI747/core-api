@@ -56,6 +56,33 @@ async function buildIfirmaContractorPayload(prisma, contractor) {
     const blob = [street, city, contractor.address].filter(Boolean).join(' ');
     postCode = extractPostCode(blob) || '';
   }
+  // Kod z adresu DOSTAWY / extras.locations — częsty przypadek (Uhaina):
+  // billing bez kodu, ale delivery ma pełny adres z kodem (zwykle ten sam
+  // budynek). Lepszy kod z dostawy niż odrzucona FV.
+  if (!postCode) {
+    try {
+      const anyAddr = await prisma.contractorAddress.findFirst({
+        where: { contractorId: contractor.id, postalCode: { not: null } },
+        orderBy: [{ isPrimary: 'desc' }, { updatedAt: 'desc' }],
+        select: { postalCode: true, city: true, street: true },
+      });
+      if (anyAddr && anyAddr.postalCode) {
+        postCode = anyAddr.postalCode;
+        city = city || anyAddr.city || '';
+        street = street || anyAddr.street || '';
+        console.log(`[ifirma-payload] kod pocztowy z adresu dostawy dla ${contractor.name}: ${postCode}`);
+      }
+    } catch (_) { /* nieistotne */ }
+  }
+  if (!postCode && Array.isArray(cExtras.locations)) {
+    const loc = cExtras.locations.find(l => l && l.postCode);
+    if (loc) {
+      postCode = loc.postCode;
+      city = city || loc.city || '';
+      street = street || loc.street || '';
+      console.log(`[ifirma-payload] kod pocztowy z extras.locations dla ${contractor.name}: ${postCode}`);
+    }
+  }
 
   let country = contractor.country
     || (billingAddr && billingAddr.country)

@@ -50,7 +50,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/ksef.js` | KSeF: sync sprzedaży (status) i kosztów |
 | `/api` | `routes/costs.js` | faktury kosztowe |
 | `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report, send-month-to-ksef, pair-wdt, pair-wdt-one |
-| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, backfille |
+| `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, **transactions/reassign-by-invoice** (przepnij transakcję do kontrahenta z FV — sprzątanie po starym fuzzy-parowaniu), backfille |
 | `/api` | `routes/activity.js` | oś zdarzeń (ActivityEvent) |
 | `/api` | `routes/cron.js` | zadania cykliczne (raport miesięczny, sync) |
 | `/api` | `routes/transactions.js` | transakcje (deal cycle) |
@@ -96,7 +96,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `sudo-agent.js` — administracyjny (call_endpoint).
 
 ### Faktury / księgowość
-- `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex → duplikat po NIP → lista kontrahentów iFirmy → **detal ostatniej FV w iFirmie** (pełny blok Kontrahent — dla kontrahentów z importu historii); odzyskany adres UTRWALANY na kontrahencie. Kraj: gdy pusty a kontrahent zagraniczny — dobiera z prefiksu NIP UE / formy prawnej (ApS→DK). Na FV **krajowej** dla zagranicznego klienta iFirma dostaje `Kraj`=polska nazwa (`country-helper.toIfirmaKraj`), inaczej odrzuca kod pocztowy jako polski.
+- `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex → duplikat po NIP → **adres DOSTAWY/extras.locations (kod z delivery, gdy billing bez kodu)** → lista kontrahentów iFirmy → **detal ostatniej FV w iFirmie** (pełny blok Kontrahent — dla kontrahentów z importu historii); odzyskany adres UTRWALANY na kontrahencie. Kraj: gdy pusty a kontrahent zagraniczny — dobiera z prefiksu NIP UE / formy prawnej (ApS→DK). Na FV **krajowej** dla zagranicznego klienta iFirma dostaje `Kraj`=polska nazwa (`country-helper.toIfirmaKraj`), inaczej odrzuca kod pocztowy jako polski.
 - `ifirma-sync.js`, `ifirma-pdf-parser.js` — sync i parsowanie PDF iFirma.
 - `monthly-accounting.js` — zakres miesiąca + `buildReport` (pokrycie KSeF + WDT sparowane/niesparowane).
 - `wdt-pairing.js` — **`pairWdtSmart`** (Opus): dopasowanie FV WDT↔wysyłki + weryfikacja kraju (`isToPoland`); **`suggestForInvoice`** — podpowiedzi LLM dla DOWOLNEJ faktury (parowanie „LLM" przy fakturze, bez reguły zagranicy).

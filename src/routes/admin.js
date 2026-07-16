@@ -697,6 +697,44 @@ router.post('/admin/contractors/:id/unlink-es', async (req, res) => {
   }
 });
 
+// NAPRAWA: przepnij transakcję (deal cycle) do WŁAŚCIWEGO kontrahenta — tego
+// z faktury. Sprząta skutki starego fuzzy-parowania, które potrafiło przypiąć
+// cudzą FV/wysyłkę do złego kontrahenta (np. FV 86/2026 Żeglarza na karcie
+// Uhainy). body: { invoiceNumber } — transakcje z tą FV dostają kontrahenta
+// z rekordu Invoice.
+router.post('/admin/transactions/reassign-by-invoice', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const invoiceNumber = String((req.body && req.body.invoiceNumber) || '').trim();
+    if (!invoiceNumber) return res.status(400).json({ ok: false, error: 'invoiceNumber required' });
+    const inv = await prisma.invoice.findFirst({
+      where: { number: invoiceNumber },
+      orderBy: { createdAt: 'desc' },
+      include: { contractor: { select: { id: true, name: true } } },
+    });
+    if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${invoiceNumber}` });
+    if (!inv.contractorId) return res.status(400).json({ ok: false, error: `Faktura ${invoiceNumber} nie ma kontrahenta w bazie.` });
+
+    const before = await prisma.transaction.findMany({
+      where: { invoiceNumber },
+      select: { id: true, contractorId: true, contractorName: true, shipmentNumber: true },
+    });
+    const r = await prisma.transaction.updateMany({
+      where: { invoiceNumber },
+      data: { contractorId: inv.contractorId, contractorName: (inv.contractor && inv.contractor.name) || inv.contractorName || null },
+    });
+    res.json({
+      ok: true,
+      invoiceNumber,
+      correctContractor: { id: inv.contractorId, name: inv.contractor && inv.contractor.name },
+      reassigned: r.count,
+      before,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/admin/merge-contractors — STARY interfejs (primaryId/secondaryId),
 // deleguje do wspólnego services/contractor-merge (ten sam kod co
 // /admin/contractors/merge i dedupe-nip: kontakty, adresy, FK, aliasy,
