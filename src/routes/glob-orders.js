@@ -208,6 +208,22 @@ async function handleSearchOrders(req, res) {
           });
           const delivBy = new Map(txs.map(t => [String(t.shipmentNumber), t.deliveredAt]));
           for (const m of mapped) m.deliveredAt = delivBy.get(String(m.orderNumber)) || null;
+          // DELIVERED bez daty w bazie → dociągnij ją z historii trackingu GK
+          // (DELIVERED_TO_RECEIVER ma datę) i zapisz do Transaction; kilka
+          // inline (od razu widoczne), reszta w tle na kolejne wejścia.
+          const { backfillDeliveredDates } = require('../services/delivered-backfill');
+          const fetched = await backfillDeliveredDates(prisma, mapped.map(m => ({
+            orderNumber: m.orderNumber,
+            status: m.status,
+            deliveredAt: m.deliveredAt,
+            hash: m.hash,
+            creationDate: m.creationDate,
+            receiverName: (m.receiver && m.receiver.name) || null,
+          })));
+          for (const m of mapped) {
+            const d = fetched.get(String(m.orderNumber));
+            if (d) m.deliveredAt = d;
+          }
         } catch (e) { console.error('[glob/orders] deliveredAt lookup failed (best-effort):', e.message); }
         // Auto-parowanie w tle (po kontrahencie + dacie) — kolejne wejście pokaże linki.
         try {

@@ -2578,6 +2578,23 @@ router.get('/invoices', async (req, res) => {
         });
         for (const t of txs) deliveredByNumber[String(t.shipmentNumber)] = t.deliveredAt;
       }
+      // DELIVERED bez daty w bazie → dociągnij z historii trackingu GK
+      // (DELIVERED_TO_RECEIVER) i zapisz do Transaction; kilka inline, reszta w tle.
+      const { backfillDeliveredDates } = require('../services/delivered-backfill');
+      const items = list.filter(i => i.shipmentNumber).map(i => {
+        const o = gkByNumber[String(i.shipmentNumber)];
+        return o ? {
+          orderNumber: o.number,
+          status: o.status,
+          deliveredAt: deliveredByNumber[String(o.number)] || null,
+          hash: o.hash || null,
+          creationDate: o.date || null,
+          contractorId: i.contractorId || null,
+          receiverName: i.contractorName || null,
+        } : null;
+      }).filter(Boolean);
+      const fetched = await backfillDeliveredDates(prisma, items, { limit: 6 });
+      for (const [num, d] of fetched) deliveredByNumber[num] = d;
     } catch (e) { console.error('[GET /invoices] deliveredAt lookup failed (best-effort):', e.message); }
     res.json(list.map(i => {
       // PRIORYTET: jawny link FV→wysyłka (i.shipmentNumber, ustawiony przy
