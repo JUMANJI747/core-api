@@ -2080,7 +2080,9 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
 
     const recv = shipment.receiverAddress || shipment.receiver || shipment.recipient || {};
     const send = shipment.senderAddress || shipment.sender || {};
-    const carrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
+    // Kurier z GK bywa OBIEKTEM {name:...} — rozpakuj, inaczej "[object Object]".
+    const rawCarrierName = shipment.productName || shipment.carrier || (shipment.product && shipment.product.name) || '';
+    const carrierName = (rawCarrierName && typeof rawCarrierName === 'object') ? (rawCarrierName.name || '') : rawCarrierName;
 
     // GK /v1/orders sometimes returns shipments without trackingNumber populated
     // (the carrier number lives on a separate /v1/order/tracking?orderNumber=...
@@ -2213,6 +2215,9 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
       from: fromOverride,
       prisma,
       reqChatId,
+      // Nazwa z listu przewozowego + miasto — klient widzi, której paczki
+      // dotyczy wiadomość.
+      reference: [recv.name || recv.companyName, recv.city].filter(Boolean).join(', ') || null,
     });
     if (!r.ok) return { ok: false, error: r.error, search };
 
@@ -2254,21 +2259,31 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     const shipment = unwrapped[0];
     const recv = shipment.receiverAddress || shipment.receiver || {};
     const trackingNumber = shipment.trackingNumber || shipment.tracking || '';
-    const carrierName = shipment.courierName || shipment.carrier || shipment.productName || '';
+    // Kurier z GK bywa OBIEKTEM {name:...} — bez rozpakowania w mailu lądował
+    // "[object Object]".
+    const rawCarrier = shipment.courierName || shipment.carrier || shipment.productName || '';
+    const carrierName = (rawCarrier && typeof rawCarrier === 'object') ? (rawCarrier.name || '') : rawCarrier;
     const trackingUrl = buildTrackingUrl(carrierName, trackingNumber);
 
-    let toEmail = contractorEmailOverride || recv.email || '';
+    // NASZ własny adres (delivery@... zapisany w GK jako mail odbiorcy, gdy
+    // klient nie miał maila) NIE jest odbiorcą trackingu — filtr jak w send.
+    let toEmail = '';
+    if (isEmailAddr(contractorEmailOverride) && !isOwnEmailAddr(contractorEmailOverride)) toEmail = contractorEmailOverride.trim();
+    else if (isEmailAddr(recv.email) && !isOwnEmailAddr(recv.email)) toEmail = recv.email.trim();
     let resolvedContractor = null;
-    if (!toEmail || !toEmail.includes('@')) {
+    if (!toEmail) {
       const all = await prisma.contractor.findMany({
         select: { id: true, name: true, email: true, primaryEmail: true, country: true, nip: true },
       });
       const recvName = (recv.name || recv.companyName || recv.contactPerson || '').trim();
       if (recvName) {
-        const scored = all.map(c => ({ c, s: scoreContractor(c, recvName) })).filter(x => x.s >= 50).sort((a, b) => b.s - a.s);
+        // Próg 75, nie 50 — jedno wspólne słowo nazwy nie może podstawić
+        // CUDZEGO maila (lekcja z "Salty Crew" → "Tarifa Crew").
+        const scored = all.map(c => ({ c, s: scoreContractor(c, recvName) })).filter(x => x.s >= 75).sort((a, b) => b.s - a.s);
         if (scored.length) {
           resolvedContractor = scored[0].c;
-          toEmail = resolvedContractor.primaryEmail || resolvedContractor.email || toEmail;
+          const cand = resolvedContractor.primaryEmail || resolvedContractor.email || '';
+          if (isEmailAddr(cand) && !isOwnEmailAddr(cand)) toEmail = cand.trim();
         }
       }
     }
@@ -2278,7 +2293,8 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     // przycisk „Wyślij mailem".
     const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
     const lang = await resolveTrackingLang(prisma, resolvedContractor, country);
-    const msg = compose({ country, lang, trackingNumber, carrier: carrierName, trackingUrl });
+    const reference = [recv.name || recv.companyName, recv.city].filter(Boolean).join(', ') || null;
+    const msg = compose({ country, lang, trackingNumber, carrier: carrierName, trackingUrl, reference });
 
     // Check if already sent
     const alreadySent = toEmail ? await prisma.email.findFirst({

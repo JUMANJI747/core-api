@@ -129,17 +129,24 @@ function escapeHtml(s) {
   }[c]));
 }
 
-function compose({ country, lang, trackingNumber, carrier, trackingUrl }) {
+function compose({ country, lang, trackingNumber, carrier, trackingUrl, reference }) {
   // lang ma pierwszenstwo (np. wykryty z maili kontrahenta), inaczej z kraju.
   const chosen = (lang && TEMPLATES[String(lang).toLowerCase()]) ? String(lang).toLowerCase() : pickLang(country);
   const t = TEMPLATES[chosen] || TEMPLATES.en;
   const linkOrFallback = trackingUrl || '(tracking link unavailable)';
+  // Kurier bywa obiektem GK {name:...} — nigdy więcej "[object Object]" w mailu.
+  const carrierName = (carrier && typeof carrier === 'object') ? (carrier.name || '') : (carrier || '');
+  // reference = nazwa/tytuł z listu przewozowego (odbiorca + miasto) — klient
+  // od razu widzi, której przesyłki dotyczy wiadomość. Emoji zamiast etykiety,
+  // żeby nie tłumaczyć jej na 8 języków.
+  const refLine = reference ? `📦 ${reference}` : null;
   const text = [
     t.intro,
     '',
     t.paragraph,
     linkOrFallback,
-    `${t.carrierLabel}: ${carrier || '—'}${trackingNumber ? ', ' + t.numberLabel + ': ' + trackingNumber : ''}`,
+    `${t.carrierLabel}: ${carrierName || '—'}${trackingNumber ? ', ' + t.numberLabel + ': ' + trackingNumber : ''}`,
+    ...(refLine ? [refLine] : []),
     '',
     t.signOff,
   ].join('\n');
@@ -150,7 +157,7 @@ function compose({ country, lang, trackingNumber, carrier, trackingUrl }) {
   const htmlLines = [
     `<p>${escapeHtml(t.intro)}</p>`,
     `<p>${escapeHtml(t.paragraph)}<br>${linkHtml}</p>`,
-    `<p>${escapeHtml(t.carrierLabel)}: ${escapeHtml(carrier || '—')}${trackingNumber ? `, ${escapeHtml(t.numberLabel)}: ${escapeHtml(trackingNumber)}` : ''}</p>`,
+    `<p>${escapeHtml(t.carrierLabel)}: ${escapeHtml(carrierName || '—')}${trackingNumber ? `, ${escapeHtml(t.numberLabel)}: ${escapeHtml(trackingNumber)}` : ''}${refLine ? `<br>${escapeHtml(refLine)}` : ''}</p>`,
     `<p style="white-space:pre-line">${escapeHtml(t.signOff)}</p>`,
   ];
   const html =
@@ -165,12 +172,12 @@ function compose({ country, lang, trackingNumber, carrier, trackingUrl }) {
 // confirmation that includes the active link, so we can see exactly what
 // went out. Best-effort — caller doesn't need to await unless it cares.
 async function sendTrackingNotification({
-  toEmail, country, lang, trackingNumber, carrier, from, prisma, reqChatId,
+  toEmail, country, lang, trackingNumber, carrier, from, prisma, reqChatId, reference,
 }) {
   if (!toEmail) return { ok: false, error: 'no recipient email' };
   if (!trackingNumber) return { ok: false, error: 'no tracking number' };
   const trackingUrl = buildTrackingUrl(carrier, trackingNumber, country);
-  const { subject, text, html } = compose({ country, lang, trackingNumber, carrier, trackingUrl });
+  const { subject, text, html } = compose({ country, lang, trackingNumber, carrier, trackingUrl, reference });
 
   let fromEmail = from || DEFAULT_FROM;
   if (!findAccount(fromEmail)) {
