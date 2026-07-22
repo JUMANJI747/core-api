@@ -1,2 +1,2 @@
 [phases.setup]
-aptPkgs = ["ghostscript"]
+aptPkgs = ["ghostscript", "poppler-utils", "imagemagick", "tesseract-ocr"]

@@ -31,6 +31,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | Prefix URL | Plik | Obszar |
 |---|---|---|
 | `/` | `routes/map.js` | health/landing |
+| `/` | `routes/preprocess-scan.js` | **POST /preprocess-scan** (n8n, przed OCR): cyfrowy PDF → `{skip:true}`; skan/obraz → strony PNG 300 dpi z korektą obrotu (tesseract OSD) + deskew/normalize → `{pages:[base64…]}`. Auth: `x-token` = `PREPROCESS_TOKEN` (brak env = otwarty), własny limit body 25 MB, POZA /api. Wymaga aptPkgs: poppler-utils, imagemagick, tesseract-ocr |
 | `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK), **GET :id/shipment-addresses** (adresy dostaw ze WSZYSTKICH źródeł: ContractorAddress → extras.locations → wysyłki powiązane przez Transaction/Invoice → adres paczki z GK po NUMERZE — działa gdy nazwa odbiorcy ≠ nazwa kontrahenta; zbiera też z DUPLIKATÓW po NIP/nazwie) |
 | `/api/deals` | `routes/deals.js` | deale |
 | `/api/consignments` | `routes/consignments.js` | komisy/konsygnacje |

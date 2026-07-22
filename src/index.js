@@ -14,6 +14,12 @@ const express = require('express');
 const prisma = require('./db');
 
 const app = express();
+// ============ PREPROCESS SCAN (n8n) ============
+// Montowany PRZED globalnym express.json: route ma WŁASNY parser (limit 25 MB
+// tylko dla niego) i żyje POZA /api (auth = x-token / PREPROCESS_TOKEN,
+// bez x-api-key). Preprocessing skanów paragonów przed OCR.
+app.use('/', require('./routes/preprocess-scan'));
+
 // Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
 // (base64 zwieksza rozmiar o ~33%). UI dopuszcza ~20 MB realnych plikow ->
 // po zakodowaniu ~27 MB, wiec backend musi przyjac wiekszy body. Wczesniej '5mb'
