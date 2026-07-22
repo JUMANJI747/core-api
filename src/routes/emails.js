@@ -2256,9 +2256,59 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     const unwrapped = Array.isArray(items) && items.length === 1 && items[0] && Array.isArray(items[0].results) ? items[0].results : items;
     if (!unwrapped || !unwrapped.length) return res.json({ ok: false, error: `No shipment found for "${search}"` });
 
-    const shipment = unwrapped[0];
+    // Search wygląda jak konkretny numer GK/kuriera → bierz DOKŁADNIE tę
+    // paczkę, nie pierwszą z listy. GK przy bliźniaczych wysyłkach (np.
+    // FedEx aktywna + DPD anulowana dla tego samego odbiorcy) zwracał
+    // najpierw tę złą — podgląd pokazywał tracking ANULOWANEJ paczki.
+    // Ten sam bezpiecznik co w ścieżce wysyłki (looksLikeTracking).
+    let shipment = unwrapped[0];
+    const wanted = String(search).trim();
+    if (/^(?:GK)?\d{9,}$/i.test(wanted)) {
+      const exact = unwrapped.find(o =>
+        String(o.trackingNumber || '').trim() === wanted ||
+        String(o.tracking || '').trim() === wanted ||
+        String(o.number || '').trim() === wanted ||
+        String(o.orderNumber || '').trim() === wanted ||
+        String(o.hash || '').trim() === wanted);
+      if (!exact) {
+        return res.json({
+          ok: false,
+          error: `Podano konkretny numer "${wanted}", ale GK zwrócił ${unwrapped.length} innych paczek — nie podstawiam cudzej/anulowanej.`,
+          gotShipmentNumbers: unwrapped.slice(0, 5).map(o => ({
+            orderNumber: o.number || o.orderNumber,
+            tracking: o.trackingNumber || o.tracking,
+            carrier: (o.carrier && typeof o.carrier === 'object') ? o.carrier.name : o.carrier,
+          })),
+        });
+      }
+      shipment = exact;
+    }
     const recv = shipment.receiverAddress || shipment.receiver || {};
-    const trackingNumber = shipment.trackingNumber || shipment.tracking || '';
+    let trackingNumber = shipment.trackingNumber || shipment.tracking || '';
+    // Świeża paczka bywa bez numeru kuriera w liście GK — dociągnij go jak w
+    // ścieżce wysyłki (tracking endpoint, potem etykieta PDF), żeby podgląd
+    // i share miały działający link.
+    if (!trackingNumber) {
+      const ordNum = shipment.number || shipment.orderNumber;
+      if (ordNum) {
+        try {
+          const { getOrderTracking } = require('../glob-client');
+          const t = await getOrderTracking(ordNum);
+          const candidate = t && (t.trackingNumber || t.tracking
+            || (t.parcels && t.parcels[0] && t.parcels[0].trackingNumber)
+            || (t.statuses && t.statuses[0] && t.statuses[0].number)
+            || (Array.isArray(t) && t[0] && t[0].trackingNumber));
+          if (candidate && String(candidate).trim()) trackingNumber = String(candidate).trim();
+        } catch (e) { console.warn('[send-tracking-email/preview] getOrderTracking failed:', e.message); }
+      }
+      if (!trackingNumber && shipment.hash) {
+        try {
+          const { extractTrackingFromLabel } = require('../services/label-tracking');
+          const fromLabel = await extractTrackingFromLabel(shipment.hash);
+          if (fromLabel) trackingNumber = fromLabel;
+        } catch (e) { console.warn('[send-tracking-email/preview] label tracking failed:', e.message); }
+      }
+    }
     // Kurier z GK bywa OBIEKTEM {name:...} — bez rozpakowania w mailu lądował
     // "[object Object]".
     const rawCarrier = shipment.courierName || shipment.carrier || shipment.productName || '';
