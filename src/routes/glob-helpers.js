@@ -5,7 +5,8 @@ function normalizeText(s) {
 }
 
 const PACKAGE_PRESETS = {
-  maly_kartonik: { name: 'Mały kartonik (30 szt)', weight: 1, length: 20, width: 20, height: 10 },
+  // Domyślny karton (user: „jak nic nie podałem to 30/20/10, 1 kg").
+  maly_kartonik: { name: 'Mały kartonik (30 szt)', weight: 1, length: 30, width: 20, height: 10 },
   duzy_karton: { name: 'Duży karton (40×40×40)', weight: 10, length: 40, width: 40, height: 40 },
   paczkomat_a: { name: 'Paczkomat A (mały)', weight: 1, length: 38, width: 64, height: 8 },
   paczkomat_b: { name: 'Paczkomat B (średni)', weight: 2, length: 38, width: 64, height: 19 },

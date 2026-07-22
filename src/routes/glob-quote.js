@@ -625,7 +625,7 @@ router.post('/glob/quote', async (req, res) => {
       height = defaultPreset.height;
       dimensionsSource = 'default (maly_kartonik fallback — brak items/preset/faktury)';
       console.log('[glob/quote] Fallback to maly_kartonik');
-      warnings.push('UŻYTO DOMYŚLNYCH WYMIARÓW (mały kartonik 20×20×10 cm, 1 kg) — żadne wymiary nie zostały podane w request. Wycena prawdopodobnie zaniżona dla większej paczki.');
+      warnings.push('UŻYTO DOMYŚLNYCH WYMIARÓW (mały kartonik 30×20×10 cm, 1 kg) — żadne wymiary nie zostały podane w request. Wycena prawdopodobnie zaniżona dla większej paczki.');
     }
 
     if (!weight || !length || !width || !height) {

@@ -29,7 +29,7 @@ NIGDY nie konwertuj liczby produktów / kartoników na cm/kg w głowie — to ha
 
 DOMYŚLNE ZACHOWANIE — user mówi tylko "Wyślij/Wyceń/Zamów kuriera/paczkę do X" bez sztuk/kartonów/wymiarów:
 → wywołaj quote_shipping z receiverSearch=X (oraz deliveryAddress gdy user podał adres inline) i invoiceNumber="ostatnia"
-→ backend weźmie items z ostatniej faktury kontrahenta; a gdy faktury NIE MA (nowy kontrahent) użyje DOMYŚLNEGO pakietu (mały kartonik 20×20×10 cm, 1 kg) i wyceni — zwróci tylko warning, który pokażesz.
+→ backend weźmie items z ostatniej faktury kontrahenta; a gdy faktury NIE MA (nowy kontrahent) użyje DOMYŚLNEGO pakietu (mały kartonik 30×20×10 cm, 1 kg) i wyceni — zwróci tylko warning, który pokażesz.
 → adres z bazy (extras.locations) lub podany inline zostanie użyty automatycznie
 ⛔ NIGDY nie pytaj usera o wymiary/wagę z własnej inicjatywy ("Brakuje mi wymiarów..."). To była realna wpadka — agent pytał, choć backend ma domyślny pakiet. Zawsze najpierw wywołaj quote_shipping i pokaż wynik (z ewentualnym warningiem o domyślnych wymiarach).
 → O WYMIARY pytaj WYŁĄCZNIE gdy backend zwróci needsItems (faktura BEZ pozycji). O ADRES pytaj WYŁĄCZNIE gdy backend zwróci needsAddress.
@@ -43,7 +43,7 @@ Items podawaj WYŁĄCZNIE gdy w bieżącym query user wprost mówi liczby ("60 s
 niż wcześniejsze wyceny w rozmowie (inna nazwa/adres), NIE przenoś items ani
 wymiarów z poprzednich wiadomości — tamto zamówienie było dla INNEGO klienta.
 Brak sztuk w bieżącej wiadomości przy nowym odbiorcy → wywołaj quote_shipping
-BEZ items (backend da domyślny mały kartonik 20×20×10, 1 kg i pokaże warning).
+BEZ items (backend da domyślny mały kartonik 30×20×10, 1 kg i pokaże warning).
 
 POKAZYWANIE ŹRÓDŁA DANYCH:
 W odpowiedzi po quote_shipping ZAWSZE pokaż user-owi 2 wiersze ze źródłem:

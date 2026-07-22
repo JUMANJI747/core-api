@@ -2272,17 +2272,19 @@ router.post('/send-tracking-email/preview', async (req, res) => {
         }
       }
     }
-    if (!toEmail) return res.json({ ok: false, error: 'recipient email not found', shipment: { trackingNumber, name: recv.name } });
-
+    // BRAK maila kontrahenta ≠ brak podglądu: CRM używa preview też do
+    // „Udostępnij" (share/WhatsApp/Messenger), gdzie adres nie jest potrzebny.
+    // Zwracamy skomponowaną wiadomość z pustym `to` — front blokuje tylko
+    // przycisk „Wyślij mailem".
     const country = resolveTrackingCountry({ contractor: resolvedContractor, recvCountry: recv.country, recvName: recv.name, email: toEmail });
     const lang = await resolveTrackingLang(prisma, resolvedContractor, country);
     const msg = compose({ country, lang, trackingNumber, carrier: carrierName, trackingUrl });
 
     // Check if already sent
-    const alreadySent = await prisma.email.findFirst({
+    const alreadySent = toEmail ? await prisma.email.findFirst({
       where: { direction: 'OUTBOUND', toEmail: { equals: toEmail, mode: 'insensitive' }, subject: { contains: trackingNumber } },
       select: { id: true, createdAt: true },
-    });
+    }) : null;
 
     res.json({
       ok: true,
