@@ -2009,21 +2009,18 @@ async function processTrackingSearch(prisma, { search, contractorEmail, from: fr
 
     let items = [];
     let usedSearch = null;
-    // GK's /v1/orders sometimes wraps the page as [{offset,total,limit,results:[...]}]
-    // — that wrapper-array shape was the cause of an early dropped-100-records
-    // bug. Unwrap it consistently with glob-orders.js extractOrdersResults.
-    function unwrapGkOrders(data) {
-      if (!data) return [];
-      if (Array.isArray(data) && data.length === 1 && data[0] && Array.isArray(data[0].results)) {
-        return data[0].results;
-      }
-      if (Array.isArray(data)) return data;
-      return data.results || data.items || data.data || [];
-    }
+    // GK /v1/orders NIE MA wyszukiwania — `search` był ignorowany i pętla
+    // dostawała po prostu 20 NAJNOWSZYCH paczek (stąd tracking „pierwszej
+    // z brzegu" / odmowy dla starszych numerów). Pobieramy ostatnie ~300
+    // JEDNYM ciągiem i filtrujemy LOKALNIE: numer → exact, nazwa → 3-tier.
+    const { fetchOrdersPaged, findOrderInList, matchOrdersByQuery } = require('../glob-client');
+    const allOrders = await fetchOrdersPaged(3);
     for (const q of [...new Set(searches.filter(Boolean))]) {
-      const gkRes = await getOrders({ search: q, limit: 20 });
-      const got = unwrapGkOrders(gkRes);
-      if (Array.isArray(got) && got.length > 0) {
+      const isNumberLike = /^(?:GK)?\d{9,}$/i.test(String(q).trim());
+      const got = isNumberLike
+        ? [findOrderInList(allOrders, q)].filter(Boolean)
+        : matchOrdersByQuery(allOrders, q);
+      if (got.length > 0) {
         items = got;
         usedSearch = q;
         break;
@@ -2251,37 +2248,23 @@ router.post('/send-tracking-email/preview', async (req, res) => {
     const contractorEmailOverride = (req.body || {}).contractorEmail;
     if (!search) return res.json({ ok: false, error: 'search required' });
 
-    const data = await getOrders({ search, limit: 5 });
-    const items = (data && (data.results || data.items || data.data)) || (Array.isArray(data) ? data : []);
-    const unwrapped = Array.isArray(items) && items.length === 1 && items[0] && Array.isArray(items[0].results) ? items[0].results : items;
-    if (!unwrapped || !unwrapped.length) return res.json({ ok: false, error: `No shipment found for "${search}"` });
-
-    // Search wygląda jak konkretny numer GK/kuriera → bierz DOKŁADNIE tę
-    // paczkę, nie pierwszą z listy. GK przy bliźniaczych wysyłkach (np.
-    // FedEx aktywna + DPD anulowana dla tego samego odbiorcy) zwracał
-    // najpierw tę złą — podgląd pokazywał tracking ANULOWANEJ paczki.
-    // Ten sam bezpiecznik co w ścieżce wysyłki (looksLikeTracking).
-    let shipment = unwrapped[0];
+    // GK /v1/orders NIE MA wyszukiwania (search był ignorowany — leciały po
+    // prostu najnowsze paczki). Pobieramy ostatnie ~300 i szukamy LOKALNIE:
+    // numer GK/kuriera → dokładne dopasowanie, nazwa → filtr jak ekran Wysyłek.
+    const { fetchOrdersPaged, findOrderInList, matchOrdersByQuery } = require('../glob-client');
+    const allOrders = await fetchOrdersPaged(3);
     const wanted = String(search).trim();
+    let shipment = null;
     if (/^(?:GK)?\d{9,}$/i.test(wanted)) {
-      const exact = unwrapped.find(o =>
-        String(o.trackingNumber || '').trim() === wanted ||
-        String(o.tracking || '').trim() === wanted ||
-        String(o.number || '').trim() === wanted ||
-        String(o.orderNumber || '').trim() === wanted ||
-        String(o.hash || '').trim() === wanted);
-      if (!exact) {
-        return res.json({
-          ok: false,
-          error: `Podano konkretny numer "${wanted}", ale GK zwrócił ${unwrapped.length} innych paczek — nie podstawiam cudzej/anulowanej.`,
-          gotShipmentNumbers: unwrapped.slice(0, 5).map(o => ({
-            orderNumber: o.number || o.orderNumber,
-            tracking: o.trackingNumber || o.tracking,
-            carrier: (o.carrier && typeof o.carrier === 'object') ? o.carrier.name : o.carrier,
-          })),
-        });
+      shipment = findOrderInList(allOrders, wanted);
+      if (!shipment) {
+        return res.json({ ok: false, error: `Nie znalazłem paczki o numerze "${wanted}" w ostatnich ${allOrders.length} zamówieniach GK — nie podstawiam innej.` });
       }
-      shipment = exact;
+    } else {
+      const hits = matchOrdersByQuery(allOrders, wanted);
+      if (!hits.length) return res.json({ ok: false, error: `No shipment found for "${search}"` });
+      hits.sort((a, b) => new Date(b.createdAt || b.creationDate || 0) - new Date(a.createdAt || a.creationDate || 0));
+      shipment = hits[0];
     }
     const recv = shipment.receiverAddress || shipment.receiver || {};
     let trackingNumber = shipment.trackingNumber || shipment.tracking || '';

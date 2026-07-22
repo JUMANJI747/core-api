@@ -91,6 +91,59 @@ async function getOrders(params = {}) {
   return resp.body;
 }
 
+// ============ LOKALNE „WYSZUKIWANIE" ZAMÓWIEŃ ============
+// GK /v1/orders NIE MA wyszukiwania (filtry tylko status/daty) — parametr
+// `search` był ignorowany i API zwracało po prostu najnowsze zamówienia.
+// Dlatego szukanie robimy LOKALNIE: pobieramy strony po 100 i filtrujemy.
+
+async function fetchOrdersPaged(maxPages = 3, pageSize = 100) {
+  const all = [];
+  for (let p = 0; p < maxPages; p++) {
+    const data = await getOrders({ limit: pageSize, offset: p * pageSize });
+    let list = data;
+    if (Array.isArray(list) && list.length === 1 && list[0] && Array.isArray(list[0].results)) list = list[0].results;
+    else if (!Array.isArray(list)) list = (list && (list.results || list.items || list.data)) || [];
+    if (!Array.isArray(list) || !list.length) break;
+    all.push(...list);
+    if (list.length < pageSize) break;
+  }
+  return all;
+}
+
+// Dokładne dopasowanie po numerze GK / numerze kuriera / hashu (pure, bez IO).
+function findOrderInList(orders, wanted) {
+  const w = String(wanted || '').trim().toUpperCase();
+  if (!w) return null;
+  return (orders || []).find(o => [o.number, o.orderNumber, o.trackingNumber, o.tracking, o.hash]
+    .some(v => v && String(v).trim().toUpperCase() === w)) || null;
+}
+
+// Filtr po nazwie/mieście/mailu odbiorcy itd. — te same trzy poziomy co ekran
+// Wysyłek (substring → collapsed → all-tokens). Pure, bez IO.
+function matchOrdersByQuery(orders, query) {
+  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const q = norm(query).trim();
+  if (!q) return [];
+  const qCollapsed = q.replace(/\s+/g, '');
+  const qTokens = q.split(/\s+/).filter(t => t.length >= 3);
+  return (orders || []).filter(o => {
+    const recv = o.receiverAddress || o.receiver || {};
+    const send = o.senderAddress || o.sender || {};
+    const fields = [
+      o.orderNumber, o.number, o.hash, o.trackingNumber, o.tracking,
+      recv.name, recv.companyName, recv.contactPerson, recv.city, recv.email, recv.contactEmail,
+      send.name, send.companyName, send.city,
+    ].filter(Boolean).map(norm);
+    if (fields.some(f => f.includes(q))) return true;
+    if (qCollapsed.length >= 4 && fields.some(f => f.replace(/\s+/g, '').includes(qCollapsed))) return true;
+    if (qTokens.length >= 1) {
+      const haystack = fields.join(' ');
+      if (qTokens.every(t => haystack.includes(t))) return true;
+    }
+    return false;
+  });
+}
+
 // GK tracking endpoint: GET /v1/order/tracking?orderNumber=GK260...
 // (NOT orderHash — earlier we passed the hash and GK returned empty.)
 // Response shape per docs: { trackingNumber, status, ... } per carrier.
@@ -343,4 +396,4 @@ async function getCountries(acceptLanguage = 'pl') {
   return resp.body;
 }
 
-module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, extractPickupSlots, getCustomRequiredFields, getCountries };
+module.exports = { getToken, getSenders, getReceivers, getOrders, getOrderTracking, getOrderLabels, getProducts, createOrder, deleteOrder, getQuote, getAddons, getPickupTimes, findNearestPickupDate, extractPickupSlots, getCustomRequiredFields, getCountries, fetchOrdersPaged, findOrderInList, matchOrdersByQuery };
