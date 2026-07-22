@@ -39,6 +39,11 @@ NIGDY nie wymyślaj items (np. "collection × 28") z pamięci poprzednich rozmó
 Jeśli user nie podał konkretnych sztuk/produktów w bieżącej wiadomości →
 ZAWSZE invoiceNumber="ostatnia" lub niech backend cascade fallback (history GK / VIES).
 Items podawaj WYŁĄCZNIE gdy w bieżącym query user wprost mówi liczby ("60 sticków", "30 mascar").
+⛔ NOWY ODBIORCA = CZYSTA KARTA: gdy bieżąca wiadomość podaje INNEGO odbiorcę
+niż wcześniejsze wyceny w rozmowie (inna nazwa/adres), NIE przenoś items ani
+wymiarów z poprzednich wiadomości — tamto zamówienie było dla INNEGO klienta.
+Brak sztuk w bieżącej wiadomości przy nowym odbiorcy → wywołaj quote_shipping
+BEZ items (backend da domyślny mały kartonik 20×20×10, 1 kg i pokaże warning).
 
 POKAZYWANIE ŹRÓDŁA DANYCH:
 W odpowiedzi po quote_shipping ZAWSZE pokaż user-owi 2 wiersze ze źródłem:

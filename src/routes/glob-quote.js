@@ -920,7 +920,9 @@ router.post('/glob/quote', async (req, res) => {
           const rcvName = receiver.name || '';
           const rcvCity = receiver.city || '';
           const head = `📦 Wyceny kuriera → ${rcvName}${rcvCity ? ` (${rcvCity})` : ''}\n` +
-            `Paczka: ${weight}kg ${length}×${width}×${height}cm\n` +
+            // Źródło wymiarów W push-u — user od razu widzi, SKĄD paczka
+            // (default/items/faktura) i wyłapie, gdy agent przemycił stare items.
+            `Paczka: ${weight}kg ${length}×${width}×${height}cm${dimensionsSource ? ` (${dimensionsSource})` : ''}\n` +
             // Warningi (domyślne wymiary, kraj=PL fallback…) jadą W TEJ wiadomości —
             // agent przy telegramPushed=true milczy, więc inaczej by zniknęły.
             (warnings.length ? `⚠ ${warnings.join('\n⚠ ')}\n` : '') +
