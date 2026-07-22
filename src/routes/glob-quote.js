@@ -282,12 +282,19 @@ router.post('/glob/quote', async (req, res) => {
     // also given so we keep contractorId for invoice auto-lookups.
     if (deliveryAddress && (deliveryAddress.city || deliveryAddress.street)) {
       if (receiverSearch) {
-        // Use the same fuzzy logic as the regular contractor lookup so
-        // typo/spelling variants ("HolaOla" vs "HOLA OLA RIBADEO SLU") still
-        // bind the contractor — needed below to backfill missing fields
-        // (postCode, phone, email) from extras.locations.
+        // Kontrahenta z bazy podpinamy TYLKO przy PEWNYM dopasowaniu (wysoki
+        // score albo równość zbioru słów nazwy). WKLEJONE DANE SĄ ŚWIĘTE —
+        // fuzzy z progiem 50 podpinał po jednym wspólnym słowie ("Salty Crew
+        // Vieux Boucau" → "Tarifa Crew", "Extrem surf shop" → "Surf Inc...")
+        // i cudza nazwa szła na etykietę, a cudze locations do backfillu.
+        const { sameContractorName } = require('../services/contractor-match');
         const scored = await findBestContractors(prisma, receiverSearch, { minScore: 50 });
-        if (scored.length) contractor = scored[0].contractor;
+        const top = scored[0];
+        if (top && (top.score >= 80 || sameContractorName(receiverSearch, top.contractor.name))) {
+          contractor = top.contractor;
+        } else if (top) {
+          console.log(`[glob/quote] inline_address: słaby match "${receiverSearch}" → "${top.contractor.name}" (score ${top.score}) — IGNORUJĘ, jadę z wklejonymi danymi`);
+        }
       }
 
       // Backfill missing deliveryAddress fields from contractor's saved
@@ -302,7 +309,10 @@ router.post('/glob/quote', async (req, res) => {
       ) || savedLocs[0] || {};
 
       receiver = {
-        name: (contractor && contractor.name) || receiverSearch || 'Receiver',
+        // Nazwa odbiorcy = to, co PODAŁ user (na etykietę idzie wklejona nazwa,
+        // nawet gdy kontrahent z bazy jest podpięty — nazwa w bazie bywa inna
+        // niż szyld/oddział, do którego jedzie paczka).
+        name: receiverSearch || (contractor && contractor.name) || 'Receiver',
         contractorId: contractor ? contractor.id : null,
         city: deliveryAddress.city || matchedLoc.city || (contractor && contractor.city) || '',
         postCode: deliveryAddress.postCode || matchedLoc.postCode || '',
