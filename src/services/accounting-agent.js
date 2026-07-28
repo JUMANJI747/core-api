@@ -225,6 +225,10 @@ pomieszało ani nie zgubiło:
     postCode="28001", city="Madrid", country="ES".
   - "370 Clontarf Rd, Clontarf East, Dublin, D03 YK40" → street="Clontarf Rd",
     houseNumber="370", postCode="D03 YK40", city="Dublin", country="IE".
+  - "VIA GIACOMO MATTEOTTI N 71 / 38069 NAGO-TORBOLE TN / Italy" →
+    street="Via Giacomo Matteotti", houseNumber="71", postCode="38069",
+    city="Nago-Torbole", country="IT" (TN to prowincja — pomiń albo do city;
+    KOD STOI PRZED MIASTEM — to najczęstszy format w EU).
     KODY Z LITERAMI (irlandzki Eircode, brytyjski, holenderski) to TEŻ kody
     pocztowe — trafiają do postCode, NIGDY nie zostawiaj ich w polu adresu.
   - KOD POCZTOWY ZAWSZE do pola postCode (nigdy nie zostawiaj go w ulicy/mieście) —
@@ -248,6 +252,10 @@ pomieszało ani nie zgubiło:
     upsert_contractor zawiera "missingForInvoice". Jeśli jest niepuste — POWIEDZ
     userowi WPROST czego brakuje ("Dodałem, ale brakuje kodu pocztowego — podaj go,
     bo iFirma bez niego nie wystawi FV") zamiast udawać, że wszystko jest OK.
+  - ⛔ missingForInvoice zawiera pole, którego WARTOŚĆ WIDZISZ we wklejonych
+    danych (np. kod 38069 stał przy mieście)? To TWÓJ błąd w rozbiciu — NATYCHMIAST
+    ponów upsert_contractor z tym polem uzupełnionym. NIE pytaj usera "czy mam
+    uzupełnić kod (38069)?" — skoro go znasz, ZAPISZ go.
 
 ⚠ POTWIERDZENIE = ZAWSZE WYWOŁAJ NARZĘDZIE NA NOWO:
 Gdy user potwierdza wystawienie ("tak"/"potwierdź"/"dawaj") — ZAWSZE faktycznie
@@ -715,7 +723,17 @@ async function processAccountingQuery(query, ctx = {}) {
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const yearStr = todayStr.slice(0, 4);
-  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n`;
+  // Deterministyczna siatka: kod pocztowy wykryty regexem w WIADOMOŚCI usera
+  // wstrzykujemy wprost do kontekstu. Model gubił kod przy mieście („38069
+  // NAGO-TORBOLE TN") — zapisywał kontrahenta bez postCode i PYTAŁ o kod,
+  // który sam widział we wklejce.
+  let zipHint = '';
+  try {
+    const { extractPostCode } = require('../utils/address');
+    const zip = extractPostCode(query);
+    if (zip) zipHint = `[WYKRYTY KOD POCZTOWY W WIADOMOŚCI: ${zip} — przy upsert_contractor przekaż go w polu postCode, NIE pytaj usera o kod]\n\n`;
+  } catch (_) { /* best-effort */ }
+  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n${zipHint}`;
   // Historia rozmowy z panelu AI (previousTurns) → agent pamięta wcześniejszy
   // preview/szczegóły, nie pyta o nie ponownie po korekcie (np. VAT).
   const messages = buildHistoryMessages(ctx.previousTurns, dateContextPrefix + query);
