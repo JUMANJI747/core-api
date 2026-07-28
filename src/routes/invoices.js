@@ -3199,7 +3199,24 @@ router.post('/invoices/:idOrNumber/unlink-shipment', async (req, res) => {
 router.post('/invoice-draft-from-email', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { text, fromEmail, contractorName, contractorId } = req.body || {};
+    const { text, fromEmail, contractorName, contractorId, emailId } = req.body || {};
+
+    // Zamówienie bywa w ZAŁĄCZNIKU maila (PDF/zdjęcie), nie w treści —
+    // doczytujemy je tak samo jak czat asystenta (pdf-parse / vision) i
+    // doklejamy do tekstu dla parsera pozycji.
+    let fullText = String(text || '');
+    if (emailId) {
+      try {
+        const { extractEmailAttachments } = require('./agent');
+        const Anthropic = require('@anthropic-ai/sdk');
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
+        const fromMail = await extractEmailAttachments(prisma, anthropic, String(emailId));
+        if (fromMail) fullText = `${fullText}\n\n[ZAŁĄCZNIKI MAILA — odczytane przez AI, to część AKTUALNEGO zamówienia]:\n${fromMail}`;
+      } catch (e) {
+        console.warn('[invoice-draft-from-email] odczyt załączników nieudany (non-fatal):', e.message);
+      }
+    }
+
     let contractor = null;
     if (contractorId) contractor = await prisma.contractor.findUnique({ where: { id: String(contractorId) } }).catch(() => null);
     if (!contractor && fromEmail) {
@@ -3218,15 +3235,16 @@ router.post('/invoice-draft-from-email', async (req, res) => {
     }
 
     let items = [];
-    if (text && String(text).trim()) {
+    if (fullText.trim()) {
       try {
         const { parseOrderWithLLM } = require('../order-llm-parser');
         // Katalog do LLM + fuzzy-domknięcie KAŻDEJ pozycji (jak w parse-order):
         // koszyk ma dostać NASZĄ nazwę+EAN. Bez tego LLM zwracał np.
         // "Surf Stick (wariant nieznany)" i preview waliło 404 — a "Surf Stick"
         // bez koloru powinien iść jako generic (Dowolny).
+        // Limit 12000 (nie 8000): tekst wątku + doczytane załączniki.
         const catalog = await getActiveCatalog(prisma).catch(() => []);
-        const parsed = await parseOrderWithLLM(String(text).slice(0, 8000), (contractor && contractor.name) || contractorName, catalog);
+        const parsed = await parseOrderWithLLM(fullText.slice(0, 12000), (contractor && contractor.name) || contractorName, catalog);
         if (parsed && Array.isArray(parsed.items)) {
           items = parsed.items
             .filter(i => i && i.name && Number(i.qty) > 0)

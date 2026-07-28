@@ -711,3 +711,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 }));
 
 module.exports = router;
+// Odczyt załączników maila (PDF → tekst, obraz → vision) — używany też przez
+// /invoice-draft-from-email (prefill FV z maila, gdy zamówienie jest w
+// załączniku). Router to funkcja, więc może nieść dodatkowe property.
+module.exports.extractEmailAttachments = extractEmailAttachments;

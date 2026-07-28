@@ -72,6 +72,7 @@ WAŻNE — mapuj na NASZ katalog (tak jakbyś klikał nasze guziki, NIE przepisu
 - NIGDY nie łącz dwóch różnych produktów w jedną pozycję. "X & Y", "X + Y", "X i Y" to DWIE osobne pozycje.
 - Ilości i ceny bierz z zamówienia. Jeśli pozycji NIE da się dopasować do katalogu — ustaw ean=null i zostaw oryginalną nazwę (użytkownik poprawi ręcznie).
 - Jeśli tekst zawiera sekcję "[AKTUALNY MAIL — POZYCJE BIERZ STĄD]": pozycje bierz WYŁĄCZNIE z niej. Sekcje "[KONTEKST]" służą tylko do rozszyfrowania skrótów/cen — pozycje z kontekstu bierz TYLKO, gdy aktualny mail nie zawiera ŻADNYCH pozycji.
+- Sekcja "[ZAŁĄCZNIKI MAILA — odczytane przez AI...]" to CZĘŚĆ AKTUALNEGO maila (typowo PDF z zamówieniem) — pozycje bierz też z niej; gdy treść maila mówi "zamówienie w załączniku", pozycje są WŁAŚNIE tam.
 - CYTOWANA starsza korespondencja wewnątrz maila (fragmenty po "Am ... schrieb", "W dniu ... napisał(a)", "On ... wrote", linie zaczynające się od ">") to NIE jest aktualne zamówienie — pozycji z niej NIE bierz.
 
 NASZ KATALOG (ean | nazwa wariant):
