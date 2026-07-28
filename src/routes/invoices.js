@@ -3205,13 +3205,18 @@ router.post('/invoice-draft-from-email', async (req, res) => {
     // doczytujemy je tak samo jak czat asystenta (pdf-parse / vision) i
     // doklejamy do tekstu dla parsera pozycji.
     let fullText = String(text || '');
+    let attachmentsRead = false;
     if (emailId) {
       try {
         const { extractEmailAttachments } = require('./agent');
         const Anthropic = require('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
         const fromMail = await extractEmailAttachments(prisma, anthropic, String(emailId));
-        if (fromMail) fullText = `${fullText}\n\n[ZAŁĄCZNIKI MAILA — odczytane przez AI, to część AKTUALNEGO zamówienia]:\n${fromMail}`;
+        if (fromMail) {
+          fullText = `${fullText}\n\n[ZAŁĄCZNIKI MAILA — odczytane przez AI, to część AKTUALNEGO zamówienia]:\n${fromMail}`;
+          attachmentsRead = true;
+        }
+        console.log(`[invoice-draft-from-email] emailId=${emailId} załączniki: ${attachmentsRead ? `odczytane (${fromMail.length} zn.)` : 'brak/nieodczytane'}`);
       } catch (e) {
         console.warn('[invoice-draft-from-email] odczyt załączników nieudany (non-fatal):', e.message);
       }
@@ -3284,6 +3289,7 @@ router.post('/invoice-draft-from-email', async (req, res) => {
     res.json({
       ok: true,
       base,
+      attachmentsRead,
       contractor: contractor ? {
         id: contractor.id, name: contractor.name, nip: contractor.nip || null,
         country: contractor.country || null, city: contractor.city || null,

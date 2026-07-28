@@ -451,7 +451,12 @@ async function extractEmailAttachments(prisma, anthropic, emailId) {
     console.error('[agent] email attachments load failed:', e.message);
     return '';
   }
-  const usable = (rows || []).filter(a => a.data && a.data.length && !a.cid);
+  // Filtr cid TYLKO dla obrazków (logo/stopka wklejone inline). Niektóre
+  // programy pocztowe nadają Content-ID też zwykłym załącznikom — PDF
+  // z zamówieniem wypadał przez blankietowe `!a.cid` i prefill FV nie widział
+  // zamówienia, choć bot (inbox-poller, bez filtra cid) je czytał.
+  const usable = (rows || []).filter(a => a.data && a.data.length
+    && !(a.cid && String(a.contentType || '').toLowerCase().startsWith('image/')));
   if (!usable.length) return '';
   const mapped = usable.map(a => ({
     filename: a.filename,
