@@ -51,6 +51,21 @@ function cacheTools(tools) {
   return copy;
 }
 
+// Twardy limit rozmiaru pojedynczego tool_result. Bez tego jeden wielki JSON
+// (mail z załącznikami base64, lista bez limitu) wysadzał CAŁĄ rozmowę:
+// Anthropic 400 „prompt is too long: 1 488 589 tokens > 200000" — agent
+// operacyjny padał zamiast odpowiedzieć. Ucinamy z adnotacją: model widzi
+// początek danych i wie, że ma zawęzić zapytanie (limit/filtr/pola).
+const MAX_TOOL_RESULT_CHARS = 60_000;
+function capToolResult(result) {
+  let s;
+  try { s = JSON.stringify(result); } catch (_) { s = String(result); }
+  if (s == null) return 'null';
+  if (s.length <= MAX_TOOL_RESULT_CHARS) return s;
+  return s.slice(0, MAX_TOOL_RESULT_CHARS)
+    + `\n…[UCIĘTE: pełny wynik miał ${s.length} znaków, pokazano ${MAX_TOOL_RESULT_CHARS}. Zawęź zapytanie: podaj limit/filtr albo poproś o konkretne pola.]`;
+}
+
 async function runAgentLoop({
   anthropic,
   model,
@@ -100,7 +115,7 @@ async function runAgentLoop({
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: tu.id,
-        content: JSON.stringify(result),
+        content: capToolResult(result),
       });
     }
     messages.push({ role: 'assistant', content: sanitizeAssistantContent(response.content) });
