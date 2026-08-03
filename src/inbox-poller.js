@@ -824,8 +824,25 @@ async function processWebOrder(prisma, savedEmail, parsed) {
   return result;
 }
 
-function buildWebOrderTelegram(savedEmail, parsed, orderResult, lang) {
-  const lines = [];
+// Zapis OSTATNIEGO powiadomienia o zamówieniu (z załącznika / ze strony) do
+// AgentContext 'order-notification'. Push na Telegram żyje POZA rozmową
+// agenta — odpowiedź „wystaw fv na to zamówienie" nie miała skąd wziąć
+// pozycji i agent pytał o nie, choć sam je przed chwilą wypisał.
+// accounting-agent wstrzykuje ten kontekst, gdy user pisze o „tym zamówieniu".
+async function saveOrderNotificationContext(prisma, payload) {
+  try {
+    const data = { lastAction: 'order_notification', ts: new Date().toISOString(), ...payload };
+    await prisma.agentContext.upsert({
+      where: { id: 'order-notification' },
+      update: { data },
+      create: { id: 'order-notification', data },
+    });
+  } catch (e) {
+    console.error('[order-notification] AgentContext save failed:', e.message);
+  }
+}
+
+function buildWebOrderTelegram(savedEmail, parsed, orderResult, lang) {  const lines = [];
   lines.push(`🛒 ZAMÓWIENIE ZE STRONY #${parsed.orderNumber || '?'}`);
   lines.push('');
   if (parsed.companyName) lines.push(`Firma/Osoba: ${parsed.companyName}`);
@@ -1388,6 +1405,19 @@ async function processAccount(account) {
             console.error('[attachment-order] update failed:', e.message);
           }
 
+          await saveOrderNotificationContext(prisma, {
+            source: 'attachment',
+            emailId: savedEmail.id,
+            fromEmail: mail.fromEmail,
+            contractorName: senderName || null,
+            orderNumber: detectedOrder.orderNumber || null,
+            items: detectedOrder.items.slice(0, 40).map(i => ({
+              name: i.name, qty: i.qty,
+              priceNetto: i.priceNetto != null ? i.priceNetto : null,
+              ean: i.ean || null,
+            })),
+          });
+
           if (tgToken && tgChat) {
             try { await sendTelegram(tgToken, tgChat, orderMsg); } catch (e) { console.error('[attachment-order] tg error:', e.message); }
           }
@@ -1407,6 +1437,18 @@ async function processAccount(account) {
               const parsed = parseWebOrder(orderBody);
               console.log('[web-order] Parsed order:', parsed.orderNumber, '| items:', parsed.items.length, '| total:', parsed.total);
               const orderResult = await processWebOrder(prisma, savedEmail, parsed);
+              await saveOrderNotificationContext(prisma, {
+                source: 'web',
+                emailId: savedEmail.id,
+                fromEmail: parsed.email || mail.fromEmail,
+                contractorName: (orderResult.contractor && orderResult.contractor.name) || parsed.companyName || null,
+                orderNumber: parsed.orderNumber || null,
+                items: (parsed.items || []).slice(0, 40).map(it => ({
+                  name: it.name, qty: it.qty,
+                  priceNetto: it.price != null ? it.price : null,
+                  ean: it.ean || null,
+                })),
+              });
               if (tgToken && tgChat) {
                 const msg = buildWebOrderTelegram(savedEmail, parsed, orderResult, effectiveLanguage);
                 await sendTelegram(tgToken, tgChat, msg);

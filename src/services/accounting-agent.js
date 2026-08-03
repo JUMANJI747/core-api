@@ -733,7 +733,26 @@ async function processAccountingQuery(query, ctx = {}) {
     const zip = extractPostCode(query);
     if (zip) zipHint = `[WYKRYTY KOD POCZTOWY W WIADOMOŚCI: ${zip} — przy upsert_contractor przekaż go w polu postCode, NIE pytaj usera o kod]\n\n`;
   } catch (_) { /* best-effort */ }
-  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n${zipHint}`;
+  // Ciągłość po powiadomieniu „ZAMÓWIENIE Z ZAŁĄCZNIKA / ZE STRONY" — push
+  // z inbox-pollera żyje POZA rozmową agenta, więc „wystaw fv na to
+  // zamówienie" nie miało pozycji i agent o nie pytał, choć sam je wypisał.
+  // Poller zapisuje ostatnie powiadomienie w AgentContext 'order-notification';
+  // tu wstrzykujemy je deterministycznie, gdy user pisze o „tym zamówieniu".
+  let orderCtxHint = '';
+  try {
+    if (ctx.prisma && /\b(to|te|tego|ostatni\w*)\s+zam[óo]wien|zam[óo]wienie z za[łl][aą]cznika|zam[óo]wienie ze strony/i.test(query)) {
+      const row = await ctx.prisma.agentContext.findUnique({ where: { id: 'order-notification' } });
+      const c = row && row.data;
+      const fresh = c && c.ts && (Date.now() - new Date(c.ts).getTime()) < 48 * 3600 * 1000;
+      if (c && c.lastAction === 'order_notification' && fresh && Array.isArray(c.items) && c.items.length) {
+        const lines = c.items.map(i => `- ${i.name} × ${i.qty}${i.priceNetto != null ? ` @ ${i.priceNetto}` : ''}${i.ean ? ` [ean ${i.ean}]` : ''}`).join('\n');
+        orderCtxHint = `[„TO ZAMÓWIENIE" = OSTATNIE POWIADOMIENIE O ZAMÓWIENIU${c.orderNumber ? ` #${c.orderNumber}` : ''} (mail od ${c.fromEmail || '?'}, kontrahent: ${c.contractorName || 'nieznany'}):\n${lines}\nUżyj DOKŁADNIE tych pozycji i tego kontrahenta (contractorSearch="${c.contractorName || c.fromEmail}") w invoice_preview. NIE pytaj usera o pozycje ani kontrahenta — masz je powyżej.]\n\n`;
+      }
+    }
+  } catch (e) {
+    console.warn('[accounting-agent] order-notification ctx load failed:', e.message);
+  }
+  const dateContextPrefix = `[KONTEKST: Dzisiejsza data: ${todayStr}. Biezacy rok: ${yearStr}. "Tym roku" / "Ten rok" / "This year" = ${yearStr}. Dla analytics ZAWSZE uzyj from=${yearStr}-01-01 to=${todayStr} jak user pyta "tym roku" / "this year".]\n\n${zipHint}${orderCtxHint}`;
   // Historia rozmowy z panelu AI (previousTurns) → agent pamięta wcześniejszy
   // preview/szczegóły, nie pyta o nie ponownie po korekcie (np. VAT).
   const messages = buildHistoryMessages(ctx.previousTurns, dateContextPrefix + query);

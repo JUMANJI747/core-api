@@ -35,7 +35,9 @@ router.post('/agent/logistics', asyncHandler(async (req, res) => {
 router.post('/agent/accounting', asyncHandler(async (req, res) => {
   const { query, chatId, previousTurns } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (string) required' });
-  await sendAgent(res, () => processAccountingQuery(query, { chatId, previousTurns }));
+  // prisma w ctx — agent dociąga AgentContext 'order-notification' („wystaw
+  // fv na to zamówienie" po pushu z inbox-pollera).
+  await sendAgent(res, () => processAccountingQuery(query, { prisma: req.app.locals.prisma, chatId, previousTurns }));
 }));
 
 router.post('/agent/accounting-es', asyncHandler(async (req, res) => {
