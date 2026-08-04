@@ -1620,52 +1620,68 @@ function findSentFolder(imap) {
   });
 }
 
-async function processSentItems(account) {
-  const { inbox, user } = account;
-  const sentKey = `${inbox}:sent`;
-  console.log(`[inbox-poller] Checking SENT for ${inbox} (${user})`);
-
-  let imap;
-  try {
-    imap = await connectImap(account);
-
-    const folderName = await findSentFolder(imap);
-    if (!folderName) {
-      console.log(`[inbox-poller] ${inbox}: no SENT folder found`);
-      try { imap.end(); } catch (_) {}
-      return;
-    }
-    console.log(`[inbox-poller] ${inbox}: SENT folder = "${folderName}"`);
-
-    const state = await prisma.imapState.findUnique({ where: { inbox: sentKey } });
-    const lastUid = (state && state.lastUid) || 0;
-
-    // Pierwsze uruchomienie — nie ściągaj historii w tył (mogą być setki maili
-    // co spowoduje długi cycle). Bierz tylko nowe od momentu wdrożenia.
-    if (lastUid === 0) {
-      const mails0 = await fetchMailsFromUid(imap, 0, folderName);
-      const maxUid0 = mails0.length ? Math.max(...mails0.map(m => m.uid)) : 0;
-      if (maxUid0 > 0) {
-        await prisma.imapState.upsert({
-          where: { inbox: sentKey },
-          update: { lastUid: maxUid0 },
-          create: { inbox: sentKey, lastUid: maxUid0 },
-        });
-        console.log(`[inbox-poller] ${sentKey}: bootstrap lastUid=${maxUid0} (skipping ${mails0.length} historical SENT mails)`);
+// WSZYSTKIE foldery „wysłanych" na koncie — nie tylko jeden. Na tej samej
+// skrzynce współistnieją np. "Sent" (serwer, flaga \Sent), "Sent Messages"
+// (webmail) i "Wysłane" (Thunderbird) — każdy klient pocztowy odkłada kopie
+// gdzie indziej. Skan JEDNEGO foldera gubił maile wysyłane z Thunderbirda
+// (kopie lądowały w "Wysłane", my czytaliśmy "Sent"). Kolejność: folder
+// z flagą \Sent pierwszy (ciągłość klucza ImapState `<inbox>:sent`),
+// potem reszta dopasowana po nazwie.
+function findSentFolders(imap) {
+  return new Promise((resolve, reject) => {
+    imap.getBoxes((err, boxes) => {
+      if (err) return reject(err);
+      const flat = [];
+      (function collect(node, prefix = '') {
+        for (const [name, box] of Object.entries(node || {})) {
+          const fullName = prefix ? prefix + box.delimiter + name : name;
+          flat.push({ fullName, attribs: box.attribs || [] });
+          if (box.children) collect(box.children, fullName);
+        }
+      })(boxes);
+      const out = [];
+      for (const f of flat) {
+        if (f.attribs.includes('\\Sent') && !out.includes(f.fullName)) out.push(f.fullName);
       }
-      try { imap.end(); } catch (_) {}
-      return;
-    }
+      for (const candidate of SENT_FOLDER_CANDIDATES) {
+        const match = flat.find(f => f.fullName.toLowerCase() === candidate.toLowerCase());
+        if (match && !out.includes(match.fullName)) out.push(match.fullName);
+      }
+      resolve(out);
+    });
+  });
+}
 
-    const mails = await fetchMailsFromUid(imap, lastUid, folderName);
-    if (mails.length === 0) {
-      console.log(`[inbox-poller] ${sentKey}: no new sent mails`);
-      try { imap.end(); } catch (_) {}
-      return;
-    }
-    console.log(`[inbox-poller] ${sentKey}: ${mails.length} new sent mail(s)`);
+// Skan JEDNEGO foldera wysłanych (stan UID per folder w ImapState[sentKey]).
+async function processSentFolderOnce(imap, inbox, folderName, sentKey) {
+  const state = await prisma.imapState.findUnique({ where: { inbox: sentKey } });
+  const lastUid = (state && state.lastUid) || 0;
 
-    let maxUid = lastUid;
+  // Pierwsze uruchomienie — nie ściągaj historii w tył (mogą być setki maili
+  // co spowoduje długi cycle). Bierz tylko nowe od momentu wdrożenia.
+  // Historię dociąga na żądanie POST /emails/sent-rescan.
+  if (lastUid === 0) {
+    const mails0 = await fetchMailsFromUid(imap, 0, folderName);
+    const maxUid0 = mails0.length ? Math.max(...mails0.map(m => m.uid)) : 0;
+    if (maxUid0 > 0) {
+      await prisma.imapState.upsert({
+        where: { inbox: sentKey },
+        update: { lastUid: maxUid0 },
+        create: { inbox: sentKey, lastUid: maxUid0 },
+      });
+      console.log(`[inbox-poller] ${sentKey}: bootstrap lastUid=${maxUid0} (skipping ${mails0.length} historical SENT mails)`);
+    }
+    return;
+  }
+
+  const mails = await fetchMailsFromUid(imap, lastUid, folderName);
+  if (mails.length === 0) {
+    console.log(`[inbox-poller] ${sentKey}: no new sent mails`);
+    return;
+  }
+  console.log(`[inbox-poller] ${sentKey}: ${mails.length} new sent mail(s)`);
+
+  let maxUid = lastUid;
     for (const mail of mails) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
@@ -1729,13 +1745,41 @@ async function processSentItems(account) {
       }
     }
 
-    if (maxUid > lastUid) {
-      await prisma.imapState.upsert({
-        where: { inbox: sentKey },
-        update: { lastUid: maxUid },
-        create: { inbox: sentKey, lastUid: maxUid },
-      });
-      console.log(`[inbox-poller] ${sentKey}: updated lastUid=${maxUid}`);
+  if (maxUid > lastUid) {
+    await prisma.imapState.upsert({
+      where: { inbox: sentKey },
+      update: { lastUid: maxUid },
+      create: { inbox: sentKey, lastUid: maxUid },
+    });
+    console.log(`[inbox-poller] ${sentKey}: updated lastUid=${maxUid}`);
+  }
+}
+
+async function processSentItems(account) {
+  const { inbox, user } = account;
+  console.log(`[inbox-poller] Checking SENT for ${inbox} (${user})`);
+
+  let imap;
+  try {
+    imap = await connectImap(account);
+
+    const folders = await findSentFolders(imap);
+    if (!folders.length) {
+      console.log(`[inbox-poller] ${inbox}: no SENT folder found`);
+      try { imap.end(); } catch (_) {}
+      return;
+    }
+    console.log(`[inbox-poller] ${inbox}: SENT folders = ${folders.map(f => `"${f}"`).join(', ')}`);
+    for (const folderName of folders) {
+      // Pierwszy folder (flagowany \Sent) trzyma historyczny klucz
+      // `<inbox>:sent` — ciągłość lastUid sprzed zmiany; kolejne foldery
+      // dostają klucz per-folder.
+      const sentKey = folderName === folders[0] ? `${inbox}:sent` : `${inbox}:sent:${folderName}`;
+      try {
+        await processSentFolderOnce(imap, inbox, folderName, sentKey);
+      } catch (e) {
+        console.error(`[inbox-poller] SENT folder "${folderName}" error for ${inbox}:`, e.message);
+      }
     }
     try { imap.end(); } catch (_) {}
   } catch (err) {
@@ -2008,15 +2052,22 @@ async function rescanSentSince(inbox, daysBack = 30) {
   let skippedNoData = 0;
   try {
     imap = await connectImap(account);
-    const folderName = await findSentFolder(imap);
-    if (!folderName) {
+    // WSZYSTKIE foldery wysłanych (Sent / Sent Messages / Wysłane…) — kopie
+    // z Thunderbirda lądują w innym folderze niż flagowany \Sent.
+    const folders = await findSentFolders(imap);
+    if (!folders.length) {
       console.log(`[sent-rescan] ${inbox}: no SENT folder found`);
       try { imap.end(); } catch (_) {}
       return { ok: false, error: 'no SENT folder found', inbox };
     }
-    console.log(`[sent-rescan] ${inbox}: SENT folder = "${folderName}"`);
+    console.log(`[sent-rescan] ${inbox}: SENT folders = ${folders.map(f => `"${f}"`).join(', ')}`);
+    const perFolder = {};
+    let fetchedTotal = 0;
+    for (const folderName of folders) {
     const mails = await fetchMailsSince(imap, since, folderName);
-    console.log(`[sent-rescan] ${inbox}: fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
+    console.log(`[sent-rescan] ${inbox}/"${folderName}": fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
+    perFolder[folderName] = mails.length;
+    fetchedTotal += mails.length;
     for (const mail of mails) {
       try {
         if (!mail.fromEmail || !mail.toEmail) { skippedNoData++; continue; }
@@ -2098,8 +2149,9 @@ async function rescanSentSince(inbox, daysBack = 30) {
         console.error('[sent-rescan] save error for uid=' + mail.uid + ':', e.message);
       }
     }
+    }
     try { imap.end(); } catch (_) {}
-    return { ok: true, inbox, folderName, since: since.toISOString().slice(0,10), fetched: mails.length, added, updatedBody, skippedDup, skippedNoData };
+    return { ok: true, inbox, folders, perFolder, since: since.toISOString().slice(0,10), fetched: fetchedTotal, added, updatedBody, skippedDup, skippedNoData };
   } catch (e) {
     console.error(`[sent-rescan] ${inbox} error:`, e.message);
     try { if (imap) imap.end(); } catch (_) {}
