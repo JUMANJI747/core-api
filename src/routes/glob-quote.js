@@ -1164,16 +1164,27 @@ router.post('/glob/order', async (req, res) => {
       console.log('[glob/order] getAddons failed:', err.message);
     }
 
-    function extractRequiredAddonIds(errorResult) {
+    // Z komunikatu błędu GK wyciąga wymagane dodatki. Wartość w stylu
+    // „...: Doręczenie do firmy (id 210) / Doręczenie do osoby prywatnej (id 211)"
+    // to grupa WZAJEMNIE WYKLUCZAJĄCA (wybierz DOKŁADNIE jeden) — wcześniej
+    // dodawaliśmy OBA id i GK odrzucał w kółko („Dodatek nie może być wybrany
+    // we wskazanej grupie"). Zwraca { single: [id...], groups: [{options:[{id,label}]}] }.
+    function extractAddonRequirements(errorResult) {
       const fields = (errorResult && (errorResult.fields || (errorResult.errors && errorResult.errors.fields))) || {};
-      const ids = new Set();
+      const single = new Set();
+      const groups = [];
       for (const [key, val] of Object.entries(fields)) {
         if (typeof val !== 'string') continue;
         if (!key.toLowerCase().includes('addon') && !val.toLowerCase().includes('dodatk')) continue;
-        const matches = val.matchAll(/\(id\s+(\d+)\)/gi);
-        for (const m of matches) ids.add(parseInt(m[1]));
+        const opts = [];
+        for (const seg of val.split('/')) {
+          const m = seg.match(/\(id\s+(\d+)\)/i);
+          if (m) opts.push({ id: parseInt(m[1]), label: seg.trim() });
+        }
+        if (opts.length > 1) groups.push({ options: opts });
+        else if (opts.length === 1) single.add(opts[0].id);
       }
-      return Array.from(ids);
+      return { single: Array.from(single), groups };
     }
 
     // Mutex addon groups: GlobKurier requires EXACTLY ONE from each group.
@@ -1183,6 +1194,8 @@ router.post('/glob/order', async (req, res) => {
     // otherwise → 1311 (private individual).
     const ADDON_MUTEX_GROUPS = [
       { ids: [1310, 1311], company: 1310, person: 1311 },
+      // UPS: „Doręczenie do firmy (id 210) / Doręczenie do osoby prywatnej (id 211)"
+      { ids: [210, 211], company: 210, person: 211 },
     ];
 
     function isCompanyName(name) {
@@ -1210,21 +1223,32 @@ router.post('/glob/order', async (req, res) => {
       let r = await createOrder(payload);
       for (let i = 0; i < 2; i++) {
         if (!r || !(r.errors || r.error || r.fields)) break;
-        const newIds = extractRequiredAddonIds(r);
-        if (newIds.length === 0) break;
+        const req = extractAddonRequirements(r);
+        if (!req.single.length && !req.groups.length) break;
+        const rcvName = (payload.receiverAddress && payload.receiverAddress.name) || '';
+        const isCompany = isCompanyName(rcvName);
         const existing = new Set((payload.addons || []).map(a => parseInt(a.id)));
-        let added = false;
+        let changed = false;
         payload.addons = payload.addons || [];
-        for (const id of newIds) {
-          if (!existing.has(id)) { payload.addons.push({ id }); existing.add(id); added = true; }
+        for (const id of req.single) {
+          if (!existing.has(id)) { payload.addons.push({ id }); existing.add(id); changed = true; }
         }
-        if (!added) break;
-        // Resolve mutex groups (e.g. company-vs-individual delivery): pick
-        // exactly one based on receiver legal-form detection.
-        payload.addons = applyAddonMutexGroups(
-          payload.addons,
-          (payload.receiverAddress && payload.receiverAddress.name) || ''
-        );
+        // Grupy „dokładnie jeden": wybierz opcję po etykiecie (firma/prywatna),
+        // usuń z payloadu pozostałe opcje tej grupy.
+        for (const g of req.groups) {
+          const pick = g.options.find(o => (isCompany ? /firm/i.test(o.label) : /(prywat|osob)/i.test(o.label)))
+            || g.options[0];
+          const before = payload.addons.length;
+          payload.addons = payload.addons.filter(a => {
+            const idn = parseInt(a.id);
+            return !(g.options.some(o => o.id === idn) && idn !== pick.id);
+          });
+          if (payload.addons.length !== before) changed = true;
+          if (!payload.addons.some(a => parseInt(a.id) === pick.id)) { payload.addons.push({ id: pick.id }); changed = true; }
+        }
+        if (!changed) break;
+        // Statyczne grupy mutex (1310/1311, 210/211) — siatka bezpieczeństwa.
+        payload.addons = applyAddonMutexGroups(payload.addons, rcvName);
         console.log('[glob/order] Auto-fixing addons from error, retrying with:', JSON.stringify(payload.addons));
         r = await createOrder(payload);
       }
@@ -1421,7 +1445,10 @@ router.post('/glob/order', async (req, res) => {
         timeFrom: pickupTimeFrom,
         timeTo: pickupTimeTo,
       },
-      addons: requiredAddons,
+      // getAddons potrafi zwrócić OBA dodatki z grupy „dokładnie jeden"
+      // (np. UPS 210/211 firma-vs-prywatna) jako required — rozstrzygamy
+      // od razu po nazwie odbiorcy, zanim GK odrzuci.
+      addons: applyAddonMutexGroups(requiredAddons, receiverName || ''),
       content: 'Cosmetics / Surf Stick Bell',
       collectionType,
       // Top-level customs/insurance fields. GK rejects shipment.declaredValue
