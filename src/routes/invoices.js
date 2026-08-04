@@ -761,42 +761,46 @@ router.post('/ifirma/invoice-preview', async (req, res) => {
 
       console.log('[invoice-preview] Matched:', (item.name || item.productName || ean), '→', product.name, product.variant || '', '(EAN:', product.ean, ')');
 
+      // Resolve per-item price override — WSPÓLNE dla zwykłej pozycji i boxa.
+      // (Wcześniej box/template rozbijał się z itemCena:null i cała drabinka
+      // cen — w tym globalPriceNetto z pola „CENA ZA SZT." i cena z ostatniej
+      // FV — była IGNOROWANA: box zawsze liczył się z cennika 4,50.)
+      let itemCena = null;
+      let itemCenaNetto = null;
+      let priceSource = null;
+
+      if (item.priceNetto != null) {
+        itemCenaNetto = parseFloat(item.priceNetto);
+        priceSource = 'netto_override';
+      } else if (item.priceBrutto != null || item.price != null) {
+        itemCena = parseFloat(item.priceBrutto || item.price);
+        priceSource = 'brutto_override';
+      } else if (item.cena != null) {
+        itemCena = parseFloat(item.cena);
+        priceSource = 'cena_override';
+      } else if (globalPriceNetto != null) {
+        itemCenaNetto = parseFloat(globalPriceNetto);
+        priceSource = 'global_netto';
+      } else if (globalPriceBrutto != null) {
+        itemCena = parseFloat(globalPriceBrutto);
+        priceSource = 'global_brutto';
+      } else if (globalPrice != null && globalPrice !== '') {
+        // Jedna cena z UI — interpretacja wg waluty: EUR=netto (B2B), PLN=brutto.
+        if (waluta === 'EUR') { itemCenaNetto = parseFloat(globalPrice); priceSource = 'global_eur_netto'; }
+        else { itemCena = parseFloat(globalPrice); priceSource = 'global_pln_brutto'; }
+      }
+
+      if (priceSource) {
+        console.log(`[invoice-preview] Price override for ${product.name}: netto=${itemCenaNetto} brutto=${itemCena} (${priceSource})`);
+      }
+
       if (product.category === 'template' && product.extras && product.extras.composition) {
+        // Cena za SZTUKĘ schodzi na każdą pod-pozycję rozbitego boxa.
         for (const comp of product.extras.composition) {
           const sub = await prisma.product.findUnique({ where: { ean: comp.ean } });
-          if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1), itemCena: null });
+          if (sub) pozycje.push({ product: sub, ilosc: comp.qty * (item.qty || 1), itemCena, itemCenaNetto });
         }
       } else {
-        // Resolve per-item price override
-        let itemCena = null;
-        let itemCenaNetto = null;
-        let priceSource = null;
-
-        if (item.priceNetto != null) {
-          itemCenaNetto = parseFloat(item.priceNetto);
-          priceSource = 'netto_override';
-        } else if (item.priceBrutto != null || item.price != null) {
-          itemCena = parseFloat(item.priceBrutto || item.price);
-          priceSource = 'brutto_override';
-        } else if (item.cena != null) {
-          itemCena = parseFloat(item.cena);
-          priceSource = 'cena_override';
-        } else if (globalPriceNetto != null) {
-          itemCenaNetto = parseFloat(globalPriceNetto);
-          priceSource = 'global_netto';
-        } else if (globalPriceBrutto != null) {
-          itemCena = parseFloat(globalPriceBrutto);
-          priceSource = 'global_brutto';
-        } else if (globalPrice != null && globalPrice !== '') {
-          // Jedna cena z UI — interpretacja wg waluty: EUR=netto (B2B), PLN=brutto.
-          if (waluta === 'EUR') { itemCenaNetto = parseFloat(globalPrice); priceSource = 'global_eur_netto'; }
-          else { itemCena = parseFloat(globalPrice); priceSource = 'global_pln_brutto'; }
-        }
-
-        if (priceSource) {
-          console.log(`[invoice-preview] Price override for ${product.name}: netto=${itemCenaNetto} brutto=${itemCena} (${priceSource})`);
-        }
-
         pozycje.push({ product, ilosc: item.qty || 1, itemCena, itemCenaNetto });
       }
     }
@@ -3150,8 +3154,20 @@ router.get('/invoices/last-price', async (req, res) => {
       where: { contractorId, ifirmaId: { not: null } }, orderBy: { issueDate: 'desc' },
       include: { lineItems: true },
     });
-    const li = inv && inv.lineItems.find(l => Number(l.qty) > 0);
-    if (li) {
+    // Linia „Delivery/wysyłka" NIE jest ceną produktu — pomijamy ją przy
+    // wyborze (inaczej „z ostatniej FV" wstawiało cenę transportu).
+    const isDeliveryName = (n) => /^(delivery|dostawa|wysy[lł]ka|shipping|transport|fracht)\b/i.test(String(n || '').trim());
+    let priceVal = null;
+    const li = inv && inv.lineItems.find(l => Number(l.qty) > 0 && !isDeliveryName(l.name));
+    if (li) priceVal = Number(li.unitPriceNetto);
+    // Fallback: extras.items zapisywane przy confirm — FV sprzed backfillu
+    // InvoiceLineItem nie miały linii i endpoint zwracał „brak ceny", mimo że
+    // cena jednostkowa jest w snapshotcie pozycji.
+    if (priceVal == null && inv && inv.extras && Array.isArray(inv.extras.items)) {
+      const it = inv.extras.items.find(i => Number(i.qty) > 0 && i.priceNetto != null && !isDeliveryName(i.name));
+      if (it) priceVal = Number(it.priceNetto);
+    }
+    if (priceVal != null && Number.isFinite(priceVal)) {
       const cur = inv.currency || 'PLN';
       // Zwracamy cenę NETTO/szt (to wartość, którą wpisano przy wystawianiu —
       // dla 16 netto NIE zamieniamy na 19,68 brutto). isNetto=true → front wyśle
@@ -3159,7 +3175,7 @@ router.get('/invoices/last-price', async (req, res) => {
       // type (rodzaj: wdt/krajowa) → front dołoży do preview, żeby nowa FV miała
       // tę samą walutę i ten sam VAT (WDT 0% / krajowa) co ostatnia.
       const typ = ['wdt', 'krajowa'].includes(String(inv.type || '').toLowerCase()) ? String(inv.type).toLowerCase() : null;
-      return res.json({ ok: true, price: Number(li.unitPriceNetto), currency: cur, isNetto: true, type: typ, invoiceNumber: inv.number });
+      return res.json({ ok: true, price: priceVal, currency: cur, isNetto: true, type: typ, invoiceNumber: inv.number });
     }
     // fallback: zapamiętana cena na kontrahencie
     const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { extras: true } });
