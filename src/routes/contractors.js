@@ -2097,23 +2097,52 @@ router.post('/rollback-gk-backfill', async (req, res) => {
 // anomalii po backfill - np. user widzi w UI ze "Chalupy" jest u AWA SURF
 // po blednym fuzzy match, usuwa).
 // Body: { locationIndex: number }
+// Usuwanie lokalizacji z extras.locations: po indeksie (locationIndex) ALBO
+// po frazie (match — normalized contains na mieście/ulicy/kodzie/kraju, np.
+// "faliraki" albo "GR"). match usuwa WSZYSTKIE pasujące i kasuje też
+// strukturalne wiersze ContractorAddress(delivery) z tym samym miastem —
+// sprzątanie błędnie przypiętych cudzych adresów jedną komendą.
 router.post('/:id/remove-location', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const id = req.params.id;
   const idx = Number(req.body.locationIndex);
-  if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ error: 'locationIndex (number >=0) required' });
+  const match = req.body.match != null ? String(req.body.match).trim() : '';
+  const hasIdx = Number.isInteger(idx) && idx >= 0;
+  if (!hasIdx && !match) return res.status(400).json({ error: 'locationIndex (number >=0) or match (string) required' });
   try {
     const c = await prisma.contractor.findUnique({ where: { id }, select: { id: true, name: true, extras: true } });
     if (!c) return res.status(404).json({ error: 'contractor not found' });
     const extras = c.extras || {};
     const locations = Array.isArray(extras.locations) ? [...extras.locations] : [];
-    if (idx >= locations.length) return res.status(400).json({ error: `locationIndex out of range (have ${locations.length})` });
-    const removed = locations.splice(idx, 1)[0];
+    let removed = [];
+    let remaining = locations;
+    if (hasIdx) {
+      if (idx >= locations.length) return res.status(400).json({ error: `locationIndex out of range (have ${locations.length})` });
+      removed = locations.splice(idx, 1);
+      remaining = locations;
+    } else {
+      const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const q = norm(match);
+      const hit = (l) => [l.city, l.street, l.postCode, l.country].some(v => v && norm(v).includes(q));
+      removed = locations.filter(hit);
+      remaining = locations.filter(l => !hit(l));
+      if (!removed.length) return res.json({ ok: true, removed: [], remaining: locations.length, note: `nic nie pasuje do "${match}"` });
+    }
     await prisma.contractor.update({
       where: { id },
-      data: { extras: { ...extras, locations } },
+      data: { extras: { ...extras, locations: remaining } },
     });
-    res.json({ ok: true, removed, remaining: locations.length });
+    // Przy match sprzątnij też strukturalne delivery z pasującym miastem/ulicą.
+    let removedAddresses = 0;
+    if (!hasIdx && match) {
+      const rows = await prisma.contractorAddress.findMany({ where: { contractorId: id, type: 'delivery' } });
+      const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const q = norm(match);
+      const toDel = rows.filter(r => [r.city, r.street, r.postalCode, r.country, r.fullAddress].some(v => v && norm(v).includes(q)));
+      for (const r of toDel) await prisma.contractorAddress.delete({ where: { id: r.id } });
+      removedAddresses = toDel.length;
+    }
+    res.json({ ok: true, removed, removedAddresses, remaining: remaining.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
