@@ -314,6 +314,26 @@ async function expandEsLines(prisma, items, opts = {}) {
       product = await prisma.esProduct.findUnique({ where: { ean } });
     }
 
+    // PL → ES: prefill/parser („Rozbij na pozycje") zwraca POLSKIE EAN-y
+    // i nazwy z kolorami ("SURF STICK … Blue", 5902082556022), a katalog
+    // Contasimple jest GENERYCZNY (bez kolorów/EAN-ów PL). Zamiast 404:
+    // dociągnij nazwę bazową z katalogu PL po EAN-ie, zbij kolor/wariant
+    // i szukaj generyka. "10× Stick Blue" → "SURF STICK zinc stick spf 50+".
+    if (!product) {
+      const COLOR_WORDS = /\b(blue|pink|purple|mint|white|skin|black|niebiesk\w*|r[oó]zow\w*|fiolet\w*|mi[eę]t\w*|bia[łl]\w*|czarn\w*|ekspozytor\w*)\b/gi;
+      let baseName = null;
+      if (ean && /^\d{13}$/.test(ean)) {
+        const pl = await prisma.product.findUnique({ where: { ean } }).catch(() => null);
+        if (pl) baseName = pl.name; // nazwa PL bez wariantu (kolor siedzi w variant)
+      }
+      const raw = baseName || [item.name, item.productName, item.product].filter(Boolean).join(' ');
+      const q2 = String(raw || '').replace(COLOR_WORDS, ' ').replace(/[\/]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (q2) {
+        product = findEsProductFuzzy(catalog, q2);
+        if (product) console.log(`[contasimple] PL→ES map: "${ean || raw}" → "${product.name}" (przez "${q2}")`);
+      }
+    }
+
     if (!product) {
       const searchedFor = ean || item.name || item.productName || item.product || 'unknown';
       const err = new Error(`product not found: ${searchedFor}`);
