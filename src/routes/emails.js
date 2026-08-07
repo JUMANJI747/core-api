@@ -261,16 +261,46 @@ router.get('/emails', async (req, res) => {
   // offset → paginacja / „Załaduj starsze".
   const take = Math.min(parseInt(limit) || 20, 1000);
   const skip = Math.max(0, parseInt(offset) || 0);
+  // JAWNY select — bez bodyFull/bodyHtml i bez pełnego wiersza kontrahenta.
+  // Wcześniej `include` bez `select` zwracał WSZYSTKIE skalary Email (w tym
+  // bodyHtml = pełny HTML maila, nierzadko setki KB) razy do 1000 rekordów,
+  // a `contractor: true` dokładał całe extras (locations, billingAddress,
+  // globKurierReceiverData...). Lista pokazuje wyłącznie bodyPreview (300 zn.),
+  // a szczegóły idą osobnym GET /emails/:id — więc treści na liście nikt nie
+  // czytał, tylko leciały przez sieć (główne źródło zużycia transferu Vercela).
+  // Kontrakt narzędzia agenta `recent_emails` też mówi wprost: tylko bodyPreview.
   const emails = await prisma.email.findMany({
     where,
-    include: {
-      contractor: true,
-      attachments: { select: { id: true, filename: true, contentType: true, size: true } },
+    select: {
+      id: true, contractorId: true,
+      direction: true, inbox: true,
+      fromEmail: true, fromName: true, toEmail: true,
+      subject: true, bodyPreview: true,
+      messageId: true, inReplyTo: true, references: true,
+      isRead: true, isSpam: true, tags: true, createdAt: true,
+      contractor: { select: { id: true, name: true, nip: true, country: true } },
+      attachments: { select: { id: true, filename: true, contentType: true, size: true, cid: true } },
     },
     take,
     skip,
     orderBy: { createdAt: 'desc' },
   });
+
+  // Flaga „niedomknięty deal" siedzi w contractor.extras.openDeal — zamiast
+  // ciągnąć całe extras dla każdego maila, jedno zapytanie po samych id.
+  try {
+    const cids = [...new Set(emails.map(e => e.contractorId).filter(Boolean))];
+    if (cids.length) {
+      const open = await prisma.contractor.findMany({
+        where: { id: { in: cids }, extras: { path: ['openDeal'], equals: true } },
+        select: { id: true },
+      });
+      const openSet = new Set(open.map(c => c.id));
+      for (const e of emails) e.contractorOpenDeal = !!(e.contractorId && openSet.has(e.contractorId));
+    }
+  } catch (err) {
+    console.error('[emails GET] openDeal lookup failed (non-fatal):', err.message);
+  }
 
   // Dolaczamy replyId dla INBOUND - id najnowszego OUTBOUND/DRAFT ktory
   // referencjuje ten mail. 3 strategie matchingu w kolejnosci od najpewniejszego:
