@@ -144,9 +144,19 @@ FLOW WYSTAWIENIA FV:
    wyszukiwanie po nazwie zwróci 0 → SPRÓBUJ find_contractor z tym ADRESEM EMAIL
    (backend szuka też po mailu). Nazwa z pieczątki/OCR bywa inna niż w bazie, ale
    mail się zgadza. Dopiero gdy i mail zwróci 0 → pytaj o dane / dodaj.
-   Jak wynik EMPTY → NIE halucynuj danych. Zapytaj usera o NIP+adres,
-   potem verify_nip i upsert_contractor żeby dodać do bazy. DOPIERO POTEM
-   invoice_preview z contractorSearch=<dokladna nazwa z find_contractor.name>.
+   Jak wynik EMPTY → NIE halucynuj danych. Zapytaj usera o NIP (sam NIP
+   wystarczy!). ⚠ NOWY NIP = AUTOMAT, BEZ DALSZYCH PYTAŃ:
+     a) verify_nip {nip} → MF/GUS zwraca name + address (dla JDG adres idzie
+        z residenceAddress — pole "address" w odpowiedzi już go zawiera).
+     b) address z odpowiedzi ROZBIJ na pola (street/houseNumber/apartment/
+        postCode/city — zasady niżej) i NATYCHMIAST upsert_contractor
+        {name z MF, nip, pola adresu, rawAddress=całe address}.
+        O adres pytaj usera WYŁĄCZNIE gdy verify_nip zwróci address=null —
+        NIGDY gdy adres przyszedł z MF/GUS.
+     c) DOPIERO PO upsert_contractor → invoice_preview z contractorSearch=
+        <nazwa z upsert/MF>. KOLEJNOŚĆ KRYTYCZNA: preview bez wcześniejszego
+        dodania kontrahenta fuzzy-matchuje po nazwie i potrafi przykleić FV
+        do INNEGO kontrahenta z bazy.
    Jak wynik 2+ → POKAŻ liste user-owi i zapytaj "Ktorego masz na mysli?".
 1. invoice_preview z items+contractorSearch → response ma previewId, pozycje, suma, telegramPushed
    TERMIN PŁATNOŚCI: gdy user poda termin (np. "30 dni", "termin 14 dni", "płatne 21 dni")
@@ -359,7 +369,7 @@ const tools = [
   },
   {
     name: 'verify_nip',
-    description: 'Sprawdz NIP w GUS/VIES (zwraca status czynny + nazwa firmy + adres). Uzyj przed upsert_contractor gdy user podal NIP nowego klienta. WAZNE: pole status = "valid" (aktywny), "invalid" (NA PEWNO nieaktywny) albo "unknown"/valid=null (VIES kraju chwilowo niedostepny lub limit — to NIE znaczy ze NIP jest bledny). Przy "unknown" NIE pisz ze NIP nieaktywny: przekaz tresc pola message i zaproponuj zapis mimo to lub ponowienie.',
+    description: 'Sprawdz NIP w GUS/VIES (zwraca status czynny + nazwa firmy + adres w polu `address` — dla JDG z residenceAddress, wiec pusty `workingAddress` NIE znaczy braku adresu). Uzyj przed upsert_contractor gdy user podal NIP nowego klienta; zwrocony address przekaz do upsert BEZ pytania usera. WAZNE: pole status = "valid" (aktywny), "invalid" (NA PEWNO nieaktywny) albo "unknown"/valid=null (VIES kraju chwilowo niedostepny lub limit — to NIE znaczy ze NIP jest bledny). Przy "unknown" NIE pisz ze NIP nieaktywny: przekaz tresc pola message i zaproponuj zapis mimo to lub ponowienie.',
     input_schema: {
       type: 'object',
       properties: {

@@ -766,7 +766,17 @@ router.post('/verify-nip', async (req, res) => {
       const s = mfData?.result?.subject;
       if (!s) return res.status(404).json({ error: 'Company not found' });
 
-      return res.json({ source: 'MF', nip: nipNum, name: s.name, regon: s.regon, krs: s.krs, address: s.workingAddress, statusVat: s.statusVat });
+      // JDG (osoba fizyczna, typ F w REGON) NIE ma workingAddress w białej
+      // liście MF — adres siedzi w residenceAddress. Bez fallbacku bot mówił
+      // „GUS nie zwrócił adresu", choć REGON/MF adres mają (case: SAILING
+      // MACHINE MAŁGORZATA STOPA, workingAddress=null, residence z adresem).
+      const address = s.workingAddress || s.residenceAddress || null;
+      return res.json({
+        source: 'MF', nip: nipNum, name: s.name, regon: s.regon, krs: s.krs,
+        address,
+        addressSource: s.workingAddress ? 'workingAddress' : (s.residenceAddress ? 'residenceAddress' : null),
+        statusVat: s.statusVat,
+      });
     } else {
       const countryCode = nip.slice(0, 2);
       const vatNumber = nip.slice(2);
