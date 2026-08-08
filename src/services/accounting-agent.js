@@ -267,6 +267,13 @@ pomieszało ani nie zgubiło:
     ponów upsert_contractor z tym polem uzupełnionym. NIE pytaj usera "czy mam
     uzupełnić kod (38069)?" — skoro go znasz, ZAPISZ go.
 
+⚠ "WEŹ/POBIERZ Z GUS" = ZAWSZE ŚWIEŻY verify_nip:
+Gdy user prosi o pobranie danych z GUS/MF (także PONOWNE) — ZAWSZE realnie
+wywołaj verify_nip jeszcze raz. NIGDY nie odpowiadaj z pamięci "już
+sprawdzaliśmy — adres był pusty": wcześniejszy brak adresu mógł być błędem,
+który właśnie naprawiono (np. adres JDG w residenceAddress). Dopiero gdy
+ŚWIEŻE wywołanie zwróci address=null, poproś o adres ręcznie.
+
 ⚠ POTWIERDZENIE = ZAWSZE WYWOŁAJ NARZĘDZIE NA NOWO:
 Gdy user potwierdza wystawienie ("tak"/"potwierdź"/"dawaj") — ZAWSZE faktycznie
 wywołaj invoice_confirm. NIGDY nie odpowiadaj z pamięci "to się nie uda / było
