@@ -341,9 +341,22 @@ async function expandEsLines(prisma, items, opts = {}) {
       throw err;
     }
 
+    // Cena pozycji: per-item override → globalna z pola „CENA ZA SZT.".
+    // WSPÓLNA dla zwykłej pozycji i BOXA — wcześniej rozbicie template'u
+    // zerowało ceny pod-pozycji i box liczył się zawsze z cennika (4,50),
+    // mimo wpisanej ceny (ten sam błąd co w PL, naprawiony wcześniej).
+    let priceNetto = null;
+    let priceBrutto = null;
+    if (item.priceNetto != null) priceNetto = parseFloat(item.priceNetto);
+    else if (item.priceBrutto != null) priceBrutto = parseFloat(item.priceBrutto);
+    else if (item.price != null) priceBrutto = parseFloat(item.price);
+    else if (globalPriceNetto != null) priceNetto = parseFloat(globalPriceNetto);
+    else if (globalPriceBrutto != null) priceBrutto = parseFloat(globalPriceBrutto);
+
     if (product.category === 'template' && product.extras && Array.isArray(product.extras.composition)) {
       // Template (box, collection, mix) — expand into individual products.
       // Composition entries reference children by ean (preferred) or name.
+      // Cena za SZTUKĘ schodzi na każdą pod-pozycję rozbitego boxa.
       for (const comp of product.extras.composition) {
         let sub = null;
         if (comp.ean) sub = await prisma.esProduct.findUnique({ where: { ean: comp.ean } });
@@ -353,20 +366,11 @@ async function expandEsLines(prisma, items, opts = {}) {
         positions.push({
           product: sub,
           qty: comp.qty * (item.qty || 1),
-          priceNetto: null,
-          priceBrutto: null,
+          priceNetto,
+          priceBrutto,
         });
       }
     } else {
-      let priceNetto = null;
-      let priceBrutto = null;
-
-      if (item.priceNetto != null) priceNetto = parseFloat(item.priceNetto);
-      else if (item.priceBrutto != null) priceBrutto = parseFloat(item.priceBrutto);
-      else if (item.price != null) priceBrutto = parseFloat(item.price);
-      else if (globalPriceNetto != null) priceNetto = parseFloat(globalPriceNetto);
-      else if (globalPriceBrutto != null) priceBrutto = parseFloat(globalPriceBrutto);
-
       positions.push({
         product,
         qty: item.qty || 1,
