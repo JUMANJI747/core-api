@@ -63,7 +63,13 @@ async function listAllForPeriod(period, log) {
 // jak jest, fallback do targetEntityId (lokalna baza lub GET /entities).
 async function resolveCustomerRef(prisma, full, csInvoice, log) {
   let customer = full.customer || csInvoice.customer || null;
-  if (customer && customer.id) return customer;
+  // Embedded customer bywa CHUDY (samo {id}, bez nazwy) — snapshot nazwy
+  // wychodził pusty i FV wystawiane przez Nikodema wprost w Contasimple
+  // lądowały na liście bez „dla kogo" (PDF ma nabywcę, nasza lista nie).
+  // Embedded zwracamy TYLKO gdy niesie materiał na nazwę; inaczej lecimy
+  // dalej do lokalnej bazy / GET /entities.
+  const hasNameMaterial = (c) => !!(c && (c.organization || c.firstname || c.lastname || c.name));
+  if (customer && customer.id && hasNameMaterial(customer)) return customer;
 
   const targetEntityId = full.targetEntityId || csInvoice.targetEntityId || (customer && customer.id) || null;
   if (!targetEntityId) return customer;
@@ -181,7 +187,7 @@ async function persistInvoice(prisma, period, csInvoice, opts) {
   const contractorId = await upsertEsContractor(prisma, customer, log);
 
   // Snapshot kontrahenta na FV (Etap 2.1) — z customer payload.
-  const snapshotName = customer ? (customer.organization || [customer.firstname, customer.lastname].filter(Boolean).join(' ').trim() || null) : null;
+  const snapshotName = customer ? (customer.organization || [customer.firstname, customer.lastname].filter(Boolean).join(' ').trim() || customer.name || null) : null;
   const snapshotNip = customer ? (customer.nif || null) : null;
   const snapshotCountry = customer ? (customer.country || null) : null;
   const snapshotCity = customer ? (customer.city || null) : null;
