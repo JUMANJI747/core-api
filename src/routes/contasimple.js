@@ -3428,14 +3428,42 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     orderBy: { invoiceDate: 'desc' },
   });
 
+  // TRYB TŁA (domyślny dla realnej naprawy): sekwencyjne wywołania do
+  // Contasimple (szczegół + klient + zapis per FV) nie mieszczą się w oknie
+  // proxy 60 s — "Load failed" mimo budżetu czasowego. Odpowiadamy OD RAZU,
+  // pętla mieli dalej po odpowiedzi, postęp w AgentContext
+  // 'es-contractor-backfill' (odczyt: GET /contasimple/backfill-contractor-status).
+  // dryRun i {"sync":true} zostają synchroniczne (z budżetem czasu).
+  const isBackground = !dryRun && (req.body || {}).sync !== true;
+  const saveState = (data) => prisma.agentContext.upsert({
+    where: { id: 'es-contractor-backfill' },
+    update: { data },
+    create: { id: 'es-contractor-backfill', data },
+  }).catch((e) => console.error('[es-contractor-backfill] state save:', e.message));
+  if (isBackground) {
+    await saveState({ status: 'running', total: candidates.length, done: 0, fixed: 0, skipped: 0, errors: 0, startedAt: new Date().toISOString() });
+    res.json({
+      ok: true,
+      started: true,
+      total: candidates.length,
+      note: 'Naprawa leci w tle — postęp sprawdzisz przez GET /api/contasimple/backfill-contractor-status',
+    });
+  }
+
   let fixed = 0, skipped = 0, errors = 0;
   const errorList = [];
   const sample = [];
 
   let processed = 0;
   for (const inv of candidates) {
-    if (Date.now() > deadline) { timedOut = true; break; }
+    if (!isBackground && Date.now() > deadline) { timedOut = true; break; }
     processed++;
+    if (isBackground) {
+      // Postęp co 10 pozycji + throttle na API Contasimple (także dla
+      // pomijanych — one też wołają getInvoice).
+      if (processed % 10 === 1 && processed > 1) await saveState({ status: 'running', total: candidates.length, done: processed - 1, fixed, skipped, errors });
+      await new Promise(r2 => setTimeout(r2, 150));
+    }
     if (!inv.contasimpleId || !inv.period) { skipped++; continue; }
     let full;
     try {
@@ -3556,6 +3584,16 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     fixed++;
   }
 
+  if (isBackground) {
+    await saveState({
+      status: 'done', finishedAt: new Date().toISOString(),
+      total: candidates.length, done: processed,
+      fixed, skipped, errors, errorList: errorList.slice(0, 20),
+    });
+    console.log(`[es-contractor-backfill] done: fixed=${fixed} skipped=${skipped} errors=${errors} / ${candidates.length}`);
+    return; // odpowiedź poszła na starcie
+  }
+
   res.json({
     ok: true,
     dryRun,
@@ -3570,6 +3608,12 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     errorList: errorList.slice(0, 20),
     sample,
   });
+}));
+
+// Postęp naprawy w tle (backfill-contractor-mapping bez dryRun).
+router.get('/backfill-contractor-status', asyncHandler(async (req, res) => {
+  const row = await prisma.agentContext.findUnique({ where: { id: 'es-contractor-backfill' } }).catch(() => null);
+  res.json({ ok: true, state: (row && row.data) || null });
 }));
 
 module.exports = router;
