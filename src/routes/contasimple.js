@@ -3414,7 +3414,9 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
 
   const candidates = await prisma.esInvoice.findMany({
     where: { contractorId: null },
-    select: { id: true, contasimpleId: true, period: true, number: true },
+    // extras — przy imporcie zapisujemy tam targetEntityId; to trzecie źródło
+    // ID klienta, gdy świeży getInvoice go nie zwraca.
+    select: { id: true, contasimpleId: true, period: true, number: true, extras: true },
     take: Math.min(Number(limit) || 1000, 5000),
     orderBy: { invoiceDate: 'desc' },
   });
@@ -3434,8 +3436,28 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
       errorList.push({ invoice: inv.number, err: 'getInvoice: ' + e.message });
       continue;
     }
-    const targetEntityId = (full && full.targetEntityId) || (full && full.customer && full.customer.id) || null;
-    if (!targetEntityId) { skipped++; continue; }
+    const extrasTargetId = inv.extras && typeof inv.extras === 'object' ? inv.extras.targetEntityId : null;
+    const targetEntityId = (full && full.targetEntityId)
+      || (full && full.customer && full.customer.id)
+      || extrasTargetId
+      || null;
+    if (!targetEntityId) {
+      skipped++;
+      // Debug pominięć — bez tego dryRun zwracał skipped=110 i sample=[],
+      // czyli zero informacji CZEMU (jaki kształt ma odpowiedź Contasimple).
+      if (sample.length < 5) {
+        sample.push({
+          number: inv.number,
+          skippedReason: 'no targetEntityId',
+          debug: {
+            fullKeys: Object.keys(full || {}).slice(0, 60),
+            extrasTargetEntityId: extrasTargetId,
+            rawHead: JSON.stringify(full || {}).slice(0, 900),
+          },
+        });
+      }
+      continue;
+    }
 
     let contractor = await prisma.esContractor.findUnique({
       where: { contasimpleId: targetEntityId },
