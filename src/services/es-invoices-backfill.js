@@ -62,7 +62,8 @@ async function listAllForPeriod(period, log) {
 // starsza wersja kodu. Ten helper rozwiazuje obie formy: nested customer
 // jak jest, fallback do targetEntityId (lokalna baza lub GET /entities).
 async function resolveCustomerRef(prisma, full, csInvoice, log) {
-  let customer = full.customer || csInvoice.customer || null;
+  // Nowy format Contasimple: klient jako zagnieżdżony `target` (nie `customer`).
+  let customer = full.customer || full.target || csInvoice.customer || csInvoice.target || null;
   // Embedded customer bywa CHUDY (samo {id}, bez nazwy) — snapshot nazwy
   // wychodził pusty i FV wystawiane przez Nikodema wprost w Contasimple
   // lądowały na liście bez „dla kogo" (PDF ma nabywcę, nasza lista nie).
@@ -71,7 +72,11 @@ async function resolveCustomerRef(prisma, full, csInvoice, log) {
   const hasNameMaterial = (c) => !!(c && (c.organization || c.firstname || c.lastname || c.name));
   if (customer && customer.id && hasNameMaterial(customer)) return customer;
 
-  const targetEntityId = full.targetEntityId || csInvoice.targetEntityId || (customer && customer.id) || null;
+  // `originalTargetEntityID` (inna pisownia niż stare targetEntityId!) — tak
+  // nowy format Contasimple wskazuje klienta w szczególe faktury.
+  const targetEntityId = full.targetEntityId || full.originalTargetEntityID
+    || csInvoice.targetEntityId || csInvoice.originalTargetEntityID
+    || (customer && customer.id) || null;
   if (!targetEntityId) return customer;
 
   const local = await prisma.esContractor.findUnique({
@@ -221,7 +226,7 @@ async function persistInvoice(prisma, period, csInvoice, opts) {
       extras: {
         lines: full.lines || [],
         payments: full.payments || [],
-        targetEntityId: full.targetEntityId || null,
+        targetEntityId: full.targetEntityId || full.originalTargetEntityID || (full.target && full.target.id) || null,
         backfilledAt: new Date().toISOString(),
       },
     },

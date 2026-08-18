@@ -3447,8 +3447,12 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
       continue;
     }
     const extrasTargetId = inv.extras && typeof inv.extras === 'object' ? inv.extras.targetEntityId : null;
-    const targetEntityId = (full && full.targetEntityId)
+    // Contasimple zmieniło format szczegółu FV: nie ma `targetEntityId` —
+    // klient jest w `originalTargetEntityID` (inna pisownia!) i/lub w
+    // zagnieżdżonym `target.id` (potwierdzone debugiem na FV 0152-0156).
+    const targetEntityId = (full && (full.targetEntityId || full.originalTargetEntityID))
       || (full && full.customer && full.customer.id)
+      || (full && full.target && full.target.id)
       || extrasTargetId
       || null;
     if (!targetEntityId) {
