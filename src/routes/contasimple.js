@@ -3610,6 +3610,68 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
   });
 }));
 
+// ============ 🏏 PRZYPOMNIENIE O PŁATNOŚCI (FV ES po terminie) ============
+// Jak PL /invoices/:id/payment-reminder-* — ale język ZAWSZE hiszpański,
+// mail z EsContractor.email, PDF przez cs.fetchInvoicePdf.
+router.post('/local-invoices/:id/payment-reminder-preview', asyncHandler(async (req, res) => {
+  const inv = await prisma.esInvoice.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, number: true, totalAmount: true, currency: true, contractorId: true, contractorName: true, contasimpleId: true },
+  });
+  if (!inv) return res.status(404).json({ ok: false, error: 'faktura ES nie znaleziona' });
+  const contractor = inv.contractorId
+    ? await prisma.esContractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, email: true } }).catch(() => null)
+    : null;
+  const { composeReminder } = require('../services/payment-reminder');
+  const msg = composeReminder({ lang: 'es', number: inv.number, amount: inv.totalAmount != null ? Number(inv.totalAmount) : null, currency: inv.currency || 'EUR' });
+  res.json({
+    ok: true,
+    preview: {
+      to: (contractor && contractor.email) || null,
+      subject: msg.subject, body: msg.text, lang: 'es',
+      number: inv.number, contractorName: (contractor && contractor.name) || inv.contractorName || null,
+      pdfUrl: `/contasimple/local-invoices/${inv.id}/pdf`,
+    },
+  });
+}));
+
+router.post('/local-invoices/:id/payment-reminder-send', asyncHandler(async (req, res) => {
+  const inv = await prisma.esInvoice.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, number: true, totalAmount: true, currency: true, contractorId: true, contasimpleId: true, period: true, invoiceDate: true },
+  });
+  if (!inv) return res.status(404).json({ ok: false, error: 'faktura ES nie znaleziona' });
+  if (!inv.contasimpleId) return res.status(400).json({ ok: false, error: 'faktura bez contasimpleId — PDF niedostępny' });
+  const contractor = inv.contractorId
+    ? await prisma.esContractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, email: true } }).catch(() => null)
+    : null;
+  const override = (req.body || {}).toEmail;
+  const to = (typeof override === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(override.trim()))
+    ? override.trim()
+    : ((contractor && contractor.email) || null);
+  if (!to) return res.json({ ok: false, error: 'Brak maila kontrahenta ES — użyj Udostępnij albo podaj toEmail.' });
+
+  const { composeReminder } = require('../services/payment-reminder');
+  const msg = composeReminder({ lang: 'es', number: inv.number, amount: inv.totalAmount != null ? Number(inv.totalAmount) : null, currency: inv.currency || 'EUR' });
+  const period = inv.period || cs.dateToPeriod(inv.invoiceDate || new Date());
+  const { buffer } = await cs.fetchInvoicePdf(period, inv.contasimpleId);
+  const safeNum = String(inv.number || inv.contasimpleId).replace(/[^A-Za-z0-9_-]/g, '_');
+  const { sendMail, getAccounts } = require('../mail-sender');
+  let from = (process.env.CONTASIMPLE_MAIL_FROM || process.env.TRACKING_NOTIFY_FROM || 'info@surfstickbell.com').trim();
+  const accounts = getAccounts();
+  if (!accounts.find(a => (a.user || '').toLowerCase() === from.toLowerCase())) {
+    from = (accounts[0] && accounts[0].user) || from;
+  }
+  const saved = await sendMail({
+    from, to,
+    subject: msg.subject,
+    body: msg.text,
+    attachments: [{ filename: `factura_${safeNum}.pdf`, content: buffer, contentType: 'application/pdf' }],
+  });
+  console.log(`[payment-reminder-es] FV ${inv.number} → ${to}`);
+  res.json({ ok: true, sent: true, to, from, subject: msg.subject, messageId: saved && saved.messageId });
+}));
+
 // Postęp naprawy w tle (backfill-contractor-mapping bez dryRun).
 router.get('/backfill-contractor-status', asyncHandler(async (req, res) => {
   const row = await prisma.agentContext.findUnique({ where: { id: 'es-contractor-backfill' } }).catch(() => null);

@@ -3563,4 +3563,89 @@ router.post('/invoices/fix-brutto-as-netto', async (req, res) => {
 
 router.addGkOrderToCache = addGkOrderToCache;
 router.getGkOrders = getGkOrders;
+// ============ 🏏 PRZYPOMNIENIE O PŁATNOŚCI (FV po terminie) ============
+//
+// Wzorem send-tracking-email: preview zwraca gotową wiadomość w języku
+// kontrahenta (kraj → język), send wysyła mail z PDF-em faktury w załączniku.
+// Front (guzik 🏏 przy przeterminowanej FV) pokazuje podgląd i daje wybór:
+// mail albo natywny share (PDF pobiera osobno przez /invoices/:id/pdf).
+
+async function loadInvoiceForReminder(prisma, idOrNumber) {
+  let inv = await prisma.invoice.findUnique({ where: { id: String(idOrNumber) } }).catch(() => null);
+  if (!inv) inv = await prisma.invoice.findFirst({ where: { number: String(idOrNumber) } }).catch(() => null);
+  return inv;
+}
+
+router.post('/invoices/:idOrNumber/payment-reminder-preview', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const inv = await loadInvoiceForReminder(prisma, req.params.idOrNumber);
+    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
+    const contractor = inv.contractorId
+      ? await prisma.contractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, country: true, email: true, primaryEmail: true } }).catch(() => null)
+      : null;
+    const { composeReminder } = require('../services/payment-reminder');
+    const msg = composeReminder({
+      country: (contractor && contractor.country) || inv.contractorCountry || 'PL',
+      number: inv.number,
+      amount: inv.grossAmount != null ? Number(inv.grossAmount) : null,
+      currency: inv.currency || 'PLN',
+    });
+    const to = (contractor && (contractor.primaryEmail || contractor.email)) || null;
+    res.json({
+      ok: true,
+      preview: {
+        to, subject: msg.subject, body: msg.text, lang: msg.lang,
+        number: inv.number, contractorName: (contractor && contractor.name) || inv.contractorName || null,
+        pdfUrl: `/invoices/${inv.id}/pdf`,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/invoices/:idOrNumber/payment-reminder-send', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const inv = await loadInvoiceForReminder(prisma, req.params.idOrNumber);
+    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
+    const contractor = inv.contractorId
+      ? await prisma.contractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, country: true, email: true, primaryEmail: true } }).catch(() => null)
+      : null;
+    const override = (req.body || {}).toEmail;
+    const to = (typeof override === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(override.trim()))
+      ? override.trim()
+      : ((contractor && (contractor.primaryEmail || contractor.email)) || null);
+    if (!to) return res.json({ ok: false, error: 'Brak maila kontrahenta — użyj Udostępnij albo podaj toEmail.' });
+
+    const { composeReminder } = require('../services/payment-reminder');
+    const msg = composeReminder({
+      country: (contractor && contractor.country) || inv.contractorCountry || 'PL',
+      number: inv.number,
+      amount: inv.grossAmount != null ? Number(inv.grossAmount) : null,
+      currency: inv.currency || 'PLN',
+    });
+    // PDF faktury w załączniku — jak w confirm/draft-with-invoice.
+    const pdfBuffer = await fetchInvoicePdf(inv.number, inv.type, inv.ifirmaId);
+    const safeNum = String(inv.number).replace(/[^A-Za-z0-9_-]/g, '_');
+    let from = (process.env.TRACKING_NOTIFY_FROM || 'info@surfstickbell.com').trim();
+    const accounts = getAccounts();
+    if (!accounts.find(a => (a.user || '').toLowerCase() === from.toLowerCase())) {
+      from = (accounts[0] && accounts[0].user) || from;
+    }
+    const saved = await sendMail({
+      from, to,
+      subject: msg.subject,
+      body: msg.text,
+      attachments: [{ filename: `Faktura_${safeNum}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
+    console.log(`[payment-reminder] FV ${inv.number} → ${to} (lang=${msg.lang})`);
+    res.json({ ok: true, sent: true, to, from, subject: msg.subject, messageId: saved && saved.messageId });
+  } catch (e) {
+    console.error('[payment-reminder]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
