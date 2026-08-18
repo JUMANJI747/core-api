@@ -3410,7 +3410,13 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
   if (!cs.isConfigured()) {
     return res.status(503).json({ ok: false, error: 'CONTASIMPLE_API_KEY not configured' });
   }
-  const { dryRun = false, limit = 1000 } = req.body || {};
+  const { dryRun = false, limit = 1000, offset = 0 } = req.body || {};
+  // Budżet czasowy: 1 getInvoice na fakturę × 110 kandydatek = kilka minut,
+  // a proxy Vercela ucina po 60 s ("Load failed" w Konsoli). Przerabiamy do
+  // ~40 s i zwracamy remaining — kolejne wywołanie (z offset dla trwale
+  // pomijanych B2C) kontynuuje od następnych.
+  const deadline = Date.now() + Math.min(Number((req.body || {}).budgetMs) || 40000, 50000);
+  let timedOut = false;
 
   const candidates = await prisma.esInvoice.findMany({
     where: { contractorId: null },
@@ -3418,6 +3424,7 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     // ID klienta, gdy świeży getInvoice go nie zwraca.
     select: { id: true, contasimpleId: true, period: true, number: true, extras: true },
     take: Math.min(Number(limit) || 1000, 5000),
+    skip: Math.max(0, Number(offset) || 0),
     orderBy: { invoiceDate: 'desc' },
   });
 
@@ -3425,7 +3432,10 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
   const errorList = [];
   const sample = [];
 
+  let processed = 0;
   for (const inv of candidates) {
+    if (Date.now() > deadline) { timedOut = true; break; }
+    processed++;
     if (!inv.contasimpleId || !inv.period) { skipped++; continue; }
     let full;
     try {
@@ -3546,6 +3556,10 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
     ok: true,
     dryRun,
     scanned: candidates.length,
+    processed,
+    remaining: candidates.length - processed,
+    timedOut,
+    note: timedOut ? `Budżet czasu wyczerpany po ${processed}/${candidates.length} — uruchom ponownie (fixowane wypadają z listy; trwale pomijane omiń przez {"offset":${processed}}).` : undefined,
     fixed,
     skipped,
     errors,
