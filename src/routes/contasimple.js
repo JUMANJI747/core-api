@@ -3214,7 +3214,7 @@ router.post('/autosync', asyncHandler(async (req, res) => {
 // GET /api/contasimple/local-invoices?search=&status=&fromDate=&toDate=&limit=&contasimpleOnly=1
 // Returns local EsInvoice rows ordered by invoiceDate desc. Used by CRM frontend.
 router.get('/local-invoices', asyncHandler(async (req, res) => {
-  const { search, status, fromDate, toDate, limit, contasimpleOnly, owner, withLines } = req.query;
+  const { search, status, fromDate, toDate, limit, contasimpleOnly, owner, withLines, numberFrom, numberTo, format } = req.query;
   const where = {};
   if (search) {
     where.OR = [
@@ -3258,8 +3258,19 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
       where.OR = ownerOr;
     }
   }
-  const take = Math.max(1, Math.min(parseInt(limit, 10) || 200, 10000));
-  const wantLines = withLines === '1' || withLines === 'true';
+  // Zakres numerów (np. „od 0096 do teraz") filtrujemy po pobraniu — numer bywa
+  // „0096" albo „2026-0096", więc porównujemy OSTATNIĄ grupę cyfr, a nie tekst.
+  // Przy takim filtrze domyślny limit 200 jest za mały (sortujemy po dacie),
+  // więc bierzemy szeroko i tniemy dopiero po numerze.
+  const asText = format === 'text' || format === 'txt';
+  const wantRange = !!(numberFrom || numberTo);
+  const numOf = (n) => {
+    const m = String(n == null ? '' : n).match(/(\d+)(?!.*\d)/);
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const take = Math.max(1, Math.min(parseInt(limit, 10) || (wantRange ? 10000 : 200), 10000));
+  // W trybie tekstowym pozycje są sensem raportu — dociągamy je domyślnie.
+  const wantLines = withLines === '1' || withLines === 'true' || (asText && withLines !== '0' && withLines !== 'false');
   const list = await prisma.esInvoice.findMany({
     where,
     orderBy: { invoiceDate: 'desc' },
@@ -3284,8 +3295,81 @@ router.get('/local-invoices', asyncHandler(async (req, res) => {
       } : {}),
     },
   });
-  res.json({ count: list.length, data: list });
+
+  const nFrom = numberFrom ? numOf(numberFrom) : null;
+  const nTo = numberTo ? numOf(numberTo) : null;
+  const rows = (nFrom == null && nTo == null) ? list : list.filter(r => {
+    const v = numOf(r.number);
+    if (v == null) return false;
+    if (nFrom != null && v < nFrom) return false;
+    if (nTo != null && v > nTo) return false;
+    return true;
+  });
+
+  if (asText) return res.type('text/plain; charset=utf-8').send(renderEsInvoicesText(rows, { nFrom, nTo }));
+  res.json({ count: rows.length, data: rows });
 }));
+
+// Raport tekstowy FV ES — czytelny na telefonie w Konsoli API (JSON z setką
+// faktur i pozycjami jest nie do przejrzenia). Kolejność rosnąco po numerze.
+function renderEsInvoicesText(rows, { nFrom, nTo } = {}) {
+  const numOf = (n) => {
+    const m = String(n == null ? '' : n).match(/(\d+)(?!.*\d)/);
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const d10 = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '—');
+  const n2 = (v) => Number(v || 0).toFixed(2);
+  const today = new Date();
+  const sorted = [...rows].sort((a, b) => (numOf(a.number) || 0) - (numOf(b.number) || 0));
+
+  const out = [];
+  const range = `${nFrom != null ? String(nFrom).padStart(4, '0') : 'początek'} → ${nTo != null ? String(nTo).padStart(4, '0') : 'teraz'}`;
+  out.push(`FAKTURY CONTASIMPLE (ES) — zakres ${range} — ${sorted.length} szt.`);
+  out.push('');
+
+  const sums = {}; // currency → { total, payed }
+  const unpaid = [];
+  for (const r of sorted) {
+    const cur = r.currency || 'EUR';
+    const total = Number(r.totalAmount || 0);
+    const payed = Number(r.totalPayedAmount || 0);
+    sums[cur] = sums[cur] || { total: 0, payed: 0 };
+    sums[cur].total += total;
+    sums[cur].payed += payed;
+
+    let pay;
+    if (r.status === 'Payed' || (total > 0 && payed >= total - 0.005)) {
+      pay = '✅ ZAPŁACONA';
+    } else if (payed > 0) {
+      pay = `🟡 CZĘŚCIOWO (${n2(payed)}/${n2(total)} ${cur}, zostało ${n2(total - payed)})`;
+      unpaid.push(r);
+    } else {
+      const overdue = r.expirationDate && new Date(r.expirationDate) < today
+        ? `, PO TERMINIE ${Math.floor((today - new Date(r.expirationDate)) / 86400000)} dni`
+        : '';
+      pay = `❌ NIEZAPŁACONA (termin ${d10(r.expirationDate)}${overdue})`;
+      unpaid.push(r);
+    }
+
+    const who = [r.contractorName || '(brak kontrahenta)', r.contractorNip || null, r.contractorCountry || null]
+      .filter(Boolean).join(' · ');
+    const owner = (r.contractor && r.contractor.owner) || 'nikodem';
+    out.push(`${r.number || '(bez numeru)'} | ${d10(r.invoiceDate)} | ${who} | ${n2(total)} ${cur} (netto ${n2(r.totalTaxableAmount)}, VAT ${n2(r.totalVatAmount)}) | ${pay} | ${owner}`);
+    for (const li of (r.lineItems || [])) {
+      const vat = li.vatRate && li.vatRate !== '0' ? ` +${li.vatRate}%` : '';
+      out.push(`    • ${Number(li.qty)}× ${li.name} @ ${n2(li.unitPriceNetto)} = ${n2(li.totalNetto)}${vat} → ${n2(li.totalGross)} ${li.currency || cur}`);
+    }
+    if (!r.lineItems || !r.lineItems.length) out.push('    • (brak zapisanych pozycji)');
+    out.push('');
+  }
+
+  out.push('— PODSUMOWANIE —');
+  for (const [cur, s] of Object.entries(sums)) {
+    out.push(`${cur}: brutto ${n2(s.total)} | zapłacone ${n2(s.payed)} | DO ZAPŁATY ${n2(s.total - s.payed)}`);
+  }
+  out.push(`Niezapłacone/częściowe: ${unpaid.length} szt.${unpaid.length ? ` → ${unpaid.map(r => r.number || '?').join(', ')}` : ''}`);
+  return out.join('\n');
+}
 
 // GET /api/contasimple/local-invoices/:id/pdf — pobranie PDF faktury ES po
 // LOKALNYM id (UUID z EsInvoice). Rozwiazuje contasimpleId + period z bazy

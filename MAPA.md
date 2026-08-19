@@ -56,7 +56,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/cron.js` | zadania cykliczne (raport miesięczny, sync) |
 | `/api` | `routes/transactions.js` | transakcje (deal cycle) |
 | `/api` | `routes/push.js` | web push (PWA) |
-| `/api/contasimple` | `routes/contasimple.js` | **FV ES/Kanary**: invoice-preview/confirm(-latest), albaran (WZ), delete, products/contractors ES, owner (PUT :id/owner + set-owner-batch), **invoices/backfill-contractor-mapping** (retro-fix kontrahentow FV z CS; realny przebieg W TLE, postep GET /backfill-contractor-status; klient z originalTargetEntityID/target — nowy format CS) |
+| `/api/contasimple` | `routes/contasimple.js` | **FV ES/Kanary**: invoice-preview/confirm(-latest), albaran (WZ), delete, products/contractors ES, owner (PUT :id/owner + set-owner-batch), **invoices/backfill-contractor-mapping** (retro-fix kontrahentow FV z CS; realny przebieg W TLE, postep GET /backfill-contractor-status; klient z originalTargetEntityID/target — nowy format CS), **GET local-invoices** (lista FV ES z bazy; filtry `search`/`status`/`fromDate`/`toDate`/`owner`/`contasimpleOnly`/`withLines`, **`numberFrom`/`numberTo`** = zakres po numerze (porównanie ostatniej grupy cyfr, działa dla „0096" i „2026-0096"; przy zakresie limit domyślnie 10000), **`format=text`** = czytelny raport tekstowy z pozycjami, statusem płatności i podsumowaniem do zapłaty — do Konsoli API) |
 | `/api` | `routes/mk.js` | **Mała Księgowość (mk.app)** — ETAP 0: `mk/ping`, `mk/ksef-fetch` (wyzwól pobranie z KSeF: buy/sell), `mk/ksef-fetch/:ref` (status), `mk/cost-invoices`, `mk/sales-invoices`, `mk/new-ledger-entries`. Reconciliation MK↔baza↔iFirma↔KSeF = ETAP 2 |
 
 ---
