@@ -421,6 +421,9 @@ model ImapState {
   // STAREJ numeracji i poller mógłby pomijać nowe maile. Poller wykrywa zmianę
   // i robi catch-up po dacie (rescan) + reset lastUid do nowej numeracji.
   uidValidity Int?
+  // Czas ostatniego UDANEGO cyklu pobierania — po przerwie (timeout serwera,
+  // restart, crash) następny udany cykl robi rescan na głębokość przerwy.
+  lastOkAt  DateTime?
   updatedAt DateTime @updatedAt
 }
 

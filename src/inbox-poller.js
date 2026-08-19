@@ -41,6 +41,53 @@ async function markInboxOk(inbox) {
     await sendInboxAlert(`✅ Skrzynka ${inbox}@ znów pobiera maile — połączenie wróciło.`);
   }
   inboxHealth.delete(inbox);
+  await healAfterGap(inbox);
+}
+
+// SAMOLECZENIE PO PRZERWIE. Każda skrzynka pamięta czas ostatniego UDANEGO
+// cyklu (ImapState.lastOkAt). Gdy między udanymi cyklami była dziura
+// (timeouty serwera poczty, restart Railway, crash procesu) — następny udany
+// cykl AUTOMATYCZNIE robi rescan po dacie NA GŁĘBOKOŚĆ PRZERWY (+1 dzień
+// zapasu, max 30 dni). UID-owa wznowa teoretycznie nie gubi, ale realnie
+// potrafiła (przypadek z 19.08) — rescan dedupuje po messageId, więc
+// fałszywy alarm kosztuje tylko jedno tanie przejście.
+const GAP_HEAL_THRESHOLD_MS = 20 * 60 * 1000; // ≥ ~4 pominięte cykle
+const _healingInboxes = new Set();
+
+async function healAfterGap(inbox) {
+  if (_healingInboxes.has(inbox)) return;
+  let prevOkAt = null;
+  try {
+    const st = await prisma.imapState.findUnique({ where: { inbox }, select: { lastOkAt: true } });
+    prevOkAt = st && st.lastOkAt;
+    await prisma.imapState.upsert({
+      where: { inbox },
+      update: { lastOkAt: new Date() },
+      create: { inbox, lastOkAt: new Date() },
+    });
+  } catch (e) {
+    console.error(`[inbox-poller] ${inbox}: lastOkAt save failed:`, e.message);
+    return;
+  }
+  if (!prevOkAt) return; // pierwszy zapis — brak punktu odniesienia
+  const gapMs = Date.now() - new Date(prevOkAt).getTime();
+  if (gapMs < GAP_HEAL_THRESHOLD_MS) return;
+  const daysBack = Math.min(30, Math.ceil(gapMs / 86400000) + 1);
+  _healingInboxes.add(inbox);
+  setImmediate(async () => {
+    try {
+      console.log(`[inbox-poller] ${inbox}: przerwa ${Math.round(gapMs / 60000)} min — samoleczenie rescanem ${daysBack} dni wstecz`);
+      const r = await rescanInboxSince(inbox, daysBack);
+      console.log(`[inbox-poller] ${inbox}: samoleczenie: +${r.added} maili (dedup ${r.dedupedExisting}, filtr ${r.filteredOut})`);
+      if (r && r.added > 0) {
+        await sendInboxAlert(`🩹 Skrzynka ${inbox}@ — po przerwie ${Math.round(gapMs / 60000)} min dociągnięto ${r.added} maili (skan ${daysBack} dni wstecz).`);
+      }
+    } catch (e) {
+      console.error(`[inbox-poller] ${inbox}: samoleczenie nieudane:`, e.message);
+    } finally {
+      _healingInboxes.delete(inbox);
+    }
+  });
 }
 
 async function markInboxFail(inbox, errMsg) {
