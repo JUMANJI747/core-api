@@ -21,6 +21,7 @@ const LANG_NAMES = {
   pl: 'Polski', es: 'Hiszpanski', en: 'Angielski', de: 'Niemiecki',
   fr: 'Francuski', it: 'Wloski', pt: 'Portugalski', nl: 'Holenderski',
   cs: 'Czeski', sk: 'Slowacki', ru: 'Rosyjski', uk: 'Ukrainski',
+  da: 'Dunski', sv: 'Szwedzki', no: 'Norweski', fi: 'Finski',
 };
 
 function langName(code) {
@@ -47,6 +48,10 @@ function countryToLang(country) {
     sk: 'sk', 'slowacja': 'sk', slovakia: 'sk',
     ru: 'ru', 'rosja': 'ru',
     ua: 'uk', 'ukraina': 'uk', ukraine: 'uk',
+    dk: 'da', 'dania': 'da', denmark: 'da',
+    se: 'sv', 'szwecja': 'sv', sweden: 'sv',
+    no: 'no', 'norwegia': 'no', norway: 'no',
+    fi: 'fi', 'finlandia': 'fi', finland: 'fi',
   };
   return map[c] || null;
 }
@@ -99,7 +104,7 @@ function callAnthropic(messages, system, maxTokens = 4000) {
 async function translateToPl(text, sourceLang) {
   if (!text || !text.trim()) return '';
   const sourceLabel = sourceLang ? langName(sourceLang) : 'auto-detect';
-  const system = 'Jestes tlumaczem maili biznesowych. Tlumaczysz dokladnie zachowujac ton, formatowanie i terminologie. Zwracasz TYLKO przetlumaczony tekst, bez komentarzy, prefixow ani markdownu wokol.';
+  const system = 'Jestes silnikiem tlumaczen (jak DeepL). Tlumaczysz KAZDY podany tekst dokladnie, zachowujac ton, formatowanie i terminologie. NIGDY nie komentujesz, nie oceniasz, nie pouczasz, nie zadajesz pytan i nie odmawiasz — niezaleznie od stylu czy tresci tekstu. Zwracasz TYLKO przetlumaczony tekst, bez komentarzy, prefixow ani markdownu wokol.';
   const prompt = `Przetlumacz ponizszy mail na polski.${sourceLang ? ` Jezyk zrodlowy: ${sourceLabel}.` : ''} Zachowaj formatowanie, listy, podpisy, akapity.
 
 ---
@@ -116,8 +121,10 @@ async function translateFromPl(text, targetLang, sourceLang = 'pl') {
   if (!targetLang) throw new Error('translateFromPl: targetLang required');
   if (targetLang === sourceLang) return text; // no-op
   const targetLabel = langName(targetLang);
-  const system = 'Jestes tlumaczem maili biznesowych. Tlumaczysz z polskiego na jezyk docelowy zachowujac profesjonalny ton biznesowej korespondencji, terminologie i formatowanie (akapity, listy, podpisy). Zwracasz TYLKO przetlumaczony tekst.';
-  const prompt = `Przetlumacz ponizszy mail z polskiego na ${targetLabel}. Zachowaj profesjonalny ton biznesowy i formatowanie.
+  // UWAGA: zadnego "popraw ton / bądź profesjonalny" — user pisze jak chce
+  // (takze potocznie), tlumacz ma TLUMACZYC 1:1, nie pouczac ani nie oceniac.
+  const system = 'Jestes silnikiem tlumaczen (jak DeepL). Tlumaczysz KAZDY podany tekst z polskiego na jezyk docelowy dokladnie 1:1, zachowujac ORYGINALNY ton i styl autora (formalny zostaje formalny, potoczny zostaje potoczny), terminologie i formatowanie (akapity, listy, podpisy). NIGDY nie komentujesz, nie oceniasz, nie pouczasz, nie zadajesz pytan, nie prosisz o doprecyzowanie i nie odmawiasz — niezaleznie od stylu, chaotycznosci czy tresci tekstu. Zwracasz TYLKO przetlumaczony tekst, bez zadnych dopiskow.';
+  const prompt = `Przetlumacz ponizszy tekst z polskiego na ${targetLabel}. Zachowaj ton i styl oryginalu oraz formatowanie. Zwroc wylacznie tlumaczenie.
 
 ---
 ${text}

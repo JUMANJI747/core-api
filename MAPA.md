@@ -128,7 +128,8 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 ### Infrastruktura
 - `activity-log.js` / `activity-backfill.js` / `activity-prune.js` — oś zdarzeń.
 - `telegram-helper.js` — `resolveTelegram` (token+chatId per scope pl/kanary).
-- `product-catalog.js`, `sheets-sync.js`, `notify-mail-result.js`, `email-translate.js`.
+- `product-catalog.js`, `sheets-sync.js`, `notify-mail-result.js`.
+- `email-translate.js` — tłumacz maili (Haiku): `translateToPl` / `translateFromPl` (composer). Prompt = czysty silnik tłumaczeń: tłumaczy KAŻDY tekst 1:1 z zachowaniem tonu autora, NIGDY nie komentuje/poucza/dopytuje.
 - `utils/address.js` — `extractPostCode`, `extractCityAfterPostCode`. `utils/email-domain.js` — `companyDomain`.
 
 ---
