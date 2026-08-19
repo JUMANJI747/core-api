@@ -89,6 +89,27 @@ async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo,
 
   checkRateLimit();
 
+  // Stopka nadawcy (np. nikodem@) — doklejana CENTRALNIE, żeby działała
+  // w kompozytorze, windykacji (🔪) i każdej innej ścieżce wysyłki.
+  // Marker chroni przed dublem (podpis już w treści / w cytacie odpowiedzi).
+  try {
+    const { getSignatureForFrom, SIGNATURE_MARKER } = require('./services/signatures');
+    const sig = getSignatureForFrom(account.user || from);
+    const already = String(body || '').includes(SIGNATURE_MARKER) || String(html || '').includes(SIGNATURE_MARKER);
+    if (sig && !already) {
+      if (body) body = `${body}\n\n${sig}`;
+      if (html) {
+        const sigHtml = sig
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+          .replace(/\n/g, '<br>');
+        html = html.includes('</body>') ? html.replace('</body>', `<br><br>${sigHtml}</body>`) : `${html}<br><br>${sigHtml}`;
+      }
+    }
+  } catch (e) {
+    console.error('[mail-sender] signature append failed (non-fatal):', e.message);
+  }
+
   console.log('[mail-sender] SMTP config:', { host: SMTP_HOST, port: SMTP_PORT, user: account.user, hasPass: !!account.pass, passLength: (account.pass || '').length });
 
   const transporter = nodemailer.createTransport({

@@ -3584,7 +3584,7 @@ router.post('/invoices/:idOrNumber/payment-reminder-preview', async (req, res) =
     const contractor = inv.contractorId
       ? await prisma.contractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, country: true, email: true, primaryEmail: true } }).catch(() => null)
       : null;
-    const { composeReminder } = require('../services/payment-reminder');
+    const { composeReminder, resolveReminderFrom } = require('../services/payment-reminder');
     const msg = composeReminder({
       country: (contractor && contractor.country) || inv.contractorCountry || 'PL',
       number: inv.number,
@@ -3598,6 +3598,9 @@ router.post('/invoices/:idOrNumber/payment-reminder-preview', async (req, res) =
         to, subject: msg.subject, body: msg.text, lang: msg.lang,
         number: inv.number, contractorName: (contractor && contractor.name) || inv.contractorName || null,
         pdfUrl: `/invoices/${inv.id}/pdf`,
+        // PL windykacja: domyślnie info@, z możliwością zmiany w UI.
+        from: resolveReminderFrom(['info'], null),
+        accounts: getAccounts().map(a => a.user),
       },
     });
   } catch (e) {
@@ -3619,7 +3622,7 @@ router.post('/invoices/:idOrNumber/payment-reminder-send', async (req, res) => {
       : ((contractor && (contractor.primaryEmail || contractor.email)) || null);
     if (!to) return res.json({ ok: false, error: 'Brak maila kontrahenta — użyj Udostępnij albo podaj toEmail.' });
 
-    const { composeReminder } = require('../services/payment-reminder');
+    const { composeReminder, resolveReminderFrom } = require('../services/payment-reminder');
     const msg = composeReminder({
       country: (contractor && contractor.country) || inv.contractorCountry || 'PL',
       number: inv.number,
@@ -3629,11 +3632,9 @@ router.post('/invoices/:idOrNumber/payment-reminder-send', async (req, res) => {
     // PDF faktury w załączniku — jak w confirm/draft-with-invoice.
     const pdfBuffer = await fetchInvoicePdf(inv.number, inv.type, inv.ifirmaId);
     const safeNum = String(inv.number).replace(/[^A-Za-z0-9_-]/g, '_');
-    let from = (process.env.TRACKING_NOTIFY_FROM || 'info@surfstickbell.com').trim();
-    const accounts = getAccounts();
-    if (!accounts.find(a => (a.user || '').toLowerCase() === from.toLowerCase())) {
-      from = (accounts[0] && accounts[0].user) || from;
-    }
+    // Nadawca: wybór z UI (req.body.from) wygrywa, domyślnie info@.
+    const from = resolveReminderFrom(['info'], (req.body || {}).from);
+    if (!from) return res.status(500).json({ ok: false, error: 'Brak skonfigurowanych kont pocztowych (IMAP_ACCOUNTS)' });
     const saved = await sendMail({
       from, to,
       subject: msg.subject,

@@ -3622,7 +3622,8 @@ router.post('/local-invoices/:id/payment-reminder-preview', asyncHandler(async (
   const contractor = inv.contractorId
     ? await prisma.esContractor.findUnique({ where: { id: inv.contractorId }, select: { name: true, email: true } }).catch(() => null)
     : null;
-  const { composeReminder } = require('../services/payment-reminder');
+  const { composeReminder, resolveReminderFrom } = require('../services/payment-reminder');
+  const { getAccounts } = require('../mail-sender');
   const msg = composeReminder({ lang: 'es', number: inv.number, amount: inv.totalAmount != null ? Number(inv.totalAmount) : null, currency: inv.currency || 'EUR' });
   res.json({
     ok: true,
@@ -3631,6 +3632,9 @@ router.post('/local-invoices/:id/payment-reminder-preview', asyncHandler(async (
       subject: msg.subject, body: msg.text, lang: 'es',
       number: inv.number, contractorName: (contractor && contractor.name) || inv.contractorName || null,
       pdfUrl: `/contasimple/local-invoices/${inv.id}/pdf`,
+      // ES windykacja: domyślnie nikodem@, z możliwością zmiany w UI.
+      from: resolveReminderFrom(['nikodem', 'niko'], null),
+      accounts: getAccounts().map(a => a.user),
     },
   });
 }));
@@ -3651,17 +3655,15 @@ router.post('/local-invoices/:id/payment-reminder-send', asyncHandler(async (req
     : ((contractor && contractor.email) || null);
   if (!to) return res.json({ ok: false, error: 'Brak maila kontrahenta ES — użyj Udostępnij albo podaj toEmail.' });
 
-  const { composeReminder } = require('../services/payment-reminder');
+  const { composeReminder, resolveReminderFrom } = require('../services/payment-reminder');
   const msg = composeReminder({ lang: 'es', number: inv.number, amount: inv.totalAmount != null ? Number(inv.totalAmount) : null, currency: inv.currency || 'EUR' });
   const period = inv.period || cs.dateToPeriod(inv.invoiceDate || new Date());
   const { buffer } = await cs.fetchInvoicePdf(period, inv.contasimpleId);
   const safeNum = String(inv.number || inv.contasimpleId).replace(/[^A-Za-z0-9_-]/g, '_');
-  const { sendMail, getAccounts } = require('../mail-sender');
-  let from = (process.env.CONTASIMPLE_MAIL_FROM || process.env.TRACKING_NOTIFY_FROM || 'info@surfstickbell.com').trim();
-  const accounts = getAccounts();
-  if (!accounts.find(a => (a.user || '').toLowerCase() === from.toLowerCase())) {
-    from = (accounts[0] && accounts[0].user) || from;
-  }
+  const { sendMail } = require('../mail-sender');
+  // Nadawca: wybór z UI (req.body.from) wygrywa, domyślnie nikodem@.
+  const from = resolveReminderFrom(['nikodem', 'niko'], (req.body || {}).from);
+  if (!from) return res.status(500).json({ ok: false, error: 'Brak skonfigurowanych kont pocztowych (IMAP_ACCOUNTS)' });
   const saved = await sendMail({
     from, to,
     subject: msg.subject,

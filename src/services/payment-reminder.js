@@ -52,4 +52,23 @@ function composeReminder({ lang, country, number, amount, currency }) {
   return { lang: l, subject: t.subject(number), text: t.body(number, amt) };
 }
 
-module.exports = { composeReminder };
+// Wybór skrzynki nadawczej dla windykacji: `requested` (z UI — pełny adres,
+// klucz skrzynki albo local-part) wygrywa; inaczej pierwszy pasujący
+// z preferredPrefixes (ES → nikodem, PL → info); ostatecznie pierwsze konto.
+function resolveReminderFrom(preferredPrefixes, requested) {
+  const { getAccounts } = require('../mail-sender');
+  const accounts = getAccounts();
+  const find = (pred) => accounts.find(a => pred(String(a.user || '').toLowerCase(), String(a.inbox || '').toLowerCase()));
+  if (requested) {
+    const r = String(requested).toLowerCase().trim();
+    const hit = find((u, i) => u === r || i === r || u.split('@')[0] === r);
+    if (hit) return hit.user;
+  }
+  for (const p of preferredPrefixes) {
+    const hit = find((u, i) => i === p || u.split('@')[0] === p || u.startsWith(p));
+    if (hit) return hit.user;
+  }
+  return (accounts[0] && accounts[0].user) || null;
+}
+
+module.exports = { composeReminder, resolveReminderFrom };
