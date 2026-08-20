@@ -32,6 +32,31 @@ router.get('/accounting/monthly-report', async (req, res) => {
   }
 });
 
+// WYMUSZONE odświeżenie statusów KSeF dla oglądanego miesiąca — guzik w UI.
+// Omija throttle 10 min (ale nie karencję po 429), bo to świadoma decyzja
+// użytkownika: „zużyj teraz jedno z 20 zapytań na godzinę". Potrzebne, gdy
+// faktury poszły do KSeF bezpośrednio z iFirmy i nasz system o tym nie wie.
+router.post('/accounting/refresh-ksef-status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { fromIso, toIso } = monthRange(req.body && req.body.month);
+    const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
+    const r = await syncSalesStatusThrottled(prisma, { minIntervalMs: 0, from: fromIso, to: toIso });
+    if (r && r.skipped === 'cooldown') {
+      return res.json({
+        ok: false,
+        cooldown: true,
+        minutes: Math.ceil((r.cooldownMs || 0) / 60000),
+        error: `KSeF wyczerpany limit odczytów (20/h) — spróbuj za ${Math.ceil((r.cooldownMs || 0) / 60000)} min.`,
+      });
+    }
+    if (r && r.skipped) return res.json({ ok: false, error: r.error || `pominięto (${r.skipped})` });
+    res.json({ ok: true, range: { from: fromIso, to: toIso }, found: r.found, matched: r.matched, alreadyHad: r.alreadyHad, notInDb: r.notInDb });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Wyślij do KSeF wszystkie faktury miesiąca, których jeszcze tam nie ma.
 router.post('/accounting/send-month-to-ksef', async (req, res) => {
   const prisma = req.app.locals.prisma;
