@@ -22,18 +22,35 @@ async function syncSalesStatus(prisma, { from, to, dateType = 'Issue' }) {
   const fromIso = new Date(from).toISOString();
   const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
   const metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from: fromIso, to: toIso, dateType });
-  let matched = 0;
-  const unmatched = [];
+  // Rozróżniamy trzy przypadki, bo „nie zaktualizowano" znaczyło wcześniej
+  // zarówno „nic do roboty" jak i realny problem — i lista `unmatched` puchła
+  // od faktur, które numer KSeF już dawno miały.
+  let matched = 0;      // dopisaliśmy numer teraz
+  let alreadyHad = 0;   // numer był już w bazie — nic do roboty
+  const notInDb = [];   // KSeF ma fakturę, my jej nie mamy pod tym numerem
   for (const m of metadata) {
     const number = P(m, 'invoiceNumber', 'number');
     const ksefNumber = P(m, 'ksefNumber', 'ksefReferenceNumber', 'referenceNumber');
     if (!number || !ksefNumber) continue;
+    const existing = await prisma.invoice
+      .findFirst({ where: { number: String(number) }, select: { id: true, ksefNumber: true } })
+      .catch(() => null);
+    if (!existing) { notInDb.push(String(number)); continue; }
+    if (existing.ksefNumber) { alreadyHad++; continue; }
     const upd = await prisma.invoice
       .updateMany({ where: { number: String(number), ksefNumber: null }, data: { ksefNumber: String(ksefNumber) } })
       .catch(() => ({ count: 0 }));
-    if (upd.count) matched += upd.count; else unmatched.push(number);
+    matched += upd.count;
   }
-  return { found: metadata.length, matched, unmatched, sample: metadata[0] || null };
+  return {
+    found: metadata.length,
+    matched,
+    alreadyHad,
+    notInDb,
+    // zgodność wstecz z poprzednim kształtem odpowiedzi
+    unmatched: notInDb,
+    sample: metadata[0] || null,
+  };
 }
 
 // Wersja z throttlem + poszanowaniem cooldownu po 429. Nic nie rzuca —

@@ -3132,6 +3132,40 @@ router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
   }
 });
 
+// Które faktury NIE mają jeszcze numeru KSeF (czyli wiszą bez ✅). Czyta
+// WYŁĄCZNIE z naszej bazy — zero zapytań do KSeF, więc można wołać do woli
+// (limit KSeF to 20 zapytań/h). ?months=N — ile miesięcy wstecz (domyślnie 8).
+router.get('/invoices/ksef-pending', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const months = Math.max(1, Math.min(parseInt(req.query.months, 10) || 8, 36));
+    const since = new Date();
+    since.setMonth(since.getMonth() - months);
+    const rows = await prisma.invoice.findMany({
+      where: { issueDate: { gte: since }, ksefNumber: null, ifirmaId: { not: null } },
+      orderBy: { issueDate: 'asc' },
+      select: { id: true, number: true, issueDate: true, ksefSentAt: true, contractorName: true, grossAmount: true, currency: true },
+    });
+    const d10 = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+    res.json({
+      ok: true,
+      monthsBack: months,
+      bezNumeruKsef: rows.length,
+      wyslaneAleBezNumeru: rows.filter(r => r.ksefSentAt).length,
+      wcaleNiewyslane: rows.filter(r => !r.ksefSentAt).length,
+      faktury: rows.map(r => ({
+        number: r.number,
+        issueDate: d10(r.issueDate),
+        wyslanaDoKsef: d10(r.ksefSentAt),
+        kontrahent: r.contractorName || null,
+        brutto: r.grossAmount != null ? `${Number(r.grossAmount).toFixed(2)} ${r.currency || 'PLN'}` : null,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // DIAGNOSTYKA: czy iFirma oddaje numer KSeF w szczegółach faktury? Jeśli tak,
 // możemy zapalać ✅ czytając z iFirmy (bez limitu) zamiast z KSeF (20 zapytań/h).
 // Zwraca tylko pola z „ksef" w nazwie + listę kluczy — bez całego payloadu.
