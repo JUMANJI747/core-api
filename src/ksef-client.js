@@ -190,18 +190,51 @@ async function getAccessToken() {
   return accessToken;
 }
 
+// KSeF odrzuca zapytanie o zakres dłuższy niż 3 MIESIĄCE (błąd 21405
+// „'dateRange' must not exceed 3 months"). Tniemy więc na okna po 85 dni —
+// krócej niż najkrótsze 3 miesiące kalendarzowe (89 dni), więc zawsze przejdzie.
+const MAX_RANGE_DAYS = 85;
+const MAX_RANGE_WINDOWS = 12; // ~3 lata; wyżej to pomyłka w zapytaniu, nie zakres
+
+function splitDateRange(from, to) {
+  const start = new Date(from);
+  const end = new Date(to);
+  if (!(start < end)) return [{ from: new Date(from).toISOString(), to: new Date(to).toISOString() }];
+  const MAX_MS = MAX_RANGE_DAYS * 24 * 3600 * 1000;
+  const windows = [];
+  let cur = start;
+  while (cur < end) {
+    const stop = new Date(Math.min(cur.getTime() + MAX_MS, end.getTime()));
+    windows.push({ from: cur.toISOString(), to: stop.toISOString() });
+    if (stop.getTime() >= end.getTime()) break;
+    cur = new Date(stop.getTime() + 1);
+  }
+  return windows;
+}
+
 // Metadane faktur w zakresie dat. subjectType: 'Subject2' = nabywca (koszty),
 // 'Subject1' = sprzedawca (nasze sprzedażowe — do oznaczania „jest w KSeF").
+// Zakres dłuższy niż 3 mies. dzielony automatycznie; UWAGA: każde okno to
+// osobne żądanie, a limit KSeF to 20 zapytań metadata na godzinę.
 async function queryInvoiceMetadata(accessToken, { subjectType = 'Subject2', from, to, dateType = 'Issue', pageSize = 100 }) {
+  const windows = splitDateRange(from, to);
+  if (windows.length > MAX_RANGE_WINDOWS) {
+    throw new Error(`KSeF: zakres ${from}–${to} wymaga ${windows.length} zapytań (limit 20/h) — zawęź go.`);
+  }
+  if (windows.length > 1) {
+    console.log(`[ksef] zakres > 3 mies. — dzielę na ${windows.length} okien po ≤${MAX_RANGE_DAYS} dni`);
+  }
   const results = [];
-  let pageOffset = 0;
-  for (let guard = 0; guard < 100; guard++) {
-    const body = { subjectType, dateRange: { dateType, from, to } };
-    const resp = await api('POST', `/invoices/query/metadata?pageOffset=${pageOffset}&pageSize=${pageSize}`, { token: accessToken, body });
-    const items = pick(resp, 'invoices') || pick(resp, 'items') || (Array.isArray(resp) ? resp : []);
-    results.push(...items);
-    if (items.length < pageSize) break;
-    pageOffset += 1;
+  for (const w of windows) {
+    let pageOffset = 0;
+    for (let guard = 0; guard < 100; guard++) {
+      const body = { subjectType, dateRange: { dateType, from: w.from, to: w.to } };
+      const resp = await api('POST', `/invoices/query/metadata?pageOffset=${pageOffset}&pageSize=${pageSize}`, { token: accessToken, body });
+      const items = pick(resp, 'invoices') || pick(resp, 'items') || (Array.isArray(resp) ? resp : []);
+      results.push(...items);
+      if (items.length < pageSize) break;
+      pageOffset += 1;
+    }
   }
   return results;
 }
