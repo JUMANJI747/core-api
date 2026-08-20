@@ -256,9 +256,12 @@ router.post('/cron/monthly-report', async (req, res) => {
         // 2) KSeF sync statusu sprzedaży (Subject1) — żeby ksefNumber był świeży
         let ksefSync = null;
         try {
-          const { selfCall } = require('../services/agent-runtime');
-          const r = await selfCall('POST', '/api/ksef/sync-sales-status', { from: fromIso, to: toIso });
-          ksefSync = r.body && (r.body.matched != null) ? { matched: r.body.matched, found: r.body.found } : null;
+          // Raport miesięczny leci raz w miesiącu — tu odczyt bez throttla, ale
+          // tym samym kanałem (odświeża wspólny znacznik, więc wejście w
+          // Księgowość zaraz po raporcie nie zużyje kolejnego zapytania).
+          const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
+          const r = await syncSalesStatusThrottled(prisma, { minIntervalMs: 0, from: fromIso, to: toIso });
+          ksefSync = r && r.matched != null ? { matched: r.matched, found: r.found } : null;
         } catch (e) {
           console.error('[cron/monthly-report] ksef sync failed:', e.message);
         }

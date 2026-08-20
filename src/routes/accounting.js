@@ -12,12 +12,19 @@ const { monthRange, buildReport } = require('../services/monthly-accounting');
 
 // Raport za miesiąc. Status KSeF odświeżamy W TLE (auth+polling KSeF bywa wolny i
 // powodował abort/timeout requestu) — raport renderuje się od razu z bazy.
+//
+// UWAGA na limit KSeF (20 zapytań metadata/h): raport wczytuje się przy wejściu
+// w zakładkę, przy zmianie miesiąca I PO KAŻDEJ AKCJI (np. po „Wyślij wszystkie
+// do KSeF"). Wcześniej szło stąd zapytanie BEZ throttla, więc kilka kliknięć
+// potrafiło wyczerpać cały godzinny limit i numery KSeF przestawały się
+// dociągać. Teraz wspólny, throttlowany kanał — max raz na 10 min.
 router.get('/accounting/monthly-report', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { from, to, fromIso, toIso } = monthRange(req.query.month);
+    const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
     // fire-and-forget — świeży ksefNumber pojawi się przy kolejnym wejściu
-    selfCall('POST', '/api/ksef/sync-sales-status', { from: fromIso, to: toIso }).catch(() => {});
+    syncSalesStatusThrottled(prisma, { minIntervalMs: 10 * 60 * 1000, from: fromIso, to: toIso }).catch(() => {});
     const rep = await buildReport(prisma, { from, to });
     res.json({ ok: true, range: { from: fromIso, to: toIso }, sales: rep.sales, wdt: rep.wdt });
   } catch (e) {
@@ -41,6 +48,17 @@ router.post('/accounting/send-month-to-ksef', async (req, res) => {
       } catch (e) {
         results.push({ number: inv.number, ok: false, info: e.message });
       }
+    }
+    // Po masowej wysyłce KSeF nadaje numery z opóźnieniem. Zamiast dobijać się
+    // co kilka sekund (tak padał limit 20/h), robimy JEDEN odczyt po ~90 s —
+    // reszta i tak dojdzie automatycznym odczytem co 30 min.
+    if (sent > 0) {
+      const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
+      setTimeout(() => {
+        syncSalesStatusThrottled(prisma, { minIntervalMs: 0, from: fromIso, to: toIso })
+          .then(r => console.log('[accounting/send-month-to-ksef] odczyt numerów KSeF:', JSON.stringify(r && (r.skipped || { found: r.found, matched: r.matched }))))
+          .catch(() => {});
+      }, 90 * 1000).unref?.();
     }
     res.json({ ok: true, range: { from: fromIso, to: toIso }, attempted: rep._toSend.length, sent, failed: rep._toSend.length - sent, results });
   } catch (e) {

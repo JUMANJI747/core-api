@@ -50,7 +50,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/telegram-callback.js` | **tapnięcia guzików Telegram** (zatwierdź FV, zamów kuriera, odrzuć) |
 | `/api` | `routes/ksef.js` | KSeF: `auth-test`, `sync-sales-status` (ręcznie, dowolny zakres), `autosync-sales` (throttle 30 min, 2 mies. wstecz), `pull-cost-invoices`, `autosync-costs` (co 6 h, TYLKO bieżący+poprzedni miesiąc — pełny rok ręcznie), `cost-invoices`. **Limit KSeF: 20 zapytań `/invoices/query/metadata` na godzinę** — wszystkie odczyty sprzedaży idą przez `services/ksef-sales-sync.js` |
 | `/api` | `routes/costs.js` | faktury kosztowe |
-| `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report, send-month-to-ksef, pair-wdt, pair-wdt-one |
+| `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report (odświeża statusy KSeF w tle przez `ksef-sales-sync`, **throttle 10 min** — raport wczytuje się też po KAŻDEJ akcji, więc bez tego padał limit 20/h), send-month-to-ksef (masowa wysyłka + JEDEN odczyt numerów po ~90 s), pair-wdt, pair-wdt-one |
 | `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, **transactions/reassign-by-invoice** (przepnij transakcję do kontrahenta z FV — sprzątanie po starym fuzzy-parowaniu), **contractors/split** (ROZKLEJENIE błędnie scalonych: przenosi FV po numerach + transakcje + maile po adresie/domenie na innego/nowego kontrahenta; dryRun→confirm), backfille |
 | `/api` | `routes/activity.js` | oś zdarzeń (ActivityEvent) |
 | `/api` | `routes/cron.js` | zadania cykliczne (raport miesięczny, sync) |

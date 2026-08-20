@@ -38,7 +38,7 @@ async function syncSalesStatus(prisma, { from, to, dateType = 'Issue' }) {
 
 // Wersja z throttlem + poszanowaniem cooldownu po 429. Nic nie rzuca —
 // zwraca `skipped` gdy pominięte, żeby wołający mógł to pokazać w UI.
-async function syncSalesStatusThrottled(prisma, { minIntervalMs, monthsBack = 2 } = {}) {
+async function syncSalesStatusThrottled(prisma, { minIntervalMs, monthsBack = 2, from, to } = {}) {
   if (!ksef.isConfigured()) return { skipped: 'not-configured' };
   const cooldownMs = ksef.metadataCooldownMs();
   if (cooldownMs > 0) return { skipped: 'cooldown', cooldownMs };
@@ -49,11 +49,15 @@ async function syncSalesStatusThrottled(prisma, { minIntervalMs, monthsBack = 2 
   const nowIso = new Date().toISOString();
   await prisma.config.upsert({ where: { key: THROTTLE_KEY }, update: { value: nowIso }, create: { key: THROTTLE_KEY, value: nowIso } }).catch(() => {});
 
+  // Zakres: jawny (np. miesiąc oglądany w Księgowości) albo ostatnie miesiące.
+  // Throttle jest JEDEN, wspólny dla wszystkich zakresów — inaczej klikanie po
+  // miesiącach mnożyłoby zapytania i znów rozjechałby się limit 20/h.
   const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+  const start = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+  const end = to ? new Date(to) : now;
   try {
-    const r = await syncSalesStatus(prisma, { from: start.toISOString(), to: now.toISOString() });
-    return { ...r, range: { from: start.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) } };
+    const r = await syncSalesStatus(prisma, { from: start.toISOString(), to: end.toISOString() });
+    return { ...r, range: { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) } };
   } catch (e) {
     return { skipped: 'error', error: e.message, cooldownMs: e.cooldownMs || 0 };
   }
