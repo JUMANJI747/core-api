@@ -532,9 +532,22 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
   if (!isWdt && _krajKrajowa !== 'Polska') {
     console.log(`[ifirma] FV krajowa dla zagranicznego kontrahenta → Kraj='${_krajKrajowa}' (kod ${_kod})`);
   }
+  // Prefiks UE MUSI iść w osobnym polu, tak samo jak w upsertContractor.
+  // Wcześniej faktura wysyłała cały „IT02061460222" w polu NIP — iFirma
+  // zapisywała to 1:1 na kontrahencie (rubryka prefiksu pusta), a KSeF taką
+  // fakturę odrzucał i trzeba było ręcznie przenosić prefiks przy każdym
+  // zagranicznym kontrahencie. Prefiks z NUMERU VAT, nie z kraju — dla Grecji
+  // kraj to GR, a prefiks VAT to EL.
+  const { splitEuVat } = require('./services/country-helper');
+  const { prefix: _uePrefix, number: _nipNumber } = splitEuVat(_nip);
+  if (_uePrefix) {
+    console.log(`[ifirma] FV: rozdzielam VAT UE → PrefiksUE='${_uePrefix}' NIP='${_nipNumber}' (było '${_nip}')`);
+  }
+
   const Kontrahent = {
     Nazwa: kontrahent.name,
-    ...(_nip ? { NIP: _nip } : {}),
+    ...(_nip ? { NIP: _nipNumber } : {}),
+    ...(_uePrefix ? { PrefiksUE: _uePrefix } : {}),
     ...(_ulica ? { Ulica: _ulica } : {}),
     ...(_kod ? { KodPocztowy: _kod } : {}),
     ...(_miasto ? { Miejscowosc: _miasto } : {}),
@@ -553,7 +566,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     ...(uwagi && String(uwagi).trim() ? { Uwagi: String(uwagi).trim().slice(0, 1000) } : {}),
     LiczOd: isNetto ? 'NET' : 'BRT',
     ...(_ifirmaId ? { IdentyfikatorKontrahenta: _ifirmaId } : {}),
-    ...(_nip ? { NIPKontrahenta: _nip } : {}),
+    ...(_nip ? { NIPKontrahenta: _nipNumber } : {}),
     DataWystawienia: today,
     MiejsceWystawienia: 'Warszawa',
     DataSprzedazy: today,
@@ -567,6 +580,9 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
     // (dwujezyczny PL/EN), tak jak WDT.
     ...(isWdt ? { Jezyk: 'en', PrefiksUEKontrahenta: (_country || '').toUpperCase() }
       : isEur ? { Jezyk: 'en' } : {}),
+    // Prefiks z numeru VAT wygrywa z tym wyliczonym z kraju (Grecja: kraj GR,
+    // VAT EL). Ustawiamy go też na fakturze krajowej/walutowej, nie tylko WDT.
+    ...(_uePrefix ? { PrefiksUEKontrahenta: _uePrefix } : {}),
     // Konto bankowe: faktury w EUR -> konto EUR; PLN (w tym WDT w złotówkach)
     // -> konto złotówkowe.
     NumerKontaBankowego: isEur ? 'PL67114020040000391213583952' : 'PL11114020040000300281459633',

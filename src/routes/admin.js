@@ -1196,4 +1196,78 @@ router.post('/admin/vies-check', async (req, res) => {
   }
 });
 
+// POST /api/admin/ifirma-fix-eu-prefix — naprawa ZAGRANICZNYCH kontrahentów
+// w iFirmie, u których prefiks UE siedzi w polu NIP („IT02061460222") zamiast
+// w osobnej rubryce. Takich faktur KSeF nie przyjmuje, a ręczna poprawka to
+// klikanie po każdym kontrahencie. Przepycha ich przez upsertContractor, który
+// rozdziela prefiks poprawnie.
+//
+// body: { dryRun?: true, limit?: number, nip?: 'IT02061460222' (pojedynczy) }
+// Bez dryRun leci W TLE (iFirma wymaga throttlingu, przekroczylibyśmy 60 s
+// limitu proxy) — postęp: GET /api/admin/ifirma-fix-eu-prefix-status
+router.post('/admin/ifirma-fix-eu-prefix', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { dryRun, limit, nip: onlyNip } = req.body || {};
+  try {
+    const { EU_VAT_PREFIXES, splitEuVat } = require('../services/country-helper');
+    const all = await prisma.contractor.findMany({
+      where: onlyNip ? { nip: String(onlyNip) } : { nip: { not: null } },
+      select: { id: true, name: true, nip: true, primaryEmail: true, email: true, phone: true, extras: true, externalIds: true },
+    });
+    // Tylko ci z prefiksem UE w numerze — reszty problem nie dotyczy.
+    const targets = all.filter(c => {
+      const raw = String(c.nip || '').replace(/[\s-]/g, '').toUpperCase();
+      const m = raw.match(/^([A-Z]{2})(.+)$/);
+      return m && m[1] !== 'PL' && EU_VAT_PREFIXES.has(m[1]);
+    }).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 500, 2000)));
+
+    if (dryRun) {
+      return res.json({
+        ok: true, dryRun: true, total: targets.length,
+        sample: targets.slice(0, 30).map(c => {
+          const s = splitEuVat(c.nip);
+          return { name: c.name, nip: c.nip, prefiks: s.prefix, numer: s.number };
+        }),
+      });
+    }
+
+    const CTX = 'ifirma-eu-prefix-fix';
+    res.json({ ok: true, started: true, total: targets.length, statusUrl: '/api/admin/ifirma-fix-eu-prefix-status' });
+
+    (async () => {
+      const { buildIfirmaContractorPayload } = require('../services/ifirma-payload');
+      const { upsertContractor } = require('../ifirma-client');
+      const state = { total: targets.length, done: 0, fixed: 0, errors: 0, errorList: [], startedAt: new Date().toISOString() };
+      const save = () => prisma.agentContext.upsert({
+        where: { id: CTX }, update: { data: state }, create: { id: CTX, data: state },
+      }).catch(() => {});
+      await save();
+      for (const c of targets) {
+        try {
+          const payload = await buildIfirmaContractorPayload(prisma, c);
+          const r = await upsertContractor(payload);
+          if (r && r.ok) state.fixed++;
+        } catch (e) {
+          state.errors++;
+          if (state.errorList.length < 20) state.errorList.push({ name: c.name, nip: c.nip, error: e.message });
+        }
+        state.done++;
+        if (state.done % 5 === 0) await save();
+        await new Promise(r => setTimeout(r, 1200)); // iFirma nie lubi serii
+      }
+      state.finishedAt = new Date().toISOString();
+      await save();
+      console.log('[admin/ifirma-fix-eu-prefix] done:', JSON.stringify({ done: state.done, fixed: state.fixed, errors: state.errors }));
+    })().catch(e => console.error('[admin/ifirma-fix-eu-prefix] fatal:', e.message));
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/admin/ifirma-fix-eu-prefix-status', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const row = await prisma.agentContext.findUnique({ where: { id: 'ifirma-eu-prefix-fix' } }).catch(() => null);
+  res.json({ ok: true, state: (row && row.data) || null });
+});
+
 module.exports = router;
