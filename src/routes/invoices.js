@@ -3169,38 +3169,55 @@ router.get('/invoices/ksef-pending', async (req, res) => {
 // DIAGNOSTYKA: czy iFirma oddaje numer KSeF w szczegółach faktury? Jeśli tak,
 // możemy zapalać ✅ czytając z iFirmy (bez limitu) zamiast z KSeF (20 zapytań/h).
 // Zwraca tylko pola z „ksef" w nazwie + listę kluczy — bez całego payloadu.
+async function ifirmaKsefProbe(prisma, key) {
+  const inv = await loadInvoiceForReminder(prisma, key);
+  if (!inv) return { ok: false, error: `Nie znaleziono faktury ${key}` };
+  if (!inv.ifirmaId) return { ok: false, error: 'Faktura bez ifirmaId (nie z iFirmy)' };
+
+  const { fetchInvoiceDetails } = require('../ifirma-client');
+  const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
+  const root = (det && det.response) ? det.response : det;
+
+  const hits = {};
+  const walk = (o, path, depth) => {
+    if (!o || typeof o !== 'object' || depth > 3) return;
+    for (const [k, v] of Object.entries(o)) {
+      const p = path ? `${path}.${k}` : k;
+      if (/ksef/i.test(k) && (v == null || typeof v !== 'object')) hits[p] = v;
+      else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, p, depth + 1);
+    }
+  };
+  walk(root, '', 0);
+
+  return {
+    ok: true,
+    number: inv.number,
+    ifirmaId: inv.ifirmaId,
+    ifirmaType: inv.ifirmaType || inv.type,
+    ksefNumberWBazie: inv.ksefNumber || null,
+    ksefSentAt: inv.ksefSentAt || null,
+    polaKsefWiFirmie: hits,
+    wszystkieKlucze: root && typeof root === 'object' ? Object.keys(root) : null,
+  };
+}
+
+// Wariant z parametrem — numery FV mają ukośnik („190/2026"), więc w ścieżce
+// URL się nie mieszczą. Z Konsoli API: GET /invoices/ksef-probe?number=190/2026
+router.get('/invoices/ksef-probe', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const key = req.query.number || req.query.id;
+  if (!key) return res.status(400).json({ ok: false, error: 'Podaj ?number=190/2026 albo ?id=<uuid>' });
+  try {
+    res.json(await ifirmaKsefProbe(prisma, String(key)));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.get('/invoices/:idOrNumber/ifirma-ksef-probe', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const inv = await loadInvoiceForReminder(prisma, req.params.idOrNumber);
-    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
-    if (!inv.ifirmaId) return res.json({ ok: false, error: 'Faktura bez ifirmaId (nie z iFirmy)' });
-
-    const { fetchInvoiceDetails } = require('../ifirma-client');
-    const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
-    const root = (det && det.response) ? det.response : det;
-
-    const hits = {};
-    const walk = (o, path, depth) => {
-      if (!o || typeof o !== 'object' || depth > 3) return;
-      for (const [k, v] of Object.entries(o)) {
-        const p = path ? `${path}.${k}` : k;
-        if (/ksef/i.test(k) && (v == null || typeof v !== 'object')) hits[p] = v;
-        else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, p, depth + 1);
-      }
-    };
-    walk(root, '', 0);
-
-    res.json({
-      ok: true,
-      number: inv.number,
-      ifirmaId: inv.ifirmaId,
-      ifirmaType: inv.ifirmaType || inv.type,
-      ksefNumberWBazie: inv.ksefNumber || null,
-      ksefSentAt: inv.ksefSentAt || null,
-      polaKsefWiFirmie: hits,
-      wszystkieKlucze: root && typeof root === 'object' ? Object.keys(root) : null,
-    });
+    res.json(await ifirmaKsefProbe(prisma, req.params.idOrNumber));
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
