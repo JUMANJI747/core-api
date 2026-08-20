@@ -3132,6 +3132,46 @@ router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
   }
 });
 
+// DIAGNOSTYKA: czy iFirma oddaje numer KSeF w szczegółach faktury? Jeśli tak,
+// możemy zapalać ✅ czytając z iFirmy (bez limitu) zamiast z KSeF (20 zapytań/h).
+// Zwraca tylko pola z „ksef" w nazwie + listę kluczy — bez całego payloadu.
+router.get('/invoices/:idOrNumber/ifirma-ksef-probe', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const inv = await loadInvoiceForReminder(prisma, req.params.idOrNumber);
+    if (!inv) return res.status(404).json({ ok: false, error: 'Nie znaleziono faktury' });
+    if (!inv.ifirmaId) return res.json({ ok: false, error: 'Faktura bez ifirmaId (nie z iFirmy)' });
+
+    const { fetchInvoiceDetails } = require('../ifirma-client');
+    const det = await fetchInvoiceDetails(inv.ifirmaId, inv.ifirmaType || inv.type);
+    const root = (det && det.response) ? det.response : det;
+
+    const hits = {};
+    const walk = (o, path, depth) => {
+      if (!o || typeof o !== 'object' || depth > 3) return;
+      for (const [k, v] of Object.entries(o)) {
+        const p = path ? `${path}.${k}` : k;
+        if (/ksef/i.test(k) && (v == null || typeof v !== 'object')) hits[p] = v;
+        else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, p, depth + 1);
+      }
+    };
+    walk(root, '', 0);
+
+    res.json({
+      ok: true,
+      number: inv.number,
+      ifirmaId: inv.ifirmaId,
+      ifirmaType: inv.ifirmaType || inv.type,
+      ksefNumberWBazie: inv.ksefNumber || null,
+      ksefSentAt: inv.ksefSentAt || null,
+      polaKsefWiFirmie: hits,
+      wszystkieKlucze: root && typeof root === 'object' ? Object.keys(root) : null,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Cena jednostkowa z OSTATNIEJ faktury kontrahenta (do guzika „Z ostatniej FV").
 // Konwencja: PLN = brutto/szt, EUR = netto/szt. base=es → faktury Kanary.
 router.get('/invoices/last-price', async (req, res) => {
