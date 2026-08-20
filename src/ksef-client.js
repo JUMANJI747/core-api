@@ -27,11 +27,47 @@ function isConfigured() {
   return !!(process.env.KSEF_TOKEN && process.env.KSEF_NIP);
 }
 
+// ============ LIMITY KSeF ============
+// KSeF twardo limituje /invoices/query/metadata: 20 żądań na GODZINĘ. Po
+// przekroczeniu oddaje 429 z czasem karencji. Bez pamiętania tego dobijaliśmy
+// się dalej i limit nie miał szans się zresetować (efekt: faktury wiecznie na
+// „⏳ wysłana", bo numeru KSeF nie dało się odczytać). Trzymamy więc globalny
+// cooldown i NIE ruszamy sieci, dopóki nie minie.
+let metadataCooldownUntil = 0;
+
+function metadataCooldownMs() {
+  return Math.max(0, metadataCooldownUntil - Date.now());
+}
+
+// „Spróbuj ponownie po 21 minutach i 10 sekundach." → ms. Fallback 30 min.
+function parseRetryAfterMs(detail, retryAfterHeader) {
+  if (retryAfterHeader && /^\d+$/.test(String(retryAfterHeader).trim())) {
+    return parseInt(retryAfterHeader, 10) * 1000;
+  }
+  const s = String(detail || '');
+  const min = s.match(/(\d+)\s*minut/i);
+  const sec = s.match(/(\d+)\s*sekund/i);
+  const ms = (min ? parseInt(min[1], 10) * 60000 : 0) + (sec ? parseInt(sec[1], 10) * 1000 : 0);
+  return ms > 0 ? ms + 5000 : 30 * 60 * 1000; // +5s zapasu na zegar
+}
+
 // Niskopoziomowy fetch JSON z obsługą Bearer + błędów (zwraca {status, body}).
 // TWARDY timeout per wywołanie — bez tego, gdy host KSeF nie odpowiada, request
 // wisi w nieskończoność ("Wysyłam..." w Konsoli).
 async function api(method, path, { token, body, accept = 'application/json', timeoutMs = 15000 } = {}) {
   const url = `${BASE}${path}`;
+  // Cooldown pilnujemy tylko dla metadanych — to one mają limit 20/h; auth
+  // i pobranie XML mają własne, luźniejsze reguły i mają działać dalej.
+  const isMetadata = path.startsWith('/invoices/query/metadata');
+  if (isMetadata) {
+    const wait = metadataCooldownMs();
+    if (wait > 0) {
+      const err = new Error(`KSeF: wyczerpany limit zapytań (20/h) — kolejna próba za ${Math.ceil(wait / 60000)} min`);
+      err.status = 429;
+      err.cooldownMs = wait;
+      throw err;
+    }
+  }
   const headers = { Accept: accept };
   if (body != null) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -50,6 +86,15 @@ async function api(method, path, { token, body, accept = 'application/json', tim
     const err = new Error(`KSeF ${method} ${path} → HTTP ${res.status}: ${typeof parsed === 'string' ? parsed.slice(0, 300) : JSON.stringify(parsed).slice(0, 300)}`);
     err.status = res.status;
     err.body = parsed;
+    if (res.status === 429) {
+      const detail = (parsed && parsed.status && Array.isArray(parsed.status.details) ? parsed.status.details.join(' ') : '') || String(typeof parsed === 'string' ? parsed : '');
+      const ms = parseRetryAfterMs(detail, res.headers.get('retry-after'));
+      err.cooldownMs = ms;
+      if (isMetadata) {
+        metadataCooldownUntil = Date.now() + ms;
+        console.warn(`[ksef] 429 na metadata — cooldown ${Math.ceil(ms / 60000)} min (do ${new Date(metadataCooldownUntil).toISOString()})`);
+      }
+    }
     throw err;
   }
   return parsed;
@@ -133,6 +178,18 @@ async function authenticate() {
   return { accessToken: accessTokenValue, refreshToken };
 }
 
+// Access token z pamięci — pełny handshake to ~10 żądań do KSeF (certyfikat,
+// challenge, ksef-token, polling, redeem). Odświeżamy co 5 min zamiast przy
+// KAŻDYM zapytaniu; auth-test woła authenticate() wprost, żeby realnie testował.
+let cachedAuth = null; // { accessToken, exp }
+
+async function getAccessToken() {
+  if (cachedAuth && cachedAuth.exp > Date.now() + 30000) return cachedAuth.accessToken;
+  const { accessToken } = await authenticate();
+  cachedAuth = { accessToken, exp: Date.now() + 5 * 60 * 1000 };
+  return accessToken;
+}
+
 // Metadane faktur w zakresie dat. subjectType: 'Subject2' = nabywca (koszty),
 // 'Subject1' = sprzedawca (nasze sprzedażowe — do oznaczania „jest w KSeF").
 async function queryInvoiceMetadata(accessToken, { subjectType = 'Subject2', from, to, dateType = 'Issue', pageSize = 100 }) {
@@ -164,6 +221,8 @@ module.exports = {
   BASE,
   isConfigured,
   authenticate,
+  getAccessToken,
+  metadataCooldownMs,
   getTokenEncryptionPublicKey,
   queryInvoiceMetadata,
   queryCostInvoiceMetadata,

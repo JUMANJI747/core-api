@@ -3108,26 +3108,25 @@ router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
     const ksef = require('../ksef-client');
     if (!ksef.isConfigured()) return res.json({ ok: true, status: 'pending', ksefNumber: null, configured: false });
 
-    // Zakres: od daty wystawienia (z zapasem 2 dni wstecz) do dziś — wąsko, szybko.
-    const issued = inv.issueDate ? new Date(inv.issueDate) : new Date(Date.now() - 7 * 24 * 3600 * 1000);
-    const from = new Date(issued.getTime() - 2 * 24 * 3600 * 1000).toISOString();
-    const to = new Date(Date.now() + 24 * 3600 * 1000 - 1).toISOString();
-    const { accessToken } = await ksef.authenticate();
-    const metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from, to, dateType: 'Issue' });
-    const P = ksef._pick;
-    let ksefNumber = null;
-    for (const m of metadata) {
-      const number = P(m, 'invoiceNumber', 'number');
-      if (number && String(number) === String(inv.number)) {
-        ksefNumber = P(m, 'ksefNumber', 'ksefReferenceNumber', 'referenceNumber');
-        if (ksefNumber) break;
-      }
+    // KSeF daje 20 zapytań metadata na godzinę, a front odpytuje ten endpoint
+    // w pętli po wysyłce — dlatego NIE pytamy tu KSeF za każdym razem, tylko
+    // wchodzimy na wspólny, throttlowany kanał (max raz na 10 min dla całego
+    // systemu) i czytamy wynik z bazy. Wcześniej jedno kliknięcie „Wyślij do
+    // KSeF" potrafiło zjeść cały godzinny limit.
+    const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
+    const sync = await syncSalesStatusThrottled(prisma, { minIntervalMs: 10 * 60 * 1000, monthsBack: 2 });
+
+    const fresh = await prisma.invoice.findUnique({ where: { id: inv.id }, select: { ksefNumber: true } }).catch(() => null);
+    if (fresh && fresh.ksefNumber) {
+      return res.json({ ok: true, status: 'in_ksef', ksefNumber: fresh.ksefNumber });
     }
-    if (ksefNumber) {
-      await prisma.invoice.update({ where: { id: inv.id }, data: { ksefNumber: String(ksefNumber) } }).catch(() => {});
-      return res.json({ ok: true, status: 'in_ksef', ksefNumber: String(ksefNumber) });
-    }
-    res.json({ ok: true, status: 'pending', ksefNumber: null });
+    res.json({
+      ok: true,
+      status: 'pending',
+      ksefNumber: null,
+      ...(sync && sync.skipped ? { waiting: sync.skipped } : {}),
+      ...(sync && sync.cooldownMs ? { cooldownMinutes: Math.ceil(sync.cooldownMs / 60000) } : {}),
+    });
   } catch (e) {
     res.status(200).json({ ok: false, status: 'error', error: e.message });
   }

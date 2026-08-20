@@ -71,7 +71,7 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
 
   let accessToken;
   try {
-    ({ accessToken } = await ksef.authenticate());
+    accessToken = await ksef.getAccessToken();
   } catch (e) {
     return res.status(502).json({ ok: false, stage: 'auth', error: e.message, status: e.status, body: e.body });
   }
@@ -129,21 +129,9 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
 
 // Rdzeń: pyta KSeF o NASZE faktury sprzedażowe (Subject1) i ustawia
 // Invoice.ksefNumber po numerze FV — żeby lista pokazała zielony znaczek „KSeF".
-async function runSalesStatusSync(prisma, { from, to, dateType = 'Issue' }) {
-  const { accessToken } = await ksef.authenticate();
-  const fromIso = new Date(from).toISOString();
-  const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
-  const metadata = await ksef.queryInvoiceMetadata(accessToken, { subjectType: 'Subject1', from: fromIso, to: toIso, dateType });
-  let matched = 0; const unmatched = [];
-  for (const m of metadata) {
-    const number = P(m, 'invoiceNumber', 'number');
-    const ksefNumber = P(m, 'ksefNumber', 'ksefReferenceNumber', 'referenceNumber');
-    if (!number || !ksefNumber) continue;
-    const upd = await prisma.invoice.updateMany({ where: { number: String(number), ksefNumber: null }, data: { ksefNumber: String(ksefNumber) } }).catch(() => ({ count: 0 }));
-    if (upd.count) matched += upd.count; else unmatched.push(number);
-  }
-  return { found: metadata.length, matched, unmatched, sample: metadata[0] || null };
-}
+// Rdzeń przeniesiony do services/ksef-sales-sync.js — ten sam kanał (z jednym
+// throttlem) obsługuje auto-sync z listy faktur i sprawdzanie po wysyłce.
+const { syncSalesStatus, syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
 
 // Ręczna synchronizacja statusu KSeF (Subject1). body: { from, to, dateType? }.
 router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
@@ -153,44 +141,33 @@ router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
   const to = (req.body && req.body.to) || now.toISOString().slice(0, 10);
   const dateType = (req.body && req.body.dateType) || 'Issue';
   try {
-    const r = await runSalesStatusSync(prisma, { from, to, dateType });
+    const r = await syncSalesStatus(prisma, { from, to, dateType });
     res.json({ ok: true, range: { from, to, dateType }, ...r, unmatchedCount: r.unmatched.length, unmatched: r.unmatched.slice(0, 20) });
   } catch (e) {
-    res.status(502).json({ ok: false, error: e.message, status: e.status, body: e.body });
+    res.status(502).json({
+      ok: false, error: e.message, status: e.status, body: e.body,
+      ...(e.cooldownMs ? { cooldownMinutes: Math.ceil(e.cooldownMs / 60000) } : {}),
+    });
   }
 }));
 
 // Auto-sync statusu KSeF — wołany w tle z listy Faktur. Throttle 10 min, zawsze
 // 200 (błąd nie psuje strony). Zakres: ostatnie 45 dni.
+// Throttle 30 min (było 10): przy limicie 20 zapytań metadata/h musi zostać
+// zapas dla ręcznych synchronizacji i sprawdzania po wysyłce faktury.
 router.post('/ksef/autosync-sales', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   if (!ksef.isConfigured()) return res.json({ ok: false, configured: false });
-  const KEY = 'autosync:ksef:salesStatus';
-  const THROTTLE_MS = 10 * 60 * 1000;
-  const cfg = await prisma.config.findUnique({ where: { key: KEY } }).catch(() => null);
-  const ageMs = cfg ? Date.now() - new Date(cfg.value).getTime() : Infinity;
-  if (ageMs < THROTTLE_MS) return res.json({ ok: true, throttled: true, ageMs });
-  const nowIso = new Date().toISOString();
-  await prisma.config.upsert({ where: { key: KEY }, update: { value: nowIso }, create: { key: KEY, value: nowIso } }).catch(() => {});
-  try {
-    const now = new Date();
-    // Od 1. dnia poprzedniego miesiąca (z zapasem) — pokrywa cały bieżący miesiąc
-    // i poprzedni, więc świeże faktury (np. od 1 czerwca) są łapane.
-    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const from = start.toISOString().slice(0, 10);
-    const to = now.toISOString().slice(0, 10);
-    const r = await runSalesStatusSync(prisma, { from, to, dateType: 'Issue' });
-    res.json({ ok: true, throttled: false, matched: r.matched, found: r.found });
-  } catch (e) {
-    res.json({ ok: false, throttled: false, error: e.message });
-  }
+  const r = await syncSalesStatusThrottled(prisma, { minIntervalMs: 30 * 60 * 1000, monthsBack: 2 });
+  if (r.skipped) return res.json({ ok: r.skipped !== 'error', throttled: r.skipped === 'throttled', ...r });
+  res.json({ ok: true, throttled: false, matched: r.matched, found: r.found });
 }));
 
 // Rdzeń: pobiera faktury KOSZTOWE (Subject2) za zakres → upsert do bazy.
 // Tylko metadane (bez XML) gdy withXml=false — szybkie i idempotentne.
 async function runCostPull(prisma, { from, to, dateType = 'Issue', withXml = false, limit = 2000 }) {
   const buyerNip = String(process.env.KSEF_NIP || '');
-  const { accessToken } = await ksef.authenticate();
+  const accessToken = await ksef.getAccessToken();
   const fromIso = new Date(from).toISOString();
   const toIso = new Date(new Date(to).getTime() + 24 * 3600 * 1000 - 1).toISOString();
   let metadata = await ksef.queryCostInvoiceMetadata(accessToken, { from: fromIso, to: toIso, dateType });
@@ -262,7 +239,12 @@ router.post('/ksef/autosync-costs', asyncHandler(async (req, res) => {
   await prisma.config.upsert({ where: { key: KEY }, update: { value: lockIso }, create: { key: KEY, value: lockIso } }).catch(() => {});
   res.json({ ok: true, throttled: false, started: true });
   const now = new Date();
-  runCostPullByMonths(prisma, { fromYear: now.getFullYear(), fromMonth: 0, toYear: now.getFullYear(), toMonth: now.getMonth(), withXml: false })
+  // Tylko bieżący + poprzedni miesiąc = 2 zapytania metadata. Wcześniej leciało
+  // od stycznia (do 12 zapytań na jeden przebieg) i samo potrafiło zjeść limit
+  // 20/h, przez co odczyt numerów KSeF dla sprzedaży przestawał działać.
+  // Pełny rok wstecz nadal ręcznie: POST /ksef/pull-cost-invoices z zakresem.
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  runCostPullByMonths(prisma, { fromYear: prev.getFullYear(), fromMonth: prev.getMonth(), toYear: now.getFullYear(), toMonth: now.getMonth(), withXml: false })
     .then(async (r) => {
       console.log('[ksef/autosync-costs] done:', JSON.stringify(r));
       // Sukces → ustaw pełny throttle 6h.

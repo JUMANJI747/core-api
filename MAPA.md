@@ -48,7 +48,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | `/api` | `routes/agent.js` | **agenci AI**: /agent/{logistics,accounting,accounting-es,communication,communication-es,operations,sudo}, /agent/assistant (router Haiku; do kontekstu sub-agentów wstrzykuje NIP-y/VAT UE znalezione regexem w PEŁNEJ treści maila/wątku — `country-helper.findEuVatsInText`), /agent/email-context |
 | `/api` | `routes/upload.js` | upload plików |
 | `/api` | `routes/telegram-callback.js` | **tapnięcia guzików Telegram** (zatwierdź FV, zamów kuriera, odrzuć) |
-| `/api` | `routes/ksef.js` | KSeF: sync sprzedaży (status) i kosztów |
+| `/api` | `routes/ksef.js` | KSeF: `auth-test`, `sync-sales-status` (ręcznie, dowolny zakres), `autosync-sales` (throttle 30 min, 2 mies. wstecz), `pull-cost-invoices`, `autosync-costs` (co 6 h, TYLKO bieżący+poprzedni miesiąc — pełny rok ręcznie), `cost-invoices`. **Limit KSeF: 20 zapytań `/invoices/query/metadata` na godzinę** — wszystkie odczyty sprzedaży idą przez `services/ksef-sales-sync.js` |
 | `/api` | `routes/costs.js` | faktury kosztowe |
 | `/api` | `routes/accounting.js` | **„Dodatkowa księgowość"**: monthly-report, send-month-to-ksef, pair-wdt, pair-wdt-one |
 | `/api` | `routes/admin.js` | **contractor-cleanup** (edycja kontrahenta), **contractors/merge** + **contractors/dedupe-nip** (scalanie duplikatów po NIP), vies-check, **transactions/reassign-by-invoice** (przepnij transakcję do kontrahenta z FV — sprzątanie po starym fuzzy-parowaniu), **contractors/split** (ROZKLEJENIE błędnie scalonych: przenosi FV po numerach + transakcje + maile po adresie/domenie na innego/nowego kontrahenta; dryRun→confirm), backfille |
@@ -66,7 +66,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `ifirma-client.js` — iFirma (HMAC). `createInvoice` (WDT też w PLN), `upsertContractor` (**rozdziela prefiks UE od NIP → PrefiksUE + NIP osobno**, inaczej KSeF odrzuca zagraniczne; `country-helper.splitEuVat`), `registerPayment` (Opłacono), pobranie listy FV i PDF.
 - `contasimple-client.js` — Contasimple (ES): faktury, WZ, formaty numeracji.
 - `glob-client.js` — GlobKurier: getQuote, getOrders, createOrder, labels, receivers, countries, pickupTimeRanges.
-- `ksef-client.js` — KSeF (token RO): pobieranie faktur sprzedaż (Subject1) / koszty (Subject2).
+- `ksef-client.js` — KSeF (token RO): pobieranie faktur sprzedaż (Subject1) / koszty (Subject2). **`getAccessToken()`** — token z cache 5 min (pełny handshake to ~10 żądań). **Cooldown po 429**: limit 20 zapytań metadata/h zapamiętywany globalnie (`metadataCooldownMs()`), w trakcie karencji klient NIE rusza sieci, tylko od razu rzuca błąd z czasem oczekiwania.
 - `mk-client.js` — **Mała Księgowość (mk.app)**: auth (X-API-Key / login→JWT / data-sharing-key, env `MK_*`), wyzwolenie pobrania z KSeF (`ksefFetch` buy/sell), odczyt ledger (vat-purchase/vat-sales/new-ledger-entries/invoices).
 - `mail-sender.js` — SMTP (wysyłka maili); centralnie dokleja stopkę nadawcy z `services/signatures.js` (marker chroni przed dublem).
 - `vies.js` — walidacja VAT UE (VIES).
@@ -100,6 +100,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 - `ifirma-payload.js` — **`buildIfirmaContractorPayload`**: składa Kontrahenta do iFirmy; postCode z kolumny → ContractorAddress(billing) → extras → regex → duplikat po NIP → **adres DOSTAWY/extras.locations (kod z delivery, gdy billing bez kodu)** → lista kontrahentów iFirmy → **detal ostatniej FV w iFirmie** (pełny blok Kontrahent — dla kontrahentów z importu historii); odzyskany adres UTRWALANY na kontrahencie. Kraj: gdy pusty a kontrahent zagraniczny — dobiera z prefiksu NIP UE / formy prawnej (ApS→DK). Na FV **krajowej** dla zagranicznego klienta iFirma dostaje `Kraj`=polska nazwa (`country-helper.toIfirmaKraj`), inaczej odrzuca kod pocztowy jako polski.
 - `ifirma-sync.js`, `ifirma-pdf-parser.js` — sync i parsowanie PDF iFirma.
 - `monthly-accounting.js` — zakres miesiąca + `buildReport` (pokrycie KSeF + WDT sparowane/niesparowane).
+- `ksef-sales-sync.js` — **jedyny kanał odczytu statusu KSeF naszej sprzedaży** (Subject1 → dopisanie `Invoice.ksefNumber`, czyli ✅ przy fakturze). `syncSalesStatus` (bez throttla, ręcznie) i `syncSalesStatusThrottled` (wspólny throttle w `Config['autosync:ksef:salesStatus']` + poszanowanie cooldownu 429). Używane przez `routes/ksef.js` i `invoices/:id/ksef-status` — dzięki temu pętla sprawdzania po wysyłce nie przepala limitu 20/h.
 - `wdt-pairing.js` — **`pairWdtSmart`** (Opus): dopasowanie FV WDT↔wysyłki + weryfikacja kraju (`isToPoland`); **`suggestForInvoice`** — podpowiedzi LLM dla DOWOLNEJ faktury (parowanie „LLM" przy fakturze, bez reguły zagranicy).
 - `confirm-lock.js` — atomowa blokada duplikatów wystawiania (DB).
 - `payment-reminder.js` — 🔪 windykacja: `composeReminder` (szablony pl/en/de/fr/es/it/nl/pt) + `resolveReminderFrom` (wybór skrzynki nadawczej: żądanie z UI > preferowany prefiks (PL info, ES nikodem) > pierwsze konto).
