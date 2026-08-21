@@ -883,3 +883,59 @@ model ConfirmLock {
   invoiceId     String?
   createdAt     DateTime @default(now())
 }
+
+// ============ AGENCI HANDLOWI (zakładka Agenci) ============
+// Agent dostaje towar po SWOJEJ cenie (delivery), jego kontrahenci dostają
+// FV po cenach sprzedaży — saldo agenta = FV kontrahentów − towar wydany
+// − rozliczenia (np. „rozliczono gotówką"). Pełna historia operacji.
+
+model SalesAgent {
+  id     String  @id @default(uuid())
+  name   String
+  notes  String?
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  operations  SalesAgentOperation[]
+  contractors SalesAgentContractor[]
+}
+
+// Przypięcie kontrahenta (PL: Contractor / ES: EsContractor) do agenta.
+// FV liczą się do salda od `since` — bez tego stare faktury sprzed umowy
+// z agentem zawyżałyby saldo. Jeden kontrahent może mieć jednego agenta.
+model SalesAgentContractor {
+  id           String     @id @default(uuid())
+  agentId      String
+  agent        SalesAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  system       String // 'pl' | 'es'
+  contractorId String // Contractor.id albo EsContractor.id
+  name         String? // snapshot nazwy (żeby lista nie wymagała joinów po 2 tabelach)
+  since        DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@unique([system, contractorId])
+  @@index([agentId])
+}
+
+// Operacja na saldzie agenta:
+//  delivery   — towar wydany agentowi (qty × unitPrice = amount; POMNIEJSZA saldo)
+//  settlement — rozliczenie (np. gotówką; POMNIEJSZA saldo)
+//  adjustment — ręczna korekta (amount ze znakiem: dodatni POWIĘKSZA saldo)
+model SalesAgentOperation {
+  id          String     @id @default(uuid())
+  agentId     String
+  agent       SalesAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  type        String
+  date        DateTime   @default(now())
+  description String?
+  qty         Decimal?   @db.Decimal(12, 3)
+  unitPrice   Decimal?   @db.Decimal(12, 2)
+  amount      Decimal    @db.Decimal(12, 2)
+  currency    String     @default("EUR")
+  extras      Json       @default("{}")
+  createdAt   DateTime   @default(now())
+
+  @@index([agentId, date])
+}
