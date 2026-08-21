@@ -890,16 +890,34 @@ model ConfirmLock {
 // − rozliczenia (np. „rozliczono gotówką"). Pełna historia operacji.
 
 model SalesAgent {
-  id     String  @id @default(uuid())
-  name   String
-  notes  String?
-  active Boolean @default(true)
+  id       String  @id @default(uuid())
+  name     String
+  notes    String?
+  active   Boolean @default(true)
+  currency String  @default("EUR") // agent rozlicza sie w EUR albo PLN
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   operations  SalesAgentOperation[]
   contractors SalesAgentContractor[]
+  prices      SalesAgentPrice[]
+}
+
+// Cennik agenta — jego uzgodniona cena PER PRODUKT (moze byc inna na kazdy
+// produkt). Uzywany przy wydawaniu towaru (delivery): wybor z cennika
+// podstawia cene. Nazwa produktu wolnym tekstem (agent PL i ES maja rozne
+// katalogi, a czesc pozycji to mixy/zestawy spoza katalogu).
+model SalesAgentPrice {
+  id        String     @id @default(uuid())
+  agentId   String
+  agent     SalesAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  name      String
+  unitPrice Decimal    @db.Decimal(12, 2)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([agentId, name])
 }
 
 // Przypięcie kontrahenta (PL: Contractor / ES: EsContractor) do agenta.

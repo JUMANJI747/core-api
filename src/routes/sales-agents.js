@@ -90,7 +90,7 @@ router.get('/sales-agents', async (req, res) => {
       const invoices = await loadAgentInvoices(prisma, a.contractors);
       const { saldo } = computeSaldo(invoices, a.operations);
       data.push({
-        id: a.id, name: a.name, notes: a.notes, active: a.active,
+        id: a.id, name: a.name, notes: a.notes, active: a.active, currency: a.currency,
         contractorCount: a.contractors.length,
         operationCount: a.operations.length,
         saldo,
@@ -102,12 +102,29 @@ router.get('/sales-agents', async (req, res) => {
   }
 });
 
+// Tworzenie: nazwa + waluta rozliczeń (EUR/PLN) + opcjonalnie od razu cennik
+// [{name, unitPrice}] — agent może mieć inną cenę na każdy produkt.
 router.post('/sales-agents', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { name, notes } = req.body || {};
+    const { name, notes, currency, prices } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ ok: false, error: 'Podaj nazwę agenta' });
-    const agent = await prisma.salesAgent.create({ data: { name: String(name).trim(), notes: notes ? String(notes) : null } });
+    const cur = String(currency || 'EUR').toUpperCase();
+    if (!['EUR', 'PLN'].includes(cur)) return res.status(400).json({ ok: false, error: 'Waluta agenta: EUR albo PLN' });
+    const priceRows = Array.isArray(prices)
+      ? prices
+        .map(p => ({ name: String((p && p.name) || '').trim(), unitPrice: Number(p && p.unitPrice) }))
+        .filter(p => p.name && Number.isFinite(p.unitPrice) && p.unitPrice >= 0)
+      : [];
+    const agent = await prisma.salesAgent.create({
+      data: {
+        name: String(name).trim(),
+        notes: notes ? String(notes) : null,
+        currency: cur,
+        ...(priceRows.length ? { prices: { create: priceRows } } : {}),
+      },
+      include: { prices: true },
+    });
     res.json({ ok: true, agent });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -117,11 +134,16 @@ router.post('/sales-agents', async (req, res) => {
 router.patch('/sales-agents/:id', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { name, notes, active } = req.body || {};
+    const { name, notes, active, currency } = req.body || {};
     const data = {};
     if (name !== undefined) data.name = String(name).trim();
     if (notes !== undefined) data.notes = notes ? String(notes) : null;
     if (active !== undefined) data.active = !!active;
+    if (currency !== undefined) {
+      const cur = String(currency).toUpperCase();
+      if (!['EUR', 'PLN'].includes(cur)) return res.status(400).json({ ok: false, error: 'Waluta agenta: EUR albo PLN' });
+      data.currency = cur;
+    }
     const agent = await prisma.salesAgent.update({ where: { id: req.params.id }, data });
     res.json({ ok: true, agent });
   } catch (e) {
@@ -138,6 +160,7 @@ router.get('/sales-agents/:id', async (req, res) => {
       include: {
         contractors: { orderBy: { createdAt: 'asc' } },
         operations: { orderBy: { date: 'desc' } },
+        prices: { orderBy: { name: 'asc' } },
       },
     });
     if (!agent) return res.status(404).json({ ok: false, error: 'Nie znaleziono agenta' });
@@ -154,8 +177,9 @@ router.get('/sales-agents/:id', async (req, res) => {
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
     res.json({
       ok: true,
-      agent: { id: agent.id, name: agent.name, notes: agent.notes, active: agent.active },
+      agent: { id: agent.id, name: agent.name, notes: agent.notes, active: agent.active, currency: agent.currency },
       contractors: agent.contractors,
+      prices: agent.prices.map(p => ({ id: p.id, name: p.name, unitPrice: Number(p.unitPrice) })),
       saldo, totals, history,
     });
   } catch (e) {
@@ -178,7 +202,7 @@ router.post('/sales-agents/:id/operations', async (req, res) => {
     }
     if (amt == null || !Number.isFinite(amt)) return res.status(400).json({ ok: false, error: 'Podaj kwotę (amount) albo qty × unitPrice' });
     if (type !== 'adjustment' && amt < 0) return res.status(400).json({ ok: false, error: 'Kwota nie może być ujemna (do korekt służy adjustment)' });
-    const agent = await prisma.salesAgent.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    const agent = await prisma.salesAgent.findUnique({ where: { id: req.params.id }, select: { id: true, currency: true } });
     if (!agent) return res.status(404).json({ ok: false, error: 'Nie znaleziono agenta' });
     const op = await prisma.salesAgentOperation.create({
       data: {
@@ -188,7 +212,9 @@ router.post('/sales-agents/:id/operations', async (req, res) => {
         qty: qty != null ? Number(qty) : null,
         unitPrice: unitPrice != null ? Number(unitPrice) : null,
         amount: Math.round(amt * 100) / 100,
-        currency: (currency || 'EUR').toUpperCase(),
+        // Domyślnie waluta AGENTA (agent jest w EUR albo PLN) — jawne
+        // `currency` w body nadal wygrywa (korekty w innej walucie).
+        currency: (currency || agent.currency || 'EUR').toUpperCase(),
       },
     });
     res.json({ ok: true, operation: op });
@@ -203,6 +229,39 @@ router.delete('/sales-agents/:id/operations/:opId', async (req, res) => {
   try {
     const r = await prisma.salesAgentOperation.deleteMany({ where: { id: req.params.opId, agentId: req.params.id } });
     if (!r.count) return res.status(404).json({ ok: false, error: 'Nie znaleziono operacji' });
+    res.json({ ok: true, deleted: r.count });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Cennik agenta: dodaj/zmień cenę produktu (upsert po nazwie w ramach agenta).
+router.post('/sales-agents/:id/prices', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { name, unitPrice } = req.body || {};
+    const n = String(name || '').trim();
+    const price = Number(unitPrice);
+    if (!n) return res.status(400).json({ ok: false, error: 'Podaj nazwę produktu' });
+    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ ok: false, error: 'Podaj poprawną cenę' });
+    const agent = await prisma.salesAgent.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!agent) return res.status(404).json({ ok: false, error: 'Nie znaleziono agenta' });
+    const row = await prisma.salesAgentPrice.upsert({
+      where: { agentId_name: { agentId: agent.id, name: n } },
+      update: { unitPrice: price },
+      create: { agentId: agent.id, name: n, unitPrice: price },
+    });
+    res.json({ ok: true, price: { id: row.id, name: row.name, unitPrice: Number(row.unitPrice) } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.delete('/sales-agents/:id/prices/:priceId', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const r = await prisma.salesAgentPrice.deleteMany({ where: { id: req.params.priceId, agentId: req.params.id } });
+    if (!r.count) return res.status(404).json({ ok: false, error: 'Nie znaleziono pozycji cennika' });
     res.json({ ok: true, deleted: r.count });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
