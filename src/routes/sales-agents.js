@@ -159,7 +159,7 @@ router.get('/sales-agents/:id', async (req, res) => {
       where: { id: req.params.id },
       include: {
         contractors: { orderBy: { createdAt: 'asc' } },
-        operations: { orderBy: { date: 'desc' } },
+        operations: { orderBy: [{ date: 'desc' }, { createdAt: 'desc' }] },
         prices: { orderBy: { name: 'asc' } },
       },
     });
@@ -175,6 +175,20 @@ router.get('/sales-agents/:id', async (req, res) => {
       })),
       ...invoices,
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Saldo narastająco („saldo po" przy każdej pozycji) — przy uzupełnianiu
+    // historii wstecz widać, jak stan zbliża się do prawdy z każdym wpisem.
+    // Iterujemy WYŚWIETLANĄ listę od końca (nie ponownym sortem!): daty wpisów
+    // wstecznych i FV to często ta sama północ, a stabilny re-sort zostawiał
+    // remisy w kolejności wyświetlania — akumulacja szła wtedy od góry i
+    // najnowszy wiersz nie zgadzał się z saldem w nagłówku.
+    const running = {};
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      const cur = (h.currency || 'EUR').toUpperCase();
+      const delta = h.kind === 'invoice' ? h.amount : (h.type === 'adjustment' ? h.amount : -h.amount);
+      running[cur] = (running[cur] || 0) + delta;
+      h.saldoAfter = Math.round(running[cur] * 100) / 100;
+    }
     res.json({
       ok: true,
       agent: { id: agent.id, name: agent.name, notes: agent.notes, active: agent.active, currency: agent.currency },
@@ -305,6 +319,26 @@ router.post('/sales-agents/:id/contractors', async (req, res) => {
       },
     });
     res.json({ ok: true, link });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Zmiana daty „od kiedy" FV kontrahenta liczą się do salda — przy uzupełnianiu
+// wstecz przesuwasz start rozliczeń, żeby stare FV (sprzed współpracy albo
+// sprzed pierwszej zapisanej dostawy) nie zawyżały salda.
+router.patch('/sales-agents/:id/contractors/:linkId', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  try {
+    const { since } = req.body || {};
+    const d = since ? new Date(since) : null;
+    if (!d || isNaN(d.getTime())) return res.status(400).json({ ok: false, error: 'Podaj poprawną datę since' });
+    const r = await prisma.salesAgentContractor.updateMany({
+      where: { id: req.params.linkId, agentId: req.params.id },
+      data: { since: d },
+    });
+    if (!r.count) return res.status(404).json({ ok: false, error: 'Nie znaleziono przypisania' });
+    res.json({ ok: true, since: d.toISOString() });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
