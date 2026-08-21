@@ -26,32 +26,41 @@ function addTo(sums, currency, amount) {
 
 // FV kontrahentów agenta liczone od `since` KAŻDEGO przypięcia z osobna
 // (kontrahent mógł trafić do agenta w połowie swojej historii).
+// Każda FV niesie `paid` = ile z niej REALNIE zapłacono (0..amount) — do salda
+// wchodzi tylko część opłacona; reszta wisi jako „w nieopłaconych FV".
 async function loadAgentInvoices(prisma, links) {
   const out = [];
   for (const link of links) {
     if (link.system === 'pl') {
       const rows = await prisma.invoice.findMany({
         where: { contractorId: link.contractorId, issueDate: { gte: link.since } },
-        select: { id: true, number: true, issueDate: true, grossAmount: true, currency: true, contractorName: true, status: true },
+        select: { id: true, number: true, issueDate: true, grossAmount: true, paidAmount: true, currency: true, contractorName: true, status: true },
         orderBy: { issueDate: 'desc' },
       }).catch(() => []);
       for (const r of rows) {
+        const amount = num(r.grossAmount);
+        // status 'paid' bez zapisanej kwoty (stare rekordy) = opłacona w całości.
+        const paidRaw = num(r.paidAmount) || (String(r.status || '').toLowerCase() === 'paid' ? amount : 0);
         out.push({
           kind: 'invoice', system: 'pl', id: r.id, number: r.number,
-          date: r.issueDate, amount: num(r.grossAmount), currency: r.currency || 'PLN',
+          date: r.issueDate, amount, paid: Math.min(Math.max(paidRaw, 0), amount),
+          currency: r.currency || 'PLN',
           contractorName: r.contractorName || link.name || null, status: r.status || null,
         });
       }
     } else {
       const rows = await prisma.esInvoice.findMany({
         where: { contractorId: link.contractorId, invoiceDate: { gte: link.since } },
-        select: { id: true, number: true, invoiceDate: true, totalAmount: true, currency: true, contractorName: true, status: true },
+        select: { id: true, number: true, invoiceDate: true, totalAmount: true, totalPayedAmount: true, currency: true, contractorName: true, status: true },
         orderBy: { invoiceDate: 'desc' },
       }).catch(() => []);
       for (const r of rows) {
+        const amount = num(r.totalAmount);
+        const paidRaw = num(r.totalPayedAmount) || (String(r.status || '') === 'Payed' ? amount : 0);
         out.push({
           kind: 'invoice', system: 'es', id: r.id, number: r.number,
-          date: r.invoiceDate, amount: num(r.totalAmount), currency: r.currency || 'EUR',
+          date: r.invoiceDate, amount, paid: Math.min(Math.max(paidRaw, 0), amount),
+          currency: r.currency || 'EUR',
           contractorName: r.contractorName || link.name || null, status: r.status || null,
         });
       }
@@ -60,12 +69,20 @@ async function loadAgentInvoices(prisma, links) {
   return out;
 }
 
+// Do salda wchodzi tylko OPŁACONA część FV (częściowa wpłata = częściowo) —
+// wystawienie faktury samo w sobie salda nie rusza; nieopłacone kwoty wracają
+// osobno w `unpaidInvoiced`, żeby było widać ile wisi w fakturach.
 function computeSaldo(invoices, operations) {
   const saldo = {};
-  const totals = { invoiced: {}, delivered: {}, settled: {}, adjusted: {} };
+  const unpaidInvoiced = {};
+  const totals = { invoiced: {}, invoicedPaid: {}, delivered: {}, settled: {}, adjusted: {} };
   for (const inv of invoices) {
-    addTo(saldo, inv.currency, inv.amount);
+    const paid = num(inv.paid);
+    addTo(saldo, inv.currency, paid);
     addTo(totals.invoiced, inv.currency, inv.amount);
+    addTo(totals.invoicedPaid, inv.currency, paid);
+    const unpaid = inv.amount - paid;
+    if (unpaid > 0.005) addTo(unpaidInvoiced, inv.currency, unpaid);
   }
   for (const op of operations) {
     const amt = num(op.amount);
@@ -74,7 +91,14 @@ function computeSaldo(invoices, operations) {
     else if (op.type === 'adjustment') { addTo(saldo, op.currency, amt); addTo(totals.adjusted, op.currency, amt); }
   }
   const round = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 100) / 100]));
-  return { saldo: round(saldo), totals: { invoiced: round(totals.invoiced), delivered: round(totals.delivered), settled: round(totals.settled), adjusted: round(totals.adjusted) } };
+  return {
+    saldo: round(saldo),
+    unpaidInvoiced: round(unpaidInvoiced),
+    totals: {
+      invoiced: round(totals.invoiced), invoicedPaid: round(totals.invoicedPaid),
+      delivered: round(totals.delivered), settled: round(totals.settled), adjusted: round(totals.adjusted),
+    },
+  };
 }
 
 // Lista agentów z saldem (do tabelki w zakładce).
@@ -88,12 +112,12 @@ router.get('/sales-agents', async (req, res) => {
     const data = [];
     for (const a of agents) {
       const invoices = await loadAgentInvoices(prisma, a.contractors);
-      const { saldo } = computeSaldo(invoices, a.operations);
+      const { saldo, unpaidInvoiced } = computeSaldo(invoices, a.operations);
       data.push({
         id: a.id, name: a.name, notes: a.notes, active: a.active, currency: a.currency,
         contractorCount: a.contractors.length,
         operationCount: a.operations.length,
-        saldo,
+        saldo, unpaidInvoiced,
       });
     }
     res.json({ ok: true, data });
@@ -165,7 +189,7 @@ router.get('/sales-agents/:id', async (req, res) => {
     });
     if (!agent) return res.status(404).json({ ok: false, error: 'Nie znaleziono agenta' });
     const invoices = await loadAgentInvoices(prisma, agent.contractors);
-    const { saldo, totals } = computeSaldo(invoices, agent.operations);
+    const { saldo, unpaidInvoiced, totals } = computeSaldo(invoices, agent.operations);
     const history = [
       ...agent.operations.map(op => ({
         kind: 'operation', id: op.id, type: op.type, date: op.date,
@@ -185,7 +209,8 @@ router.get('/sales-agents/:id', async (req, res) => {
     for (let i = history.length - 1; i >= 0; i--) {
       const h = history[i];
       const cur = (h.currency || 'EUR').toUpperCase();
-      const delta = h.kind === 'invoice' ? h.amount : (h.type === 'adjustment' ? h.amount : -h.amount);
+      // FV wchodzi do salda tylko OPŁACONĄ częścią (spójnie z computeSaldo).
+      const delta = h.kind === 'invoice' ? num(h.paid) : (h.type === 'adjustment' ? h.amount : -h.amount);
       running[cur] = (running[cur] || 0) + delta;
       h.saldoAfter = Math.round(running[cur] * 100) / 100;
     }
@@ -194,7 +219,7 @@ router.get('/sales-agents/:id', async (req, res) => {
       agent: { id: agent.id, name: agent.name, notes: agent.notes, active: agent.active, currency: agent.currency },
       contractors: agent.contractors,
       prices: agent.prices.map(p => ({ id: p.id, name: p.name, unitPrice: Number(p.unitPrice) })),
-      saldo, totals, history,
+      saldo, unpaidInvoiced, totals, history,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
