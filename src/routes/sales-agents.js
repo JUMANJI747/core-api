@@ -24,16 +24,29 @@ function addTo(sums, currency, amount) {
   sums[cur] = (sums[cur] || 0) + amount;
 }
 
-// FV kontrahentów agenta liczone od `since` KAŻDEGO przypięcia z osobna
-// (kontrahent mógł trafić do agenta w połowie swojej historii).
+// Kontrahent agenta jest STAŁY — bez dat przy przypięciu. Granicę wyznacza
+// automatycznie PIERWSZA DOSTAWA agenta (albo wcześniejsza korekta salda
+// początkowego): FV sprzed niej nie liczą się, bo dotyczyły towaru sprzed
+// ewidencji. Brak dostaw = FV jeszcze nie wchodzą (nie ma czego rozliczać).
+function agentCutoff(operations) {
+  let cutoff = null;
+  for (const op of operations) {
+    if (op.type !== 'delivery' && op.type !== 'adjustment') continue;
+    const d = new Date(op.date);
+    if (!cutoff || d < cutoff) cutoff = d;
+  }
+  return cutoff;
+}
+
 // Każda FV niesie `paid` = ile z niej REALNIE zapłacono (0..amount) — do salda
 // wchodzi tylko część opłacona; reszta wisi jako „w nieopłaconych FV".
-async function loadAgentInvoices(prisma, links) {
+async function loadAgentInvoices(prisma, links, cutoff) {
+  if (!cutoff) return [];
   const out = [];
   for (const link of links) {
     if (link.system === 'pl') {
       const rows = await prisma.invoice.findMany({
-        where: { contractorId: link.contractorId, issueDate: { gte: link.since } },
+        where: { contractorId: link.contractorId, issueDate: { gte: cutoff } },
         select: { id: true, number: true, issueDate: true, grossAmount: true, paidAmount: true, currency: true, contractorName: true, status: true },
         orderBy: { issueDate: 'desc' },
       }).catch(() => []);
@@ -50,7 +63,7 @@ async function loadAgentInvoices(prisma, links) {
       }
     } else {
       const rows = await prisma.esInvoice.findMany({
-        where: { contractorId: link.contractorId, invoiceDate: { gte: link.since } },
+        where: { contractorId: link.contractorId, invoiceDate: { gte: cutoff } },
         select: { id: true, number: true, invoiceDate: true, totalAmount: true, totalPayedAmount: true, currency: true, contractorName: true, status: true },
         orderBy: { invoiceDate: 'desc' },
       }).catch(() => []);
@@ -107,11 +120,11 @@ router.get('/sales-agents', async (req, res) => {
   try {
     const agents = await prisma.salesAgent.findMany({
       orderBy: [{ active: 'desc' }, { name: 'asc' }],
-      include: { contractors: true, operations: { select: { type: true, amount: true, currency: true } } },
+      include: { contractors: true, operations: { select: { type: true, amount: true, currency: true, date: true } } },
     });
     const data = [];
     for (const a of agents) {
-      const invoices = await loadAgentInvoices(prisma, a.contractors);
+      const invoices = await loadAgentInvoices(prisma, a.contractors, agentCutoff(a.operations));
       const { saldo, unpaidInvoiced } = computeSaldo(invoices, a.operations);
       data.push({
         id: a.id, name: a.name, notes: a.notes, active: a.active, currency: a.currency,
@@ -188,7 +201,8 @@ router.get('/sales-agents/:id', async (req, res) => {
       },
     });
     if (!agent) return res.status(404).json({ ok: false, error: 'Nie znaleziono agenta' });
-    const invoices = await loadAgentInvoices(prisma, agent.contractors);
+    const cutoff = agentCutoff(agent.operations);
+    const invoices = await loadAgentInvoices(prisma, agent.contractors, cutoff);
     const { saldo, unpaidInvoiced, totals } = computeSaldo(invoices, agent.operations);
     const history = [
       ...agent.operations.map(op => ({
@@ -219,6 +233,7 @@ router.get('/sales-agents/:id', async (req, res) => {
       agent: { id: agent.id, name: agent.name, notes: agent.notes, active: agent.active, currency: agent.currency },
       contractors: agent.contractors,
       prices: agent.prices.map(p => ({ id: p.id, name: p.name, unitPrice: Number(p.unitPrice) })),
+      fvOd: cutoff ? cutoff.toISOString() : null,
       saldo, unpaidInvoiced, totals, history,
     });
   } catch (e) {
@@ -307,12 +322,12 @@ router.delete('/sales-agents/:id/prices/:priceId', async (req, res) => {
   }
 });
 
-// Przypnij kontrahenta (PL/ES). `since` — od kiedy jego FV liczą się do salda
-// (domyślnie dziś; można podać wstecz). Jeden kontrahent = jeden agent.
+// Przypnij kontrahenta (PL/ES) — NA STAŁE, bez dat: granicę liczenia FV
+// wyznacza automatycznie pierwsza dostawa agenta. Jeden kontrahent = jeden agent.
 router.post('/sales-agents/:id/contractors', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { system, contractorId, since } = req.body || {};
+    const { system, contractorId } = req.body || {};
     if (!['pl', 'es'].includes(system)) return res.status(400).json({ ok: false, error: "system: 'pl' | 'es'" });
     if (!contractorId) return res.status(400).json({ ok: false, error: 'Podaj contractorId' });
     const agent = await prisma.salesAgent.findUnique({ where: { id: req.params.id }, select: { id: true } });
@@ -338,32 +353,9 @@ router.post('/sales-agents/:id/contractors', async (req, res) => {
     }
 
     const link = await prisma.salesAgentContractor.create({
-      data: {
-        agentId: agent.id, system, contractorId: String(contractorId), name,
-        ...(since ? { since: new Date(since) } : {}),
-      },
+      data: { agentId: agent.id, system, contractorId: String(contractorId), name },
     });
     res.json({ ok: true, link });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// Zmiana daty „od kiedy" FV kontrahenta liczą się do salda — przy uzupełnianiu
-// wstecz przesuwasz start rozliczeń, żeby stare FV (sprzed współpracy albo
-// sprzed pierwszej zapisanej dostawy) nie zawyżały salda.
-router.patch('/sales-agents/:id/contractors/:linkId', async (req, res) => {
-  const prisma = req.app.locals.prisma;
-  try {
-    const { since } = req.body || {};
-    const d = since ? new Date(since) : null;
-    if (!d || isNaN(d.getTime())) return res.status(400).json({ ok: false, error: 'Podaj poprawną datę since' });
-    const r = await prisma.salesAgentContractor.updateMany({
-      where: { id: req.params.linkId, agentId: req.params.id },
-      data: { since: d },
-    });
-    if (!r.count) return res.status(404).json({ ok: false, error: 'Nie znaleziono przypisania' });
-    res.json({ ok: true, since: d.toISOString() });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
