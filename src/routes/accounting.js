@@ -22,9 +22,12 @@ router.get('/accounting/monthly-report', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { from, to, fromIso, toIso } = monthRange(req.query.month);
-    const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
-    // fire-and-forget — świeży ksefNumber pojawi się przy kolejnym wejściu
-    syncSalesStatusThrottled(prisma, { minIntervalMs: 10 * 60 * 1000, from: fromIso, to: toIso }).catch(() => {});
+    // fire-and-forget — świeży ksefNumber pojawi się przy kolejnym wejściu.
+    // Odczyt z iFirmy, ALE przez throttle 10 min (własny klucz w Config) —
+    // raport ładuje się przy każdym wejściu, zmianie miesiąca i po KAŻDEJ
+    // akcji; bez throttla każdy z tych momentów puszczałby serię do iFirmy.
+    const { syncMissingFromIfirmaThrottled } = require('../services/ifirma-ksef-sync');
+    syncMissingFromIfirmaThrottled(prisma, { minIntervalMs: 10 * 60 * 1000, from: fromIso, to: toIso, limit: 30, budgetMs: 30000 }).catch(() => {});
     const rep = await buildReport(prisma, { from, to });
     res.json({ ok: true, range: { from: fromIso, to: toIso }, sales: rep.sales, wdt: rep.wdt });
   } catch (e) {
@@ -33,25 +36,26 @@ router.get('/accounting/monthly-report', async (req, res) => {
 });
 
 // WYMUSZONE odświeżenie statusów KSeF dla oglądanego miesiąca — guzik w UI.
-// Omija throttle 10 min (ale nie karencję po 429), bo to świadoma decyzja
-// użytkownika: „zużyj teraz jedno z 20 zapytań na godzinę". Potrzebne, gdy
-// faktury poszły do KSeF bezpośrednio z iFirmy i nasz system o tym nie wie.
+// Odczyt idzie z IFIRMY (NumerKSEF w szczegółach FV): bez limitu 20/h, łapie
+// też wysyłki zrobione ręcznie w panelu iFirmy, o których nasz system nie wie.
+// Sekwencyjnie z throttlem; czego nie zdążymy w budżecie czasu (limit 60 s
+// proxy), wraca w `remaining` — kolejne kliknięcie dokończy.
 router.post('/accounting/refresh-ksef-status', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
     const { fromIso, toIso } = monthRange(req.body && req.body.month);
-    const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
-    const r = await syncSalesStatusThrottled(prisma, { minIntervalMs: 0, from: fromIso, to: toIso });
-    if (r && r.skipped === 'cooldown') {
-      return res.json({
-        ok: false,
-        cooldown: true,
-        minutes: Math.ceil((r.cooldownMs || 0) / 60000),
-        error: `KSeF wyczerpany limit odczytów (20/h) — spróbuj za ${Math.ceil((r.cooldownMs || 0) / 60000)} min.`,
-      });
+    const { syncMissingFromIfirma } = require('../services/ifirma-ksef-sync');
+    // budżet 25 s: sprawdzany PRZED wywołaniem, a jedno wywołanie iFirmy może
+    // trwać do 30 s (HTTP timeout) — 25+30 < 60 s limitu proxy.
+    const r = await syncMissingFromIfirma(prisma, { from: fromIso, to: toIso, limit: 100, budgetMs: 25000 });
+    if (r.skipped === 'busy') {
+      return res.json({ ok: false, error: 'Odczyt numerów KSeF już trwa w tle — spróbuj za chwilę.' });
     }
-    if (r && r.skipped) return res.json({ ok: false, error: r.error || `pominięto (${r.skipped})` });
-    res.json({ ok: true, range: { from: fromIso, to: toIso }, found: r.found, matched: r.matched, alreadyHad: r.alreadyHad, notInDb: r.notInDb });
+    // iFirma padła w całości → powiedz to wprost, zamiast udawać czysty przebieg.
+    if (r.checked > 0 && r.got === 0 && r.errorCount === r.checked) {
+      return res.json({ ok: false, error: `iFirma nie odpowiada (${(r.errors[0] && r.errors[0].error) || 'brak szczegółów'})`, ...r });
+    }
+    res.json({ ok: true, range: { from: fromIso, to: toIso }, ...r });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -74,16 +78,23 @@ router.post('/accounting/send-month-to-ksef', async (req, res) => {
         results.push({ number: inv.number, ok: false, info: e.message });
       }
     }
-    // Po masowej wysyłce KSeF nadaje numery z opóźnieniem. Zamiast dobijać się
-    // co kilka sekund (tak padał limit 20/h), robimy JEDEN odczyt po ~90 s —
-    // reszta i tak dojdzie automatycznym odczytem co 30 min.
+    // Po masowej wysyłce KSeF nadaje numery z opóźnieniem — jeden przebieg
+    // odczytu z iFirmy po ~90 s dopisze je do faktur (bez limitu 20/h).
+    // Gdy akurat trwa inny przebieg (skipped=busy), ponawiamy raz po kolejnych
+    // 90 s; potem i tak dogoni to throttlowany odczyt w tle.
     if (sent > 0) {
-      const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
-      setTimeout(() => {
-        syncSalesStatusThrottled(prisma, { minIntervalMs: 0, from: fromIso, to: toIso })
-          .then(r => console.log('[accounting/send-month-to-ksef] odczyt numerów KSeF:', JSON.stringify(r && (r.skipped || { found: r.found, matched: r.matched }))))
-          .catch(() => {});
-      }, 90 * 1000).unref?.();
+      const { syncMissingFromIfirma } = require('../services/ifirma-ksef-sync');
+      const runPull = (attempt) => {
+        setTimeout(() => {
+          syncMissingFromIfirma(prisma, { from: fromIso, to: toIso, limit: 100, budgetMs: 120000 })
+            .then(r => {
+              if (r.skipped === 'busy' && attempt < 2) return runPull(attempt + 1);
+              console.log('[accounting/send-month-to-ksef] odczyt numerów KSeF z iFirmy:', JSON.stringify(r.skipped ? r : { checked: r.checked, got: r.got, pending: r.stillPending.length, errors: r.errorCount }));
+            })
+            .catch(() => {});
+        }, 90 * 1000).unref?.();
+      };
+      runPull(1);
     }
     res.json({ ok: true, range: { from: fromIso, to: toIso }, attempted: rep._toSend.length, sent, failed: rep._toSend.length - sent, results });
   } catch (e) {

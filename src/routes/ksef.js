@@ -131,7 +131,7 @@ router.post('/ksef/pull-cost-invoices', asyncHandler(async (req, res) => {
 // Invoice.ksefNumber po numerze FV — żeby lista pokazała zielony znaczek „KSeF".
 // Rdzeń przeniesiony do services/ksef-sales-sync.js — ten sam kanał (z jednym
 // throttlem) obsługuje auto-sync z listy faktur i sprawdzanie po wysyłce.
-const { syncSalesStatus, syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
+const { syncSalesStatus } = require('../services/ksef-sales-sync');
 
 // Ręczna synchronizacja statusu KSeF (Subject1). body: { from, to, dateType? }.
 router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
@@ -153,14 +153,25 @@ router.post('/ksef/sync-sales-status', asyncHandler(async (req, res) => {
 
 // Auto-sync statusu KSeF — wołany w tle z listy Faktur. Throttle 10 min, zawsze
 // 200 (błąd nie psuje strony). Zakres: ostatnie 45 dni.
-// Throttle 30 min (było 10): przy limicie 20 zapytań metadata/h musi zostać
-// zapas dla ręcznych synchronizacji i sprawdzania po wysyłce faktury.
+// Auto-odczyt numerów KSeF wołany w tle z listy Faktur. Od odkrycia, że iFirma
+// zwraca NumerKSEF w szczegółach FV, czytamy z IFIRMY (bez limitu 20/h jak API
+// KSeF). Throttle 15 min przez wspólny wrapper (WŁASNY klucz Config kanału
+// iFirma + atomowy check-and-set — dwa równoległe wejścia na listę nie odpalą
+// dwóch przebiegów; klucz celowo inny niż `autosync:ksef:salesStatus` kanału
+// KSeF, bo to niezależne limity i wspólny klucz wzajemnie by je dusił).
+// Budżet 20 s: sprawdzany przed wywołaniem, pojedyncze wywołanie iFirmy może
+// trwać do 30 s — 20+30 < 60 s limitu proxy.
 router.post('/ksef/autosync-sales', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
-  if (!ksef.isConfigured()) return res.json({ ok: false, configured: false });
-  const r = await syncSalesStatusThrottled(prisma, { minIntervalMs: 30 * 60 * 1000, monthsBack: 2 });
-  if (r.skipped) return res.json({ ok: r.skipped !== 'error', throttled: r.skipped === 'throttled', ...r });
-  res.json({ ok: true, throttled: false, matched: r.matched, found: r.found });
+  const { syncMissingFromIfirmaThrottled } = require('../services/ifirma-ksef-sync');
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  const r = await syncMissingFromIfirmaThrottled(prisma, {
+    minIntervalMs: 15 * 60 * 1000,
+    from: start.toISOString(), to: now.toISOString(), limit: 40, budgetMs: 20000,
+  });
+  if (r.skipped) return res.json({ ok: true, throttled: true, skipped: r.skipped, ageMs: r.ageMs });
+  res.json({ ok: true, throttled: false, source: 'ifirma', checked: r.checked, got: r.got, pending: r.stillPending.length });
 }));
 
 // Rdzeń: pobiera faktury KOSZTOWE (Subject2) za zakres → upsert do bazy.

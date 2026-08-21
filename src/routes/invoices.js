@@ -3105,14 +3105,29 @@ router.get('/invoices/:idOrNumber/ksef-status', async (req, res) => {
     if (!inv) return res.status(404).json({ ok: false, error: `Nie znaleziono faktury ${key}` });
     if (inv.ksefNumber) return res.json({ ok: true, status: 'in_ksef', ksefNumber: inv.ksefNumber });
 
+    // Numer KSeF czytamy z IFIRMY (to ona wysyła FV do KSeF i zwraca NumerKSEF
+    // w szczegółach faktury) — bez limitu 20 zapytań/h, który ma API KSeF.
+    // Jedno pytanie o status = jedno tanie żądanie do iFirmy o TĘ fakturę.
+    // Przy błędzie iFirmy NIE wpadamy w kanał KSeF — front i tak pyta co 10 s,
+    // a timeout iFirmy (30 s) + wolny auth KSeF przebiłyby 60 s proxy.
+    if (inv.ifirmaId) {
+      const { pullKsefNumberFromIfirma, checkedRecently } = require('../services/ifirma-ksef-sync');
+      if (checkedRecently(inv.id)) {
+        return res.json({ ok: true, status: 'pending', ksefNumber: null, source: 'ifirma', deduped: true });
+      }
+      try {
+        const num = await pullKsefNumberFromIfirma(prisma, inv);
+        if (num) return res.json({ ok: true, status: 'in_ksef', ksefNumber: num, source: 'ifirma' });
+        return res.json({ ok: true, status: 'pending', ksefNumber: null, source: 'ifirma' });
+      } catch (e) {
+        console.error('[ksef-status] odczyt z iFirmy nieudany:', e.message);
+        return res.json({ ok: true, status: 'pending', ksefNumber: null, source: 'ifirma', error: 'iFirma nie odpowiada' });
+      }
+    }
+
+    // Zapas: throttlowany kanał KSeF (tylko FV bez ifirmaId — nie z iFirmy).
     const ksef = require('../ksef-client');
     if (!ksef.isConfigured()) return res.json({ ok: true, status: 'pending', ksefNumber: null, configured: false });
-
-    // KSeF daje 20 zapytań metadata na godzinę, a front odpytuje ten endpoint
-    // w pętli po wysyłce — dlatego NIE pytamy tu KSeF za każdym razem, tylko
-    // wchodzimy na wspólny, throttlowany kanał (max raz na 10 min dla całego
-    // systemu) i czytamy wynik z bazy. Wcześniej jedno kliknięcie „Wyślij do
-    // KSeF" potrafiło zjeść cały godzinny limit.
     const { syncSalesStatusThrottled } = require('../services/ksef-sales-sync');
     const sync = await syncSalesStatusThrottled(prisma, { minIntervalMs: 10 * 60 * 1000, monthsBack: 2 });
 
