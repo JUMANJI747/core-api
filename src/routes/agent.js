@@ -413,6 +413,40 @@ async function extractAssistantAttachments(anthropic, attachments) {
       } catch (e) {
         parts.push(`PDF "${fname}": nie udało się odczytać (${e.message}).`);
       }
+    } else if (ct.includes('spreadsheetml') || ct.includes('ms-excel') || /\.(xlsx|xls)$/i.test(fname)) {
+      // Excel z zamówieniem — częsty format od sklepów. Bez tego prefill FV
+      // „nie widział" załącznika i nie rozbijał pozycji.
+      try {
+        const ExcelJS = require('exceljs');
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(Buffer.from(b64, 'base64'));
+        const chunks = [];
+        for (const ws of wb.worksheets.slice(0, 5)) {
+          const lines = [];
+          ws.eachRow({ includeEmpty: false }, (row) => {
+            if (lines.length >= 200) return;
+            const vals = (Array.isArray(row.values) ? row.values.slice(1) : []).map(v => {
+              if (v == null) return '';
+              if (typeof v === 'object') {
+                if (Array.isArray(v.richText)) return v.richText.map(r => r.text).join('');
+                return String(v.text ?? v.result ?? v.hyperlink ?? '');
+              }
+              return String(v);
+            });
+            if (vals.some(x => String(x).trim())) lines.push(vals.join(' | '));
+          });
+          if (lines.length) chunks.push(`Arkusz "${ws.name}":\n${lines.join('\n')}`);
+        }
+        if (chunks.length) parts.push(`Excel "${fname}":\n${chunks.join('\n\n').slice(0, 8000)}`);
+        else parts.push(`Excel "${fname}": pusty albo bez danych.`);
+      } catch (e) {
+        parts.push(/\.xls$/i.test(fname)
+          ? `Excel "${fname}": stary format .xls — nie odczytam; poproś o .xlsx albo CSV.`
+          : `Excel "${fname}": nie udało się odczytać (${e.message}).`);
+      }
+    } else if (ct.startsWith('text/') || /\.(csv|txt)$/i.test(fname)) {
+      const txt = Buffer.from(b64, 'base64').toString('utf8').trim();
+      if (txt) parts.push(`Plik tekstowy "${fname}":\n${txt.slice(0, 6000)}`);
     } else {
       parts.push(`Plik "${fname}" (${ct || 'nieznany typ'}) — pominięty (nieobsługiwany do odczytu AI).`);
     }
