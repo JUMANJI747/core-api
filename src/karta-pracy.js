@@ -61,17 +61,19 @@ async function pdfPageCount(pdfPath) {
 
 async function renderPage(pdfPath, page, dir) {
   const base = path.join(dir, `p${page}`);
+  // JPEG jako format posredni zamiast PNG: 5 s na strone zamiast 12, a wykrycie
+  // siatki wychodzi co do piksela tak samo (sprawdzone na wszystkich kartach).
   await run('pdftoppm', ['-f', String(page), '-l', String(page),
-    '-r', String(DPI), '-png', '-singlefile', pdfPath, base]);
+    '-r', String(DPI), '-jpeg', '-jpegopt', 'quality=92', '-singlefile', pdfPath, base]);
   // Prostowanie jest obowiazkowe, nie kosmetyczne: przy przekrzywieniu o 1 stopien
   // pionowa linia rozmazuje sie na kilkanascie kolumn i ramka tabeli znika z profilu.
-  const straight = `${base}_d.png`;
+  const straight = `${base}_d.jpg`;
   try {
-    await run('convert', [`${base}.png`, '-deskew', '40%', '-background', 'white',
-      '+repage', straight]);
+    await run('convert', [`${base}.jpg`, '-deskew', '40%', '-background', 'white',
+      '+repage', '-quality', '92', straight]);
     return await fs.readFile(straight);
   } catch (e) {
-    return fs.readFile(`${base}.png`);
+    return fs.readFile(`${base}.jpg`);
   }
 }
 

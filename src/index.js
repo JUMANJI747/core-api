@@ -39,9 +39,13 @@ app.use('/', require('./routes/preprocess-scan'));
 try {
   const kartaToken = (process.env.PREPROCESS_TOKEN || '').trim() || undefined;
   app.use('/', require('./karta-pracy').router(express, kartaToken));
-  if (!kartaToken) console.warn('[startup] /karta-pracy/crop BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+  // Odczyt teczki kart modelem (dwa niezależne odczyty + kontrola arytmetyki).
+  // Ten sam montaż i ta sama ochrona: moduł ciągnie sharp przez karta-pracy.js.
+  app.use('/', require('./karty-pracy-odczyt').router(express, kartaToken));
+  if (!kartaToken) console.warn('[startup] /karta-pracy/* BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+  if (!process.env.ANTHROPIC_API_KEY) console.warn('[startup] brak ANTHROPIC_API_KEY — /karty-pracy/odczytaj zwróci błąd przy pierwszym żądaniu');
 } catch (e) {
-  console.error('[startup] /karta-pracy/crop wyłączona (sharp?):', e.message);
+  console.error('[startup] trasy karta-pracy wyłączone (sharp?):', e.message);
 }
 
 // Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
@@ -90,6 +94,13 @@ app.get('/api/_version', (req, res) => {
     branch: process.env.RAILWAY_GIT_BRANCH || null,
     hasInvoicePdfRoute: true,
     startedAt: new Date().toISOString(),
+    // Zasoby kontenera — do doboru `rownolegle` i DPI w /karty-pracy/odczytaj
+    // (cięcie skanów jest CPU-bound: pdftoppm + convert + sharp).
+    cpu: require('os').cpus().length,
+    ramGB: +(require('os').totalmem() / 1073741824).toFixed(1),
+    node: process.version,
+    maAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    maPreprocessToken: !!(process.env.PREPROCESS_TOKEN || '').trim(),
   });
 });
 
