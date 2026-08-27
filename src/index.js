@@ -20,6 +20,30 @@ const app = express();
 // bez x-api-key). Preprocessing skanów paragonów przed OCR.
 app.use('/', require('./routes/preprocess-scan'));
 
+// ============ KARTA PRACY — CROP (n8n) ============
+// Tak samo jak /preprocess-scan: PRZED globalnym express.json (własny parser
+// 40 MB — większy niż globalne 32 MB, więc kolejność jest tu KRYTYCZNA) i poza
+// /api, więc bez x-api-key; autoryzacja nagłówkiem x-token = PREPROCESS_TOKEN.
+// Tnie skan karty ewidencji czasu pracy na pasma wierszy pod odczyt modelem.
+//
+// TRY/CATCH NIE JEST OZDOBNIKIEM: moduł robi na starcie `require('sharp')`, a
+// sharp to binarka natywna (niezgodność glibc/musl, ABI Node, niepełne npm ci).
+// Rzut z require zostałby połknięty przez handler uncaughtException wyżej,
+// wykonanie index.js stanęłoby TUTAJ i app.listen niżej nigdy by nie wystartował
+// — cały backend (/api, /health, /map, /preprocess-scan) padłby z kodem 0, więc
+// bez sygnału crash-loopu. Lepiej jeden martwy endpoint niż martwy serwer.
+//
+// Token trimujemy jak w preprocess-scan: ta sama zmienna, a moduł porównuje
+// znak w znak — spacja/enter doklejony w panelu Railway dawałby wieczne 401
+// tylko na tej trasie, przy działającym /preprocess-scan.
+try {
+  const kartaToken = (process.env.PREPROCESS_TOKEN || '').trim() || undefined;
+  app.use('/', require('./karta-pracy').router(express, kartaToken));
+  if (!kartaToken) console.warn('[startup] /karta-pracy/crop BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+} catch (e) {
+  console.error('[startup] /karta-pracy/crop wyłączona (sharp?):', e.message);
+}
+
 // Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
 // (base64 zwieksza rozmiar o ~33%). UI dopuszcza ~20 MB realnych plikow ->
 // po zakodowaniu ~27 MB, wiec backend musi przyjac wiekszy body. Wczesniej '5mb'
