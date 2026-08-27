@@ -11,8 +11,9 @@
  * bez zapisanych logow. Tutaj obrazy zyja tylko w trakcie jednego wywolania i nie wracaja.
  *
  * POST /karty-pracy/odczytaj
- *   body: { data: "<base64 pdf>", rownolegle?: 4, model?: "claude-opus-5" }
- *   -> { stron, rok, miesiac, norma, problemyOgolne: [], karty: [...] }
+ *   body: { data: "<base64 pdf>", rownolegle?: 4, dpi?: 300, strony?: [1,2,3],
+ *           model?: "claude-opus-5" }
+ *   -> { stron, przetworzone, rok, miesiac, norma, problemyOgolne: [], karty: [...] }
  *
  * Wymaga: ANTHROPIC_API_KEY oraz PREPROCESS_TOKEN w srodowisku.
  */
@@ -28,7 +29,7 @@ const run = promisify(execFile);
 
 const API = 'https://api.anthropic.com/v1/messages';
 const MODEL_DOM = 'claude-opus-5';
-const MAX_TOKENS = 4000;
+const MAX_TOKENS = 8000;   // 31 dni JSON-a to ~1400 tokenow, ale model bywa gadatliwy
 const ROWNOLEGLE_DOM = 4;
 
 /* ------------------------------------------------------------------ prompty */
@@ -165,7 +166,11 @@ async function zapytajModel(obrazy, prompt, model, proby = 3) {
       }
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
       const j = await r.json();
-      return (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+      return {
+        tekst: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'),
+        powodStopu: j.stop_reason || null,
+        zuzyte: j.usage ? j.usage.output_tokens : null,
+      };
     } catch (e) {
       ostatni = e;
       if (i < proby - 1) await spij(2000 * (i + 1));
@@ -301,11 +306,25 @@ async function przetworzStrone(pdfPath, dir, strona, model, dpi) {
   const obrazy = [crops.naglowek, ...crops.lewa, ...crops.prawa].map(b => b.toString('base64'));
   try {
     // dwa odczyty rownolegle - to ta sama karta, wiec nie ma na co czekac
-    const [tA, tB] = await Promise.all([
+    const [oA, oB] = await Promise.all([
       zapytajModel(obrazy, PROMPT_A, model),
       zapytajModel(obrazy, PROMPT_B, model),
     ]);
-    return zszyj(jsonZTekstu(tA), jsonZTekstu(tB), strona, null);
+    const A = jsonZTekstu(oA.tekst), B = jsonZTekstu(oB.tekst);
+    const wynik = zszyj(A, B, strona, null);
+    // Diagnostyka przy nieudanym parsowaniu: bez surowej odpowiedzi i powodu
+    // zatrzymania komunikat "nie udalo sie sparsowac" nic nie mowi - nie wiadomo,
+    // czy odpowiedz zostala ucieta na limicie, czy model napisal cos innego.
+    if (!A || !B) {
+      wynik.diagnostyka = {
+        A: { powodStopu: oA.powodStopu, tokeny: oA.zuzyte, sparsowane: !!A, poczatek: String(oA.tekst || '').slice(0, 200), koniec: String(oA.tekst || '').slice(-120) },
+        B: { powodStopu: oB.powodStopu, tokeny: oB.zuzyte, sparsowane: !!B, poczatek: String(oB.tekst || '').slice(0, 200), koniec: String(oB.tekst || '').slice(-120) },
+      };
+      if (oA.powodStopu === 'max_tokens' || oB.powodStopu === 'max_tokens') {
+        wynik.problemy.push('odpowiedz modelu zostala UCIETA na limicie max_tokens - podnies limit');
+      }
+    }
+    return wynik;
   } catch (e) {
     return { strona, ok: false, problemy: [`blad wywolania modelu: ${e.message}`], sporne: [] };
   }
@@ -335,9 +354,16 @@ async function odczytajTeczke(pdf, opcje = {}) {
   try {
     await fs.writeFile(pdfPath, pdf);
     const stron = await pdfPageCount(pdfPath);
+    // Domyslnie cala teczka. Podanie "strony" pozwala n8n wolac endpoint porcjami,
+    // gdyby proxy Railway ucinalo zadania trwajace kilka minut - wtedy kazde
+    // wywolanie schodzi w kilkadziesiat sekund, a wyniki skleja sie po stronie n8n.
+    const wybrane = Array.isArray(opcje.strony) && opcje.strony.length
+      ? opcje.strony.map(Number).filter(p => p >= 1 && p <= stron)
+      : Array.from({ length: stron }, (_, i) => i + 1);
+    if (!wybrane.length) throw new Error('zadna z podanych stron nie miesci sie w zakresie 1-' + stron);
     const zadania = [];
     const dpi = Math.max(150, Math.min(400, Number(opcje.dpi) || 300));
-    for (let p = 1; p <= stron; p++) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi));
+    for (const p of wybrane) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi));
     const karty = await pula(zadania, rownolegle);
 
     // wszystkie karty w teczce musza dotyczyc tego samego miesiaca
@@ -354,7 +380,7 @@ async function odczytajTeczke(pdf, opcje = {}) {
     const miesiac = mies.length === 1 ? mies[0] : null;
 
     return {
-      stron, rok, miesiac,
+      stron, przetworzone: wybrane, rok, miesiac,
       norma: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) : null,
       normaCzesc: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) * 0.75 : null,
       kartOk: karty.filter(k => k.ok).length,
@@ -374,9 +400,9 @@ function router(express, token) {
   r.post('/karty-pracy/odczytaj', express.json({ limit: '40mb' }), async (req, res) => {
     if (token && req.get('x-token') !== String(token).trim()) return res.status(401).json({ blad: 'zly token' });
     try {
-      const { data, rownolegle, model, dpi } = req.body || {};
+      const { data, rownolegle, model, dpi, strony } = req.body || {};
       if (!data) return res.status(400).json({ blad: 'brak pola data' });
-      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi }));
+      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi, strony }));
     } catch (e) {
       res.status(500).json({ blad: e.message });
     }
@@ -391,9 +417,12 @@ module.exports = { odczytajTeczke, zszyj, wymiarCzasuPracy, swietaMiesiaca, json
 if (require.main === module) {
   (async () => {
     const plik = process.argv[2];
-    if (!plik) { console.error('uzycie: node karty-pracy-odczyt.js <plik.pdf> [rownolegle]'); process.exit(1); }
+    if (!plik) { console.error('uzycie: node karty-pracy-odczyt.js <plik.pdf> [rownolegle] [dpi]'); process.exit(1); }
     const t0 = Date.now();
-    const w = await odczytajTeczke(await fs.readFile(plik), { rownolegle: Number(process.argv[3]) || 4 });
+    const w = await odczytajTeczke(await fs.readFile(plik), {
+      rownolegle: Number(process.argv[3]) || 4,
+      dpi: Number(process.argv[4]) || 300,
+    });
     console.log(`\nstron: ${w.stron} | okres: ${w.miesiac}/${w.rok} | norma: ${w.norma} | czystych kart: ${w.kartOk}/${w.stron}`);
     if (w.problemyOgolne.length) console.log('PROBLEMY OGOLNE:', w.problemyOgolne.join('; '));
     console.log();
@@ -401,7 +430,17 @@ if (require.main === module) {
       console.log(`str.${String(k.strona).padStart(2)} ${k.ok ? 'OK  ' : 'UWAGA'} ${String(k.nazwisko || '?').padEnd(24)} C=${k.C ?? '-'}  G=${k.G ?? '-'}   [RAZEM ${k.wierszSuma ?? '-'}${k.sto ? ' +100% ' + k.sto : ''}${k.uw ? ' +UW ' + k.uw : ''}]`);
       (k.problemy || []).forEach(p => console.log('        ! ' + p));
       (k.sporne || []).forEach(s => console.log(`        ? dzien ${s.dzien}, ${s.pole}: A=${s.A} B=${s.B}`));
+      if (k.diagnostyka) {
+        for (const w of ['A', 'B']) {
+          const d = k.diagnostyka[w];
+          console.log(`        [${w}] stop=${d.powodStopu} tokeny=${d.tokeny} json=${d.sparsowane ? 'ok' : 'BRAK'}`);
+          if (!d.sparsowane) {
+            console.log(`            poczatek: ${JSON.stringify(d.poczatek)}`);
+            console.log(`            koniec:   ${JSON.stringify(d.koniec)}`);
+          }
+        }
+      }
     }
     console.log(`\nczas: ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-  })().catch(e => { console.error(e); process.exit(1); });
+  })().catch(e => { console.error('BLAD: ' + e.message); process.exit(1); });
 }
