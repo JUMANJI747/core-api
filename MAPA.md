@@ -22,6 +22,17 @@ agenci AI (Anthropic) sterowani z **Telegrama** (master w n8n) i z panelu CRM.
 Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/index.js`
 (nowe modele/pola wchodzą same). Auth: nagłówek `x-api-key` (`src/index.js` → `auth`).
 
+**Obraz produkcyjny definiuje `Dockerfile`** (node:22-bookworm-slim + apt:
+poppler-utils, imagemagick, ghostscript, tesseract-ocr, openssl dla silników
+Prisma). Powód: sam `aptPkgs` w `nixpacks.toml` NIE dowoził binariów do obrazu
+runtime — na produkcji leciało `spawn pdfinfo ENOENT`, choć poppler-utils był
+w configu od dawna. `nixpacks.toml` został wyłącznie jako zapas (gdyby builder
+był przypięty do Nixpacks) i podaje pakiety dwoma mechanizmami naraz: `aptPkgs`
+(nazwy Debiana, z myślnikiem) i `nixPkgs` (nazwy nixpkgs, z podkreślnikiem).
+**Weryfikacja binariów tylko w runtime:** `GET /api/_version` → pole `binaria`
+(realne uruchomienie procesu, nie odczyt configu) + głośne ostrzeżenie w logu
+przy starcie — `services/bin-check.js`.
+
 ---
 
 ## 2. Punkt wejścia i montaż tras
@@ -31,7 +42,7 @@ Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/i
 | Prefix URL | Plik | Obszar |
 |---|---|---|
 | `/` | `routes/map.js` | health/landing |
-| `/` | `routes/preprocess-scan.js` | **POST /preprocess-scan** (n8n, przed OCR): cyfrowy PDF → `{skip:true}`; skan/obraz → strony PNG 300 dpi z korektą obrotu (tesseract OSD) + deskew/normalize → `{pages:[base64…]}`. Auth: `x-token` = `PREPROCESS_TOKEN` (brak env = otwarty), własny limit body 25 MB, POZA /api. Wymaga aptPkgs: poppler-utils, imagemagick, tesseract-ocr |
+| `/` | `routes/preprocess-scan.js` | **POST /preprocess-scan** (n8n, przed OCR): cyfrowy PDF → `{skip:true}`; skan/obraz → strony PNG 300 dpi z korektą obrotu (tesseract OSD) + deskew/normalize → `{pages:[base64…]}`. Auth: `x-token` = `PREPROCESS_TOKEN` (brak env = otwarty), własny limit body 25 MB, POZA /api. Wymaga binariów z obrazu (Dockerfile): poppler-utils, imagemagick, tesseract-ocr |
 | `/` | `karta-pracy.js` | **POST /karta-pracy/crop** (n8n): skan KARTY EWIDENCJI CZASU PRACY (PDF base64, 1 karta = 1 strona) → wykrycie ramki i siatki tabeli (profile ciemnych pikseli, deskew) i pocięcie na pasma po 10-11 wierszy: `naglowek`, `lewa[0..2]` (dzień/rozpocz/zakończ/RAZEM), `prawa[0..2]` (dzień + RAZEM…Chor.), `pod` — JPEG base64. Kolumna „dzień" jest w KAŻDYM wycinku (zszywanie lewej z prawą po numerze dnia); kolumny podpisów wycięte. `tylkoInfo:true` → sama liczba stron, `pages:[n]` → tnie wybrane. Strona bez pewnej siatki wraca z `blad` (fail-closed, nie idzie do modelu na oślep). Auth: `x-token` = `PREPROCESS_TOKEN` (brak env = otwarty), własny limit body **40 MB** (montowany PRZED globalnym `express.json` 32 MB — inaczej globalny by go przyciął), POZA /api. Wymaga: poppler-utils (pdfinfo/pdftoppm), imagemagick (convert -deskew) + npm `sharp`. CLI: `node src/karta-pracy.js <pdf> ./out`. **renderPage używa JPEG jako formatu pośredniego** (pdftoppm -jpeg → convert -deskew) — szybciej niż PNG, wykrycie siatki identyczne |
 | `/` | `karty-pracy-odczyt.js` | **POST /karty-pracy/odczytaj** (n8n): teczka kart w jednym PDF → dla KAŻDEJ strony crop (`karta-pracy.cropCard`) + **dwa niezależne odczyty modelem** (PROMPT_A wierszami, PROMPT_B kolumnami — rozbija błędy przesunięcia o wiersz) → `zszyj()`: porównanie obu odczytów (rozjazdy trafiają do `sporne`) + kontrola arytmetyki (suma dni vs wiersz SUMA, 100% tylko w święta ustawowe, wielokrotność 0.5, zakres 0-24) + `wymiarCzasuPracy` (art. 130 KP, święta z Wielkanocy). Zwraca ~2 kB JSON na teczkę: `{stron, rok, miesiac, norma, kartOk, problemyOgolne, karty:[{C, G, problemy, sporne}]}` — **obrazy ani surowe `dni` NIE wracają** (n8n zapisywał wejście/wyjście każdego node’a i dławił się 20 MB obrazów). Pula `rownolegle` (domyślnie 4, max 8), `dpi` (domyślnie 300, 150-400), `model` (domyślnie claude-opus-5). Wymaga **ANTHROPIC_API_KEY**; auth i montaż jak /karta-pracy/crop (x-token, własny parser 40 MB, poza /api). CLI: `node src/karty-pracy-odczyt.js <pdf> [rownolegle]` |
 | `/api/contractors` | `routes/contractors.js` | kontrahenci PL: upsert, 360, **adresy (structured-address / delivery-address)**, merge, geocode, find-address (maile/GK), **GET :id/shipment-addresses** (adresy dostaw ze WSZYSTKICH źródeł: ContractorAddress → extras.locations → wysyłki powiązane przez Transaction/Invoice → adres paczki z GK po NUMERZE — działa gdy nazwa odbiorcy ≠ nazwa kontrahenta; zbiera też z DUPLIKATÓW po NIP/nazwie) |
