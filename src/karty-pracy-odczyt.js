@@ -12,7 +12,7 @@
  *
  * POST /karty-pracy/odczytaj
  *   body: { data: "<base64 pdf>", rownolegle?: 4, dpi?: 300, strony?: [1,2,3],
- *           model?: "claude-opus-5" }
+ *           rok?: 2026, miesiac?: 6, model?: "claude-opus-5" }
  *   -> { stron, przetworzone, rok, miesiac, norma, problemyOgolne: [], karty: [...] }
  *
  * Wymaga: ANTHROPIC_API_KEY oraz PREPROCESS_TOKEN w srodowisku.
@@ -116,6 +116,18 @@ function wymiarCzasuPracy(rok, mies) {
   return rob * 8 - obn * 8;
 }
 
+/**
+ * Na karcie NIE MA roku - rubryka "Miesiac/rok" zawiera samo slowo, np. CZERWIEC.
+ * Karta trafia do nas po zakonczeniu miesiaca, wiec bierzemy najswiezszy rok,
+ * w ktorym ten miesiac zdazyl sie skonczyc. Zalozenie jest zapisywane w wyniku,
+ * zeby nie bylo cichym domyslem.
+ */
+function domyslnyRok(miesiac, dzisiaj = new Date()) {
+  const r = dzisiaj.getUTCFullYear();
+  const koniecMiesiaca = new Date(Date.UTC(r, miesiac, 0, 23, 59, 59));
+  return koniecMiesiaca <= dzisiaj ? r : r - 1;
+}
+
 /* -------------------------------------------------------------- model + JSON */
 
 /** wyciaga pierwszy ZBALANSOWANY obiekt JSON - model lubi dopisac zdanie po odpowiedzi */
@@ -189,7 +201,7 @@ const sumuj = a => a.reduce((x, y) => x + (Number(y) || 0), 0);
  * niezaleznie napisane liczby, karta ma wiersz SUMA i nadrukowana norme.
  * Model nie musi byc nieomylny - musi byc sprawdzalny.
  */
-function zszyj(A, B, strona, sha) {
+function zszyj(A, B, strona, sha, okres = {}) {
   const problemy = [], sporne = [];
   if (!A || !B) {
     return {
@@ -200,8 +212,17 @@ function zszyj(A, B, strona, sha) {
     };
   }
 
-  const rok = A.rok || B.rok, mies = A.miesiac || B.miesiac;
-  if (!rok || !mies) problemy.push('nie odczytano miesiaca/roku z naglowka');
+  const mies = okres.miesiac || A.miesiac || B.miesiac;
+  let rok = okres.rok || A.rok || B.rok;
+  let rokDomyslny = false;
+  if (!mies) problemy.push('nie odczytano miesiaca z naglowka karty');
+  if (!rok && mies) {
+    // rubryka "Miesiac/rok" na tym formularzu zawiera sam miesiac - to norma, nie blad
+    rok = domyslnyRok(mies);
+    rokDomyslny = true;
+  } else if (!rok) {
+    problemy.push('nie odczytano ani miesiaca, ani roku - nie umiem ustalic okresu');
+  }
   if (A.rok && B.rok && A.rok !== B.rok) problemy.push(`odczyty roznia sie rokiem: ${A.rok} vs ${B.rok}`);
   if (A.miesiac && B.miesiac && A.miesiac !== B.miesiac) problemy.push(`odczyty roznia sie miesiacem: ${A.miesiac} vs ${B.miesiac}`);
 
@@ -266,7 +287,7 @@ function zszyj(A, B, strona, sha) {
     ok: problemy.length === 0 && sporne.length === 0,
     nazwisko: String(A.nazwisko || B.nazwisko || '').trim(),
     nazwiskoB: String(B.nazwisko || '').trim(),
-    rok, miesiac: mies, normaZKarty: L(A.norma),
+    rok, rokDomyslny, miesiac: mies, normaZKarty: L(A.norma),
     C, G, sumaDni: sumDni, wierszSuma: wSuma, sto, uw, chor,
     problemy, sporne, dni,
   };
@@ -295,7 +316,7 @@ async function renderPage(pdfPath, page, dir, dpi = 300) {
   }
 }
 
-async function przetworzStrone(pdfPath, dir, strona, model, dpi) {
+async function przetworzStrone(pdfPath, dir, strona, model, dpi, okres) {
   let crops;
   try {
     const png = await renderPage(pdfPath, strona, dir, dpi);
@@ -311,7 +332,7 @@ async function przetworzStrone(pdfPath, dir, strona, model, dpi) {
       zapytajModel(obrazy, PROMPT_B, model),
     ]);
     const A = jsonZTekstu(oA.tekst), B = jsonZTekstu(oB.tekst);
-    const wynik = zszyj(A, B, strona, null);
+    const wynik = zszyj(A, B, strona, null, okres);
     // Diagnostyka przy nieudanym parsowaniu: bez surowej odpowiedzi i powodu
     // zatrzymania komunikat "nie udalo sie sparsowac" nic nie mowi - nie wiadomo,
     // czy odpowiedz zostala ucieta na limicie, czy model napisal cos innego.
@@ -363,7 +384,9 @@ async function odczytajTeczke(pdf, opcje = {}) {
     if (!wybrane.length) throw new Error('zadna z podanych stron nie miesci sie w zakresie 1-' + stron);
     const zadania = [];
     const dpi = Math.max(150, Math.min(400, Number(opcje.dpi) || 300));
-    for (const p of wybrane) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi));
+    // okres mozna narzucic z zewnatrz (np. z tematu maila "karty pracy czerwiec 2026")
+    const okres = { rok: Number(opcje.rok) || null, miesiac: Number(opcje.miesiac) || null };
+    for (const p of wybrane) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi, okres));
     const karty = await pula(zadania, rownolegle);
 
     // wszystkie karty w teczce musza dotyczyc tego samego miesiaca
@@ -400,9 +423,9 @@ function router(express, token) {
   r.post('/karty-pracy/odczytaj', express.json({ limit: '40mb' }), async (req, res) => {
     if (token && req.get('x-token') !== String(token).trim()) return res.status(401).json({ blad: 'zly token' });
     try {
-      const { data, rownolegle, model, dpi, strony } = req.body || {};
+      const { data, rownolegle, model, dpi, strony, rok, miesiac } = req.body || {};
       if (!data) return res.status(400).json({ blad: 'brak pola data' });
-      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi, strony }));
+      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi, strony, rok, miesiac }));
     } catch (e) {
       res.status(500).json({ blad: e.message });
     }
@@ -423,7 +446,8 @@ if (require.main === module) {
       rownolegle: Number(process.argv[3]) || 4,
       dpi: Number(process.argv[4]) || 300,
     });
-    console.log(`\nstron: ${w.stron} | okres: ${w.miesiac}/${w.rok} | norma: ${w.norma} | czystych kart: ${w.kartOk}/${w.stron}`);
+    const dom = w.karty.some(k => k.rokDomyslny) ? ' (rok domyslony - nie ma go na karcie)' : '';
+    console.log(`\nstron: ${w.stron} | okres: ${w.miesiac}/${w.rok}${dom} | norma: ${w.norma} | czystych kart: ${w.kartOk}/${w.przetworzone.length}`);
     if (w.problemyOgolne.length) console.log('PROBLEMY OGOLNE:', w.problemyOgolne.join('; '));
     console.log();
     for (const k of w.karty) {
