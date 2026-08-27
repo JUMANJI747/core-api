@@ -86,10 +86,19 @@ app.get('/health', async (req, res) => {
 // Marker wersji — do weryfikacji ktory commit Railway faktycznie wdrozyl.
 // Jesli /api/core/_version zwraca to JSON => nowy kod jest live; jesli
 // "Cannot GET /api/_version" => serwer dalej na starym kodzie.
-app.get('/api/_version', (req, res) => {
+app.get('/api/_version', async (req, res) => {
+  // Binaria testujemy REALNYM uruchomieniem procesu (nie czytaniem configu) —
+  // nixpacks.toml potrafi być ignorowany przez builder i wtedy kłamie.
+  let binaria = null;
+  try {
+    binaria = await require('./services/bin-check').sprawdzBinaria();
+  } catch (e) {
+    binaria = { ok: false, blad: e.message };
+  }
   res.json({
     ok: true,
     marker: 'invoice-pdf-route',
+    binaria,
     commit: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT || null,
     branch: process.env.RAILWAY_GIT_BRANCH || null,
     hasInvoicePdfRoute: true,
@@ -145,6 +154,9 @@ app.use((err, req, res, next) => {
 // ============ START ============
 const server = app.listen(PORT, () => {
   console.log(`Core API running on port ${PORT}`);
+  // Braki binariów mają krzyczeć w logu deployu, a nie czekać na pierwsze
+  // żądanie użytkownika (tak przeszło niezauważone „spawn pdfinfo ENOENT").
+  require('./services/bin-check').ostrzezOBrakachPrzyStarcie();
 });
 
 // ============ GK COUNTRIES SELF-HEAL ============

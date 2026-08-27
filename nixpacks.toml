@@ -1,2 +1,19 @@
+# UWAGA: obraz produkcyjny definiuje Dockerfile w katalogu głównym — Railway
+# bierze go przed automatycznym wykrywaniem buildera, więc TEN plik jest wtedy
+# ignorowany. Zostaje wyłącznie jako zapas na wypadek, gdyby w ustawieniach
+# usługi builder był na sztywno przypięty do Nixpacks.
+#
+# Historia: sam `aptPkgs` NIE zadziałał — na produkcji brakowało pdfinfo
+# („spawn pdfinfo ENOENT"), mimo że poppler-utils stał tu od dawna. Dlatego
+# te same pakiety są tu podane DWOMA mechanizmami naraz:
+#   aptPkgs  — nazwy z Debiana/Ubuntu (myślnik):    poppler-utils
+#   nixPkgs  — nazwy z nixpkgs (podkreślnik!):      poppler_utils
+# Pomyłka w nazewnictwie przechodzi po cichu, dlatego oba warianty są jawne.
+# Pakiety z nixPkgs trafiają do /nix/store, który przeżywa przejście do obrazu
+# runtime także wtedy, gdy warstwa apt tego nie robi.
+#
+# Cokolwiek zadziała, sprawdzisz to REALNIE: GET /api/_version → "binaria".
+
 [phases.setup]
 aptPkgs = ["ghostscript", "poppler-utils", "imagemagick", "tesseract-ocr"]
+nixPkgs = ["poppler_utils", "imagemagick", "ghostscript", "tesseract"]
