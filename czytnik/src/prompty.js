@@ -55,8 +55,9 @@ const SCHEMAT_KARTY = {
       additionalProperties: false,
     },
     dni: {
+      // BEZ minItems/maxItems: structured outputs wspieraja tylko wartosci 0/1
+      // (API odrzucalo schemat z minItems:28). Komplet dni pilnuje walidacja K9.
       type: 'array',
-      minItems: 28, maxItems: 31,
       items: {
         type: 'object',
         properties: {
