@@ -39,6 +39,8 @@ const BANDS = [11, 10, 11];   // dni 1-11, 12-21, 22-31 + SUMA
  * Udzialy szerokosci tabeli, zmierzone na formularzu. Uzywane, bo cienkie linie
  * wewnetrzne bywaja niewykrywalne na slabym skanie, a ramka zewnetrzna zawsze jest.
  */
+const FR_DZIEN_KONIEC = 0.0395;
+
 const FR = {
   dzienEnd: 0.0395,
   rozpoczStart: 0.0395, rozpoczEnd: 0.1110,
@@ -47,6 +49,18 @@ const FR = {
   razemEnd: 0.4738,
   chorEnd: 0.8248,   // koniec kolumny "Chor." (dalej same puste rubryki)
 };
+
+// Pojedyncze rubryki wiersza SUMA. Model dostaje kazda jako OSOBNY obrazek,
+// wiec nie ma jak pomylic kolumny - a to byl jedyny blad, ktory jeszcze zostal.
+// Szerokosc kolumny za RAZEM: (1 - razemEnd) / 9 rubryk = 0.05847.
+const KOL = 0.05847;
+const RUBRYKI_SUMY = [
+  { nazwa: 'razem', od: 0.3960, do: 0.4738 },
+  { nazwa: 'sto',   od: 0.4738 + 2 * KOL, do: 0.4738 + 3 * KOL },
+  { nazwa: 'nocne', od: 0.4738 + 3 * KOL, do: 0.4738 + 4 * KOL },
+  { nazwa: 'uw',    od: 0.4738 + 4 * KOL, do: 0.4738 + 5 * KOL },
+  { nazwa: 'chor',  od: 0.4738 + 5 * KOL, do: 0.4738 + 6 * KOL },
+];
 
 const JAKOSC = 82;   // JPEG zamiast PNG: ~12x mniej bajtow, bez widocznej straty na piśmie
 
@@ -128,15 +142,29 @@ async function detectGrid(png) {
   }
   if (hs.length < 10) throw new Error('nie znalazlem siatki wierszy');
 
+  // SIATKA WIERSZY.
+  //
+  // Wysokosc wiersza liczymy z MEDIANY odstepow miedzy wykrytymi liniami, a nie
+  // z (dol - gora) / 32. Powod z pomiaru: ostatnia wykryta linia bywa linia STOPKI,
+  // nie dolna krawedzia tabeli - wtedy wysokosc rosnie o 2%, a blad kumuluje sie
+  // przez 32 wiersze i wycinek ostatniego wiersza schodzi o pol rubryki za nisko.
+  // Mediana jest na to odporna, bo pojedyncze zabladzone linie jej nie ruszaja.
+  //
+  // Probowalem tez dopasowywac cala siatke naraz (odpowiednik transformaty Hougha)
+  // - dawalo lepszy wynik na jednej stronie i psulo dwie inne, wiec zostaje mediana.
   const top = hs[0], bottom = hs[hs.length - 1];
-  const rowH = (bottom - top) / ROWS;
-  if (rowH < H * 0.018 || rowH > H * 0.032) {
-    throw new Error(`wysokosc wiersza poza norma (${rowH.toFixed(1)} px) - zla strona albo zly skan`);
-  }
+  const odstepy = [];
+  for (let i = 1; i < hs.length; i++) odstepy.push(hs[i] - hs[i - 1]);
+  const zgrubna = (bottom - top) / ROWS;
+  const sensowne = odstepy.filter(d => d > zgrubna * 0.7 && d < zgrubna * 1.4).sort((a, b) => a - b);
+  const rowH = sensowne.length >= 5 ? sensowne[Math.floor(sensowne.length / 2)] : zgrubna;
+  const sumaGora = Math.round(top + 31 * rowH);
+  const sumaDol = Math.round(top + 32 * rowH);
+
   const y = i => Math.round(top + i * rowH);
   const x = f => Math.round(left + f * tw);
 
-  return { W, H, left, right, tw, top, bottom, rowH, y, x };
+  return { W, H, left, right, tw, top, bottom, rowH, sumaGora, sumaDol,  y, x };
 }
 
 /** sklejenie kilku wycinkow w poziomie (kolumna dnia + wlasciwy blok) */
@@ -185,14 +213,31 @@ async function cropCard(png) {
   // Wiersz SUMA dostaje wlasny wycinek: to jeden wiersz o innej strukturze niz dni,
   // a doklejony na koncu trzeciego pasma byl czytany najgorzej z calej karty.
   // Bierzemy go razem z wierszem 31 dla kontekstu i powiekszamy - jest maly.
-  const sumaTop = Math.max(0, g.y(30) - pad);
-  const sumaH = Math.min(g.H - sumaTop, g.y(32) - sumaTop + Math.round(g.rowH * 0.25));
+  const sumaTop = Math.max(0, g.sumaGora - Math.round(g.rowH * 1.1));
+  const sumaH = Math.min(g.H - sumaTop, Math.round(g.rowH * 2.3));
   const suma = await sharp(png)
     .extract({ left: Math.max(0, g.left - 4), top: sumaTop,
                width: Math.min(g.W - Math.max(0, g.left - 4), g.x(FR.chorEnd) + 8 - Math.max(0, g.left - 4)),
                height: sumaH })
     .resize({ width: 2200, withoutEnlargement: false })
     .normalise().jpeg({ quality: JAKOSC, mozjpeg: true }).toBuffer();
+
+  // Kazda rubryka osobno, powiekszona 4x. Skan ma 200 DPI, wiec to interpolacja,
+  // nie nowa informacja - ale model dostaje wtedy jedna liczbe na obrazku zamiast
+  // szukac jej wsrod siedmiu rubryk, a to wlasnie mylenie kolumn nas kosztowalo.
+  // Liczymy od WYKRYTEJ dolnej krawedzi tabeli, nie od indeksu wiersza - indeks
+  // potrafi sie przesunac o pol wiersza, a krawedz jest twardym punktem odniesienia.
+  const wierszSumyTop = Math.max(0, g.sumaGora - Math.round(g.rowH * 0.12));
+  const wierszSumyH = Math.min(g.H - wierszSumyTop, Math.round(g.rowH * 1.24));
+  const sumaKomorki = {};
+  for (const r of RUBRYKI_SUMY) {
+    const x0 = Math.max(0, g.x(r.od) - 6);
+    const x1 = Math.min(g.W, g.x(r.do) + 6);
+    sumaKomorki[r.nazwa] = (await sharp(png)
+      .extract({ left: x0, top: wierszSumyTop, width: x1 - x0, height: wierszSumyH })
+      .resize({ width: (x1 - x0) * 4, kernel: 'lanczos3' })
+      .normalise().sharpen().jpeg({ quality: 90, mozjpeg: true }).toBuffer()).toString('base64');
+  }
 
   const naglowek = await sharp(png)
     .extract({ left: 0, top: 0, width: g.W, height: g.top })
@@ -203,7 +248,7 @@ async function cropCard(png) {
     .extract({ left: 0, top: podTop, width: g.W, height: g.H - podTop })
     .normalise().jpeg({ quality: JAKOSC, mozjpeg: true }).toBuffer();
 
-  return { naglowek, lewa, prawa, suma, pod, meta: { rowH: +g.rowH.toFixed(1), left: g.left, right: g.right } };
+  return { naglowek, lewa, prawa, suma, sumaKomorki, pod, meta: { rowH: +g.rowH.toFixed(1), left: g.left, right: g.right } };
 }
 
 /**
@@ -231,6 +276,7 @@ async function przygotujKarty(pdf, pages, tylkoInfo) {
           sha: crypto.createHash('sha1').update(png).digest('hex').slice(0, 12),
           naglowek: c.naglowek.toString('base64'),
           suma: c.suma.toString('base64'),
+          sumaKomorki: c.sumaKomorki,
           lewa: c.lewa.map(b => b.toString('base64')),
           prawa: c.prawa.map(b => b.toString('base64')),
           pod: c.pod.toString('base64'),
@@ -280,6 +326,9 @@ if (require.main === module) {
       }
       await fs.writeFile(`${outDir}/s${s.page}_naglowek.jpg`, Buffer.from(s.naglowek, 'base64'));
       await fs.writeFile(`${outDir}/s${s.page}_suma.jpg`, Buffer.from(s.suma, 'base64'));
+      for (const [k, v] of Object.entries(s.sumaKomorki || {})) {
+        await fs.writeFile(`${outDir}/s${s.page}_suma_${k}.jpg`, Buffer.from(v, 'base64'));
+      }
       await fs.writeFile(`${outDir}/s${s.page}_pod.jpg`, Buffer.from(s.pod, 'base64'));
       console.log(`strona ${s.page}: ok, wiersz ${s.meta.rowH} px`);
     }
