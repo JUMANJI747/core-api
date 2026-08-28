@@ -231,6 +231,30 @@ UWAGA
 ZWROC WYLACZNIE CZYSTY JSON:
 {"razem":152,"normalne":null,"p50":null,"sto":null,"nocne":null,"uw":16,"chor":null}`;
 
+const PROMPT_SUMA_KOMORKI = `Dostajesz PIEC osobnych obrazkow. Kazdy to JEDNA rubryka
+z wiersza SUMA karty ewidencji czasu pracy, powiekszona. Kolejnosc jest stala:
+
+  obrazek 1 = Ilosc godzin RAZEM (suma miesiaca, zwykle 100-250)
+  obrazek 2 = 100%   (godziny przepracowane w swieto)
+  obrazek 3 = nocne
+  obrazek 4 = UW     (urlop wypoczynkowy)
+  obrazek 5 = Chor.  (chorobowe)
+
+Nie musisz niczego lokalizowac - kazda liczba jest juz wyciagnieta ze swojej rubryki.
+Odczytaj po prostu, co jest napisane na kazdym obrazku.
+
+ZASADY
+- Wiekszosc rubryk jest PUSTA. Pusta rubryka -> null. Nie wymyslaj liczby.
+- PRZECINEK DZIESIETNY: odreczne "6,5" bywa mylone z "60" albo "66". Przecinek to nie
+  cyfra. Godziny sa wielokrotnosciami 0.5, wiec po separatorze stoi tylko 5 albo 0.
+- Obrazki 2-5 zawieraja wartosci MNIEJSZE albo rowne obrazkowi 1, czesto pojedyncze
+  godziny (6.5, 16, 40). Nie moga byc wieksze niz RAZEM.
+- Na krawedziach widac linie siatki i skrawki sasiednich rubryk - ignoruj je.
+- Przecinek zapisuj KROPKA. Czego nie widzisz -> null. NIGDY nie zgaduj.
+
+ZWROC WYLACZNIE CZYSTY JSON:
+{"razem":203,"sto":3,"nocne":null,"uw":null,"chor":null}`;
+
 const PROMPT_SUMA_B = `Zanim odczytasz wartosci, USTAL POLOZENIE KOLUMN: znajdz napis
 "SUMA" i licz rubryki w prawo od niego. Pierwsza to RAZEM, szosta to UW. Dopiero
 potem odczytaj liczby, kazda osobno, patrzac tylko na jedna rubryke naraz.
@@ -298,6 +322,19 @@ async function czytajPasmami(crops, model, nazwiska, wariantB = false) {
 }
 
 async function czytajSume(crops, model, wariantB = false) {
+  // Preferowana sciezka: kazda rubryka jako OSOBNY obrazek. Model nie musi wtedy
+  // szukac kolumny, tylko odczytac liczbe - a mylenie kolumn bylo ostatnim
+  // powaznym zrodlem bledow (Wojcik 203 czytany jako 163, Owczarek gubil UW).
+  const K = crops.sumaKomorki;
+  if (K && K.razem) {
+    const obrazy = [K.razem, K.sto, K.nocne, K.uw, K.chor].filter(Boolean);
+    if (obrazy.length === 5) {
+      const o = await zapytajModel(obrazy, PROMPT_SUMA_KOMORKI, model);
+      const j = jsonZTekstu(o.tekst);
+      if (j) return { razem: j.razem, sto: j.sto, nocne: j.nocne, uw: j.uw, chor: j.chor };
+    }
+  }
+  // Zapas: caly wiersz jednym obrazkiem (starsza wersja core-api bez sumaKomorki)
   if (!crops.suma) return null;
   const o = await zapytajModel([crops.suma.toString('base64')],
     (wariantB ? PROMPT_SUMA_B : '') + PROMPT_SUMA, model);
@@ -459,9 +496,12 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
   const wSuma = gSuma.wartosc === undefined ? null : gSuma.wartosc;
   if (gSuma.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'RAZEM', odczyty: sumy.map(x => L(x.razem)) });
   const sA = sumy[0], sB = sumy[1] || {};
-  if (wSuma === null && gSuma.wartosc !== undefined) problemy.push('nie odczytano wiersza SUMA');
-  if (gSuma.wartosc === undefined && sumy.every(x => L(x.razem) === null)) problemy.push('nie odczytano wiersza SUMA');
-  else if (Math.abs(sumDni - wSuma) > 0.001) problemy.push(`suma dni (${sumDni}) nie zgadza sie z wierszem SUMA (${wSuma})`);
+  // Wiersz SUMA jest KONTROLA, nie zrodlem. Jego brak to normalna sytuacja -
+  // ludzie czesto go nie wypelniaja - a nie blad. Gdy jest, musi sie zgadzac.
+  const brakWierszaSumy = wSuma === null;
+  if (!brakWierszaSumy && Math.abs(sumDni - wSuma) > 0.001) {
+    problemy.push(`suma dni (${sumDni}) nie zgadza sie z wierszem SUMA (${wSuma})`);
+  }
   const gSto = glosSuma('sto'), gNoc = glosSuma('nocne'), gUw = glosSuma('uw'), gChor = glosSuma('chor');
   if (gSto.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: '100%', odczyty: sumy.map(x => L(x.sto)) });
   if (gNoc.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'nocne', odczyty: sumy.map(x => L(x.nocne)) });
@@ -470,21 +510,36 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
   if (gUw.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'UW', odczyty: sumy.map(x => L(x.uw)) });
   if (gChor.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'Chor.', odczyty: sumy.map(x => L(x.chor)) });
 
-  const sto = (gSto.wartosc ?? 0) || 0, uw = (gUw.wartosc ?? 0) || 0, chor = (gChor.wartosc ?? 0) || 0;
+  // Kolumny dodatkow: gdy wiersz SUMA jest wypelniony, bierzemy go i sprawdzamy
+  // z suma dni; gdy go nie ma, liczymy sami z wpisow dziennych.
+  const zDni = pole => sumuj(dni.map(x => x[pole]));
+  const wybierz = (glos, pole) => {
+    const zWiersza = glos.wartosc;
+    if (zWiersza === null || zWiersza === undefined) return zDni(pole);
+    return zWiersza;
+  };
+  const sto = wybierz(gSto, 'sto') || 0;
+  const uw = wybierz(gUw, 'uw') || 0;
+  const chor = wybierz(gChor, 'chor') || 0;
   // Kazda kolumna dodatkow ma dwa niezalezne zrodla: wpisy dzienne i wiersz SUMA.
   // Rozjazd znaczy, ze ktores z nich jest zle odczytane - wtedy nie zgadujemy.
-  for (const [pole, wTotal] of [['sto', sto], ['uw', uw], ['chor', chor]]) {
-    const zDni = sumuj(dni.map(x => x[pole]));
-    if (Math.abs(zDni - wTotal) > 0.001) {
+  for (const [pole, glos] of [['sto', gSto], ['uw', gUw], ['chor', gChor]]) {
+    const zWiersza = glos.wartosc;
+    if (zWiersza === null || zWiersza === undefined) continue;  // brak wiersza SUMA - nie ma czego porownywac
+    const suma = zDni(pole);
+    if (Math.abs(suma - zWiersza) > 0.001) {
       problemy.push('kolumna ' + (pole === 'sto' ? '100%' : pole === 'uw' ? 'UW' : 'Chor.') +
-        ': suma z dni (' + zDni + ') nie zgadza sie z wierszem SUMA (' + wTotal + ')');
+        ': suma z dni (' + suma + ') nie zgadza sie z wierszem SUMA (' + zWiersza + ')');
     }
   }
   if (wSuma !== null && sto > wSuma) problemy.push('godziny 100% (' + sto + ') sa wieksze niz cale RAZEM (' + wSuma + ') - to niemozliwe');
 
   // C = RAZEM + godziny w swieto (100%) + platne nieprzepracowane (UW, Chor.)
-  const C = wSuma === null ? null : wSuma + sto + uw + chor;
-  const G = gNoc.wartosc ?? null;
+  // C liczymy z sumy dni - dziala tak samo, gdy wiersz SUMA jest pusty.
+  const maDni = dni.some(x => x.razem !== null);
+  const C = maDni ? sumDni + sto + uw + chor : null;
+  if (!maDni) problemy.push('nie odczytano ani jednego dnia z tabeli - nie mam z czego policzyc godzin');
+  const G = (gNoc.wartosc === null || gNoc.wartosc === undefined) ? (zDni('nocne') || null) : gNoc.wartosc;
 
   if (rok && mies) {
     const norma = wymiarCzasuPracy(rok, mies);
@@ -503,7 +558,7 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
     nazwiskoB: String(B.nazwisko || '').trim(),
     nazwiskaOdczytane: czytajacy.map(x => (x.nazwisko || '').trim()).filter(Boolean),
     rok, rokDomyslny, miesiac: mies, normaZKarty: L(A.norma),
-    C, G, sumaDni: sumDni, wierszSuma: wSuma, sto, uw, chor,
+    C, G, sumaDni: sumDni, wierszSuma: wSuma, brakWierszaSumy, sto, uw, chor,
     problemy, sporne, dni,
   };
 }
