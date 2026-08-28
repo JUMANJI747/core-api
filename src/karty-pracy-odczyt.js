@@ -12,7 +12,8 @@
  *
  * POST /karty-pracy/odczytaj
  *   body: { data: "<base64 pdf>", rownolegle?: 4, dpi?: 300, strony?: [1,2,3],
- *           rok?: 2026, miesiac?: 6, model?: "claude-opus-5" }
+ *           rok?: 2026, miesiac?: 6, nazwiska?: ["Patrycja Żak", ...],
+ *           model?: "claude-opus-5" }
  *   -> { stron, przetworzone, rok, miesiac, norma, problemyOgolne: [], karty: [...] }
  *
  * Wymaga: ANTHROPIC_API_KEY oraz PREPROCESS_TOKEN w srodowisku.
@@ -63,6 +64,18 @@ ZWROC WYLACZNIE CZYSTY JSON, bez markdown, bez komentarzy, bez zdan przed ani po
  "dni":[{"d":1,"od":"9:00","do":"18:00","razem":9,"razem_rozbite":null,"kod":null,"sto":null,"nocne":null,"uw":null,"chor":null,"notatka":null}],
  "suma":{"razem":175,"sto":10,"nocne":null,"uw":null,"chor":null}}
 Tablica "dni" ma miec po jednym wpisie na kazdy wiersz dnia widoczny w tabeli, po kolei od 1.`;
+
+function zListaNazwisk(prompt, nazwiska) {
+  if (!Array.isArray(nazwiska) || !nazwiska.length) return prompt;
+  return prompt + `
+
+LISTA PRACOWNIKOW (zamkniety zbior)
+Nazwisko na karcie NALEZY do tej listy. Wybierz z niej dokladnie jedna pozycje
+i przepisz ja ZNAK W ZNAK do pola "nazwisko". Nie poprawiaj, nie skracaj, nie
+tworz nowych wariantow. Jesli zadna pozycja nie pasuje do tego, co widzisz,
+wpisz null - lepiej nic niz zla osoba.
+${nazwiska.map(n => '- ' + n).join('\n')}`;
+}
 
 const PROMPT_A = `Czytaj WIERSZ PO WIERSZU, od dnia 1 do konca miesiaca. Dla kazdego dnia odczytaj
 najpierw godzine rozpoczecia, potem zakonczenia, potem RAZEM, potem kolumny po prawej.
@@ -191,6 +204,94 @@ async function zapytajModel(obrazy, prompt, model, proby = 3) {
   throw ostatni || new Error('nieznany blad wywolania modelu');
 }
 
+const PROMPT_NAGLOWEK = `Dostajesz naglowek JEDNEJ karty "KARTA EWIDENCJI CZASU PRACY".
+Odczytaj z niego tylko cztery rzeczy. Rubryka "Miesiac/rok" na tym formularzu
+zawiera zwykle SAM MIESIAC, bez roku - wtedy rok zwroc jako null, to normalne.
+
+ZWROC WYLACZNIE CZYSTY JSON:
+{"nazwisko":"IMIE NAZWISKO","miesiac":6,"rok":null,"norma":168}
+miesiac jako liczba 1-12. norma to "Ilosc godzin do przepracowania".
+Czego nie widzisz -> null. NIGDY nie zgaduj.`;
+
+const PROMPT_PASMO_B = `Czytaj to pasmo KOLUMNAMI, nie wierszami. Najpierw przejdz cala
+kolumne "Ilosc godzin RAZEM" z gory na dol i zapisz wartosc dla kazdego dnia, potem
+kolumne 100%, potem nocne, UW i Chor., a na koncu wiersz SUMA jesli jest w tym pasmie.
+Nie wyliczaj RAZEM z godzin - odczytaj to, co jest napisane w kolumnie.
+
+`;
+
+const PROMPT_PASMO = `Dostajesz wycinki JEDNEJ karty "KARTA EWIDENCJI CZASU PRACY" - ale
+tylko FRAGMENT tabeli, nie calosc. Obrazy:
+1) pasmo tabeli, kolumny: [dzien] [Godz. rozpocz.] [Godz. zakoncz.] [Ilosc godzin RAZEM]
+2) to samo pasmo, kolumny: [dzien] [RAZEM] [normalne] [50%] [100%] [nocne] [UW] [Chor.]
+
+Odczytaj TYLKO te dni, ktore widzisz w tym pasmie. Jesli w pasmie jest wiersz SUMA
+(ostatni, bez numeru dnia), odczytaj go do pola "suma"; jesli go nie ma, daj suma: null.
+
+Masz przed soba tylko kilkanascie wierszy - przeczytaj kazdy z osobna i uwaznie.
+Szczegolnie latwo pomylic cyfry 1/7, 4/9, 3/8 i 0/6.
+
+ZASADY (te same co zwykle)
+- Litera W/U/C zamiast godziny rozpoczecia -> razem: null, litera do pola "kod".
+- Kolumna "normalne" bywa brudnopisem z sumami narastajacymi - to NIE sa godziny dnia.
+- Godziny sa wielokrotnosciami 0.5, przecinek zapisuj KROPKA.
+- "8/2" w RAZEM to dwie zmiany tego dnia - razem = 10.
+- Scinek sasiedniego wiersza na krawedzi pasma - zignoruj.
+- Czego nie da sie odczytac -> null. NIGDY nie zgaduj.
+
+ZWROC WYLACZNIE CZYSTY JSON:
+{"dni":[{"d":1,"razem":9,"kod":null,"sto":null,"nocne":null,"uw":null,"chor":null}],
+ "suma":{"razem":175,"sto":10,"nocne":null,"uw":null,"chor":null}}`;
+
+/** Trzeci odczyt: pasmo po pasmie. 10-11 dni naraz zamiast 31 - uwaga modelu
+ *  rozklada sie znacznie lepiej, a to wlasnie na dlugich tabelach gubil pojedyncze
+ *  dni albo wiersz SUMA. */
+async function czytajPasmami(crops, model, nazwiska, wariantB = false) {
+  const wstep = wariantB ? PROMPT_PASMO_B : '';
+  const wyniki = await Promise.all([0, 1, 2].map(async i => {
+    const obrazy = [crops.lewa[i].toString('base64'), crops.prawa[i].toString('base64')];
+    const o = await zapytajModel(obrazy, wstep + PROMPT_PASMO, model);
+    return jsonZTekstu(o.tekst);
+  }));
+  if (wyniki.every(w => !w)) return null;
+  const dni = [];
+  let suma = null;
+  for (const w of wyniki) {
+    if (!w) continue;
+    for (const d of (w.dni || [])) dni.push(d);
+    if (w.suma && w.suma.razem !== null && w.suma.razem !== undefined) suma = w.suma;
+  }
+  return { nazwisko: null, miesiac: null, rok: null, norma: null, dni, suma: suma || {} };
+}
+
+async function czytajNaglowek(crops, model, nazwiska) {
+  const o = await zapytajModel([crops.naglowek.toString('base64')],
+    zListaNazwisk(PROMPT_NAGLOWEK, nazwiska), model);
+  return jsonZTekstu(o.tekst) || {};
+}
+
+/**
+ * Jeden pelny odczyt karty = naglowek + trzy pasma. Kazde wywolanie widzi
+ * kilkanascie wierszy zamiast trzydziestu jeden, przez co model nie gubi
+ * pojedynczych dni ani wiersza SUMA - to byla przyczyna wszystkich wpadek
+ * w przebiegach na prawdziwych kartach.
+ */
+async function czytajKarte(crops, model, nazwiska, wariantB) {
+  const [nag, tabela] = await Promise.all([
+    czytajNaglowek(crops, model, nazwiska),
+    czytajPasmami(crops, model, nazwiska, wariantB),
+  ]);
+  if (!tabela) return null;
+  return {
+    nazwisko: nag.nazwisko || null,
+    miesiac: nag.miesiac || null,
+    rok: nag.rok || null,
+    norma: nag.norma || null,
+    dni: tabela.dni || [],
+    suma: tabela.suma || {},
+  };
+}
+
 /* ------------------------------------------------- zszycie i kontrola karty */
 
 const L = v => (v === null || v === undefined || v === '') ? null : Number(String(v).replace(',', '.'));
@@ -201,7 +302,20 @@ const sumuj = a => a.reduce((x, y) => x + (Number(y) || 0), 0);
  * niezaleznie napisane liczby, karta ma wiersz SUMA i nadrukowana norme.
  * Model nie musi byc nieomylny - musi byc sprawdzalny.
  */
-function zszyj(A, B, strona, sha, okres = {}) {
+/** wartosc wygrywa, gdy powtorzy sie u co najmniej dwoch czytajacych */
+function wiekszosc(wartosci) {
+  const licz = new Map();
+  for (const v of wartosci) {
+    if (v === undefined) continue;
+    const k = JSON.stringify(v);
+    licz.set(k, (licz.get(k) || 0) + 1);
+  }
+  let najlepszy = null, ile = 0;
+  for (const [k, n] of licz) if (n > ile) { ile = n; najlepszy = k; }
+  return { wartosc: ile >= 2 ? JSON.parse(najlepszy) : undefined, glosy: ile, roznych: licz.size };
+}
+
+function zszyj(A, B, strona, sha, okres = {}, T = null) {
   const problemy = [], sporne = [];
   if (!A || !B) {
     return {
@@ -212,6 +326,17 @@ function zszyj(A, B, strona, sha, okres = {}) {
     };
   }
 
+  // Nazwisko: dwa odczyty potrafia sie ZGODNIE pomylic (Wojcik -> Hajduk), wiec
+  // sama zgodnosc nic nie gwarantuje. Prawdziwa kontrola to przynaleznosc do listy.
+  const nazwiskaCzyt = [A, B, T].filter(Boolean).map(x => (x.nazwisko || '').trim()).filter(Boolean);
+  if (Array.isArray(okres.nazwiska) && okres.nazwiska.length && nazwiskaCzyt.length) {
+    const klucz = t => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase().replace(/\u0141/g, 'L').replace(/[^A-Z ]+/g, ' ')
+      .trim().split(/\s+/).filter(Boolean).sort().join(' ');
+    const lista = new Set(okres.nazwiska.map(klucz));
+    const obce = [...new Set(nazwiskaCzyt.filter(n => !lista.has(klucz(n))))];
+    if (obce.length) problemy.push('nazwisko spoza listy pracownikow: ' + obce.join(' / ') + ' - nie wpisuje godzin nie tej osobie');
+  }
   const mies = okres.miesiac || A.miesiac || B.miesiac;
   let rok = okres.rok || A.rok || B.rok;
   let rokDomyslny = false;
@@ -226,20 +351,28 @@ function zszyj(A, B, strona, sha, okres = {}) {
   if (A.rok && B.rok && A.rok !== B.rok) problemy.push(`odczyty roznia sie rokiem: ${A.rok} vs ${B.rok}`);
   if (A.miesiac && B.miesiac && A.miesiac !== B.miesiac) problemy.push(`odczyty roznia sie miesiacem: ${A.miesiac} vs ${B.miesiac}`);
 
-  const mapA = new Map((A.dni || []).map(d => [Number(d.d), d]));
-  const mapB = new Map((B.dni || []).map(d => [Number(d.d), d]));
+  const czytajacy = [A, B, T].filter(Boolean);
+  const mapy = czytajacy.map(x => new Map((x.dni || []).map(d => [Number(d.d), d])));
+  const mapA = mapy[0], mapB = mapy[1];
   const dniMies = (rok && mies) ? new Date(Date.UTC(rok, mies, 0)).getUTCDate() : 31;
   const swieta = (rok && mies) ? swietaMiesiaca(rok, mies) : [];
   const dni = [];
 
   for (let d = 1; d <= dniMies; d++) {
-    const a = mapA.get(d) || {}, b = mapB.get(d) || {};
-    const ra = L(a.razem), rb = L(b.razem);
-    if (ra !== rb) { sporne.push({ dzien: d, pole: 'RAZEM', A: ra, B: rb }); continue; }
-    const sa = L(a.sto), sb = L(b.sto);
-    if (sa !== sb) sporne.push({ dzien: d, pole: '100%', A: sa, B: sb });
-    const na = L(a.nocne), nb = L(b.nocne);
-    if (na !== nb) sporne.push({ dzien: d, pole: 'nocne', A: na, B: nb });
+    const wiersze = mapy.map(m => m.get(d) || {});
+    const glosuj = pole => wiekszosc(wiersze.map(w => L(w[pole])));
+    const gr = glosuj('razem');
+    if (gr.wartosc === undefined) {
+      sporne.push({ dzien: d, pole: 'RAZEM', odczyty: wiersze.map(w => L(w.razem)) });
+      continue;
+    }
+    const a = wiersze[0], b = wiersze[1] || {};
+    const ra = gr.wartosc;
+    const gs = glosuj('sto'), gn = glosuj('nocne');
+    if (gs.wartosc === undefined) sporne.push({ dzien: d, pole: '100%', odczyty: wiersze.map(w => L(w.sto)) });
+    if (gn.wartosc === undefined) sporne.push({ dzien: d, pole: 'nocne', odczyty: wiersze.map(w => L(w.nocne)) });
+    const sa = gs.wartosc === undefined ? null : gs.wartosc;
+    const na = gn.wartosc === undefined ? null : gn.wartosc;
 
     if (ra !== null) {
       if (ra < 0 || ra > 24) problemy.push(`dzien ${d}: RAZEM poza zakresem 0-24 (${ra})`);
@@ -253,24 +386,32 @@ function zszyj(A, B, strona, sha, okres = {}) {
     if (ra !== null && ra > 0 && swieta.includes(d) && (sa === null || sa === 0)) {
       problemy.push(`dzien ${d} to swieto, przepracowano ${ra} h, a kolumna 100% jest pusta - sprawdz, czy nie zapomniano dopisac`);
     }
-    dni.push({ d, razem: ra, kod: a.kod || b.kod || null, sto: sa, nocne: na, uw: L(a.uw), chor: L(a.chor), notatka: a.notatka || null });
+    dni.push({ d, razem: ra, kod: a.kod || b.kod || null, sto: sa, nocne: na,
+               uw: wiekszosc(wiersze.map(w => L(w.uw))).wartosc ?? null,
+               chor: wiekszosc(wiersze.map(w => L(w.chor))).wartosc ?? null,
+               notatka: a.notatka || null });
   }
 
   const sumDni = sumuj(dni.map(x => x.razem));
-  const sA = A.suma || {}, sB = B.suma || {};
-  const wSuma = L(sA.razem);
-  if (L(sB.razem) !== wSuma) sporne.push({ dzien: 'SUMA', pole: 'RAZEM', A: wSuma, B: L(sB.razem) });
-  if (wSuma === null) problemy.push('nie odczytano wiersza SUMA');
+  const sumy = czytajacy.map(x => x.suma || {});
+  const glosSuma = pole => wiekszosc(sumy.map(x => L(x[pole])));
+  const gSuma = glosSuma('razem');
+  const wSuma = gSuma.wartosc === undefined ? null : gSuma.wartosc;
+  if (gSuma.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'RAZEM', odczyty: sumy.map(x => L(x.razem)) });
+  const sA = sumy[0], sB = sumy[1] || {};
+  if (wSuma === null && gSuma.wartosc !== undefined) problemy.push('nie odczytano wiersza SUMA');
+  if (gSuma.wartosc === undefined && sumy.every(x => L(x.razem) === null)) problemy.push('nie odczytano wiersza SUMA');
   else if (Math.abs(sumDni - wSuma) > 0.001) problemy.push(`suma dni (${sumDni}) nie zgadza sie z wierszem SUMA (${wSuma})`);
-  if (L(sA.sto) !== L(sB.sto)) sporne.push({ dzien: 'SUMA', pole: '100%', A: L(sA.sto), B: L(sB.sto) });
-  if (L(sA.nocne) !== L(sB.nocne)) sporne.push({ dzien: 'SUMA', pole: 'nocne', A: L(sA.nocne), B: L(sB.nocne) });
+  const gSto = glosSuma('sto'), gNoc = glosSuma('nocne'), gUw = glosSuma('uw'), gChor = glosSuma('chor');
+  if (gSto.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: '100%', odczyty: sumy.map(x => L(x.sto)) });
+  if (gNoc.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'nocne', odczyty: sumy.map(x => L(x.nocne)) });
 
-  const sto = L(sA.sto) || 0, uw = L(sA.uw) || 0, chor = L(sA.chor) || 0;
+  const sto = (gSto.wartosc ?? 0) || 0, uw = (gUw.wartosc ?? 0) || 0, chor = (gChor.wartosc ?? 0) || 0;
   if (Math.abs(sumuj(dni.map(x => x.sto)) - sto) > 0.001) problemy.push('suma kolumny 100% z dni nie zgadza sie z wierszem SUMA');
 
   // C = RAZEM + godziny w swieto (100%) + platne nieprzepracowane (UW, Chor.)
   const C = wSuma === null ? null : wSuma + sto + uw + chor;
-  const G = L(sA.nocne);
+  const G = gNoc.wartosc ?? null;
 
   if (rok && mies) {
     const norma = wymiarCzasuPracy(rok, mies);
@@ -287,6 +428,7 @@ function zszyj(A, B, strona, sha, okres = {}) {
     ok: problemy.length === 0 && sporne.length === 0,
     nazwisko: String(A.nazwisko || B.nazwisko || '').trim(),
     nazwiskoB: String(B.nazwisko || '').trim(),
+    nazwiskaOdczytane: czytajacy.map(x => (x.nazwisko || '').trim()).filter(Boolean),
     rok, rokDomyslny, miesiac: mies, normaZKarty: L(A.norma),
     C, G, sumaDni: sumDni, wierszSuma: wSuma, sto, uw, chor,
     problemy, sporne, dni,
@@ -326,24 +468,38 @@ async function przetworzStrone(pdfPath, dir, strona, model, dpi, okres) {
   }
   const obrazy = [crops.naglowek, ...crops.lewa, ...crops.prawa].map(b => b.toString('base64'));
   try {
-    // dwa odczyty rownolegle - to ta sama karta, wiec nie ma na co czekac
-    const [oA, oB] = await Promise.all([
-      zapytajModel(obrazy, PROMPT_A, model),
-      zapytajModel(obrazy, PROMPT_B, model),
+    // Dwa niezalezne odczyty, oba PASMAMI: A wierszami, B kolumnami.
+    // Kazde wywolanie obejmuje ~11 dni, nie cala tabele.
+    const [A, B] = await Promise.all([
+      czytajKarte(crops, model, okres.nazwiska, false),
+      czytajKarte(crops, model, okres.nazwiska, true),
     ]);
-    const A = jsonZTekstu(oA.tekst), B = jsonZTekstu(oB.tekst);
-    const wynik = zszyj(A, B, strona, null, okres);
+    let wynik = zszyj(A, B, strona, null, okres);
+    // Trzeci odczyt tylko wtedy, gdy pierwsze dwa sie nie domykaja. Idzie pasmami
+    // (10-11 dni naraz zamiast 31), wiec patrzy uwazniej tam, gdzie tamte gubily
+    // pojedyncze dni albo wiersz SUMA. Potem decyduje wiekszosc z trzech.
+    if (!wynik.ok && (A || B)) {
+      try {
+        // Rozjemca czyta CALA karte naraz - inna ziarnistosc to inne bledy,
+        // wiec jego glos realnie rozstrzyga, a nie powiela pomylki pasm.
+        const oT = await zapytajModel(obrazy, zListaNazwisk(PROMPT_A, okres.nazwiska), model);
+        const T = jsonZTekstu(oT.tekst);
+        if (T) {
+          const poprawiony = zszyj(A, B, strona, null, okres, T);
+          poprawiony.trzeciOdczyt = true;
+          poprawiony.przedTrzecim = { problemy: wynik.problemy, sporne: wynik.sporne };
+          wynik = poprawiony;
+        }
+      } catch (e) {
+        wynik.problemy.push('trzeci odczyt nie doszedl do skutku: ' + e.message);
+      }
+    }
     // Diagnostyka przy nieudanym parsowaniu: bez surowej odpowiedzi i powodu
     // zatrzymania komunikat "nie udalo sie sparsowac" nic nie mowi - nie wiadomo,
     // czy odpowiedz zostala ucieta na limicie, czy model napisal cos innego.
     if (!A || !B) {
-      wynik.diagnostyka = {
-        A: { powodStopu: oA.powodStopu, tokeny: oA.zuzyte, sparsowane: !!A, poczatek: String(oA.tekst || '').slice(0, 200), koniec: String(oA.tekst || '').slice(-120) },
-        B: { powodStopu: oB.powodStopu, tokeny: oB.zuzyte, sparsowane: !!B, poczatek: String(oB.tekst || '').slice(0, 200), koniec: String(oB.tekst || '').slice(-120) },
-      };
-      if (oA.powodStopu === 'max_tokens' || oB.powodStopu === 'max_tokens') {
-        wynik.problemy.push('odpowiedz modelu zostala UCIETA na limicie max_tokens - podnies limit');
-      }
+      wynik.diagnostyka = { A: { sparsowane: !!A }, B: { sparsowane: !!B },
+        uwaga: 'ktorys z odczytow pasmami nie zwrocil poprawnego JSON - patrz logi serwera' };
     }
     return wynik;
   } catch (e) {
@@ -385,7 +541,8 @@ async function odczytajTeczke(pdf, opcje = {}) {
     const zadania = [];
     const dpi = Math.max(150, Math.min(400, Number(opcje.dpi) || 300));
     // okres mozna narzucic z zewnatrz (np. z tematu maila "karty pracy czerwiec 2026")
-    const okres = { rok: Number(opcje.rok) || null, miesiac: Number(opcje.miesiac) || null };
+    const okres = { rok: Number(opcje.rok) || null, miesiac: Number(opcje.miesiac) || null,
+                    nazwiska: Array.isArray(opcje.nazwiska) ? opcje.nazwiska : null };
     for (const p of wybrane) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi, okres));
     const karty = await pula(zadania, rownolegle);
 
@@ -423,9 +580,9 @@ function router(express, token) {
   r.post('/karty-pracy/odczytaj', express.json({ limit: '40mb' }), async (req, res) => {
     if (token && req.get('x-token') !== String(token).trim()) return res.status(401).json({ blad: 'zly token' });
     try {
-      const { data, rownolegle, model, dpi, strony, rok, miesiac } = req.body || {};
+      const { data, rownolegle, model, dpi, strony, rok, miesiac, nazwiska } = req.body || {};
       if (!data) return res.status(400).json({ blad: 'brak pola data' });
-      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi, strony, rok, miesiac }));
+      res.json(await odczytajTeczke(Buffer.from(data, 'base64'), { rownolegle, model, dpi, strony, rok, miesiac, nazwiska }));
     } catch (e) {
       res.status(500).json({ blad: e.message });
     }
