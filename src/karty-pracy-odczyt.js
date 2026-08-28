@@ -220,10 +220,22 @@ Wiekszosc rubryk bywa pusta - to normalne, wpisz wtedy null.
 UWAGA
 - Nie mylic z wierszem dnia 31, ktory jest NAD wierszem SUMA.
 - Ponizej tabeli jest drukowana legenda i odreczna parafka przelozonego - to NIE sa liczby.
+- PRZECINEK DZIESIETNY. Odreczne "6,5" bywa mylone z "60" albo "66" - przecinek
+  to NIE jest cyfra. Jesli miedzy cyframi widzisz mala kreske, kropke lub ogonek
+  przy dole linii, to separator dziesietny. Godziny sa wielokrotnosciami 0.5,
+  wiec po separatorze moze stac WYLACZNIE 5 albo 0.
+- WIDELKI: RAZEM w calym miesiacu to zwykle 100-250. Kolumny 100%, nocne, UW i Chor.
+  sa zawsze MNIEJSZE albo rowne RAZEM - czesto to pojedyncze godziny, np. 6.5 albo 16.
 - Przecinek dziesietny zapisuj KROPKA. Czego nie widzisz -> null. NIGDY nie zgaduj.
 
 ZWROC WYLACZNIE CZYSTY JSON:
 {"razem":152,"normalne":null,"p50":null,"sto":null,"nocne":null,"uw":16,"chor":null}`;
+
+const PROMPT_SUMA_B = `Zanim odczytasz wartosci, USTAL POLOZENIE KOLUMN: znajdz napis
+"SUMA" i licz rubryki w prawo od niego. Pierwsza to RAZEM, szosta to UW. Dopiero
+potem odczytaj liczby, kazda osobno, patrzac tylko na jedna rubryke naraz.
+
+`;
 
 const PROMPT_NAGLOWEK = `Dostajesz naglowek JEDNEJ karty "KARTA EWIDENCJI CZASU PRACY".
 Odczytaj z niego tylko cztery rzeczy. Rubryka "Miesiac/rok" na tym formularzu
@@ -285,9 +297,10 @@ async function czytajPasmami(crops, model, nazwiska, wariantB = false) {
   return { nazwisko: null, miesiac: null, rok: null, norma: null, dni, suma: suma || {} };
 }
 
-async function czytajSume(crops, model) {
+async function czytajSume(crops, model, wariantB = false) {
   if (!crops.suma) return null;
-  const o = await zapytajModel([crops.suma.toString('base64')], PROMPT_SUMA, model);
+  const o = await zapytajModel([crops.suma.toString('base64')],
+    (wariantB ? PROMPT_SUMA_B : '') + PROMPT_SUMA, model);
   const j = jsonZTekstu(o.tekst);
   return j ? { razem: j.razem, sto: j.sto, nocne: j.nocne, uw: j.uw, chor: j.chor } : null;
 }
@@ -311,7 +324,7 @@ async function czytajKarte(crops, model, nazwiska, wariantB) {
   const [nag, tabela, suma] = await Promise.all([
     czytajNaglowek(crops, model, nazwiska),
     czytajPasmami(crops, model, nazwiska, wariantB),
-    czytajSume(crops, model),
+    czytajSume(crops, model, wariantB),
   ]);
   if (!tabela) return null;
   return {
@@ -458,7 +471,16 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
   if (gChor.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'Chor.', odczyty: sumy.map(x => L(x.chor)) });
 
   const sto = (gSto.wartosc ?? 0) || 0, uw = (gUw.wartosc ?? 0) || 0, chor = (gChor.wartosc ?? 0) || 0;
-  if (Math.abs(sumuj(dni.map(x => x.sto)) - sto) > 0.001) problemy.push('suma kolumny 100% z dni nie zgadza sie z wierszem SUMA');
+  // Kazda kolumna dodatkow ma dwa niezalezne zrodla: wpisy dzienne i wiersz SUMA.
+  // Rozjazd znaczy, ze ktores z nich jest zle odczytane - wtedy nie zgadujemy.
+  for (const [pole, wTotal] of [['sto', sto], ['uw', uw], ['chor', chor]]) {
+    const zDni = sumuj(dni.map(x => x[pole]));
+    if (Math.abs(zDni - wTotal) > 0.001) {
+      problemy.push('kolumna ' + (pole === 'sto' ? '100%' : pole === 'uw' ? 'UW' : 'Chor.') +
+        ': suma z dni (' + zDni + ') nie zgadza sie z wierszem SUMA (' + wTotal + ')');
+    }
+  }
+  if (wSuma !== null && sto > wSuma) problemy.push('godziny 100% (' + sto + ') sa wieksze niz cale RAZEM (' + wSuma + ') - to niemozliwe');
 
   // C = RAZEM + godziny w swieto (100%) + platne nieprzepracowane (UW, Chor.)
   const C = wSuma === null ? null : wSuma + sto + uw + chor;
