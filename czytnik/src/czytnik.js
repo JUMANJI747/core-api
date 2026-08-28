@@ -24,6 +24,10 @@ const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO } = requi
 const { zszyjIKontroluj } = require('./walidacja');
 const { wymiarCzasuPracy } = require('./kalendarz');
 
+// Cennik claude-opus-5 (USD za 1M tokenów, stan 2026-06). Przy zmianie modelu
+// domyślnego zaktualizować — koszt w odpowiedzi ma być prawdziwy, nie ozdobny.
+const CENY_USD_MTOK = { we: 5, wy: 25 };
+
 async function przetworzStrone(pdfPath, dir, strona, opcje) {
   const t0 = Date.now();
   let obrazy, sha;
@@ -109,11 +113,21 @@ async function odczytajTeczke(pdf, opcje = {}) {
     const rok = lata.length === 1 ? lata[0] : null;
     const miesiac = mies.length === 1 ? mies[0] : null;
 
+    // Podliczenie kosztu przebiegu z realnego zużycia (user chce widzieć,
+    // ile kosztuje miesiąc — każda odpowiedź niesie tokeny i USD).
+    let tokWe = 0, tokWy = 0;
+    for (const k of karty) {
+      const t = k.slad && k.slad.tokeny;
+      if (t) for (const x of Object.values(t)) if (x) { tokWe += x.we || 0; tokWy += x.wy || 0; }
+    }
+
     return {
       silnik: 'czytnik-p0', stron, przetworzone: wybrane, rok, miesiac,
       norma: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) : null,
       normaCzesc: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) * 0.75 : null,
       kartOk: karty.filter(k => k.ok).length,
+      tokeny: { we: tokWe, wy: tokWy },
+      kosztUSD: +(tokWe / 1e6 * CENY_USD_MTOK.we + tokWy / 1e6 * CENY_USD_MTOK.wy).toFixed(3),
       problemyOgolne,
       // "dni" zostaja po stronie serwera w wersji z baza; na razie zwracamy je,
       // bo pelnia role sladu (eval porownuje per pole)

@@ -34,6 +34,7 @@ snapshot-backup tabel Google Sheets, eval-runner na korpusie.
 - `POST /czytnik/odczytaj`  body: `{data: base64 pdf, strony?, rok?, miesiac?, nazwiska?, rownolegle?, model?, dpi?, async?}`
   - bez `async`: wynik w odpowiedzi (małe porcje stron),
   - z `async: true`: `202 {przebiegId}` → `GET /czytnik/przebieg/:id` (może liczyć się całą noc),
+Każda odpowiedź niesie `tokeny: {we, wy}` i `kosztUSD` (realne zużycie przebiegu).
 - `POST /karty-pracy/odczytaj` (tylko serwis samodzielny) — alias zgodny z kontraktem
   core-api: przełączenie n8n = zmiana samego URL-a.
 
