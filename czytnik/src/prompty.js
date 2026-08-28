@@ -9,15 +9,19 @@
  * Dzięki temu audyt widzi, co model PRZECZYTAŁ, a co WYWNIOSKOWAŁ.
  */
 
-// null-owalne typy w schemacie: structured outputs wymagają required+additionalProperties:false
-const S = t => ({ type: [t, 'null'] });
+// ZERO UNII TYPOW: structured outputs dopuszczaja najwyzej 16 pol z unia
+// (nasz schemat mial 32 i API odrzucalo zadanie bledem 400). Dlatego KAZDE pole
+// jest zwyklym stringiem z konwencja: "" = pusta rubryka / brak wartosci,
+// "?" = nieczytelne, liczby jako string z kropka ("9.5"). Parsowanie robi
+// walidacja.js (L() zamienia ""/"?" na null).
+const S = () => ({ type: 'string' });
 
 const DZIEN_ZAPIS = {
   type: 'object',
   properties: {
-    od: S('string'), do: S('string'), razem: S('string'),
-    sto: S('string'), nocne: S('string'), uw: S('string'), chor: S('string'),
-    kod: S('string'), notatka: S('string'),
+    od: S(), do: S(), razem: S(),
+    sto: S(), nocne: S(), uw: S(), chor: S(),
+    kod: S(), notatka: S(),
   },
   required: ['od', 'do', 'razem', 'sto', 'nocne', 'uw', 'chor', 'kod', 'notatka'],
   additionalProperties: false,
@@ -26,8 +30,8 @@ const DZIEN_ZAPIS = {
 const DZIEN_WNIOSEK = {
   type: 'object',
   properties: {
-    razem: S('number'), sto: S('number'), nocne: S('number'),
-    uw: S('number'), chor: S('number'), kod: S('string'),
+    razem: S(), sto: S(), nocne: S(),
+    uw: S(), chor: S(), kod: S(),
   },
   required: ['razem', 'sto', 'nocne', 'uw', 'chor', 'kod'],
   additionalProperties: false,
@@ -35,7 +39,7 @@ const DZIEN_WNIOSEK = {
 
 const SUMA_POLA = {
   type: 'object',
-  properties: { razem: S('number'), sto: S('number'), nocne: S('number'), uw: S('number'), chor: S('number') },
+  properties: { razem: S(), sto: S(), nocne: S(), uw: S(), chor: S() },
   required: ['razem', 'sto', 'nocne', 'uw', 'chor'],
   additionalProperties: false,
 };
@@ -46,10 +50,10 @@ const SCHEMAT_KARTY = {
     naglowek: {
       type: 'object',
       properties: {
-        nazwisko: S('string'),
-        miesiac: S('integer'),
-        rok: S('integer'),
-        norma: S('number'),
+        nazwisko: S(),
+        miesiac: S(),
+        rok: S(),
+        norma: S(),
       },
       required: ['nazwisko', 'miesiac', 'rok', 'norma'],
       additionalProperties: false,
@@ -65,7 +69,7 @@ const SCHEMAT_KARTY = {
           zapis: DZIEN_ZAPIS,
           wniosek: DZIEN_WNIOSEK,
           pewnosc: { type: 'string', enum: ['wysoka', 'niska'] },
-          uwaga: S('string'),
+          uwaga: S(),
         },
         required: ['d', 'zapis', 'wniosek', 'pewnosc', 'uwaga'],
         additionalProperties: false,
@@ -76,13 +80,13 @@ const SCHEMAT_KARTY = {
       properties: {
         zapis: {
           type: 'object',
-          properties: { razem: S('string'), sto: S('string'), nocne: S('string'), uw: S('string'), chor: S('string') },
+          properties: { razem: S(), sto: S(), nocne: S(), uw: S(), chor: S() },
           required: ['razem', 'sto', 'nocne', 'uw', 'chor'],
           additionalProperties: false,
         },
         wniosek: SUMA_POLA,
         pewnosc: { type: 'string', enum: ['wysoka', 'niska'] },
-        uwaga: S('string'),
+        uwaga: S(),
       },
       required: ['zapis', 'wniosek', 'pewnosc', 'uwaga'],
       additionalProperties: false,
@@ -93,7 +97,7 @@ const SCHEMAT_KARTY = {
         type: 'object',
         properties: {
           miejsce: { type: 'string' },
-          zapis: S('string'),
+          zapis: S(),
           wniosek: { type: 'string' },
           uzasadnienie: { type: 'string' },
         },
@@ -109,7 +113,7 @@ const SCHEMAT_KARTY = {
 const SCHEMAT_NAZWISKO = {
   type: 'object',
   properties: {
-    zapis: S('string'),
+    zapis: S(),
     pewnosc: { type: 'string', enum: ['wysoka', 'niska'] },
   },
   required: ['zapis', 'pewnosc'],
@@ -125,25 +129,29 @@ Obrazy 3 i 4 zachodzą na siebie (dzień 16 jest w obu) i są ostrzejsze niż ca
 
 Kolumny tabeli od lewej: [dzień miesiąca] [Godz. rozpocz. pracy] [podpis] [Godz. zakończ. pracy] [podpis] [Ilość godzin RAZEM] [normalne] [50%] [100%] [nocne] [UW] [Chor.].
 
+KONWENCJA WARTOŚCI (wszystkie pola są stringami):
+- pusta rubryka -> "" (pusty string); nieczytelna -> "?". Pusta i nieczytelna to RÓŻNE rzeczy.
+- liczby w polach "wniosek" zapisuj jako string z KROPKĄ dziesiętną: "9", "6.5", "175.5".
+
 TWOJE ZADANIE — dwa kanały dla każdego pola:
-- "zapis" = WIERNA TRANSKRYPCJA tego, co fizycznie napisano: "6,5", "7/17", "W", pusta rubryka -> "" (pusty string), nieczytelne -> null. Pusta i nieczytelna to RÓŻNE rzeczy. Zapisu NIE WOLNO poprawiać ani uzupełniać.
-- "wniosek" = wartość liczbowa po interpretacji i sprawdzeniu krzyżowym. Karta jest NADMIAROWA: godzina rozpoczęcia i zakończenia ↔ RAZEM ↔ sumy narastające ↔ wiersz SUMA ↔ norma z nagłówka. UŻYWAJ tej nadmiarowości: niewyraźną cyfrę wolno rozstrzygnąć arytmetyką (np. RAZEM wygląda jak 9 lub 4, a 15:00−7:00=8 z przerwą daje 9 -> wniosek 9). Pusta rubryka -> wniosek null.
+- "zapis" = WIERNA TRANSKRYPCJA tego, co fizycznie napisano: "6,5", "7/17", "W". Zapisu NIE WOLNO poprawiać ani uzupełniać.
+- "wniosek" = wartość po interpretacji i sprawdzeniu krzyżowym. Karta jest NADMIAROWA: godzina rozpoczęcia i zakończenia ↔ RAZEM ↔ sumy narastające ↔ wiersz SUMA ↔ norma z nagłówka. UŻYWAJ tej nadmiarowości: niewyraźną cyfrę wolno rozstrzygnąć arytmetyką (np. RAZEM wygląda jak 9 lub 4, a 15:00−7:00=8 z przerwą daje 9 -> wniosek "9"). Pusta rubryka -> wniosek "".
 - Gdy wniosek różni się od literalnego zapisu albo pewność jest niska: pewnosc="niska" i OBOWIĄZKOWA "uwaga" (co widzisz, co wybrałeś i dlaczego) + wpis w "rozbieznosci". Konflikt ZGŁOŚ — nie rozstrzygaj po cichu.
 
 KONWENCJE TEGO FORMULARZA (zweryfikowane na prawdziwych kartach):
-- Zamiast godziny rozpoczęcia bywa litera: W (wolne), U (urlop), C (chorobowe) albo pozioma kreska. Wtedy wniosek.razem=null, litera w "kod". Kod i godziny naraz to błąd — zgłoś w uwadze.
+- Zamiast godziny rozpoczęcia bywa litera: W (wolne), U (urlop), C (chorobowe) albo pozioma kreska. Wtedy wniosek.razem="", litera w "kod". Kod i godziny naraz to błąd — zgłoś w uwadze.
 - Zapis "7/17" w rozpoczęciu, "15/19" w zakończeniu, "8/2" w RAZEM = DWIE zmiany tego samego dnia; wniosek.razem = suma obu (8/2 -> 10).
 - Kolumna "normalne" bywa brudnopisem: narastające sumy pośrednie (np. 127,5 przy dniu 22). To NIE są godziny dnia — do "zapis.notatka", nie do razem.
 - Godziny są wielokrotnościami 0,5. Odręczne "6,5" bywa mylone z "65" — przecinek to nie cyfra. W "wniosek" przecinek dziesiętny zapisuj kropką (6.5).
-- Ostatni wiersz tabeli (bez numeru dnia) to SUMA — podsumowanie miesiąca. Rubryki SUMA bywają puste (to normalne): zapis "" i wniosek null.
+- Ostatni wiersz tabeli (bez numeru dnia) to SUMA — podsumowanie miesiąca. Rubryki SUMA bywają puste (to normalne): zapis "" i wniosek "".
 - Kolumny 100%, nocne, UW, Chor. są zwykle puste; wypełnione wartości są MNIEJSZE lub równe RAZEM.
 - Parafki i podpisy to NIE są liczby. Na krawędziach wycinków bywa ścinek sąsiedniego wiersza — ignoruj.
-- Rubryka "Miesiąc/rok" zawiera zwykle SAM miesiąc (np. CZERWIEC) — wtedy rok=null, to normalne.
-- Nazwisko przepisz dokładnie tak, jak napisane (zapis wierny; jeśli nieczytelne -> null).
+- Rubryka "Miesiąc/rok" zawiera zwykle SAM miesiąc (np. CZERWIEC) — wtedy rok="", to normalne; miesiąc podaj jako liczbę ("6").
+- Nazwisko przepisz dokładnie tak, jak napisane (zapis wierny; jeśli nieczytelne -> "?").
 
 Tablica "dni" ma dokładnie tyle wpisów, ile dni ma miesiąc, po kolei od d=1. Dzień 16 (widoczny na obu połówkach) odczytaj raz, porównując oba obrazy.`;
 
 const PROMPT_NAZWISKO = `Na obrazie jest nagłówek karty ewidencji czasu pracy. Odczytaj WYŁĄCZNIE odręcznie wpisane imię i nazwisko pracownika (rubryka "Nazwisko i imię" / "Imię i nazwisko").
-Przepisz je dokładnie tak, jak jest napisane — bez poprawiania, bez zgadywania. Jeśli nie da się odczytać pewnie, daj zapis=null i pewnosc="niska". Podpisy i parafki to nie jest nazwisko.`;
+Przepisz je dokładnie tak, jak jest napisane — bez poprawiania, bez zgadywania. Jeśli nie da się odczytać pewnie, daj zapis="?" i pewnosc="niska". Podpisy i parafki to nie jest nazwisko.`;
 
 module.exports = { SCHEMAT_KARTY, SCHEMAT_NAZWISKO, PROMPT_KARTA, PROMPT_NAZWISKO };

@@ -107,16 +107,18 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null) {
       problemy: ['glowny odczyt nie zwrocil kompletnych danych'], ostrzezenia, sporne };
   }
 
-  /* okres */
-  const mies = okres.miesiac || p0.naglowek.miesiac || null;
-  let rok = okres.rok || p0.naglowek.rok || null;
+  /* okres — naglowek niesie stringi (schemat bez unii typow), wiec koercja na liczby */
+  const mies = Number(okres.miesiac || p0.naglowek.miesiac) || null;
+  let rok = Number(okres.rok || p0.naglowek.rok) || null;
   let rokDomyslny = false;
   if (!mies) problemy.push('nie odczytano miesiaca z naglowka');
   if (!rok && mies) { rok = domyslnyRok(mies); rokDomyslny = true; }
 
-  /* nazwisko: dwa zdekorelowane odczyty -> ta sama pozycja listy */
-  const n1 = (p0.naglowek.nazwisko || '').trim() || null;
-  const n2 = (nazwisko2 && nazwisko2.zapis || '').trim() || null;
+  /* nazwisko: dwa zdekorelowane odczyty -> ta sama pozycja listy.
+     "?" to konwencja "nieczytelne" (schemat bez null-i) — traktowane jak brak. */
+  const czysc = v => { const t = String(v || '').trim(); return t && t !== '?' ? t : null; };
+  const n1 = czysc(p0.naglowek.nazwisko);
+  const n2 = czysc(nazwisko2 && nazwisko2.zapis);
   const lista = Array.isArray(okres.nazwiska) && okres.nazwiska.length ? okres.nazwiska : null;
   let nazwisko = '', nazwiskoOk = false;
   if (!n1 && !n2) {
