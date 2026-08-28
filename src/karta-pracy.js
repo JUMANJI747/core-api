@@ -182,6 +182,18 @@ async function cropCard(png) {
 
   // naglowek to duzy nadrukowany tekst - 1400 px w zupelnosci wystarcza,
   // a pelna szerokosc strony i tak zostalaby przeskalowana po stronie modelu
+  // Wiersz SUMA dostaje wlasny wycinek: to jeden wiersz o innej strukturze niz dni,
+  // a doklejony na koncu trzeciego pasma byl czytany najgorzej z calej karty.
+  // Bierzemy go razem z wierszem 31 dla kontekstu i powiekszamy - jest maly.
+  const sumaTop = Math.max(0, g.y(30) - pad);
+  const sumaH = Math.min(g.H - sumaTop, g.y(32) - sumaTop + Math.round(g.rowH * 0.25));
+  const suma = await sharp(png)
+    .extract({ left: Math.max(0, g.left - 4), top: sumaTop,
+               width: Math.min(g.W - Math.max(0, g.left - 4), g.x(FR.chorEnd) + 8 - Math.max(0, g.left - 4)),
+               height: sumaH })
+    .resize({ width: 2200, withoutEnlargement: false })
+    .normalise().jpeg({ quality: JAKOSC, mozjpeg: true }).toBuffer();
+
   const naglowek = await sharp(png)
     .extract({ left: 0, top: 0, width: g.W, height: g.top })
     .resize({ width: Math.min(1400, g.W), withoutEnlargement: true })
@@ -191,7 +203,7 @@ async function cropCard(png) {
     .extract({ left: 0, top: podTop, width: g.W, height: g.H - podTop })
     .normalise().jpeg({ quality: JAKOSC, mozjpeg: true }).toBuffer();
 
-  return { naglowek, lewa, prawa, pod, meta: { rowH: +g.rowH.toFixed(1), left: g.left, right: g.right } };
+  return { naglowek, lewa, prawa, suma, pod, meta: { rowH: +g.rowH.toFixed(1), left: g.left, right: g.right } };
 }
 
 /**
@@ -218,6 +230,7 @@ async function przygotujKarty(pdf, pages, tylkoInfo) {
           page: p,
           sha: crypto.createHash('sha1').update(png).digest('hex').slice(0, 12),
           naglowek: c.naglowek.toString('base64'),
+          suma: c.suma.toString('base64'),
           lewa: c.lewa.map(b => b.toString('base64')),
           prawa: c.prawa.map(b => b.toString('base64')),
           pod: c.pod.toString('base64'),
@@ -266,6 +279,7 @@ if (require.main === module) {
         await fs.writeFile(`${outDir}/s${s.page}_P${i + 1}.jpg`, Buffer.from(s.prawa[i], 'base64'));
       }
       await fs.writeFile(`${outDir}/s${s.page}_naglowek.jpg`, Buffer.from(s.naglowek, 'base64'));
+      await fs.writeFile(`${outDir}/s${s.page}_suma.jpg`, Buffer.from(s.suma, 'base64'));
       await fs.writeFile(`${outDir}/s${s.page}_pod.jpg`, Buffer.from(s.pod, 'base64'));
       console.log(`strona ${s.page}: ok, wiersz ${s.meta.rowH} px`);
     }

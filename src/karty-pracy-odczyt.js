@@ -31,7 +31,7 @@ const run = promisify(execFile);
 const API = 'https://api.anthropic.com/v1/messages';
 const MODEL_DOM = 'claude-opus-5';
 const MAX_TOKENS = 8000;   // 31 dni JSON-a to ~1400 tokenow, ale model bywa gadatliwy
-const ROWNOLEGLE_DOM = 4;
+const ROWNOLEGLE_DOM = 2;   // 8-9 wywolan na karte, wiec 2 strony naraz to juz ~18 zapytan
 
 /* ------------------------------------------------------------------ prompty */
 
@@ -204,6 +204,27 @@ async function zapytajModel(obrazy, prompt, model, proby = 3) {
   throw ostatni || new Error('nieznany blad wywolania modelu');
 }
 
+const PROMPT_SUMA = `Dostajesz wycinek z DOLU karty "KARTA EWIDENCJI CZASU PRACY":
+ostatni wiersz dnia (numer 31) oraz pod nim wiersz podsumowania z napisem SUMA.
+
+Interesuje Cie WYLACZNIE wiersz SUMA. Kolumny w nim, liczac od napisu "SUMA" w prawo:
+  1. Ilosc godzin RAZEM
+  2. normalne
+  3. 50%
+  4. 100%
+  5. nocne
+  6. UW   (urlop wypoczynkowy)
+  7. Chor. (chorobowe)
+Wiekszosc rubryk bywa pusta - to normalne, wpisz wtedy null.
+
+UWAGA
+- Nie mylic z wierszem dnia 31, ktory jest NAD wierszem SUMA.
+- Ponizej tabeli jest drukowana legenda i odreczna parafka przelozonego - to NIE sa liczby.
+- Przecinek dziesietny zapisuj KROPKA. Czego nie widzisz -> null. NIGDY nie zgaduj.
+
+ZWROC WYLACZNIE CZYSTY JSON:
+{"razem":152,"normalne":null,"p50":null,"sto":null,"nocne":null,"uw":16,"chor":null}`;
+
 const PROMPT_NAGLOWEK = `Dostajesz naglowek JEDNEJ karty "KARTA EWIDENCJI CZASU PRACY".
 Odczytaj z niego tylko cztery rzeczy. Rubryka "Miesiac/rok" na tym formularzu
 zawiera zwykle SAM MIESIAC, bez roku - wtedy rok zwroc jako null, to normalne.
@@ -264,6 +285,13 @@ async function czytajPasmami(crops, model, nazwiska, wariantB = false) {
   return { nazwisko: null, miesiac: null, rok: null, norma: null, dni, suma: suma || {} };
 }
 
+async function czytajSume(crops, model) {
+  if (!crops.suma) return null;
+  const o = await zapytajModel([crops.suma.toString('base64')], PROMPT_SUMA, model);
+  const j = jsonZTekstu(o.tekst);
+  return j ? { razem: j.razem, sto: j.sto, nocne: j.nocne, uw: j.uw, chor: j.chor } : null;
+}
+
 async function czytajNaglowek(crops, model, nazwiska) {
   const o = await zapytajModel([crops.naglowek.toString('base64')],
     zListaNazwisk(PROMPT_NAGLOWEK, nazwiska), model);
@@ -277,9 +305,13 @@ async function czytajNaglowek(crops, model, nazwiska) {
  * w przebiegach na prawdziwych kartach.
  */
 async function czytajKarte(crops, model, nazwiska, wariantB) {
-  const [nag, tabela] = await Promise.all([
+  // Trzy zadania o roznym charakterze, kazde osobno: naglowek to drukowany tekst,
+  // pasma to kolumna liczb, wiersz SUMA to jeden wiersz o innej strukturze niz dni.
+  // Doklejony do konca trzeciego pasma byl czytany najgorzej z calej karty.
+  const [nag, tabela, suma] = await Promise.all([
     czytajNaglowek(crops, model, nazwiska),
     czytajPasmami(crops, model, nazwiska, wariantB),
+    czytajSume(crops, model),
   ]);
   if (!tabela) return null;
   return {
@@ -288,7 +320,7 @@ async function czytajKarte(crops, model, nazwiska, wariantB) {
     rok: nag.rok || null,
     norma: nag.norma || null,
     dni: tabela.dni || [],
-    suma: tabela.suma || {},
+    suma: suma || tabela.suma || {},   // dedykowany odczyt ma pierwszenstwo
   };
 }
 
@@ -326,16 +358,31 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
     };
   }
 
-  // Nazwisko: dwa odczyty potrafia sie ZGODNIE pomylic (Wojcik -> Hajduk), wiec
-  // sama zgodnosc nic nie gwarantuje. Prawdziwa kontrola to przynaleznosc do listy.
+  // NAZWISKO. Trzy niezalezne zabezpieczenia, bo wpisanie godzin nie tej osobie
+  // jest najgorszym mozliwym bledem tego systemu:
+  //  1) glosowanie - jeden czytajacy nie przegrywa z dwoma pozostalymi
+  //  2) brak odczytu BLOKUJE karte (prompt pozwala zwrocic null, wiec to realna sciezka)
+  //  3) przynaleznosc do listy pracownikow
+  const klucz = t => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().replace(/\u0141/g, 'L').replace(/[^A-Z ]+/g, ' ')
+    .trim().split(/\s+/).filter(Boolean).sort().join(' ');
   const nazwiskaCzyt = [A, B, T].filter(Boolean).map(x => (x.nazwisko || '').trim()).filter(Boolean);
-  if (Array.isArray(okres.nazwiska) && okres.nazwiska.length && nazwiskaCzyt.length) {
-    const klucz = t => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .toUpperCase().replace(/\u0141/g, 'L').replace(/[^A-Z ]+/g, ' ')
-      .trim().split(/\s+/).filter(Boolean).sort().join(' ');
-    const lista = new Set(okres.nazwiska.map(klucz));
-    const obce = [...new Set(nazwiskaCzyt.filter(n => !lista.has(klucz(n))))];
-    if (obce.length) problemy.push('nazwisko spoza listy pracownikow: ' + obce.join(' / ') + ' - nie wpisuje godzin nie tej osobie');
+  let nazwiskoWybrane = '';
+  if (!nazwiskaCzyt.length) {
+    problemy.push('nie odczytano nazwiska z karty - nie wiem, komu przypisac godziny');
+  } else {
+    const gNazw = wiekszosc(nazwiskaCzyt.map(klucz));
+    if (gNazw.wartosc === undefined) {
+      sporne.push({ dzien: 'NAGLOWEK', pole: 'nazwisko', odczyty: [...new Set(nazwiskaCzyt)] });
+      problemy.push('odczyty roznia sie nazwiskiem: ' + [...new Set(nazwiskaCzyt)].join(' / '));
+    } else {
+      nazwiskoWybrane = nazwiskaCzyt.find(n => klucz(n) === gNazw.wartosc) || '';
+    }
+    if (Array.isArray(okres.nazwiska) && okres.nazwiska.length) {
+      const lista = new Set(okres.nazwiska.map(klucz));
+      const obce = [...new Set(nazwiskaCzyt.filter(n => !lista.has(klucz(n))))];
+      if (obce.length) problemy.push('nazwisko spoza listy pracownikow: ' + obce.join(' / ') + ' - nie wpisuje godzin nie tej osobie');
+    }
   }
   const mies = okres.miesiac || A.miesiac || B.miesiac;
   let rok = okres.rok || A.rok || B.rok;
@@ -405,6 +452,10 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
   const gSto = glosSuma('sto'), gNoc = glosSuma('nocne'), gUw = glosSuma('uw'), gChor = glosSuma('chor');
   if (gSto.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: '100%', odczyty: sumy.map(x => L(x.sto)) });
   if (gNoc.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'nocne', odczyty: sumy.map(x => L(x.nocne)) });
+  // Bez tych dwoch linii rozjazd w UW/Chor. dawal po cichu zero i ZANIZAL C,
+  // a karta wychodzila jako czysta. Najgrozniejszy rodzaj bledu: wiarygodna liczba.
+  if (gUw.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'UW', odczyty: sumy.map(x => L(x.uw)) });
+  if (gChor.wartosc === undefined) sporne.push({ dzien: 'SUMA', pole: 'Chor.', odczyty: sumy.map(x => L(x.chor)) });
 
   const sto = (gSto.wartosc ?? 0) || 0, uw = (gUw.wartosc ?? 0) || 0, chor = (gChor.wartosc ?? 0) || 0;
   if (Math.abs(sumuj(dni.map(x => x.sto)) - sto) > 0.001) problemy.push('suma kolumny 100% z dni nie zgadza sie z wierszem SUMA');
@@ -426,7 +477,7 @@ function zszyj(A, B, strona, sha, okres = {}, T = null) {
   return {
     strona, sha,
     ok: problemy.length === 0 && sporne.length === 0,
-    nazwisko: String(A.nazwisko || B.nazwisko || '').trim(),
+    nazwisko: nazwiskoWybrane,
     nazwiskoB: String(B.nazwisko || '').trim(),
     nazwiskaOdczytane: czytajacy.map(x => (x.nazwisko || '').trim()).filter(Boolean),
     rok, rokDomyslny, miesiac: mies, normaZKarty: L(A.norma),
@@ -543,6 +594,15 @@ async function odczytajTeczke(pdf, opcje = {}) {
     // okres mozna narzucic z zewnatrz (np. z tematu maila "karty pracy czerwiec 2026")
     const okres = { rok: Number(opcje.rok) || null, miesiac: Number(opcje.miesiac) || null,
                     nazwiska: Array.isArray(opcje.nazwiska) ? opcje.nazwiska : null };
+    // Lista nazwisk idzie do promptu, wiec zepsute kodowanie po stronie klienta
+    // (PowerShell 5.1 wysyla body w latin1) zatruwa caly odczyt, a nie tylko
+    // dopasowanie. Lepiej krzyknac, niz po cichu czytac gorzej.
+    const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));
+    if (zepsute.length) {
+      throw new Error('lista nazwisk dotarla z uszkodzonym kodowaniem (' + zepsute.length +
+        ' z ' + okres.nazwiska.length + ' pozycji, np. "' + zepsute[0] +
+        '") - wyslij body jako UTF-8, inaczej model dostanie bezsensowna liste');
+    }
     for (const p of wybrane) zadania.push(() => przetworzStrone(pdfPath, dir, p, model, dpi, okres));
     const karty = await pula(zadania, rownolegle);
 
