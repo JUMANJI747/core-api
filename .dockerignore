@@ -1,3 +1,9 @@
 node_modules
 .git
 .claude
+# Korpus kart (42 MB danych osobowych do ewaluacji) i artefakty czytnika nie
+# wchodzą do obrazu core-api; tymczasowy montaż /czytnik/* używa czytnik/src
+# oraz node_modules core-api (SDK jest w dependencies core-api).
+czytnik/korpus
+czytnik/node_modules
+out

@@ -48,6 +48,20 @@ try {
   console.error('[startup] trasy karta-pracy wyłączone (sharp?):', e.message);
 }
 
+// ============ CZYTNIK — TYMCZASOWY MONTAŻ (pomiary) ============
+// Nowy silnik odczytu kart (czytnik/) docelowo jedzie jako OSOBNY serwis Railway
+// (root directory: czytnik). Do czasu jego powstania montujemy go tu pod
+// /czytnik/*, bo tylko produkcja ma ANTHROPIC_API_KEY — inaczej nie da się
+// zmierzyć nowego silnika na korpusie. Ta sama ochrona try/catch co wyżej:
+// błąd modułu (sharp/SDK) zabija wyłącznie te trasy, nie CRM.
+// Po uruchomieniu osobnego serwisu: usunąć ten blok + zależność @anthropic-ai/sdk.
+try {
+  const czytnikToken = (process.env.PREPROCESS_TOKEN || '').trim() || undefined;
+  app.use('/', require('../czytnik/src/router').router(express, czytnikToken));
+} catch (e) {
+  console.error('[startup] tymczasowe trasy /czytnik/* wyłączone:', e.message);
+}
+
 // Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
 // (base64 zwieksza rozmiar o ~33%). UI dopuszcza ~20 MB realnych plikow ->
 // po zakodowaniu ~27 MB, wiec backend musi przyjac wiekszy body. Wczesniej '5mb'

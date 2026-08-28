@@ -30,7 +30,12 @@ const run = promisify(execFile);
 
 const API = 'https://api.anthropic.com/v1/messages';
 const MODEL_DOM = 'claude-opus-5';
-const MAX_TOKENS = 8000;   // 31 dni JSON-a to ~1400 tokenow, ale model bywa gadatliwy
+// 8000 -> 16000: na opus-5 adaptive thinking jest domyslnie WLACZONY i liczy sie
+// do max_tokens, a kod nigdy nie logowal stop_reason - nie wiedzielismy, ile
+// odpowiedzi bylo przycinanych. 16000 (nie 32000), bo wywolanie jest
+// niestreamowane: dluzsze generowanie ryzykuje timeout naglowkow undici (300 s).
+// Licznik ucieć niżej dostarcza brakujacy pomiar (hipoteza H4 z analizy).
+const MAX_TOKENS = 16000;
 const ROWNOLEGLE_DOM = 2;   // 8-9 wywolan na karte, wiec 2 strony naraz to juz ~18 zapytan
 
 /* ------------------------------------------------------------------ prompty */
@@ -161,6 +166,11 @@ function jsonZTekstu(tekst) {
 
 const spij = ms => new Promise(r => setTimeout(r, ms));
 
+// Licznik odpowiedzi zatrzymanych przed koncem (stop_reason != end_turn).
+// Zerowany na poczatku odczytajTeczke; przy dwoch teczkach naraz wartosci by sie
+// mieszaly, ale endpoint jest wolany przez n8n sekwencyjnie.
+const LICZNIK = { uciete: 0 };
+
 async function zapytajModel(obrazy, prompt, model, proby = 3) {
   const body = {
     model, max_tokens: MAX_TOKENS,
@@ -191,6 +201,12 @@ async function zapytajModel(obrazy, prompt, model, proby = 3) {
       }
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
       const j = await r.json();
+      // Pomiar H4: kazde zatrzymanie inne niz end_turn ma byc widoczne w logu
+      // i policzone w odpowiedzi (pole "uciecia") - dotad nikt tego nie zbieral.
+      if (j.stop_reason && j.stop_reason !== 'end_turn') {
+        LICZNIK.uciete++;
+        console.warn(`[karty-pracy] stop_reason=${j.stop_reason}, output_tokens=${j.usage && j.usage.output_tokens}`);
+      }
       return {
         tekst: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'),
         powodStopu: j.stop_reason || null,
@@ -657,6 +673,7 @@ async function odczytajTeczke(pdf, opcje = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kpo-'));
   const pdfPath = path.join(dir, 'in.pdf');
   try {
+    LICZNIK.uciete = 0;
     await fs.writeFile(pdfPath, pdf);
     const stron = await pdfPageCount(pdfPath);
     // Domyslnie cala teczka. Podanie "strony" pozwala n8n wolac endpoint porcjami,
@@ -701,6 +718,7 @@ async function odczytajTeczke(pdf, opcje = {}) {
       norma: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) : null,
       normaCzesc: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) * 0.75 : null,
       kartOk: karty.filter(k => k.ok).length,
+      uciecia: LICZNIK.uciete,
       problemyOgolne,
       // "dni" zostaja po stronie serwera - n8n dostaje same wyniki, nie surowe odczyty
       karty: karty.map(({ dni, ...reszta }) => reszta),
