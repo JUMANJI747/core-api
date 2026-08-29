@@ -302,31 +302,40 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
      dzien nieobecnosci = 8 h; wyjatki w okres.stawkiDnia (3/4 etatu = 6 h). */
   const stawkaDnia = (okres.stawkiDnia && nazwisko && okres.stawkiDnia[nazwisko])
     || Number(okres.domyslnaStawkaDnia) || 8;
-  const dniZKodem = lit => dni.filter(x => String(x.kod || '').toUpperCase().startsWith(lit)).length;
+  const czyPtaszek = v => /^[vV+xX\u2713\u2714]$/.test(String(v || '').trim());
   const kolumnaNieobecnosci = (pole, lit, etykieta) => {
     const zSumy = L(s.wniosek && s.wniosek[pole]);
-    const zDni_ = zDni(pole);
-    const ileDni = dniZKodem(lit);
-    if (zSumy === null) {
-      if (zDni_ > 0) return zDni_;
-      if (ileDni > 0) {
-        ostrzezenia.push(`${etykieta}: ${ileDni} dni x ${stawkaDnia} h = ${ileDni * stawkaDnia} h (SUMA pusta, przeliczono z kodow dziennych)`);
-        return ileDni * stawkaDnia;
+    const zDni_ = zDni(pole);                               // godziny wpisane liczbowo w dniach
+    const ozn = p0.dni.filter(x => czyPtaszek(x.zapis && x.zapis[pole])
+      || czyPtaszek(x.wniosek && x.wniosek[pole])).length;  // ptaszki w RUBRYCE
+    const kodow = dni.filter(x => String(x.kod || '').toUpperCase().startsWith(lit)).length;
+    if (ozn > 0) {
+      // ptaszki = dni nieobecnosci (regula kadr: dzien x stawka)
+      if (zSumy === null || rowne(zSumy, ozn)) {
+        ostrzezenia.push(`${etykieta}: ${ozn} dni (ptaszki) x ${stawkaDnia} h = ${ozn * stawkaDnia} h`);
+        return ozn * stawkaDnia;
       }
-      return 0;
-    }
-    if (ileDni > 0) {
-      if (rowne(zSumy, ileDni)) {
-        ostrzezenia.push(`${etykieta}: rubryka SUMA zawiera liczbe DNI (${ileDni}) - przeliczono ${ileDni} x ${stawkaDnia} h = ${ileDni * stawkaDnia} h`);
-        return ileDni * stawkaDnia;
-      }
-      if (rowne(zSumy, ileDni * stawkaDnia)) return zSumy;
+      if (rowne(zSumy, ozn * stawkaDnia)) return zSumy;
       sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: zSumy,
-        uwaga: `${ileDni} dni z kodem ${lit}, a w SUMIE ${zSumy} - nie pasuje ani do liczby dni, ani do ${ileDni}x${stawkaDnia} h` });
+        uwaga: `${ozn} ptaszkow, a w SUMIE ${zSumy} - nie pasuje ani do dni, ani do ${ozn}x${stawkaDnia} h` });
       return zSumy;
     }
-    if (zDni_ !== 0 && !rowne(zSumy, zDni_)) {
-      problemy.push(`kolumna ${etykieta}: suma z dni (${zDni_}) nie zgadza sie z wierszem SUMA (${zSumy})`);
+    if (zSumy === null) {
+      if (zDni_ > 0) return zDni_;
+      // litery U/C w kolumnie rozpoczecia BEZ oznaczen w rubryce: Ala ich nie
+      // dolicza (Zak 6/2026), wiec my tez nie - tylko slad w ostrzezeniach
+      if (kodow > 0) ostrzezenia.push(`${etykieta}: ${kodow} dni z litera ${lit} w kolumnie rozpoczecia, bez oznaczen w rubryce - NIE doliczono`);
+      return 0;
+    }
+    if (zDni_ !== 0) {
+      if (!rowne(zSumy, zDni_)) problemy.push(`kolumna ${etykieta}: suma z dni (${zDni_}) nie zgadza sie z wierszem SUMA (${zSumy})`);
+      return zSumy;
+    }
+    // sama liczba w SUMIE, zero informacji z dni: mala calkowita moze byc
+    // LICZBA DNI (Korgul 6/2026: "6" = 6 dni = 48 h, nie 6 h) - nie zgadujemy
+    if (zSumy > 0 && zSumy <= 16 && Number.isInteger(zSumy)) {
+      sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: zSumy,
+        uwaga: `wartosc ${zSumy} moze byc liczba DNI (${zSumy * stawkaDnia} h) albo godzin - brak oznaczen dziennych, wymaga czlowieka` });
     }
     return zSumy;
   };
