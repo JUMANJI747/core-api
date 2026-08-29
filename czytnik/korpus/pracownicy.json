@@ -30,5 +30,11 @@
   "Tomasz Żuk",
   "Urszula Wołoch"
  ],
- "zrodlo": "GODZINY_2023_2024_2025_2026.xlsx (Czerwiec+Lipiec 2026)"
+ "zrodlo": "GODZINY_2023_2024_2025_2026.xlsx (Czerwiec+Lipiec 2026)",
+ "domyslnaStawkaDnia": 8,
+ "stawkiDnia": {
+  "Karolina Lenczewska": 6,
+  "Przemek Podolecki": 6
+ },
+ "uwagaStawki": "regula od kadr (Ala, 2026-08-29): dzien UW/Chor. = 8 h; Lenczewska i Podolecki 3/4 etatu = 6 h"
 }

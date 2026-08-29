@@ -294,9 +294,44 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     return zSumy;
   };
   const sto = kolumna('sto') || 0;
-  const uw = kolumna('uw') || 0;
-  const chor = kolumna('chor') || 0;
   const nocne = kolumna('nocne') || 0;
+
+  /* UW i Chor. bywaja wypelniane DNIAMI (ptaszek/kod na dzien, w SUMIE liczba
+     dni - karta Korgul 6/2026: 6 ptaszkow i "6" w SUMIE), a bywaja GODZINAMI
+     (Kuleta 7/2026: "56" = 7 dni x 8 h). Regula od kadr (Ala, 2026-08-29):
+     dzien nieobecnosci = 8 h; wyjatki w okres.stawkiDnia (3/4 etatu = 6 h). */
+  const stawkaDnia = (okres.stawkiDnia && nazwisko && okres.stawkiDnia[nazwisko])
+    || Number(okres.domyslnaStawkaDnia) || 8;
+  const dniZKodem = lit => dni.filter(x => String(x.kod || '').toUpperCase().startsWith(lit)).length;
+  const kolumnaNieobecnosci = (pole, lit, etykieta) => {
+    const zSumy = L(s.wniosek && s.wniosek[pole]);
+    const zDni_ = zDni(pole);
+    const ileDni = dniZKodem(lit);
+    if (zSumy === null) {
+      if (zDni_ > 0) return zDni_;
+      if (ileDni > 0) {
+        ostrzezenia.push(`${etykieta}: ${ileDni} dni x ${stawkaDnia} h = ${ileDni * stawkaDnia} h (SUMA pusta, przeliczono z kodow dziennych)`);
+        return ileDni * stawkaDnia;
+      }
+      return 0;
+    }
+    if (ileDni > 0) {
+      if (rowne(zSumy, ileDni)) {
+        ostrzezenia.push(`${etykieta}: rubryka SUMA zawiera liczbe DNI (${ileDni}) - przeliczono ${ileDni} x ${stawkaDnia} h = ${ileDni * stawkaDnia} h`);
+        return ileDni * stawkaDnia;
+      }
+      if (rowne(zSumy, ileDni * stawkaDnia)) return zSumy;
+      sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: zSumy,
+        uwaga: `${ileDni} dni z kodem ${lit}, a w SUMIE ${zSumy} - nie pasuje ani do liczby dni, ani do ${ileDni}x${stawkaDnia} h` });
+      return zSumy;
+    }
+    if (zDni_ !== 0 && !rowne(zSumy, zDni_)) {
+      problemy.push(`kolumna ${etykieta}: suma z dni (${zDni_}) nie zgadza sie z wierszem SUMA (${zSumy})`);
+    }
+    return zSumy;
+  };
+  const uw = kolumnaNieobecnosci('uw', 'U', 'UW') || 0;
+  const chor = kolumnaNieobecnosci('chor', 'C', 'Chor.') || 0;
 
   /* C i G */
   const maDni = dni.some(x => x.razem !== null);

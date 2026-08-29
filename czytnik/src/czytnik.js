@@ -210,6 +210,10 @@ async function odczytajTeczke(pdf, opcje = {}) {
     const okres = {
       rok: Number(opcje.rok) || null, miesiac: Number(opcje.miesiac) || null,
       nazwiska: Array.isArray(opcje.nazwiska) ? opcje.nazwiska : null,
+      // stawki dnia nieobecnosci (UW/Chor. oznaczane ptaszkiem = dzien):
+      // domyslnie 8 h, wyjatki per osoba (3/4 etatu = 6 h)
+      stawkiDnia: opcje.stawkiDnia && typeof opcje.stawkiDnia === 'object' ? opcje.stawkiDnia : null,
+      domyslnaStawkaDnia: Number(opcje.domyslnaStawkaDnia) || 8,
       model: opcje.model || MODEL_DOM, dpi: opcje.dpi,
     };
         const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));

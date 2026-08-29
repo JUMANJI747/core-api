@@ -29,8 +29,9 @@ function sprzatajPrzebiegi() {
 }
 
 function wyciagnijOpcje(body) {
-  const { strony, rok, miesiac, nazwiska, rownolegle, model, dpi } = body || {};
-  return { strony, rok, miesiac, nazwiska, rownolegle, model, dpi };
+  const { strony, rok, miesiac, nazwiska, rownolegle, model, dpi,
+    stawkiDnia, domyslnaStawkaDnia } = body || {};
+  return { strony, rok, miesiac, nazwiska, rownolegle, model, dpi, stawkiDnia, domyslnaStawkaDnia };
 }
 
 function router(express, token) {
