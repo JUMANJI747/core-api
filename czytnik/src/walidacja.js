@@ -57,9 +57,36 @@ function czasZOdDo(od, do_) {
 
 /* ------------------------------------------------- nazwiska (zamknięta lista) */
 
-const klucz = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+// Aliasy imion: w arkuszu kadrowym bywa zdrobnienie, na karcie pelne imie.
+const ALIASY = { PRZEMEK: 'PRZEMYSLAW', PRZEMO: 'PRZEMYSLAW' };
+
+const tokeny = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toUpperCase().replace(/Ł/g, 'L').replace(/[^A-Z ]+/g, ' ')
-  .trim().split(/\s+/).filter(Boolean).sort().join(' ');
+  .trim().split(/\s+/).filter(Boolean).map(x => ALIASY[x] || x).sort();
+
+const klucz = t => tokeny(t).join(' ');
+
+/**
+ * Dopasowanie dwoch nazwisk PER SLOWO (kazdy token znajduje odpowiednik
+ * w odleglosci <=2). Porownanie calych sklejonych kluczy zawodzilo, gdy zmiana
+ * jednej litery zmieniala porzadek sortowania (Andriichuk vs Andrichuk).
+ */
+function pasujeOsoba(a, b) {
+  const ta = tokeny(a), tb = tokeny(b);
+  if (!ta.length || ta.length !== tb.length) return false;
+  const uzyte = new Set();
+  for (const x of ta) {
+    let naj = null;
+    for (let i = 0; i < tb.length; i++) {
+      if (uzyte.has(i)) continue;
+      const d = odlegloscEdycyjna(x, tb[i]);
+      if (naj === null || d < naj.d) naj = { i, d };
+    }
+    if (!naj || naj.d > 2) return false;
+    uzyte.add(naj.i);
+  }
+  return true;
+}
 
 function odlegloscEdycyjna(a, b) {
   const m = a.length, n = b.length;
@@ -75,19 +102,16 @@ function odlegloscEdycyjna(a, b) {
   return prev[n];
 }
 
-/** dopasowanie odczytu do zamkniętej listy: dokładne po kluczu, potem odległość <=2 */
+/** dopasowanie odczytu do zamkniętej listy: dokładne po kluczu, potem per słowo */
 function dopasujDoListy(odczyt, lista) {
   if (!odczyt || !Array.isArray(lista) || !lista.length) return null;
   const k = klucz(odczyt);
   if (!k) return null;
   const dokladne = lista.find(n => klucz(n) === k);
   if (dokladne) return { pozycja: dokladne, odleglosc: 0 };
-  let najlepszy = null;
-  for (const n of lista) {
-    const d = odlegloscEdycyjna(k, klucz(n));
-    if (najlepszy === null || d < najlepszy.odleglosc) najlepszy = { pozycja: n, odleglosc: d };
-  }
-  return najlepszy && najlepszy.odleglosc <= 2 ? najlepszy : null;
+  const pasujace = lista.filter(n => pasujeOsoba(odczyt, n));
+  // dopasowanie musi byc JEDNOZNACZNE - dwie pasujace pozycje to brak dopasowania
+  return pasujace.length === 1 ? { pozycja: pasujace[0], odleglosc: 1 } : null;
 }
 
 /* -------------------------------------------------------------------- główna */
@@ -131,7 +155,7 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null) {
   } else {
     // bez listy nie ma jak potwierdzic przynaleznosci - zgodnosc odczytow to minimum
     if (n1 && n2 && klucz(n1) === klucz(n2)) { nazwisko = n1; nazwiskoOk = true; }
-    else if (n1 && n2 && odlegloscEdycyjna(klucz(n1), klucz(n2)) <= 2) {
+    else if (n1 && n2 && pasujeOsoba(n1, n2)) {
       nazwisko = n1; nazwiskoOk = true;
       ostrzezenia.push(`odczyty nazwiska roznia sie drobnie: "${n1}" vs "${n2}"`);
     } else {

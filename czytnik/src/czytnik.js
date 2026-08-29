@@ -18,11 +18,85 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { pdfPageCount, renderPage } = require('./render');
-const { przygotujObrazy } = require('./obrazy');
+const { przygotujObrazy, detectGrid, wytnijKomorke } = require('./obrazy');
 const { zapytaj, MODEL_DOM } = require('./silnik');
-const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO } = require('./prompty');
+const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO,
+  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA } = require('./prompty');
 const { zszyjIKontroluj } = require('./walidacja');
 const { wymiarCzasuPracy } = require('./kalendarz');
+
+// pola sporne, które umiemy dograć zoomem (mapa: nazwa z walidacji -> kolumna)
+const POLA_ZOOM = { 'RAZEM': 'razem', '100%': 'sto', 'nocne': 'nocne', 'UW': 'uw', 'Chor.': 'chor' };
+const MAX_POL_ZOOM = 6;
+
+/**
+ * Dogrywka P1: każde sporne pole wycinamy ×4 i czytamy PONOWNIE, neutralnie
+ * (model nie zna hipotez — zero kotwiczenia), z kolumną numeru dnia jako
+ * kontrolą tożsamości wiersza. Zoom to TRANSKRYPCJA: wynik wchodzi do OBU
+ * kanałów (zapis i wniosek), a potem karta przechodzi PEŁNĄ walidację od nowa —
+ * dogrywka niczego nie "przepycha", tylko dostarcza lepszy odczyt; o statusie
+ * auto nadal decydują ścieżki dowodowe.
+ */
+async function dogrywkaZoom(png, p0, wynik, opcje, slad) {
+  const sporneZoom = (wynik.sporne || []).filter(s => POLA_ZOOM[s.pole]
+    && (s.dzien === 'SUMA' || (Number(s.dzien) >= 1 && Number(s.dzien) <= 31)));
+  if (!sporneZoom.length || sporneZoom.length > MAX_POL_ZOOM) return null;
+  let g;
+  try { g = await detectGrid(png); } catch (e) { return null; }   // bez siatki nie ma zoomu
+
+  const poprawki = [];
+  for (const s of sporneZoom) {
+    const pole = POLA_ZOOM[s.pole];
+    try {
+      const obraz = await wytnijKomorke(png, g, s.dzien, pole);
+      const o = await zapytaj([obraz],
+        s.dzien === 'SUMA' ? PROMPT_ZOOM_SUMA(pole) : PROMPT_ZOOM(pole),
+        SCHEMAT_ZOOM, { model: opcje.model, effort: 'low', maxTokens: 1500 });
+      slad.zoomy = (slad.zoomy || 0) + 1;
+      // zoom w slad.tokeny, żeby wchodził do kosztUSD przebiegu
+      if (o.tokeny) {
+        slad.tokeny.zoom = slad.tokeny.zoom || { we: 0, wy: 0 };
+        slad.tokeny.zoom.we += o.tokeny.we; slad.tokeny.zoom.wy += o.tokeny.wy;
+      }
+      const d = o.dane || {};
+      // kontrola tożsamości wiersza: niezgodny numer dnia = błąd cięcia, zoom nieważny
+      if (s.dzien !== 'SUMA' && String(d.dzien).trim() !== String(s.dzien)) continue;
+      if (d.wartosc === '?' || d.wartosc === undefined) continue;   // nadal nieczytelne
+      if (s.dzien === 'SUMA') {
+        if (p0.suma) { p0.suma.zapis[pole] = d.wartosc; p0.suma.wniosek[pole] = d.wartosc; }
+      } else {
+        const w = p0.dni.find(x => Number(x.d) === Number(s.dzien));
+        if (!w) continue;
+        w.zapis[pole] = d.wartosc; w.wniosek[pole] = d.wartosc;
+        if (d.pewnosc === 'wysoka') w.pewnosc = 'wysoka';
+        w.uwaga = (w.uwaga ? w.uwaga + '; ' : '') + `dogrywka zoom ${s.pole}: "${d.wartosc}"`;
+      }
+      poprawki.push({ dzien: s.dzien, pole: s.pole, przed: s.wniosek ?? s.zapis ?? null, zoom: d.wartosc });
+    } catch (e) {
+      // pojedynczy nieudany zoom nie przerywa dogrywki
+    }
+  }
+  return poprawki.length ? poprawki : null;
+}
+
+/** wycinki spornych pól dla człowieka — do maila z formularzem (n8n) */
+async function paczkaRewizyjna(png, wynik) {
+  const sporne = (wynik.sporne || []).filter(s => POLA_ZOOM[s.pole]).slice(0, MAX_POL_ZOOM);
+  if (!sporne.length) return null;
+  let g;
+  try { g = await detectGrid(png); } catch (e) { return null; }
+  const paczka = [];
+  for (const s of sporne) {
+    try {
+      paczka.push({
+        dzien: s.dzien, pole: s.pole,
+        odczyty: { zapis: s.zapis ?? null, wniosek: s.wniosek ?? null, uwaga: s.uwaga || null },
+        obraz: await wytnijKomorke(png, g, s.dzien, POLA_ZOOM[s.pole]),
+      });
+    } catch (e) { /* pojedynczy wycinek moze sie nie udac */ }
+  }
+  return paczka.length ? paczka : null;
+}
 
 // Cennik claude-opus-5 (USD za 1M tokenów, stan 2026-06). Przy zmianie modelu
 // domyślnego zaktualizować — koszt w odpowiedzi ma być prawdziwy, nie ozdobny.
@@ -30,9 +104,9 @@ const CENY_USD_MTOK = { we: 5, wy: 25 };
 
 async function przetworzStrone(pdfPath, dir, strona, opcje) {
   const t0 = Date.now();
-  let obrazy, sha;
+  let obrazy, sha, png;
   try {
-    const png = await renderPage(pdfPath, strona, dir, opcje.dpi || 300);
+    png = await renderPage(pdfPath, strona, dir, opcje.dpi || 300);
     sha = crypto.createHash('sha256').update(png).digest('hex').slice(0, 16);
     obrazy = await przygotujObrazy(png);
   } catch (e) {
@@ -46,15 +120,30 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       zapytaj([obrazy.naglowek], PROMPT_NAZWISKO, SCHEMAT_NAZWISKO,
         { model: opcje.model, effort: 'low', maxTokens: 2000 }),
     ]);
-    const wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
-    wynik.sha = sha;
-    wynik.obrazyMeta = obrazy.meta;
-    wynik.slad = {
+    const slad = {
       model: glowny.model,
       tokeny: { glowny: glowny.tokeny, nazwisko: nazwisko2.tokeny },
-      czasMs: Date.now() - t0,
       thinking: (glowny.thinking || '').slice(0, 4000) || null,
     };
+    let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
+
+    // P1: sporne pola dogrywamy zoomem i walidujemy kartę OD NOWA
+    if (wynik.status !== 'auto' && (wynik.sporne || []).length) {
+      const poprawki = await dogrywkaZoom(png, glowny.dane, wynik, opcje, slad);
+      if (poprawki) {
+        wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
+        wynik.dogrywka = poprawki;
+      }
+    }
+    // co zostało sporne po dogrywce, idzie do człowieka z wycinkami
+    if (wynik.status !== 'auto' && (wynik.sporne || []).length) {
+      wynik.paczkaRewizyjna = await paczkaRewizyjna(png, wynik);
+    }
+
+    wynik.sha = sha;
+    wynik.obrazyMeta = obrazy.meta;
+    slad.czasMs = Date.now() - t0;
+    wynik.slad = slad;
     return wynik;
   } catch (e) {
     return { strona, sha, ok: false, status: 'do_weryfikacji',

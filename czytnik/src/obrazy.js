@@ -159,4 +159,50 @@ async function przygotujObrazy(png) {
   };
 }
 
-module.exports = { przygotujObrazy, detectGrid };
+/* ------------------------------------------------- dogrywka: zoom komórki */
+
+// Udziały szerokości tabeli zmierzone na formularzu (te same co w core-api
+// karta-pracy.js — zweryfikowane wzrokowo na prawdziwych kartach).
+const KOL = 0.05847;
+const KOLUMNY = {
+  od:    [0.0395, 0.1110],
+  do:    [0.2156, 0.2927],
+  razem: [0.3960, 0.4738],
+  sto:   [0.4738 + 2 * KOL, 0.4738 + 3 * KOL],
+  nocne: [0.4738 + 3 * KOL, 0.4738 + 4 * KOL],
+  uw:    [0.4738 + 4 * KOL, 0.4738 + 5 * KOL],
+  chor:  [0.4738 + 5 * KOL, 0.4738 + 6 * KOL],
+};
+
+/**
+ * Wycinek JEDNEJ komórki do dogrywki: [kolumna numeru dnia | rubryka], ×4.
+ * Numer dnia jest w wycinku po to, żeby model POTWIERDZIŁ tożsamość wiersza —
+ * niezgodność numeru unieważnia zoom (błąd cięcia, nie odczytu).
+ * dzien: 1-31 albo 'SUMA' (wtedy bez kolumny dnia — wiersz SUMA nie ma numeru).
+ */
+async function wytnijKomorke(png, g, dzien, pole) {
+  const [f0, f1] = KOLUMNY[pole] || KOLUMNY.razem;
+  const y = i => Math.round(g.top + i * g.rowH);
+  const x = f => Math.round(g.left + f * g.tw);
+  const wiersz = dzien === 'SUMA' ? 31 : Number(dzien) - 1;
+  const top = Math.max(0, y(wiersz) - Math.round(g.rowH * 0.12));
+  const h = Math.min(g.H - top, Math.round(g.rowH * 1.24));
+  const czesci = [];
+  if (dzien !== 'SUMA') {
+    czesci.push([Math.max(0, g.left - 4), x(0.0395) + 3]);   // kolumna numeru dnia
+  }
+  czesci.push([Math.max(0, x(f0) - 6), Math.min(g.W, x(f1) + 6)]);
+  const kawalki = [];
+  let szer = 0;
+  for (const [x0, x1] of czesci) {
+    kawalki.push({ input: await sharp(png).extract({ left: x0, top, width: x1 - x0, height: h }).toBuffer(),
+      left: szer, top: 0 });
+    szer += (x1 - x0) + 6;
+  }
+  const sklejka = await sharp({ create: { width: szer, height: h, channels: 3, background: '#fff' } })
+    .composite(kawalki).png().toBuffer();
+  return (await sharp(sklejka).resize({ width: szer * 4, kernel: 'lanczos3' })
+    .normalise().sharpen().jpeg({ quality: 90, mozjpeg: true }).toBuffer()).toString('base64');
+}
+
+module.exports = { przygotujObrazy, detectGrid, wytnijKomorke, KOLUMNY };

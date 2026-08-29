@@ -110,6 +110,38 @@ const SCHEMAT_KARTY = {
   additionalProperties: false,
 };
 
+/* --- dogrywka P1: neutralny odczyt jednej komórki (zero kotwiczenia) --- */
+
+const SCHEMAT_ZOOM = {
+  type: 'object',
+  properties: {
+    dzien: { type: 'string' },
+    wartosc: { type: 'string' },
+    pewnosc: { type: 'string', enum: ['wysoka', 'niska'] },
+  },
+  required: ['dzien', 'wartosc', 'pewnosc'],
+  additionalProperties: false,
+};
+
+const OPISY_POL = {
+  od: 'Godz. rozpocz. pracy', do: 'Godz. zakoncz. pracy', razem: 'Ilosc godzin RAZEM',
+  sto: '100% (godziny w swieto)', nocne: 'nocne', uw: 'UW (urlop wypoczynkowy)', chor: 'Chor. (chorobowe)',
+};
+
+const PROMPT_ZOOM = pole => `Na obrazie sa dwa wycinki JEDNEGO wiersza tabeli karty pracy:
+po lewej numer dnia miesiaca, po prawej rubryka "${OPISY_POL[pole] || pole}".
+Odczytaj obie rzeczy dokladnie tak, jak sa napisane.
+- pusta rubryka -> wartosc "" (to czeste i normalne), nieczytelna -> "?"
+- przecinek dziesietny zapisuj kropka; godziny sa wielokrotnosciami 0.5
+- na krawedziach moga byc scinki sasiednich rubryk - ignoruj je
+- NIE zgaduj: masz przed soba wszystko, co podlega ocenie`;
+
+const PROMPT_ZOOM_SUMA = pole => `Na obrazie jest JEDNA rubryka z wiersza SUMA karty pracy
+(kolumna "${OPISY_POL[pole] || pole}", podsumowanie miesiaca), powiekszona.
+Odczytaj dokladnie to, co napisane. Pusta -> "", nieczytelna -> "?".
+Przecinek dziesietny jako kropka; godziny sa wielokrotnosciami 0.5.
+W polu dzien wpisz "SUMA".`;
+
 const SCHEMAT_NAZWISKO = {
   type: 'object',
   properties: {
@@ -154,4 +186,5 @@ Tablica "dni" ma dokładnie tyle wpisów, ile dni ma miesiąc, po kolei od d=1. 
 const PROMPT_NAZWISKO = `Na obrazie jest nagłówek karty ewidencji czasu pracy. Odczytaj WYŁĄCZNIE odręcznie wpisane imię i nazwisko pracownika (rubryka "Nazwisko i imię" / "Imię i nazwisko").
 Przepisz je dokładnie tak, jak jest napisane — bez poprawiania, bez zgadywania. Jeśli nie da się odczytać pewnie, daj zapis="?" i pewnosc="niska". Podpisy i parafki to nie jest nazwisko.`;
 
-module.exports = { SCHEMAT_KARTY, SCHEMAT_NAZWISKO, PROMPT_KARTA, PROMPT_NAZWISKO };
+module.exports = { SCHEMAT_KARTY, SCHEMAT_NAZWISKO, PROMPT_KARTA, PROMPT_NAZWISKO,
+  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA };
