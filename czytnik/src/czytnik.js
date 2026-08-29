@@ -21,7 +21,7 @@ const { pdfPageCount, renderPage } = require('./render');
 const { przygotujObrazy, detectGrid, wytnijKomorke } = require('./obrazy');
 const { zapytaj, MODEL_DOM } = require('./silnik');
 const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO,
-  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA } = require('./prompty');
+  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA, SCHEMAT_KOLUMNA, PROMPT_KOLUMNA } = require('./prompty');
 const { zszyjIKontroluj } = require('./walidacja');
 const { wymiarCzasuPracy } = require('./kalendarz');
 
@@ -38,8 +38,17 @@ const MAX_POL_ZOOM = 6;
  * auto nadal decydują ścieżki dowodowe.
  */
 async function dogrywkaZoom(png, p0, wynik, opcje, slad) {
-  const sporneZoom = (wynik.sporne || []).filter(s => POLA_ZOOM[s.pole]
-    && (s.dzien === 'SUMA' || (Number(s.dzien) >= 1 && Number(s.dzien) <= 31)));
+  // deduplikacja po (dzien, pole): to samo pole bywa sporne z dwóch powodów
+  // (niska pewność P0 + rozjazd ze ślepą kolumną) — zoomujemy raz
+  const widziane = new Set();
+  const sporneZoom = (wynik.sporne || []).filter(s => {
+    if (!POLA_ZOOM[s.pole]) return false;
+    if (s.dzien !== 'SUMA' && !(Number(s.dzien) >= 1 && Number(s.dzien) <= 31)) return false;
+    const k = s.dzien + '|' + s.pole;
+    if (widziane.has(k)) return false;
+    widziane.add(k);
+    return true;
+  });
   if (!sporneZoom.length || sporneZoom.length > MAX_POL_ZOOM) return null;
   let g;
   try { g = await detectGrid(png); } catch (e) { return null; }   // bez siatki nie ma zoomu
@@ -120,18 +129,21 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       problemy: [`przygotowanie obrazow nie powiodlo sie: ${e.message}`], ostrzezenia: [], sporne: [] };
   }
   try {
-    const [glowny, nazwisko2] = await Promise.all([
+    const [glowny, nazwisko2, slepaKolumna] = await Promise.all([
       zapytaj([obrazy.calaStrona, obrazy.naglowek, obrazy.gornaPolowka, obrazy.dolnaPolowka],
         PROMPT_KARTA, SCHEMAT_KARTY, { model: opcje.model, effort: 'high' }),
       zapytaj([obrazy.naglowek], PROMPT_NAZWISKO, SCHEMAT_NAZWISKO,
         { model: opcje.model, effort: 'low', maxTokens: 2000 }),
+      // niezależna ścieżka dowodowa: ślepa transkrypcja kolumny RAZEM
+      zapytaj([obrazy.gornaPolowka, obrazy.dolnaPolowka], PROMPT_KOLUMNA, SCHEMAT_KOLUMNA,
+        { model: opcje.model, effort: 'low', maxTokens: 4000 }),
     ]);
     const slad = {
       model: glowny.model,
-      tokeny: { glowny: glowny.tokeny, nazwisko: nazwisko2.tokeny },
+      tokeny: { glowny: glowny.tokeny, nazwisko: nazwisko2.tokeny, slepaKolumna: slepaKolumna.tokeny },
       thinking: (glowny.thinking || '').slice(0, 4000) || null,
     };
-    let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
+    let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona, slepaKolumna.dane);
 
     // P1: sporne pola dogrywamy zoomem NA KOPII danych i walidujemy od nowa.
     // Werdykt zoomu przyjmujemy TYLKO, gdy karta po nim jest lepsza (mniej
@@ -141,7 +153,7 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       const kopia = JSON.parse(JSON.stringify(glowny.dane));
       const poprawki = await dogrywkaZoom(png, kopia, wynik, opcje, slad);
       if (poprawki) {
-        const wynik2 = zszyjIKontroluj(kopia, nazwisko2.dane, opcje, strona);
+        const wynik2 = zszyjIKontroluj(kopia, nazwisko2.dane, opcje, strona, slepaKolumna.dane);
         const kara = w => (w.problemy || []).length + (w.sporne || []).length;
         if (wynik2.status === 'auto' || kara(wynik2) < kara(wynik)) {
           wynik = wynik2;

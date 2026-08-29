@@ -123,8 +123,12 @@ const rowne = (a, b) => a !== null && b !== null && Math.abs(a - b) <= 0.011;
  * @param {object} p0        wynik głównego odczytu (dane wg SCHEMAT_KARTY)
  * @param {object} nazwisko2 wynik ślepego odczytu nagłówka {zapis, pewnosc}
  * @param {object} okres     {rok, miesiac, nazwiska} narzucone z zewnątrz (opcjonalne)
+ * @param {*} strona
+ * @param {object} [slepy]   ślepa transkrypcja kolumny RAZEM {dni:[{d,razem}], suma}
+ *                           — NIEZALEŻNE wywołanie; jedyna ścieżka (obok wiersza
+ *                           SUMA), która widzi dzień zgubiony przez odczyt główny
  */
-function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null) {
+function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null) {
   const problemy = [], ostrzezenia = [], sporne = [];
   if (!p0 || !p0.naglowek || !Array.isArray(p0.dni)) {
     return { strona, ok: false, status: 'do_weryfikacji',
@@ -228,10 +232,48 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null) {
   const sciezkaC = (pokrycieOdDo === 1 && niezgodneOdDo === 0)
     ? sumuj(dni.map(x => x.zCzasu ?? x.razem)) : null;     // c) czasy od/do (tylko pelne pokrycie)
 
+  /* ścieżka D: ślepa kolumna RAZEM — porównanie DZIEŃ PO DNIU z odczytem
+     głównym. To jedyna kontrola (obok wiersza SUMA), która jest naprawdę
+     niezależna: zapisyDni i czasyOdDo pochodzą z tego samego wywołania co
+     wynik, więc zgubiony dzień psuje je WSZYSTKIE zgodnie (lekcja: Żuk 7/2026,
+     odczyt główny zgubił dzień 4 i trzy "ścieżki" potwierdziły błąd). */
+  let sciezkaD = null;
+  if (slepy && Array.isArray(slepy.dni) && slepy.dni.length) {
+    const mapaSlepa = new Map();
+    for (const w of slepy.dni) {
+      const d = Number(w.d);
+      if (d >= 1 && d <= 31 && !mapaSlepa.has(d)) mapaSlepa.set(d, w.razem);
+    }
+    let suma = 0, kompletna = true;
+    for (let d = 1; d <= dniWMies; d++) {
+      const sv = mapaSlepa.has(d) ? String(mapaSlepa.get(d)) : '';
+      const sn = sv.includes('/')
+        ? sv.split('/').reduce((a, x) => a + (L(x) || 0), 0)
+        : L(sv);
+      if (sv === '?') { kompletna = false; continue; }
+      const wiersz = dni.find(x => x.d === d);
+      const pv = wiersz ? wiersz.razem : null;
+      const zgodne = (sn === null && pv === null) || rowne(sn, pv);
+      if (!zgodne) {
+        sporne.push({ dzien: d, pole: 'RAZEM', wniosek: pv, slepaKolumna: sv,
+          uwaga: 'slepa transkrypcja kolumny RAZEM rozni sie od odczytu glownego' });
+      }
+      suma += sn || 0;
+    }
+    sciezkaD = kompletna ? Math.round(suma * 100) / 100 : null;
+    // wiersz SUMA wg ślepej transkrypcji — drugi głos przy spornym wierszu SUMA
+    const slepaSuma = L(slepy.suma);
+    if (slepaSuma !== null && sciezkaB !== null && !rowne(slepaSuma, sciezkaB)) {
+      sporne.push({ dzien: 'SUMA', pole: 'RAZEM', wniosek: sciezkaB, slepaKolumna: slepy.suma,
+        uwaga: 'slepa transkrypcja wiersza SUMA rozni sie od odczytu glownego' });
+    }
+  }
+
   const sciezki = {
-    zapisyDni: sciezkaA, wierszSuma: sciezkaB, czasyOdDo: sciezkaC,
+    zapisyDni: sciezkaA, wierszSuma: sciezkaB, czasyOdDo: sciezkaC, slepaKolumna: sciezkaD,
     zgodne: [
       ['zapisyDni', sciezkaA], ['wierszSuma', sciezkaB], ['czasyOdDo', sciezkaC],
+      ['slepaKolumna', sciezkaD],
     ].filter(([, v]) => rowne(v, sumaDni)).map(([k]) => k),
   };
   const brakWierszaSumy = sciezkaB === null;
@@ -274,11 +316,15 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null) {
     }
   }
 
-  /* decyzja: auto wymaga nazwiska + >=2 zgodnych ścieżek + zera spornych/problemów */
+  /* Decyzja: auto wymaga nazwiska + >=2 zgodnych ścieżek, w tym CO NAJMNIEJ
+     JEDNEJ NIEZALEŻNEJ od odczytu głównego (wiersz SUMA albo ślepa kolumna).
+     zapisyDni i czasyOdDo pochodzą z tego samego wywołania co wynik — same
+     siebie nie potwierdzają (zgubiony dzień psuje je zgodnie; case Żuk 7/2026). */
   const potwierdzenia = sciezki.zgodne.length;
+  const niezalezne = sciezki.zgodne.filter(k => k === 'wierszSuma' || k === 'slepaKolumna').length;
   let status = 'do_weryfikacji';
-  if (nazwiskoOk && potwierdzenia >= 2 && problemy.length === 0 && sporne.length === 0) status = 'auto';
-  else if (nazwiskoOk && potwierdzenia >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto_slabe'; // 1 ścieżka: do decyzji progowej po korpusie
+  if (nazwiskoOk && potwierdzenia >= 2 && niezalezne >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto';
+  else if (nazwiskoOk && potwierdzenia >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto_slabe'; // bez niezależnego potwierdzenia — nie wchodzi samo
 
   return {
     strona, ok: status === 'auto',

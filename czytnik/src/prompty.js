@@ -110,6 +110,41 @@ const SCHEMAT_KARTY = {
   additionalProperties: false,
 };
 
+/* --- ślepa kolumna RAZEM: niezależna ścieżka dowodowa ---
+ * Lekcja z karty Żuka (lipiec): odczyt główny ZGUBIŁ cały dzień, a ścieżki
+ * "suma zapisów" i "suma od/do" tego nie widzą, bo pochodzą Z TEGO SAMEGO
+ * odczytu. Dlatego kolumnę RAZEM czyta OSOBNE wywołanie — czysta transkrypcja
+ * bez kontekstu i bez rozumowania (filozofia starego promptu B). Zgubiony
+ * albo dopisany dzień wychodzi w porównaniu dzień po dniu. */
+
+const SCHEMAT_KOLUMNA = {
+  type: 'object',
+  properties: {
+    dni: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { d: { type: 'string' }, razem: { type: 'string' } },
+        required: ['d', 'razem'],
+        additionalProperties: false,
+      },
+    },
+    suma: { type: 'string' },
+  },
+  required: ['dni', 'suma'],
+  additionalProperties: false,
+};
+
+const PROMPT_KOLUMNA = `Dostajesz dwie polowki tabeli karty pracy (gorna: dni 1-16, dolna: dni 16-31 i wiersz SUMA na dole).
+Przejdz kolumne "Ilosc godzin RAZEM" WIERSZ PO WIERSZU, od dnia 1 do konca, i przepisz DOKLADNIE to, co jest
+w niej napisane. Nic nie wyliczaj, nic nie poprawiaj, nie patrz na inne kolumny - to slepa transkrypcja jednej kolumny.
+- kazdy dzien miesiaca ma dostac wpis: pusta rubryka -> "", nieczytelna -> "?"
+- dzien 16 jest na obu obrazach - przepisz go raz
+- "8/2" przepisz jako "8/2" (dwie zmiany), "6,5" jako "6.5"
+- PRZECINEK DZIESIETNY TO NIE CYFRA: mala kreska/kropka przy dole linii miedzy cyframi to separator,
+  po ktorym moze stac wylacznie 5 albo 0
+- w polu "suma" przepisz wartosc RAZEM z wiersza SUMA (ostatni wiersz, bez numeru dnia); pusta -> "", nieczytelna -> "?"`;
+
 /* --- dogrywka P1: neutralny odczyt jednej komórki (zero kotwiczenia) --- */
 
 const SCHEMAT_ZOOM = {
@@ -197,4 +232,4 @@ const PROMPT_NAZWISKO = `Na obrazie jest nagłówek karty ewidencji czasu pracy.
 Przepisz je dokładnie tak, jak jest napisane — bez poprawiania, bez zgadywania. Jeśli nie da się odczytać pewnie, daj zapis="?" i pewnosc="niska". Podpisy i parafki to nie jest nazwisko.`;
 
 module.exports = { SCHEMAT_KARTY, SCHEMAT_NAZWISKO, PROMPT_KARTA, PROMPT_NAZWISKO,
-  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA };
+  SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA, SCHEMAT_KOLUMNA, PROMPT_KOLUMNA };
