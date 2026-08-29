@@ -128,19 +128,29 @@ const OPISY_POL = {
   sto: '100% (godziny w swieto)', nocne: 'nocne', uw: 'UW (urlop wypoczynkowy)', chor: 'Chor. (chorobowe)',
 };
 
+// Ostrzezenie o przecinku jest KRYTYCZNE: bez niego zoom czytal "8,5" jako "85"
+// (zweryfikowane na produkcji — karta Dunayevej). Ta sama lekcja co w starym
+// PROMPT_SUMA_KOMORKI, ktory dzialal.
+const ZASADY_LICZB = `- PRZECINEK DZIESIETNY TO NIE CYFRA: odreczne "8,5" bywa mylone z "85".
+  Mala kreska, kropka lub ogonek przy dole linii miedzy cyframi to separator
+  dziesietny, po ktorym moze stac WYLACZNIE 5 albo 0. Zapisuj go kropka ("8.5").
+- godziny sa wielokrotnosciami 0.5
+- na krawedziach moga byc scinki sasiednich rubryk i linie siatki - ignoruj je
+- NIE zgaduj: masz przed soba wszystko, co podlega ocenie`;
+
 const PROMPT_ZOOM = pole => `Na obrazie sa dwa wycinki JEDNEGO wiersza tabeli karty pracy:
 po lewej numer dnia miesiaca, po prawej rubryka "${OPISY_POL[pole] || pole}".
 Odczytaj obie rzeczy dokladnie tak, jak sa napisane.
 - pusta rubryka -> wartosc "" (to czeste i normalne), nieczytelna -> "?"
-- przecinek dziesietny zapisuj kropka; godziny sa wielokrotnosciami 0.5
-- na krawedziach moga byc scinki sasiednich rubryk - ignoruj je
-- NIE zgaduj: masz przed soba wszystko, co podlega ocenie`;
+- wartosc w rubryce dnia to godziny z zakresu 0-24
+${ZASADY_LICZB}`;
 
 const PROMPT_ZOOM_SUMA = pole => `Na obrazie jest JEDNA rubryka z wiersza SUMA karty pracy
 (kolumna "${OPISY_POL[pole] || pole}", podsumowanie miesiaca), powiekszona.
 Odczytaj dokladnie to, co napisane. Pusta -> "", nieczytelna -> "?".
-Przecinek dziesietny jako kropka; godziny sa wielokrotnosciami 0.5.
-W polu dzien wpisz "SUMA".`;
+Wartosc to suma miesieczna (RAZEM zwykle 100-250, pozostale kolumny mniejsze).
+W polu dzien wpisz "SUMA".
+${ZASADY_LICZB}`;
 
 const SCHEMAT_NAZWISKO = {
   type: 'object',

@@ -62,6 +62,12 @@ async function dogrywkaZoom(png, p0, wynik, opcje, slad) {
       // kontrola tożsamości wiersza: niezgodny numer dnia = błąd cięcia, zoom nieważny
       if (s.dzien !== 'SUMA' && String(d.dzien).trim() !== String(s.dzien)) continue;
       if (d.wartosc === '?' || d.wartosc === undefined) continue;   // nadal nieczytelne
+      // sanity zakresu: dzień to 0-24 h, SUMA do 400 — wartość spoza zakresu
+      // to błąd odczytu zoomu (np. "8,5" jako 85), nie dane
+      if (d.wartosc !== '') {
+        const n = Number(String(d.wartosc).replace(',', '.'));
+        if (!Number.isFinite(n) || n < 0 || n > (s.dzien === 'SUMA' ? 400 : 24)) continue;
+      }
       if (s.dzien === 'SUMA') {
         if (p0.suma) { p0.suma.zapis[pole] = d.wartosc; p0.suma.wniosek[pole] = d.wartosc; }
       } else {
@@ -127,12 +133,22 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
     };
     let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
 
-    // P1: sporne pola dogrywamy zoomem i walidujemy kartę OD NOWA
+    // P1: sporne pola dogrywamy zoomem NA KOPII danych i walidujemy od nowa.
+    // Werdykt zoomu przyjmujemy TYLKO, gdy karta po nim jest lepsza (mniej
+    // problemów+spornych albo pełne auto) — zoom też bywa omylny ("8,5" vs 85)
+    // i nie wolno mu psuć dobrego odczytu głównego.
     if (wynik.status !== 'auto' && (wynik.sporne || []).length) {
-      const poprawki = await dogrywkaZoom(png, glowny.dane, wynik, opcje, slad);
+      const kopia = JSON.parse(JSON.stringify(glowny.dane));
+      const poprawki = await dogrywkaZoom(png, kopia, wynik, opcje, slad);
       if (poprawki) {
-        wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona);
-        wynik.dogrywka = poprawki;
+        const wynik2 = zszyjIKontroluj(kopia, nazwisko2.dane, opcje, strona);
+        const kara = w => (w.problemy || []).length + (w.sporne || []).length;
+        if (wynik2.status === 'auto' || kara(wynik2) < kara(wynik)) {
+          wynik = wynik2;
+          wynik.dogrywka = poprawki;
+        } else {
+          wynik.dogrywkaOdrzucona = poprawki;   // ślad: zoom nie poprawił karty
+        }
       }
     }
     // co zostało sporne po dogrywce, idzie do człowieka z wycinkami
