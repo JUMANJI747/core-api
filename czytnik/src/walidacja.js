@@ -320,8 +320,12 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
         uwaga: `${ozn} ptaszkow, a w SUMIE ${zSumy} - nie pasuje ani do dni, ani do ${ozn}x${stawkaDnia} h` });
       return zSumy;
     }
+    if (zDni_ > 0 && (zSumy === null || rowne(zSumy, zDni_))) {
+      // godziny wpisane wprost przy dniach (np. 8 przy dniu urlopu) - bierzemy
+      // doslownie; regula dni x stawka dotyczy wylacznie oznaczen ptaszkiem
+      return zDni_;
+    }
     if (zSumy === null) {
-      if (zDni_ > 0) return zDni_;
       // litery U/C w kolumnie rozpoczecia BEZ oznaczen w rubryce: Ala ich nie
       // dolicza (Zak 6/2026), wiec my tez nie - tylko slad w ostrzezeniach
       if (kodow > 0) ostrzezenia.push(`${etykieta}: ${kodow} dni z litera ${lit} w kolumnie rozpoczecia, bez oznaczen w rubryce - NIE doliczono`);

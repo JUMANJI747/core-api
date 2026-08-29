@@ -223,6 +223,12 @@ KONWENCJE TEGO FORMULARZA (zweryfikowane na prawdziwych kartach):
 - Ostatni wiersz tabeli (bez numeru dnia) to SUMA — podsumowanie miesiąca. Rubryki SUMA bywają puste (to normalne): zapis "" i wniosek "".
 - Kolumny 100%, nocne, UW, Chor. są zwykle puste; wypełnione wartości są MNIEJSZE lub równe RAZEM.
 - PTASZEK (✓/v/haczyk) w rubryce UW lub Chor. przy dniu = oznaczenie DNIA nieobecności: wpisz "v" do zapis i wniosek tej rubryki. To co innego niż litera w kolumnie rozpoczęcia.
+
+KOLUMNY PO PRAWEJ SĄ ŁATWE DO PRZEOCZENIA — cztery rubryki 100% / nocne / UW / Chor. przy każdym dniu
+sprawdź OSOBNO, przechodząc te kolumny z góry na dół, zanim uznasz je za puste. Bywa tam pojedyncza
+liczba (np. "8" przy dniu urlopu) albo ptaszek, wpisane cienkim długopisem daleko od kolumny RAZEM —
+pominięcie takiego wpisu zaniża wypłatę o cały dzień. Jeśli w rubryce jest liczba, przepisz ją jako liczbę;
+jeśli ptaszek — "v".
 - Parafki i podpisy to NIE są liczby. Na krawędziach wycinków bywa ścinek sąsiedniego wiersza — ignoruj.
 - Rubryka "Miesiąc/rok" zawiera zwykle SAM miesiąc (np. CZERWIEC) — wtedy rok="", to normalne; miesiąc podaj jako liczbę ("6").
 - Nazwisko przepisz dokładnie tak, jak napisane (zapis wierny; jeśli nieczytelne -> "?").

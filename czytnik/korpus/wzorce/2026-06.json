@@ -1,0 +1,15 @@
+{
+  "okres": "2026-06",
+  "wpisy": {
+    "Monika Korgul": {
+      "C": 171.5, "G": 0,
+      "zrodlo": "3 niezalezne odczyty (3/3 zgodne) + regula kadr",
+      "uwaga": "dni 123,5 + 6 ptaszkow Chor. x 8 h = 48. Arkusz GODZINY ma 159,5 = 123,5 + 6x6 - policzone po 6 h, a Korgul nie jest jednym z dwoch wyjatkow 3/4 etatu. Arkusz do poprawki: +12 h"
+    },
+    "Sylwia Czuryłowicz": {
+      "C": 155, "G": 0,
+      "zrodlo": "3 niezalezne odczyty (3/3 zgodne)",
+      "uwaga": "dni 147 + 100% 8 = 155; wiersz SUMA na karcie tez 155 (pracownik juz doliczyl setke). Arkusz GODZINY ma 163 = 155 + 8, czyli setka policzona DWA RAZY. Arkusz do poprawki: -8 h"
+    }
+  }
+}
