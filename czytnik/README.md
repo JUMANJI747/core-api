@@ -18,10 +18,17 @@ deterministyczną walidację i pomiar na korpusie.
    nakazane, ale tylko w osobnym kanale z obowiązkową uwagą,
 4. równolegle drugi, ślepy odczyt nazwiska (sam nagłówek, bez listy w prompcie;
    dopasowanie do zamkniętej listy robi kod — dekorelacja),
-5. walidacja w kodzie: od/do↔RAZEM, Σdni↔wiersz SUMA, kolumny 100%/UW/Chor.,
-   norma z art. 130 KP, święta, zakresy; **C liczy wyłącznie kod**,
-6. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ C potwierdzają
-   ≥2 niezależne ścieżki (zapisy dni / wiersz SUMA / czasy od/do) ORAZ zero spornych.
+5. walidacja w kodzie: **godziny wejścia/wyjścia jako SUFIT** (wpis mniejszy =
+   odliczona przerwa, normalne; wpis większy = alarm i karta do człowieka),
+   Σdni↔wiersz SUMA jako kontrola, kolumny 100%/UW/Chor., norma z art. 130 KP,
+   święta, zakresy; **C liczy wyłącznie kod**,
+6. urlop i chorobowe = **liczba dni × stawka osoby** (8 h; 6 h dla Lenczewskiej
+   i Podoleckiego — `korpus/pracownicy.json`), niezależnie od tego, czy na karcie
+   jest ptaszek, liczba godzin, czy nic,
+7. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę
+   potwierdza ścieżka NIEZALEŻNA od głównego odczytu (ślepa transkrypcja kolumny
+   RAZEM albo wiersz SUMA — wiersza SUMA może nie być, to nie blokuje karty)
+   ORAZ zero spornych.
 
 ZROBIONE: dogrywka P1 — każde sporne pole jest wycinane ×4 (z kolumną numeru
 dnia jako kontrolą tożsamości wiersza) i czytane ponownie neutralnym promptem;

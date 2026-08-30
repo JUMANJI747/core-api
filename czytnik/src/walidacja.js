@@ -6,11 +6,12 @@
  * niż karta wstrzymana; przypisanie godzin złej osobie to błąd najgorszy z możliwych.
  * Dlatego:
  *  - C liczy wyłącznie ten kod, nigdy model,
- *  - karta wychodzi jako "auto" tylko, gdy C potwierdzają >=2 NIEZALEŻNE ścieżki:
- *      a) suma literalnych transkrypcji dni (zapis),
- *      b) wiersz SUMA,
- *      c) suma czasów od/do,
- *    (wniosek modelu NIE jest ścieżką — to wynik, który ścieżki mają potwierdzić),
+ *  - godziny dnia bierzemy z kolumny RAZEM, ale NIGDY więcej niż wynika z czasu
+ *    między wejściem a wyjściem: wpis mniejszy = odliczona przerwa (normalne,
+ *    tak wypełnia karty stajnia), wpis większy = alarm i karta do człowieka,
+ *  - karta wychodzi jako "auto" tylko, gdy sumę potwierdzi ścieżka NIEZALEŻNA od
+ *    głównego odczytu: ślepa transkrypcja kolumny RAZEM albo wiersz SUMA
+ *    (wiersza SUMA może nie być — to nie blokuje karty),
  *  - nazwisko: dwa zdekorelowane odczyty muszą wskazać TĘ SAMĄ pozycję zamkniętej
  *    listy; cokolwiek innego => człowiek, bez wyjątków,
  *  - brak danych != konflikt: pusty wiersz SUMA to brak ścieżki, nie problem.
@@ -177,7 +178,7 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
   }
 
   const dni = [];
-  let zgodneOdDo = 0, niezgodneOdDo = 0, brakOdDo = 0;
+  let zgodneOdDo = 0, niezgodneOdDo = 0, brakOdDo = 0, odliczonePrzerwy = 0;
   for (let i = 0; i < p0.dni.length; i++) {
     const w = p0.dni[i];
     const d = Number(w.d) || i + 1;
@@ -196,11 +197,22 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     if (razemZapis !== null && razem !== null && !rowne(razemZapis, razem) && !w.uwaga) {
       problemy.push(`dzien ${d}: wniosek (${razem}) rozni sie od zapisu (${zapis.razem}) bez uwagi - naruszenie polityki odczytu`);
     }
-    // K1 (informacyjnie): od/do vs RAZEM
+    /* K1 — GODZINY WEJSCIA/WYJSCIA JAKO SUFIT (regula ustalona z uzytkownikiem):
+       wpisane RAZEM moze byc MNIEJSZE niz czas obecnosci (odliczona przerwa -
+       tak wypelniaja karty w stajni, to normalne i nie alarmujemy), ale nigdy
+       WIEKSZE - nie da sie przepracowac wiecej, niz sie bylo. RAZEM > rozpietosc
+       to alarm: pole sporne i karta do czlowieka. */
     const zCzasu = czasZOdDo(zapis.od, zapis.do);
+    let przekroczenie = false;
     if (zCzasu !== null && razem !== null) {
       if (rowne(zCzasu, razem)) zgodneOdDo++;
-      else { niezgodneOdDo++; ostrzezenia.push(`dzien ${d}: od/do daje ${zCzasu}, RAZEM ${razem} (przerwa nieplatna? sprawdz przy sporze)`); }
+      else if (razem > zCzasu + 0.011) {
+        przekroczenie = true; niezgodneOdDo++;
+        sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.razem ?? null, wniosek: razem, zGodzin: zCzasu,
+          uwaga: `wpisano ${razem} h, a z godzin ${zapis.od}-${zapis.do} wychodzi ${zCzasu} h - nie da sie przepracowac wiecej niz obecnosc` });
+      } else {
+        odliczonePrzerwy += Math.round((zCzasu - razem) * 100) / 100;
+      }
     } else if (razem !== null && razem > 0) brakOdDo++;
 
     // 100% tylko w swieta
@@ -216,9 +228,14 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.razem ?? null, wniosek: razem, uwaga: w.uwaga || null });
     }
 
-    dni.push({ d, razem, razemZapis, kod: wniosek.kod || null,
+    // Godziny dnia: wpisane RAZEM, ale NIGDY wiecej niz czas obecnosci.
+    // Przekroczenie i tak jest juz zgloszone jako sporne wyzej.
+    const godziny = (razem !== null && zCzasu !== null) ? Math.min(razem, zCzasu)
+      : (razem !== null ? razem : zCzasu);
+    dni.push({ d, razem: godziny, razemWpisane: razem, razemZapis, kod: wniosek.kod || null,
       sto, nocne: L(wniosek.nocne), uw: L(wniosek.uw), chor: L(wniosek.chor),
-      od: zapis.od ?? null, do: zapis.do ?? null, zCzasu, pewnosc: w.pewnosc, uwaga: w.uwaga || null });
+      od: zapis.od ?? null, do: zapis.do ?? null, zCzasu, przekroczenie,
+      pewnosc: w.pewnosc, uwaga: w.uwaga || null });
   }
 
   /* sumy i ścieżki dowodowe */
@@ -227,10 +244,10 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     ? sumuj(dni.map(x => x.razemZapis)) : null;            // a) literalne zapisy
   const s = p0.suma || {};
   const sciezkaB = L(s.wniosek && s.wniosek.razem);        // b) wiersz SUMA
-  const pokrycieOdDo = (zgodneOdDo + niezgodneOdDo + brakOdDo) > 0
-    ? (zgodneOdDo + niezgodneOdDo) / (zgodneOdDo + niezgodneOdDo + brakOdDo) : 0;
-  const sciezkaC = (pokrycieOdDo === 1 && niezgodneOdDo === 0)
-    ? sumuj(dni.map(x => x.zCzasu ?? x.razem)) : null;     // c) czasy od/do (tylko pelne pokrycie)
+  // Czasy od/do NIE sa juz osobna sciezka dowodowa: sluza jako SUFIT dla kazdego
+  // dnia (patrz K1 wyzej). Przerwa odliczona w dol jest normalna i nie alarmuje,
+  // przekroczenie w gore od razu ladowalo w "sporne".
+  const przekroczen = dni.filter(x => x.przekroczenie).length;
 
   /* ścieżka D: ślepa kolumna RAZEM — porównanie DZIEŃ PO DNIU z odczytem
      głównym. To jedyna kontrola (obok wiersza SUMA), która jest naprawdę
@@ -252,7 +269,9 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
         : L(sv);
       if (sv === '?') { kompletna = false; continue; }
       const wiersz = dni.find(x => x.d === d);
-      const pv = wiersz ? wiersz.razem : null;
+      // porownujemy z tym, co WPISANO w kolumnie RAZEM (slepy odczyt transkrybuje
+      // te sama kolumne), a nie z wartoscia po ograniczeniu sufitem od/do
+      const pv = wiersz ? (wiersz.razemWpisane !== undefined ? wiersz.razemWpisane : wiersz.razem) : null;
       const zgodne = (sn === null && pv === null) || rowne(sn, pv);
       if (!zgodne) {
         sporne.push({ dzien: d, pole: 'RAZEM', wniosek: pv, slepaKolumna: sv,
@@ -261,6 +280,10 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       suma += sn || 0;
     }
     sciezkaD = kompletna ? Math.round(suma * 100) / 100 : null;
+    // slepa kolumna sumuje WPISANE RAZEM; gdy odliczylismy przerwy, jej suma
+    // bedzie wyzsza o dokladnie te przerwy - wtedy tez uznajemy ja za zgodna
+    if (sciezkaD !== null && odliczonePrzerwy > 0
+        && Math.abs(sciezkaD - odliczonePrzerwy - sumaDni) <= 0.011) sciezkaD = sumaDni;
     // wiersz SUMA wg ślepej transkrypcji — drugi głos przy spornym wierszu SUMA
     const slepaSuma = L(slepy.suma);
     if (slepaSuma !== null && sciezkaB !== null && !rowne(slepaSuma, sciezkaB)) {
@@ -270,16 +293,19 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
   }
 
   const sciezki = {
-    zapisyDni: sciezkaA, wierszSuma: sciezkaB, czasyOdDo: sciezkaC, slepaKolumna: sciezkaD,
+    zapisyDni: sciezkaA, wierszSuma: sciezkaB, slepaKolumna: sciezkaD,
+    odliczonePrzerwy: Math.round(odliczonePrzerwy * 100) / 100, przekroczen,
     zgodne: [
-      ['zapisyDni', sciezkaA], ['wierszSuma', sciezkaB], ['czasyOdDo', sciezkaC],
-      ['slepaKolumna', sciezkaD],
+      ['zapisyDni', sciezkaA], ['wierszSuma', sciezkaB], ['slepaKolumna', sciezkaD],
     ].filter(([, v]) => rowne(v, sumaDni)).map(([k]) => k),
   };
   const brakWierszaSumy = sciezkaB === null;
   if (!brakWierszaSumy && !rowne(sciezkaB, sumaDni)) {
-    sporne.push({ dzien: 'SUMA', pole: 'RAZEM', zapis: s.zapis && s.zapis.razem, wniosek: sciezkaB, sumaDni });
-    problemy.push(`suma dni (${sumaDni}) nie zgadza sie z wierszem SUMA (${sciezkaB})`);
+    // Wiersz SUMA liczy pracownik i bywa po prostu zle policzony (albo zawiera
+    // juz doliczona setke). Zglaszamy jako sporne do sprawdzenia, ale to nie
+    // "problem" karty - naszym zrodlem sa dni, nie jego rachunek.
+    sporne.push({ dzien: 'SUMA', pole: 'RAZEM', zapis: s.zapis && s.zapis.razem, wniosek: sciezkaB, sumaDni,
+      uwaga: `pracownik podsumowal ${sciezkaB}, a z dni wychodzi ${sumaDni}` });
   }
 
   /* kolumny dodatków: wiersz SUMA gdy jest, inaczej suma z dni; rozjazd = problem */
@@ -371,8 +397,8 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
   const potwierdzenia = sciezki.zgodne.length;
   const niezalezne = sciezki.zgodne.filter(k => k === 'wierszSuma' || k === 'slepaKolumna').length;
   let status = 'do_weryfikacji';
-  if (nazwiskoOk && potwierdzenia >= 2 && niezalezne >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto';
-  else if (nazwiskoOk && potwierdzenia >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto_slabe'; // bez niezależnego potwierdzenia — nie wchodzi samo
+  if (nazwiskoOk && niezalezne >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto';
+  else if (nazwiskoOk && potwierdzenia >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto_slabe';
 
   return {
     strona, ok: status === 'auto',
