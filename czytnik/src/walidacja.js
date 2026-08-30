@@ -326,7 +326,8 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
      dni - karta Korgul 6/2026: 6 ptaszkow i "6" w SUMIE), a bywaja GODZINAMI
      (Kuleta 7/2026: "56" = 7 dni x 8 h). Regula od kadr (Ala, 2026-08-29):
      dzien nieobecnosci = 8 h; wyjatki w okres.stawkiDnia (3/4 etatu = 6 h). */
-  const stawkaDnia = (okres.stawkiDnia && nazwisko && okres.stawkiDnia[nazwisko])
+  const nadpisanaStawka = !!(okres.stawkiDnia && nazwisko && okres.stawkiDnia[nazwisko]);
+  const stawkaDnia = (nadpisanaStawka && okres.stawkiDnia[nazwisko])
     || Number(okres.domyslnaStawkaDnia) || 8;
   const czyPtaszek = v => /^[vV+xX\u2713\u2714]$/.test(String(v || '').trim());
   const kolumnaNieobecnosci = (pole, lit, etykieta) => {
@@ -352,11 +353,23 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
        Podolecki (3/4 etatu) dostaje 6 h za dzien, choc na karcie ma wpisane 8. */
     const dniZLiczba = p0.dni.filter(x => (L(x.wniosek && x.wniosek[pole]) || 0) > 0).length;
     if (dniZLiczba > 0) {
-      const godzin = dniZLiczba * stawkaDnia;
-      if (!rowne(zDni_, godzin)) {
-        ostrzezenia.push(`${etykieta}: ${dniZLiczba} dni oznaczonych, na karcie wpisano lacznie ${zDni_} h - liczymy wg stawki ${stawkaDnia} h/dzien = ${godzin} h`);
+      // GODZINY WPISANE PRZY DNIACH SA WIAZACE - dzien nieobecnosci to dlugosc
+      // zmiany danej osoby, a pracownik ja zna: 12-godzinne zmiany maja wpisane
+      // po 12 h (Grenda, Kuleta - potwierdzone arkuszem), biurowe po 8.
+      // WYJATEK: osoby z jawna stawka w stawkiDnia (3/4 etatu) - tam wpis bywa
+      // zawyzony (Podolecki ma na karcie 8 h, a nalezy mu sie 6).
+      if (nadpisanaStawka) {
+        const godzin = dniZLiczba * stawkaDnia;
+        if (!rowne(zDni_, godzin)) {
+          ostrzezenia.push(`${etykieta}: ${dniZLiczba} dni oznaczonych, na karcie ${zDni_} h - liczymy wg stawki osoby ${stawkaDnia} h/dzien = ${godzin} h`);
+        }
+        return godzin;
       }
-      return godzin;
+      if (zSumy !== null && !rowne(zSumy, zDni_) && !rowne(zSumy, dniZLiczba)) {
+        sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: zSumy,
+          uwaga: `przy dniach lacznie ${zDni_} h (${dniZLiczba} dni), a w wierszu SUMA ${zSumy}` });
+      }
+      return zDni_;
     }
     if (zSumy === null) {
       // litery U/C w kolumnie rozpoczecia BEZ oznaczen w rubryce: Ala ich nie
