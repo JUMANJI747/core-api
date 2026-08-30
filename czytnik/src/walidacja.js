@@ -346,10 +346,17 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
         uwaga: `${ozn} ptaszkow, a w SUMIE ${zSumy} - nie pasuje ani do dni, ani do ${ozn}x${stawkaDnia} h` });
       return zSumy;
     }
-    if (zDni_ > 0 && (zSumy === null || rowne(zSumy, zDni_))) {
-      // godziny wpisane wprost przy dniach (np. 8 przy dniu urlopu) - bierzemy
-      // doslownie; regula dni x stawka dotyczy wylacznie oznaczen ptaszkiem
-      return zDni_;
+    /* REGULA KADR (uzytkownik, 2026-08-29): urlop i chorobowe licza sie
+       WEDLUG STAWKI OSOBY, niezaleznie od tego, co pracownik wpisal w rubryce
+       - ptaszek, "8", czy nic. Liczy sie LICZBA DNI oznaczonych. Dzieki temu
+       Podolecki (3/4 etatu) dostaje 6 h za dzien, choc na karcie ma wpisane 8. */
+    const dniZLiczba = p0.dni.filter(x => (L(x.wniosek && x.wniosek[pole]) || 0) > 0).length;
+    if (dniZLiczba > 0) {
+      const godzin = dniZLiczba * stawkaDnia;
+      if (!rowne(zDni_, godzin)) {
+        ostrzezenia.push(`${etykieta}: ${dniZLiczba} dni oznaczonych, na karcie wpisano lacznie ${zDni_} h - liczymy wg stawki ${stawkaDnia} h/dzien = ${godzin} h`);
+      }
+      return godzin;
     }
     if (zSumy === null) {
       // litery U/C w kolumnie rozpoczecia BEZ oznaczen w rubryce: Ala ich nie
