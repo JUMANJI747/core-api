@@ -19,6 +19,8 @@
 
 const crypto = require('crypto');
 const { odczytajTeczke } = require('./czytnik');
+const { nowaZakladka } = require('./arkusz');
+const { wymiarCzasuPracy } = require('./kalendarz');
 const { MODEL_DOM } = require('./silnik');
 
 const przebiegi = new Map();   // id -> {status, start, wynik?, blad?}
@@ -72,6 +74,38 @@ function router(express, token) {
     }
     try {
       res.json(await odczytajTeczke(pdf, opcje));
+    } catch (e) {
+      res.status(500).json({ blad: e.message });
+    }
+  });
+
+  /* Wymiar czasu pracy miesiaca z art. 130 KP — to samo, co Ala trzyma w I1.
+     Nie pobieramy tego z sieci: wyliczenie zgadza sie z 42 z 43 zakladek arkusza
+     GODZINY (jedyny wyjatek to Grudzien 2025, gdzie arkusz ma 160 zamiast 168). */
+  r.get('/czytnik/norma', (req, res) => {
+    const rok = Number(req.query.rok), miesiac = Number(req.query.miesiac);
+    if (!(rok > 2000) || !(miesiac >= 1 && miesiac <= 12)) {
+      return res.status(400).json({ blad: 'podaj ?rok=2026&miesiac=8' });
+    }
+    res.json({ rok, miesiac, norma: wymiarCzasuPracy(rok, miesiac), zrodlo: 'art. 130 Kodeksu pracy' });
+  });
+
+  /* Nowa zakladka miesiaca w arkuszu GODZINY: przenosi salda (TOTAL ->
+     POPRZEDNI OKRES, NOCNE TOTAL -> NOCNE POPRZEDNI), wstawia norme i formuly.
+     Zaklada ja TYLKO gdy zamykany miesiac jest kompletny - inaczej saldo
+     przeszloby niepelne (mozna wymusic: wymuszaj: true). */
+  r.post('/czytnik/nowa-zakladka', express.json({ limit: '8mb' }), (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const { poprzedniaSiatka, wyniki, rok, miesiac, wymuszaj } = req.body || {};
+      if (!Array.isArray(poprzedniaSiatka) || !poprzedniaSiatka.length) {
+        return res.status(400).json({ blad: 'brak poprzedniaSiatka (wiersze zamykanej zakladki)' });
+      }
+      if (!(Number(rok) > 2000) || !(Number(miesiac) >= 1 && Number(miesiac) <= 12)) {
+        return res.status(400).json({ blad: 'podaj rok i miesiac NOWEJ zakladki' });
+      }
+      res.json(nowaZakladka({ poprzedniaSiatka, wyniki: wyniki || [],
+        rok: Number(rok), miesiac: Number(miesiac), wymuszaj: !!wymuszaj }));
     } catch (e) {
       res.status(500).json({ blad: e.message });
     }

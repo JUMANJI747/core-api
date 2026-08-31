@@ -89,6 +89,17 @@ wyników — wiernie poza kartami, gdzie nieobecności oznaczono ptaszkiem
   - bez `async`: wynik w odpowiedzi (małe porcje stron),
   - z `async: true`: `202 {przebiegId}` → `GET /czytnik/przebieg/:id` (może liczyć się całą noc),
 Każda odpowiedź niesie `tokeny: {we, wy}` i `kosztUSD` (realne zużycie przebiegu).
+- `GET  /czytnik/norma?rok=2026&miesiac=8` — wymiar czasu pracy z art. 130 KP.
+  **Nie pobieramy tego z sieci**: wyliczenie zgadza się z 42 z 43 zakładek arkusza
+  GODZINY (jedyny wyjątek to Grudzień 2025, gdzie arkusz ma 160, a z Kodeksu
+  wychodzi 168 — błąd w arkuszu).
+- `POST /czytnik/nowa-zakladka` body: `{poprzedniaSiatka, wyniki, rok, miesiac, wymuszaj?}`
+  — buduje siatkę nowej zakładki miesiąca: przenosi **TOTAL → POPRZEDNI OKRES**
+  i **NOCNE TOTAL → NOCNE POPRZEDNI**, wstawia normę do A1/I1 i formuły
+  (`D = C − $I$1`, `E = B + D`, `H = F + G − I`). Zakłada ją **tylko gdy zamykany
+  miesiąc jest kompletny** — brak choćby jednej karty blokuje, żeby saldo nie
+  przeszło niepełne. Odtworzenie lipca z czerwca zgadza się z prawdziwą zakładką
+  w 26 z 27 wierszy (dwie różnice to ręczne korekty w arkuszu).
 - `POST /karty-pracy/odczytaj` (tylko serwis samodzielny) — alias zgodny z kontraktem
   core-api: przełączenie n8n = zmiana samego URL-a.
 

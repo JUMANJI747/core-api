@@ -43,23 +43,8 @@
    "Emilia Rafalska",
    "Tomasz Żuk"
   ],
-  "kuchnia": [
-   "Karolina Lenczewska",
-   "Mateusz Korejwo",
-   "Nikola Maląg",
-   "Paulina Biziewska"
-  ],
   "grupa-brzoskwiniowa": [
    "Andrzej Włoch"
-  ],
-  "bar": [
-   "Alicja Gaber",
-   "Andrii Andriichuk",
-   "Izabela Madejek",
-   "Marzena Oszczyk",
-   "Monika Korgul",
-   "Natalia Kuleta",
-   "Sandra Reluga"
   ],
   "grupa-zielona": [
    "Marzena Dąbrowska",
@@ -82,6 +67,21 @@
   ],
   "grupa-czerwona": [
    "Izabela Ciepła"
+  ],
+  "bar": [
+   "Karolina Lenczewska",
+   "Mateusz Korejwo",
+   "Nikola Maląg",
+   "Paulina Biziewska"
+  ],
+  "kuchnia": [
+   "Alicja Gaber",
+   "Andrii Andriichuk",
+   "Izabela Madejek",
+   "Marzena Oszczyk",
+   "Monika Korgul",
+   "Natalia Kuleta",
+   "Sandra Reluga"
   ]
  },
  "grafikZmianowy": [
@@ -100,5 +100,12 @@
   "stajnia": "razem",
   "domyslne": "odDo"
  },
- "uwagaGrupy": "grupy odczytane z kolorow arkusza GODZINY (lipiec 2026); kuchnia=jasnozielony, bar=niebieski wg wskazania uzytkownika - DO POTWIERDZENIA. Osoby w grafikZmianowym pracuja 12/12: przy nieobecnosci oznaczonej samym ptaszkiem system nie liczy godzin, tylko pyta, ile z tych dni bylo zmianami."
+ "uwagaGrupy": "grupy z kolorow arkusza GODZINY: zielony=bar, niebieski=kuchnia (potwierdzone trescia Grafik_BAR.xlsx i Grafik_Kuchnia.xlsx). Bar i kuchnia pracuja 12/12 poza Paulina Biziewska - przy nieobecnosci oznaczonej ptaszkiem system siega do grafiku, zeby ustalic ktore dni byly zmianami.",
+ "grafikPliki": {
+  "bar": "Grafik_BAR",
+  "kuchnia": "Grafik_Kuchnia",
+  "recepcja": "Grafik_Recepcja",
+  "pokojowi": "Grafik_Pokojowi__Techniczni",
+  "marketing": "Grafik_Marketing"
+ }
 }
