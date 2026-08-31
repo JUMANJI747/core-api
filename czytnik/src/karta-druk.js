@@ -366,14 +366,37 @@ function zbudujPdf(karty) {
   });
 }
 
-/** plan + PDF w jednym; zwraca też nazwę pliku do pobrania */
+const znacznik = o => `${o.rok}-${String(o.miesiac).padStart(2, '0')}`;
+
+/**
+ * Plan + gotowe pliki PDF.
+ *
+ * `podziel: 'miesiac'` (domyślne) daje **osobny PDF na każdy miesiąc** — tak
+ * karty trafiają do obiegu: jedna teczka na miesiąc, drukowana i rozdawana
+ * naraz. `podziel: 'nie'` skleja wszystko w jeden plik.
+ *
+ * @returns {{karty, okresy, pliki: Array<{nazwa, pdf, stron, okres}>, pdf?, nazwa?}}
+ *          `pdf`/`nazwa` są ustawione tylko wtedy, gdy plik wyszedł jeden.
+ */
 async function kartyDoDruku(opcje) {
   const { karty, okresy } = planKart(opcje);
-  const pdf = await zbudujPdf(karty);
-  const o = okresy[0], z = okresy[okresy.length - 1];
-  const nazwa = `karty-${o.rok}-${String(o.miesiac).padStart(2, '0')}`
-    + (okresy.length > 1 ? `_${z.rok}-${String(z.miesiac).padStart(2, '0')}` : '') + '.pdf';
-  return { karty, okresy, pdf, nazwa };
+  const naMiesiace = (opcje.podziel ?? 'miesiac') !== 'nie' && okresy.length > 1;
+
+  const grupy = naMiesiace
+    ? okresy.map(o => ({ okres: o, karty: karty.filter(k => k.rok === o.rok && k.miesiac === o.miesiac) }))
+    : [{ okres: null, karty }];
+
+  const pliki = [];
+  for (const g of grupy) {
+    const pierwszy = znacznik(okresy[0]), ostatni = znacznik(okresy[okresy.length - 1]);
+    const nazwa = g.okres ? `karty-${znacznik(g.okres)}.pdf`
+      : `karty-${pierwszy}${pierwszy === ostatni ? '' : '_' + ostatni}.pdf`;
+    pliki.push({ nazwa, okres: g.okres, stron: g.karty.length, pdf: await zbudujPdf(g.karty) });
+  }
+
+  const wynik = { karty, okresy, pliki };
+  if (pliki.length === 1) { wynik.pdf = pliki[0].pdf; wynik.nazwa = pliki[0].nazwa; }
+  return wynik;
 }
 
 module.exports = { kartyDoDruku, planKart, zbudujPdf, rysujKarte, miesiaceOd, nastepnyMiesiac,

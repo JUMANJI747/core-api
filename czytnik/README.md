@@ -72,8 +72,10 @@ Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 Druga strona Czytnika: zanim karty przeczytamy, trzeba je rozdać. Dotąd Ala co
 miesiąc otwierała wzór w Excelu, wpisywała ręcznie miesiąc, nazwisko i wymiar
 godzin i drukowała — osobno dla każdego pracownika. Teraz robi to jedno
-wywołanie: **PDF, jedna karta = jedna strona A4, cała lista umów o pracę na
-3 miesiące do przodu** (29 osób × 3 = 87 stron).
+wywołanie: **jedna karta = jedna strona A4, jeden PDF na miesiąc**, cała lista
+umów o pracę na 3 miesiące do przodu (3 pliki po 29 stron). Tak karty idą do
+obiegu — teczka na miesiąc, drukowana i rozdawana naraz; `podziel: "nie"` skleja
+wszystko w jeden plik.
 
 Wypełniamy dokładnie te pola, które i tak były wpisywane ręcznie:
 
@@ -150,13 +152,16 @@ Każda odpowiedź niesie `tokeny: {we, wy}` i `kosztUSD` (realne zużycie przebi
   przeszło niepełne. Odtworzenie lipca z czerwca zgadza się z prawdziwą zakładką
   w 26 z 27 wierszy (dwie różnice to ręczne korekty w arkuszu).
 - `POST /czytnik/karty-do-druku` body: `{od?: "2026-09", miesiecy?: 3, osoby?: [...],
-  zDzialem?: false, dzialy?: {osoba: dział}, nrEwid?: {osoba: nr}, kolejnosc?: "osoba"|"miesiac"}`
-  → `{stron, okresy, karty, plik: {nazwa, mime, data (base64 PDF)}}`.
-  Bez `od` bierze **następny miesiąc** po dzisiejszym, bez `osoby` — całą listę
-  umów o pracę. `kolejnosc: "osoba"` (domyślnie) trzyma trzy miesiące jednej
-  osoby razem; `"miesiac"` grupuje stronami po miesiącach.
-- `GET /czytnik/karty-do-druku.pdf?od=2026-09&miesiecy=3&osoby=Jan%20Kowalski;...`
-  — to samo prosto do przeglądarki i na drukarkę (token w nagłówku albo `?token=`).
+  podziel?: "miesiac"|"nie", zDzialem?: false, dzialy?: {osoba: dział},
+  nrEwid?: {osoba: nr}, kolejnosc?: "osoba"|"miesiac"}`
+  → `{stron, okresy, karty, pliki: [{nazwa, mime, okres, stron, data (base64 PDF)}]}`
+  (przy jednym pliku dodatkowo `plik`). Bez `od` bierze **następny miesiąc** po
+  dzisiejszym, bez `osoby` — całą listę umów o pracę. `kolejnosc` układa strony
+  wewnątrz pliku.
+- `GET /czytnik/karty-do-druku.zip?od=2026-09&miesiecy=3` — komplet do
+  przeglądarki: archiwum z jednym PDF-em na miesiąc (token w nagłówku albo `?token=`).
+- `GET /czytnik/karty-do-druku.pdf?od=2026-09&miesiecy=1&osoby=Jan%20Kowalski;...`
+  — pojedynczy plik prosto na drukarkę (przy `miesiecy>1` sklei miesiące w jeden PDF).
 - `GET /czytnik/pracownicy` — lista i działy używane, gdy nie podamy `osoby`.
 - `POST /karty-pracy/odczytaj` (tylko serwis samodzielny) — alias zgodny z kontraktem
   core-api: przełączenie n8n = zmiana samego URL-a.

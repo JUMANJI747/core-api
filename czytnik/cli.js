@@ -4,7 +4,8 @@
  *
  *   node cli.js obrazy <plik.pdf> <strona> [katalog]   — zrzuca 4 obrazy (bez modelu)
  *   node cli.js odczyt <plik.pdf> [strony np. 1,2,5]   — pełny odczyt (wymaga ANTHROPIC_API_KEY)
- *   node cli.js karty <plik.pdf> [2026-09] [ile mies.]  — PUSTE karty do wydruku dla całej listy
+ *   node cli.js karty <katalog|plik.pdf> [2026-09] [ile]  — PUSTE karty do wydruku dla całej listy
+ *       (katalog -> jeden PDF na miesiąc, nazwa z .pdf -> wszystko w jednym pliku)
  */
 
 const fs = require('fs/promises');
@@ -22,15 +23,21 @@ const path = require('path');
   if (tryb === 'karty') {
     const { kartyDoDruku } = require('./src/karta-druk');
     const [rok, mies] = String(reszta[0] || '').split('-').map(Number);
+    const jedenPlik = plik.toLowerCase().endsWith('.pdf');
     const w = await kartyDoDruku({
       od: rok && mies ? { rok, miesiac: mies } : null,
       miesiecy: Number(reszta[1]) || 3,
+      podziel: jedenPlik ? 'nie' : 'miesiac',
     });
-    await fs.writeFile(plik, w.pdf);
+    if (!jedenPlik) await fs.mkdir(plik, { recursive: true });
     const osoby = new Set(w.karty.map(k => k.osoba));
-    console.log(`${plik}: ${w.karty.length} kart (${osoby.size} osob x ${w.okresy.length} mies.)`);
-    for (const o of w.okresy) console.log(`  ${String(o.miesiac).padStart(2, '0')}.${o.rok}: norma ${
-      w.karty.find(k => k.rok === o.rok && k.miesiac === o.miesiac).norma} h`);
+    console.log(`${w.karty.length} kart (${osoby.size} osob x ${w.okresy.length} mies.)`);
+    for (const p of w.pliki) {
+      const cel = jedenPlik ? plik : path.join(plik, p.nazwa);
+      await fs.writeFile(cel, p.pdf);
+      const norma = w.karty.find(k => !p.okres || (k.rok === p.okres.rok && k.miesiac === p.okres.miesiac)).norma;
+      console.log(`  ${cel}: ${p.stron} stron${p.okres ? `, norma ${norma} h` : ''}`);
+    }
     return;
   }
 

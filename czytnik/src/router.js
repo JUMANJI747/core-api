@@ -22,6 +22,7 @@ const { odczytajTeczke } = require('./czytnik');
 const { nowaZakladka } = require('./arkusz');
 const { wymiarCzasuPracy } = require('./kalendarz');
 const { kartyDoDruku, domyslniPracownicy } = require('./karta-druk');
+const { spakuj } = require('./zip');
 const { MODEL_DOM } = require('./silnik');
 
 const przebiegi = new Map();   // id -> {status, start, wynik?, blad?}
@@ -126,32 +127,60 @@ function router(express, token) {
       dzialy: zr.dzialy || {},
       nrEwid: zr.nrEwid || {},
       kolejnosc: zr.kolejnosc === 'miesiac' ? 'miesiac' : 'osoba',
+      podziel: zr.podziel === 'nie' ? 'nie' : 'miesiac',
     };
   };
+  const autoQuery = (req, res) => {
+    if (token && req.get('x-token') !== String(token).trim() && req.query.token !== String(token).trim()) {
+      res.status(401).json({ blad: 'zly token' });
+      return false;
+    }
+    return true;
+  };
 
+  /* Domyślnie JEDEN PDF NA MIESIĄC (`pliki`), bo tak karty idą do obiegu:
+     teczka na miesiąc, drukowana i rozdawana naraz. `podziel: "nie"` skleja
+     wszystko w jeden plik; `plik` jest wtedy dla zgodności ustawiony też. */
   r.post('/czytnik/karty-do-druku', express.json({ limit: '1mb' }), async (req, res) => {
     if (!auth(req, res)) return;
     try {
       const w = await kartyDoDruku(parametryDruku(req.body || {}));
+      const pliki = w.pliki.map(p => ({ nazwa: p.nazwa, mime: 'application/pdf',
+        okres: p.okres, stron: p.stron, data: p.pdf.toString('base64') }));
       res.json({
         ok: true, stron: w.karty.length, okresy: w.okresy, karty: w.karty,
-        plik: { nazwa: w.nazwa, mime: 'application/pdf', data: w.pdf.toString('base64') },
+        pliki, ...(pliki.length === 1 ? { plik: pliki[0] } : {}),
       });
     } catch (e) {
       res.status(400).json({ blad: e.message });
     }
   });
 
-  /* To samo prosto do przeglądarki i na drukarkę (token w nagłówku albo ?token=). */
+  /* Prosto do przeglądarki i na drukarkę (token w nagłówku albo ?token=):
+     .pdf daje JEDEN miesiąc, .zip cały komplet po jednym PDF na miesiąc. */
   r.get('/czytnik/karty-do-druku.pdf', async (req, res) => {
-    if (token && req.get('x-token') !== String(token).trim() && req.query.token !== String(token).trim()) {
-      return res.status(401).json({ blad: 'zly token' });
-    }
+    if (!autoQuery(req, res)) return;
     try {
-      const w = await kartyDoDruku(parametryDruku(req.query || {}));
+      const w = await kartyDoDruku({ ...parametryDruku(req.query || {}), podziel: 'nie' });
       res.set('Content-Type', 'application/pdf');
       res.set('Content-Disposition', `inline; filename="${w.nazwa}"`);
       res.send(w.pdf);
+    } catch (e) {
+      res.status(400).json({ blad: e.message });
+    }
+  });
+
+  r.get('/czytnik/karty-do-druku.zip', async (req, res) => {
+    if (!autoQuery(req, res)) return;
+    try {
+      const w = await kartyDoDruku(parametryDruku(req.query || {}));
+      const zip = spakuj(w.pliki.map(p => ({ nazwa: p.nazwa, dane: p.pdf })));
+      const o = w.okresy[0], z = w.okresy[w.okresy.length - 1];
+      const nazwa = `karty-${o.rok}-${String(o.miesiac).padStart(2, '0')}`
+        + (w.okresy.length > 1 ? `_${z.rok}-${String(z.miesiac).padStart(2, '0')}` : '') + '.zip';
+      res.set('Content-Type', 'application/zip');
+      res.set('Content-Disposition', `attachment; filename="${nazwa}"`);
+      res.send(zip);
     } catch (e) {
       res.status(400).json({ blad: e.message });
     }
