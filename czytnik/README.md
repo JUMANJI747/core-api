@@ -81,7 +81,7 @@ Wypełniamy dokładnie te pola, które i tak były wpisywane ręcznie:
 |---|---|
 | `C2` Miesiąc/rok | np. „WRZESIEŃ 2026" |
 | `J2` Ilość godzin do przepracowania | wymiar z art. 130 KP (`kalendarz.js`) |
-| `G3` Nazwisko i imię | z listy `korpus/pracownicy.json`, WIELKIMI LITERAMI |
+| `G3` Nazwisko i imię | z listy `dane/pracownicy.json`, WIELKIMI LITERAMI |
 | `C3` Nr ewd. | tylko gdy podany w wywołaniu |
 | `M2` Dział | **domyślnie pusty** — patrz niżej |
 

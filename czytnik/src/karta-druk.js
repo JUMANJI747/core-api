@@ -274,14 +274,14 @@ function rysujKarte(doc, dane) {
 }
 
 /**
- * Domyślna obsada: lista umów o pracę i działy z `korpus/pracownicy.json`
+ * Domyślna obsada: lista umów o pracę i działy z `dane/pracownicy.json`
  * (to samo źródło, co przy czytaniu kart — jedna lista, nie dwie).
  * n8n może podać własne `osoby`/`dzialy` w wywołaniu i tej listy nie ruszać.
  */
 function domyslniPracownicy() {
   try {
     const p = JSON.parse(fs.readFileSync(
-      path.join(__dirname, '..', 'korpus', 'pracownicy.json'), 'utf8'));
+      path.join(__dirname, '..', 'dane', 'pracownicy.json'), 'utf8'));
     return { osoby: p.lista || [], dzialy: p.dzialy || {},
       nazwiskaNaKarcie: p.nazwiskaNaKarcie || {} };
   } catch {
@@ -310,7 +310,7 @@ function nastepnyMiesiac(dzis = new Date()) {
  *
  * @param {Object} o
  * @param {string[]} [o.osoby]      lista pracowników (domyślnie cała lista UoP
- *                                  z korpus/pracownicy.json; kolejność = kolejność stron)
+ *                                  z dane/pracownicy.json; kolejność = kolejność stron)
  * @param {{rok,miesiac}} [o.od]    pierwszy miesiąc; domyślnie następny po dzisiejszym
  * @param {number} [o.miesiecy]     ile miesięcy do przodu (domyślnie 3)
  * @param {Object} [o.dzialy]       {osoba: dział}
