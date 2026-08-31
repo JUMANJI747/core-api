@@ -66,6 +66,39 @@ Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 + formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres
 (pełny ślad, idempotencja per strona), snapshot-backup tabel Google Sheets.
 
+## Puste karty do wydruku
+
+Druga strona Czytnika: zanim karty przeczytamy, trzeba je rozdać. Dotąd Ala co
+miesiąc otwierała wzór w Excelu, wpisywała ręcznie miesiąc, nazwisko i wymiar
+godzin i drukowała — osobno dla każdego pracownika. Teraz robi to jedno
+wywołanie: **PDF, jedna karta = jedna strona A4, cała lista umów o pracę na
+3 miesiące do przodu** (29 osób × 3 = 87 stron).
+
+Wypełniamy dokładnie te pola, które i tak były wpisywane ręcznie:
+
+| pole wzoru | co wchodzi |
+|---|---|
+| `C2` Miesiąc/rok | np. „Wrzesień 2026" |
+| `J2` Ilość godzin do przepracowania | wymiar z art. 130 KP (`kalendarz.js`) |
+| `G3` Nazwisko i imię | z listy `korpus/pracownicy.json` |
+| `M2` Dział | z mapy `dzialy` (27 z 29 osób; reszta zostaje „Dział: ......") |
+| `C3` Nr ewd. | tylko gdy podany w wywołaniu |
+
+Reszta zostaje pusta — wypełnia pracownik i przełożony. Dni, których w miesiącu
+nie ma (30-dniowy wrzesień, luty), mają pusty numer i szary wiersz, żeby nikt
+tam nic nie wpisał.
+
+**Wzór nie jest przepisany z palca.** `assets/karta-wzor.json` powstał z
+oryginalnego pliku kadrowego (`Karta_ewid.cz._pr.obowiązuje_OK.xls`, arkusz
+„Wzór") przez `narzedzia/wzor-do-json.py` — szerokości kolumn, wysokości wierszy,
+scalenia, teksty, czcionki i ramki co do komórki. `src/karta-druk.js` jest małym
+silnikiem druku arkusza: liczy geometrię, rysuje krawędzie (grubsza wygrywa,
+wnętrza scaleń bez kresek) i składa teksty z wyrównaniem Excela — z przelewaniem
+na puste komórki i ucinaniem przed zajętymi. Gdy Ala zmieni wzór, powtarzamy
+ekstrakcję i kod zostaje bez zmian. Czcionka (Liberation Sans, metrycznie zgodna
+z Arialem ze wzoru) leży w `assets/fonty/` — obraz Dockera nie ma żadnych
+czcionek, a PDF bez osadzonego kroju nie zapisze polskich znaków.
+
 ## Ewaluacja bez kosztów — `npm run eval`
 
 **Zasada: strojenie REGUŁ nie wymaga czytania kart modelem.** Dopracowanie reguł
@@ -106,6 +139,15 @@ Każda odpowiedź niesie `tokeny: {we, wy}` i `kosztUSD` (realne zużycie przebi
   miesiąc jest kompletny** — brak choćby jednej karty blokuje, żeby saldo nie
   przeszło niepełne. Odtworzenie lipca z czerwca zgadza się z prawdziwą zakładką
   w 26 z 27 wierszy (dwie różnice to ręczne korekty w arkuszu).
+- `POST /czytnik/karty-do-druku` body: `{od?: "2026-09", miesiecy?: 3, osoby?: [...],
+  dzialy?: {osoba: dział}, nrEwid?: {osoba: nr}, kolejnosc?: "osoba"|"miesiac"}`
+  → `{stron, okresy, karty, plik: {nazwa, mime, data (base64 PDF)}}`.
+  Bez `od` bierze **następny miesiąc** po dzisiejszym, bez `osoby` — całą listę
+  umów o pracę. `kolejnosc: "osoba"` (domyślnie) trzyma trzy miesiące jednej
+  osoby razem; `"miesiac"` grupuje stronami po miesiącach.
+- `GET /czytnik/karty-do-druku.pdf?od=2026-09&miesiecy=3&osoby=Jan%20Kowalski;...`
+  — to samo prosto do przeglądarki i na drukarkę (token w nagłówku albo `?token=`).
+- `GET /czytnik/pracownicy` — lista i działy używane, gdy nie podamy `osoby`.
 - `POST /karty-pracy/odczytaj` (tylko serwis samodzielny) — alias zgodny z kontraktem
   core-api: przełączenie n8n = zmiana samego URL-a.
 
@@ -123,6 +165,7 @@ Auth: nagłówek `x-token` = `CZYTNIK_TOKEN` (lub `PREPROCESS_TOKEN`).
 ```
 node cli.js obrazy korpus/2026-06-stajnia.pdf 1 out/   # zrzut 4 obrazów, bez modelu
 node cli.js odczyt korpus/2026-06-stajnia.pdf 1,2      # pełny odczyt (wymaga klucza)
+node cli.js karty karty-IX-XI.pdf 2026-09 3            # puste karty do wydruku (bez klucza)
 ```
 
 ## Korpus

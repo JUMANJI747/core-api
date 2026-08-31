@@ -4,6 +4,7 @@
  *
  *   node cli.js obrazy <plik.pdf> <strona> [katalog]   — zrzuca 4 obrazy (bez modelu)
  *   node cli.js odczyt <plik.pdf> [strony np. 1,2,5]   — pełny odczyt (wymaga ANTHROPIC_API_KEY)
+ *   node cli.js karty <plik.pdf> [2026-09] [ile mies.]  — PUSTE karty do wydruku dla całej listy
  */
 
 const fs = require('fs/promises');
@@ -13,8 +14,24 @@ const path = require('path');
 (async () => {
   const [tryb, plik, ...reszta] = process.argv.slice(2);
   if (!tryb || !plik) {
-    console.error('uzycie: node cli.js obrazy <pdf> <strona> [out] | node cli.js odczyt <pdf> [strony]');
+    console.error('uzycie: node cli.js obrazy <pdf> <strona> [out] | node cli.js odczyt <pdf> [strony]'
+      + ' | node cli.js karty <pdf> [2026-09] [ile]');
     process.exit(1);
+  }
+
+  if (tryb === 'karty') {
+    const { kartyDoDruku } = require('./src/karta-druk');
+    const [rok, mies] = String(reszta[0] || '').split('-').map(Number);
+    const w = await kartyDoDruku({
+      od: rok && mies ? { rok, miesiac: mies } : null,
+      miesiecy: Number(reszta[1]) || 3,
+    });
+    await fs.writeFile(plik, w.pdf);
+    const osoby = new Set(w.karty.map(k => k.osoba));
+    console.log(`${plik}: ${w.karty.length} kart (${osoby.size} osob x ${w.okresy.length} mies.)`);
+    for (const o of w.okresy) console.log(`  ${String(o.miesiac).padStart(2, '0')}.${o.rok}: norma ${
+      w.karty.find(k => k.rok === o.rok && k.miesiac === o.miesiac).norma} h`);
+    return;
   }
 
   if (tryb === 'obrazy') {

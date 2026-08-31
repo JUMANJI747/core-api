@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const { odczytajTeczke } = require('./czytnik');
 const { nowaZakladka } = require('./arkusz');
 const { wymiarCzasuPracy } = require('./kalendarz');
+const { kartyDoDruku, domyslniPracownicy } = require('./karta-druk');
 const { MODEL_DOM } = require('./silnik');
 
 const przebiegi = new Map();   // id -> {status, start, wynik?, blad?}
@@ -110,6 +111,54 @@ function router(express, token) {
       res.status(500).json({ blad: e.message });
     }
   });
+
+  /* PUSTE karty do wydruku — druga strona Czytnika (zanim karty przeczytamy,
+     trzeba je rozdać). Jedna karta = jedna strona A4, wypełnione: miesiąc,
+     wymiar godzin z art. 130 KP, nazwisko i dział. Domyślnie cała lista umów
+     o pracę na 3 miesiące do przodu. */
+  const parametryDruku = (zr) => {
+    const [rok, mies] = String(zr.od || '').split('-').map(Number);
+    return {
+      od: rok && mies ? { rok, miesiac: mies } : null,
+      miesiecy: Number(zr.miesiecy) > 0 ? Number(zr.miesiecy) : 3,
+      osoby: Array.isArray(zr.osoby) ? zr.osoby
+        : (typeof zr.osoby === 'string' && zr.osoby ? zr.osoby.split(';').map(s => s.trim()) : null),
+      dzialy: zr.dzialy || {},
+      nrEwid: zr.nrEwid || {},
+      kolejnosc: zr.kolejnosc === 'miesiac' ? 'miesiac' : 'osoba',
+    };
+  };
+
+  r.post('/czytnik/karty-do-druku', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const w = await kartyDoDruku(parametryDruku(req.body || {}));
+      res.json({
+        ok: true, stron: w.karty.length, okresy: w.okresy, karty: w.karty,
+        plik: { nazwa: w.nazwa, mime: 'application/pdf', data: w.pdf.toString('base64') },
+      });
+    } catch (e) {
+      res.status(400).json({ blad: e.message });
+    }
+  });
+
+  /* To samo prosto do przeglądarki i na drukarkę (token w nagłówku albo ?token=). */
+  r.get('/czytnik/karty-do-druku.pdf', async (req, res) => {
+    if (token && req.get('x-token') !== String(token).trim() && req.query.token !== String(token).trim()) {
+      return res.status(401).json({ blad: 'zly token' });
+    }
+    try {
+      const w = await kartyDoDruku(parametryDruku(req.query || {}));
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', `inline; filename="${w.nazwa}"`);
+      res.send(w.pdf);
+    } catch (e) {
+      res.status(400).json({ blad: e.message });
+    }
+  });
+
+  /* Kogo i z jakim działem wydrukujemy, gdy nie podamy listy w wywołaniu. */
+  r.get('/czytnik/pracownicy', (req, res) => res.json(domyslniPracownicy()));
 
   r.get('/czytnik/przebieg/:id', (req, res) => {
     if (!auth(req, res)) return;

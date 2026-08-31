@@ -116,5 +116,35 @@
   "Marketing/Przemek": "Przemek Podolecki",
   "Recepcja/Sylwia": "Sylwia Czuryłowicz"
  },
- "uwagaImionaGrafiku": "mapowanie dla imion niejednoznacznych. Ustalone przez porownanie sum miesiecznych z arkuszem GODZINY: Marzenka(kuchnia)=Oszczyk 167/174,5 i Marzena(pokojowi)=Dabrowska 174,5/193 - zgodne co do grosza w obu miesiacach. Natalia(kuchnia)=Kuleta 151 w czerwcu; Natalia(marketing)=Blank-Kobryn (w marketingu razem z Podoleckim). 'Natalia S.' w kuchni i trzy Weroniki to zlecenia - poza automatem. Klucz: <nazwa arkusza grafiku>/<imie>."
+ "uwagaImionaGrafiku": "mapowanie dla imion niejednoznacznych. Ustalone przez porownanie sum miesiecznych z arkuszem GODZINY: Marzenka(kuchnia)=Oszczyk 167/174,5 i Marzena(pokojowi)=Dabrowska 174,5/193 - zgodne co do grosza w obu miesiacach. Natalia(kuchnia)=Kuleta 151 w czerwcu; Natalia(marketing)=Blank-Kobryn (w marketingu razem z Podoleckim). 'Natalia S.' w kuchni i trzy Weroniki to zlecenia - poza automatem. Klucz: <nazwa arkusza grafiku>/<imie>.",
+ "dzialy": {
+  "Alicja Gaber": "Kuchnia",
+  "Andrii Andriichuk": "Kuchnia",
+  "Andrzej Włoch": "Pokojowi / Techniczni",
+  "Daniel Wójcik": "Stajnia",
+  "Dawid Grenda": "Recepcja",
+  "Dunayeva Polina": "Stajnia",
+  "Emilia Rafalska": "Recepcja",
+  "Izabela Madejek": "Kuchnia",
+  "Karolina Lenczewska": "Bar",
+  "Marzena Dąbrowska": "Pokojowi / Techniczni",
+  "Marzena Oszczyk": "Kuchnia",
+  "Mateusz Korejwo": "Bar",
+  "Małgorzata Stącel": "Stajnia",
+  "Mirosław Owczarek": "Stajnia",
+  "Monika Korgul": "Kuchnia",
+  "Natalia Blank - Kobryń": "Marketing",
+  "Natalia Kuleta": "Kuchnia",
+  "Nikola Maląg": "Bar",
+  "Orzełek Adrian": "Stajnia",
+  "Patrycja Żak": "Stajnia",
+  "Paulina Biziewska": "Bar",
+  "Paweł Kisiel": "Stajnia",
+  "Rynkiewicz Martyna": "Stajnia",
+  "Sandra Reluga": "Kuchnia",
+  "Sylwia Czuryłowicz": "Recepcja",
+  "Tomasz Żuk": "Recepcja",
+  "Urszula Wołoch": "Pokojowi / Techniczni"
+ },
+ "uwagaDzialy": "dzial drukowany na pustej karcie. Zrodla: grafiki dzialow (Bar, Recepcja, Pokojowi__Techniczni, Kuchnia - 16 osob dopasowanych po imionach), grupa 'stajnia' i 'kuchnia' z arkusza GODZINY, Marketing wprost od uzytkownika (Natalia Blank - Kobryn). Osoby spoza tej mapy (Izabela Ciepla, Przemek Podolecki) dostaja karte z pustym polem 'Dzial: ......' - dopisuje Ala."
 }
