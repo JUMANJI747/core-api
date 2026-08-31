@@ -90,7 +90,8 @@ Wypełniamy dokładnie te pola, które i tak były wpisywane ręcznie:
 Zapis odtwarza to, co stoi na kartach krążących dziś po firmie (sprawdzone na
 skanach czerwca i lipca): miesiąc i nazwisko wielkimi literami, wymiar godzin
 w ramce, rubryka **Dział pusta na każdej karcie** — dlatego działów nie
-wpisujemy, choć mapa `dzialy` czeka w `pracownicy.json` na `zDzialem: true`.
+wpisujemy, choć mapa `dzialy` czeka w `pracownicy.json` na `zDzialem: true`
+(podane wprost pary `dzialy: {osoba: dział}` działają zawsze).
 Jedyne odstępstwo: **dopisujemy rok** („WRZESIEŃ 2026" zamiast „CZERWIEC"), bo
 bez roku odczyt musi go zgadywać z daty przetwarzania i na przełomie roku trafia
 w grudzień poprzedniego.
@@ -110,6 +111,12 @@ na puste komórki i ucinaniem przed zajętymi. Gdy Ala zmieni wzór, powtarzamy
 ekstrakcję i kod zostaje bez zmian. Czcionka (Liberation Sans, metrycznie zgodna
 z Arialem ze wzoru) leży w `assets/fonty/` — obraz Dockera nie ma żadnych
 czcionek, a PDF bez osadzonego kroju nie zapisze polskich znaków.
+
+Drogę wydruku pilnuje `npm test` (wbudowany `node:test`, bez zależności i bez
+wywołań API) — testy idą **przez router**, tak jak n8n, bo pierwsza wersja
+przepuściła błąd, którego nie było widać z CLI: router wysyła `dzialy: {}`,
+a pusty obiekt jest w JS prawdziwy, więc domyślne działy trafiały na papier
+mimo `zDzialem: false`.
 
 ## Ewaluacja bez kosztów — `npm run eval`
 

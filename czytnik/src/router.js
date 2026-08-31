@@ -125,6 +125,7 @@ function router(express, token) {
       osoby: Array.isArray(zr.osoby) ? zr.osoby
         : (typeof zr.osoby === 'string' && zr.osoby ? zr.osoby.split(';').map(s => s.trim()) : null),
       dzialy: zr.dzialy || {},
+      zDzialem: zr.zDzialem === true || zr.zDzialem === 'true',
       nrEwid: zr.nrEwid || {},
       kolejnosc: zr.kolejnosc === 'miesiac' ? 'miesiac' : 'osoba',
       podziel: zr.podziel === 'nie' ? 'nie' : 'miesiac',

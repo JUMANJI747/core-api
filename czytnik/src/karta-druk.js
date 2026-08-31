@@ -323,8 +323,13 @@ function planKart({ osoby, od, miesiecy = 3, dzialy, zDzialem = false, nrEwid = 
   osoby = Array.isArray(osoby) && osoby.length ? osoby : domyslne.osoby;
   /* Na kartach, które firma drukuje dziś, rubryka „Dział" jest pusta na
      KAŻDEJ (sprawdzone na skanach czerwca i lipca) — więc domyślnie też jej
-     nie wypełniamy. Mapa działów czeka w pracownicy.json na `zDzialem: true`. */
-  dzialy = zDzialem || dzialy ? { ...domyslne.dzialy, ...(dzialy || {}) } : {};
+     nie wypełniamy. Mapa z pracownicy.json wchodzi WYŁĄCZNIE przy
+     `zDzialem: true`; podane wprost pary osoba->dział działają zawsze.
+     UWAGA: warunek musi patrzeć na LICZBĘ kluczy, nie na sam obiekt — router
+     wstawia `dzialy: {}`, a pusty obiekt jest w JS prawdziwy i przez to
+     domyślne działy wchodziły na wydruk mimo `zDzialem: false`. */
+  const jawne = dzialy && Object.keys(dzialy).length ? dzialy : null;
+  dzialy = { ...(zDzialem ? domyslne.dzialy : {}), ...(jawne || {}) };
   const nazwy = domyslne.nazwiskaNaKarcie || {};
   if (!Array.isArray(osoby) || !osoby.length) throw new Error('brak listy osob');
   if (!(miesiecy >= 1 && miesiecy <= 24)) throw new Error('miesiecy: 1..24');
