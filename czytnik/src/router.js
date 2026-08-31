@@ -32,10 +32,10 @@ function sprzatajPrzebiegi() {
 
 function wyciagnijOpcje(body) {
   const { strony, rok, miesiac, nazwiska, rownolegle, model, dpi,
-    stawkiDnia, domyslnaStawkaDnia, zapiszSurowe, zrodloGodzin, grafikZmianowy, grafik, grafikArkusze } = body || {};
+    stawkiDnia, domyslnaStawkaDnia, zapiszSurowe, zrodloGodzin, grafikZmianowy, grafik, grafikArkusze, imionaGrafiku } = body || {};
   return { strony, rok, miesiac, nazwiska, rownolegle, model, dpi,
     stawkiDnia, domyslnaStawkaDnia, zapiszSurowe, zrodloGodzin, grafikZmianowy,
-    grafik, grafikArkusze };
+    grafik, grafikArkusze, imionaGrafiku };
 }
 
 function router(express, token) {

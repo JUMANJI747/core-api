@@ -239,7 +239,7 @@ async function odczytajTeczke(pdf, opcje = {}) {
       // grafik zmian: gotowa mapa albo surowe arkusze z Google Sheets do sparsowania
       grafik: opcje.grafik && typeof opcje.grafik === 'object' ? opcje.grafik
         : (Array.isArray(opcje.grafikArkusze) && Array.isArray(opcje.nazwiska)
-            ? zbudujGrafikMiesiaca(opcje.grafikArkusze, opcje.nazwiska).grafik : null),
+            ? zbudujGrafikMiesiaca(opcje.grafikArkusze, opcje.nazwiska, opcje.imionaGrafiku).grafik : null),
       model: opcje.model || MODEL_DOM, dpi: opcje.dpi,
     };
         const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));

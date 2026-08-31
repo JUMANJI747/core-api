@@ -41,7 +41,13 @@ deterministyczną walidację i pomiar na korpusie.
      (Korgul 6/2026 dzień 17: 12 h w grafiku, na karcie nic). Godzin **nie
      doliczamy** — zgłaszamy do sprawdzenia.
    Dzień oznaczony na karcie, którego grafik nie zna → pytanie, nie zgadywanie.
-   Bez grafiku osoby z `grafikZmianowy` mają nieobecności wstrzymywane,
+   Bez grafiku osoby z `grafikZmianowy` mają nieobecności wstrzymywane.
+   Grafik podpisuje ludzi **samymi imionami**, więc dopasowanie idzie po zdrobnieniach,
+   a tam gdzie imię jest niejednoznaczne — po jawnej mapie `imionaGrafiku`
+   (`"Dział/Imię": "Imię Nazwisko"`, rozstrzygnięte porównaniem sum miesięcznych
+   grafiku z arkuszem GODZINY dla dwóch miesięcy: Kuchnia/Marzenka = Oszczyk,
+   Pokojowi/Marzena = Dąbrowska, Kuchnia/Natalia = Kuleta, Marketing/Natalia =
+   Blank‑Kobryń). Bez mapy grafik rozpoznawał 13 osób, z mapą 16,
 8. **brakujący wpis** (jest godzina rozpoczęcia, nie ma zakończenia ani sumy)
    → pole sporne; taki dzień potrafi ukryć cały dzień pracy (Czuryłowicz 6/2026),
 9. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę

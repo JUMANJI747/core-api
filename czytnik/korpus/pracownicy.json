@@ -107,5 +107,14 @@
   "recepcja": "Grafik_Recepcja",
   "pokojowi": "Grafik_Pokojowi__Techniczni",
   "marketing": "Grafik_Marketing"
- }
+ },
+ "imionaGrafiku": {
+  "Kuchnia/Marzenka": "Marzena Oszczyk",
+  "Pokojowi__Techniczni/Marzena": "Marzena Dąbrowska",
+  "Kuchnia/Natalia": "Natalia Kuleta",
+  "Marketing/Natalia": "Natalia Blank - Kobryń",
+  "Marketing/Przemek": "Przemek Podolecki",
+  "Recepcja/Sylwia": "Sylwia Czuryłowicz"
+ },
+ "uwagaImionaGrafiku": "mapowanie dla imion niejednoznacznych. Ustalone przez porownanie sum miesiecznych z arkuszem GODZINY: Marzenka(kuchnia)=Oszczyk 167/174,5 i Marzena(pokojowi)=Dabrowska 174,5/193 - zgodne co do grosza w obu miesiacach. Natalia(kuchnia)=Kuleta 151 w czerwcu; Natalia(marketing)=Blank-Kobryn (w marketingu razem z Podoleckim). 'Natalia S.' w kuchni i trzy Weroniki to zlecenia - poza automatem. Klucz: <nazwa arkusza grafiku>/<imie>."
 }

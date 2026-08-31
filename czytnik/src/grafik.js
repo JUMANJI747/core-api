@@ -124,7 +124,14 @@ const rozwin = t => ZDROBNIENIA[t] || t;
  * Wymaga JEDNOZNACZNOŚCI — dwie pasujące osoby oznaczają brak dopasowania
  * (w firmie są dwie Marzeny, dwie Natalie i trzy Weroniki).
  */
-function dopasujImie(imieZGrafiku, lista) {
+function dopasujImie(imieZGrafiku, lista, mapa = null, dzial = null) {
+  // Jawne mapowanie ma pierwszenstwo - rozstrzyga imiona niejednoznaczne
+  // (dwie Marzeny: Oszczyk w kuchni, Dabrowska u pokojowych; dwie Natalie:
+  // Kuleta w kuchni, Blank-Kobryn w marketingu).
+  if (mapa) {
+    const wprost = mapa[`${dzial}/${imieZGrafiku}`] || mapa[imieZGrafiku];
+    if (wprost) return wprost;
+  }
   const t = tokeny(imieZGrafiku).map(rozwin);
   if (!t.length || !Array.isArray(lista)) return null;
   const pasuje = lista.filter(pelne => {
@@ -139,12 +146,12 @@ function dopasujImie(imieZGrafiku, lista) {
  * pełne_nazwisko -> { dni, suma, ... }. Imiona niedopasowane trafiają do
  * `nieprzypisane`, żeby nie znikały po cichu.
  */
-function zbudujGrafikMiesiaca(arkusze, lista) {
+function zbudujGrafikMiesiaca(arkusze, lista, mapaImion = null) {
   const wynik = {}, nieprzypisane = [];
   for (const { nazwa, siatka } of arkusze || []) {
     const { osoby } = parsujGrafik(siatka);
     for (const [imie, dane] of Object.entries(osoby)) {
-      const pelne = dopasujImie(imie, lista);
+      const pelne = dopasujImie(imie, lista, mapaImion, nazwa);
       if (!pelne) { nieprzypisane.push({ dzial: nazwa || null, imie }); continue; }
       // ta sama osoba moze byc w dwoch dzialach - scalamy dni
       if (!wynik[pelne]) wynik[pelne] = { dni: {}, suma: null, norma: null, dzialy: [] };
