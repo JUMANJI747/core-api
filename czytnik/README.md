@@ -60,7 +60,8 @@ dnia jako kontrolą tożsamości wiersza) i czytane ponownie neutralnym promptem
 zoom to transkrypcja (wchodzi do obu kanałów), po czym karta przechodzi PEŁNĄ
 walidację od nowa. Co zostanie sporne, wraca w `paczkaRewizyjna`
 [{dzien, pole, odczyty, obraz base64}] — gotowe do maila z formularzem dla
-człowieka. Aliasy imion (Przemek→Przemysław) i dopasowanie nazwisk per słowo.
+człowieka. Aliasy nazwisk (Przemek→Przemysław, ANDRICHUK z kart = Andriichuk
+z arkusza — jedna osoba) i dopasowanie per słowo.
 
 Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 + formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres

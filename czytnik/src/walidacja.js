@@ -58,8 +58,13 @@ function czasZOdDo(od, do_) {
 
 /* ------------------------------------------------- nazwiska (zamknięta lista) */
 
-// Aliasy imion: w arkuszu kadrowym bywa zdrobnienie, na karcie pelne imie.
-const ALIASY = { PRZEMEK: 'PRZEMYSLAW', PRZEMO: 'PRZEMYSLAW' };
+/* Aliasy: w arkuszu kadrowym bywa zdrobnienie, na karcie pelne imie
+   (Przemek/Przemyslaw), a jedno nazwisko ma po prostu dwie pisownie —
+   ANDRICHUK na kartach i Andriichuk w arkuszu GODZINY to ta sama osoba
+   (potwierdzone przez uzytkownika: „andrii jest jeden"). Sklejamy je tutaj na
+   stale, zeby dopasowanie bylo dokladne, a nie zalezalo od tolerancji
+   odleglosci edycyjnej. */
+const ALIASY = { PRZEMEK: 'PRZEMYSLAW', PRZEMO: 'PRZEMYSLAW', ANDRICHUK: 'ANDRIICHUK' };
 
 const tokeny = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toUpperCase().replace(/Ł/g, 'L').replace(/[^A-Z ]+/g, ' ')
