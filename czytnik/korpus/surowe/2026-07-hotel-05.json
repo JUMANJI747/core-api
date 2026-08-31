@@ -1,0 +1,966 @@
+{
+ "etykieta": "2026-07 hotel s.5",
+ "okresNazwa": "2026-07",
+ "strona": 5,
+ "okres": {
+  "rok": 2026,
+  "miesiac": 7,
+  "nazwiska": [
+   "Alicja Gaber",
+   "Andrii Andriichuk",
+   "Andrzej Włoch",
+   "Daniel Wójcik",
+   "Dawid Grenda",
+   "Dunayeva Polina",
+   "Emilia Rafalska",
+   "Izabela Ciepła",
+   "Izabela Madejek",
+   "Karolina Lenczewska",
+   "Marzena Dąbrowska",
+   "Marzena Oszczyk",
+   "Mateusz Korejwo",
+   "Małgorzata Stącel",
+   "Mirosław Owczarek",
+   "Monika Korgul",
+   "Natalia Blank - Kobryń",
+   "Natalia Kuleta",
+   "Nikola Maląg",
+   "Orzełek Adrian",
+   "Patrycja Żak",
+   "Paulina Biziewska",
+   "Paweł Kisiel",
+   "Przemek Podolecki",
+   "Rynkiewicz Martyna",
+   "Sandra Reluga",
+   "Sylwia Czuryłowicz",
+   "Tomasz Żuk",
+   "Urszula Wołoch"
+  ],
+  "stawkiDnia": {
+   "Karolina Lenczewska": 6,
+   "Przemek Podolecki": 6
+  },
+  "domyslnaStawkaDnia": 8
+ },
+ "glowny": {
+  "naglowek": {
+   "nazwisko": "Andrzej Włoch",
+   "miesiac": "7",
+   "rok": "2026",
+   "norma": "184"
+  },
+  "dni": [
+   {
+    "d": 1,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 2,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 3,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 4,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 5,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 6,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 7,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 8,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 9,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 10,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 11,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 12,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 13,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 14,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 15,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 16,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz widoczny na obu połówkach — odczyt zgodny."
+   },
+   {
+    "d": 17,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 18,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 19,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 20,
+    "zapis": {
+     "od": "Uw",
+     "do": "Uw",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Urlop wypoczynkowy: zamiast godzin litera Uw, kreska w RAZEM, 8 godz. w kolumnie UW."
+   },
+   {
+    "d": 21,
+    "zapis": {
+     "od": "Uw",
+     "do": "Uw",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Urlop wypoczynkowy, 8 godz. w kolumnie UW."
+   },
+   {
+    "d": 22,
+    "zapis": {
+     "od": "Uw",
+     "do": "Uw",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Urlop wypoczynkowy, 8 godz. w kolumnie UW."
+   },
+   {
+    "d": 23,
+    "zapis": {
+     "od": "Uw",
+     "do": "Uw",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "8",
+     "chor": "",
+     "kod": "Uw"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Urlop wypoczynkowy, 8 godz. w kolumnie UW."
+   },
+   {
+    "d": 24,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 25,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 26,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 30",
+     "razem": "8.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "15:30−7:00 = 8,5 h — zgodne z zapisem RAZEM."
+   },
+   {
+    "d": 27,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Po cyfrze 8 kropka/kleks — wartość 8."
+   },
+   {
+    "d": 28,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 29,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Wiersz pusty (dzień wolny)."
+   },
+   {
+    "d": 30,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Cyfra w RAZEM napisana niedbale (wygląda jak 'P'), 15:00−7:00 = 8."
+   },
+   {
+    "d": 31,
+    "zapis": {
+     "od": "7 00",
+     "do": "15 00",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   }
+  ],
+  "suma": {
+   "zapis": {
+    "razem": "152.5",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "wniosek": {
+    "razem": "152.5",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "pewnosc": "wysoka",
+   "uwaga": ""
+  },
+  "rozbieznosci": [
+   {
+    "miejsce": "SUMA / RAZEM",
+    "zapis": "1575 (nieczytelne, możliwe 152,5)",
+    "wniosek": "152.5",
+    "uzasadnienie": "Suma pozycji dziennych: 17×8 + 8,5 = 152,5 h; dopisek pod tabelą (152,5+32=184,5) potwierdza."
+   },
+   {
+    "miejsce": "SUMA / UW",
+    "zapis": "37",
+    "wniosek": "32",
+    "uzasadnienie": "Cztery dni urlopu (20–23.07) po 8 h dają 32 h; druga cyfra odczytana jako 7 to najpewniej 2."
+   }
+  ]
+ },
+ "nazwisko": {
+  "zapis": "ANDRZEJ WŁOCH",
+  "pewnosc": "wysoka"
+ },
+ "slepaKolumna": {
+  "dni": [
+   {
+    "d": "1",
+    "razem": ""
+   },
+   {
+    "d": "2",
+    "razem": "8"
+   },
+   {
+    "d": "3",
+    "razem": "8"
+   },
+   {
+    "d": "4",
+    "razem": "8"
+   },
+   {
+    "d": "5",
+    "razem": "8"
+   },
+   {
+    "d": "6",
+    "razem": "8"
+   },
+   {
+    "d": "7",
+    "razem": ""
+   },
+   {
+    "d": "8",
+    "razem": ""
+   },
+   {
+    "d": "9",
+    "razem": "8"
+   },
+   {
+    "d": "10",
+    "razem": "8"
+   },
+   {
+    "d": "11",
+    "razem": "8"
+   },
+   {
+    "d": "12",
+    "razem": "8"
+   },
+   {
+    "d": "13",
+    "razem": "8"
+   },
+   {
+    "d": "14",
+    "razem": ""
+   },
+   {
+    "d": "15",
+    "razem": "8"
+   },
+   {
+    "d": "16",
+    "razem": "8"
+   },
+   {
+    "d": "17",
+    "razem": "8"
+   },
+   {
+    "d": "18",
+    "razem": ""
+   },
+   {
+    "d": "19",
+    "razem": ""
+   },
+   {
+    "d": "20",
+    "razem": ""
+   },
+   {
+    "d": "21",
+    "razem": ""
+   },
+   {
+    "d": "22",
+    "razem": ""
+   },
+   {
+    "d": "23",
+    "razem": ""
+   },
+   {
+    "d": "24",
+    "razem": "8"
+   },
+   {
+    "d": "25",
+    "razem": "8"
+   },
+   {
+    "d": "26",
+    "razem": "8.5"
+   },
+   {
+    "d": "27",
+    "razem": "8"
+   },
+   {
+    "d": "28",
+    "razem": ""
+   },
+   {
+    "d": "29",
+    "razem": ""
+   },
+   {
+    "d": "30",
+    "razem": "8"
+   },
+   {
+    "d": "31",
+    "razem": "8"
+   }
+  ],
+  "suma": "152.5"
+ },
+ "zrekonstruowane": true,
+ "niepelnaRekonstrukcja": false
+}

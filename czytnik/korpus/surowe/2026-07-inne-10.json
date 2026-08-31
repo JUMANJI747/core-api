@@ -1,0 +1,984 @@
+{
+ "etykieta": "2026-07 inne s.10",
+ "okresNazwa": "2026-07",
+ "strona": 10,
+ "okres": {
+  "rok": 2026,
+  "miesiac": 7,
+  "nazwiska": [
+   "Alicja Gaber",
+   "Andrii Andriichuk",
+   "Andrzej Włoch",
+   "Daniel Wójcik",
+   "Dawid Grenda",
+   "Dunayeva Polina",
+   "Emilia Rafalska",
+   "Izabela Ciepła",
+   "Izabela Madejek",
+   "Karolina Lenczewska",
+   "Marzena Dąbrowska",
+   "Marzena Oszczyk",
+   "Mateusz Korejwo",
+   "Małgorzata Stącel",
+   "Mirosław Owczarek",
+   "Monika Korgul",
+   "Natalia Blank - Kobryń",
+   "Natalia Kuleta",
+   "Nikola Maląg",
+   "Orzełek Adrian",
+   "Patrycja Żak",
+   "Paulina Biziewska",
+   "Paweł Kisiel",
+   "Przemek Podolecki",
+   "Rynkiewicz Martyna",
+   "Sandra Reluga",
+   "Sylwia Czuryłowicz",
+   "Tomasz Żuk",
+   "Urszula Wołoch"
+  ],
+  "stawkiDnia": {
+   "Karolina Lenczewska": 6,
+   "Przemek Podolecki": 6
+  },
+  "domyslnaStawkaDnia": 8
+ },
+ "glowny": {
+  "naglowek": {
+   "nazwisko": "INHA FEDORNOVA",
+   "miesiac": "7",
+   "rok": "2026",
+   "norma": ""
+  },
+  "dni": [
+   {
+    "d": 1,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 2,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 3,
+    "zapis": {
+     "od": "15",
+     "do": "18,5",
+     "razem": "3.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "3.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "15:00-18:30 = 3,5 h, zgodne z kolumną liczby godzin."
+   },
+   {
+    "d": 4,
+    "zapis": {
+     "od": "9,5",
+     "do": "18,5",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 5,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 6,
+    "zapis": {
+     "od": "10",
+     "do": "22",
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 7,
+    "zapis": {
+     "od": "7,5",
+     "do": "17,5",
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 8,
+    "zapis": {
+     "od": "6:15",
+     "do": "20:40",
+     "razem": "14.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "14.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Zapisano 6:15-20:40, co daje 14 h 25 min, a w kolumnie liczby godzin wpisano 14,5. Przyjęto wartość deklarowaną 14,5 (godziny są wielokrotnością 0,5)."
+   },
+   {
+    "d": 9,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 10,
+    "zapis": {
+     "od": "10:30",
+     "do": "22",
+     "razem": "11.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 11,
+    "zapis": {
+     "od": "10",
+     "do": "22",
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 12,
+    "zapis": {
+     "od": "10 / 6",
+     "do": "22 / 8",
+     "razem": "14",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "14",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dwie zmiany tego samego dnia: 12 h + 2 h = 14 h."
+   },
+   {
+    "d": 13,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "—",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "—"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Kreska = dzień wolny, brak godzin."
+   },
+   {
+    "d": 14,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 15,
+    "zapis": {
+     "od": "6",
+     "do": "17:00",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 16,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "—",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "—"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Odczyt z obu wycinków zgodny: dzień wolny (kreska)."
+   },
+   {
+    "d": 17,
+    "zapis": {
+     "od": "6 / 11",
+     "do": "8,5 / 22",
+     "razem": "13.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "13.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "2,5 h + 11 h = 13,5 h."
+   },
+   {
+    "d": 18,
+    "zapis": {
+     "od": "10:30",
+     "do": "22",
+     "razem": "11.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Wiersz mocno poprawiany: skreślenia i strzałka; przyjęto 10:30-22 = 11,5 h."
+   },
+   {
+    "d": 19,
+    "zapis": {
+     "od": "10",
+     "do": "22",
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "12",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Kolumny zamienione miejscami: przedział 10-22 wpisano w rubryce liczby godzin, a liczbę 12 w rubryce podpisu. 10-22 = 12 h."
+   },
+   {
+    "d": 20,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 21,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 22,
+    "zapis": {
+     "od": "11",
+     "do": "21",
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 23,
+    "zapis": {
+     "od": "11",
+     "do": "21",
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "10",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Przy liczbie 10 dopisano znaki zapytania (wątpliwość osoby wypełniającej); przedział 11-21 potwierdza 10 h."
+   },
+   {
+    "d": 24,
+    "zapis": {
+     "od": "6 / 11",
+     "do": "8 / 22",
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "2 h + 11 h = 13 h."
+   },
+   {
+    "d": 25,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 26,
+    "zapis": {
+     "od": "11",
+     "do": "22",
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "11",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 27,
+    "zapis": {
+     "od": "11",
+     "do": "20",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 28,
+    "zapis": {
+     "od": "6 / 11",
+     "do": "8:00 / 22",
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "2 h + 11 h = 13 h, zgodne z wpisanym 13."
+   },
+   {
+    "d": 29,
+    "zapis": {
+     "od": "6 / 11",
+     "do": "8:00 / 22",
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "13",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "2 h + 11 h = 13 h."
+   },
+   {
+    "d": 30,
+    "zapis": {
+     "od": "11",
+     "do": "21:30",
+     "razem": "10.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "10.5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 31,
+    "zapis": {
+     "od": "",
+     "do": "",
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   }
+  ],
+  "suma": {
+   "zapis": {
+    "razem": "290",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "wniosek": {
+    "razem": "290",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "pewnosc": "wysoka",
+   "uwaga": ""
+  },
+  "rozbieznosci": [
+   {
+    "miejsce": "dzień 8",
+    "zapis": "6:15 - 20:40, liczba godzin 14,5",
+    "wniosek": "14.5",
+    "uzasadnienie": "Z przedziału godzinowego wychodzi 14 h 25 min; wpisana wartość 14,5 jest zaokrągleniem do 0,5 h i została przyjęta."
+   },
+   {
+    "miejsce": "dzień 19",
+    "zapis": "kolumna 'Liczba godzin': '10 - 22'; kolumna 'Podpis': '12'",
+    "wniosek": "razem 12, od 10, do 22",
+    "uzasadnienie": "Wpisy zamieniono kolumnami; przedział 10-22 daje 12 h, co zgadza się z liczbą 12."
+   },
+   {
+    "miejsce": "dzień 18",
+    "zapis": "11,5 ze strzałką, skreślone zapisy, '10:30 - 22'",
+    "wniosek": "11.5",
+    "uzasadnienie": "Wiersz poprawiany; ostateczny czytelny zapis 10:30-22 = 11,5 h."
+   },
+   {
+    "miejsce": "dzień 23",
+    "zapis": "'10 ??'",
+    "wniosek": "10",
+    "uzasadnienie": "Autor sam zaznaczył wątpliwość znakami zapytania; przedział 11-21 potwierdza 10 h."
+   },
+   {
+    "miejsce": "SUMA",
+    "zapis": "rubryka pusta",
+    "wniosek": "290",
+    "uzasadnienie": "Suma dni = 290 h; pod tabelą odręczny dopisek odczytany jako '290' potwierdza wynik."
+   }
+  ]
+ },
+ "nazwisko": {
+  "zapis": "INHA FEDORNOVA",
+  "pewnosc": "wysoka"
+ },
+ "slepaKolumna": {
+  "dni": [
+   {
+    "d": "1",
+    "razem": "11"
+   },
+   {
+    "d": "2",
+    "razem": "11"
+   },
+   {
+    "d": "3",
+    "razem": "3.5"
+   },
+   {
+    "d": "4",
+    "razem": "9"
+   },
+   {
+    "d": "5",
+    "razem": "11"
+   },
+   {
+    "d": "6",
+    "razem": "12"
+   },
+   {
+    "d": "7",
+    "razem": "10"
+   },
+   {
+    "d": "8",
+    "razem": "14.5"
+   },
+   {
+    "d": "9",
+    "razem": ""
+   },
+   {
+    "d": "10",
+    "razem": "11.5"
+   },
+   {
+    "d": "11",
+    "razem": "12"
+   },
+   {
+    "d": "12",
+    "razem": "14"
+   },
+   {
+    "d": "13",
+    "razem": ""
+   },
+   {
+    "d": "14",
+    "razem": "11"
+   },
+   {
+    "d": "15",
+    "razem": "11"
+   },
+   {
+    "d": "16",
+    "razem": ""
+   },
+   {
+    "d": "17",
+    "razem": "13.5"
+   },
+   {
+    "d": "18",
+    "razem": "11.5"
+   },
+   {
+    "d": "19",
+    "razem": "12"
+   },
+   {
+    "d": "20",
+    "razem": ""
+   },
+   {
+    "d": "21",
+    "razem": "11"
+   },
+   {
+    "d": "22",
+    "razem": "10"
+   },
+   {
+    "d": "23",
+    "razem": "10"
+   },
+   {
+    "d": "24",
+    "razem": "13"
+   },
+   {
+    "d": "25",
+    "razem": "11"
+   },
+   {
+    "d": "26",
+    "razem": "11"
+   },
+   {
+    "d": "27",
+    "razem": "9"
+   },
+   {
+    "d": "28",
+    "razem": "13"
+   },
+   {
+    "d": "29",
+    "razem": "13"
+   },
+   {
+    "d": "30",
+    "razem": "10.5"
+   },
+   {
+    "d": "31",
+    "razem": ""
+   }
+  ],
+  "suma": "290"
+ },
+ "zrekonstruowane": true,
+ "niepelnaRekonstrukcja": false
+}

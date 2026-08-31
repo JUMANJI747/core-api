@@ -38,9 +38,30 @@ walidację od nowa. Co zostanie sporne, wraca w `paczkaRewizyjna`
 człowieka. Aliasy imion (Przemek→Przemysław) i dopasowanie nazwisk per słowo.
 
 Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
-+ formularz odpowiedzi dla człowieka
-(PATCH zatwierdzenia), baza Postgres (pełny ślad, idempotencja per strona),
-snapshot-backup tabel Google Sheets, eval-runner na korpusie.
++ formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres
+(pełny ślad, idempotencja per strona), snapshot-backup tabel Google Sheets.
+
+## Ewaluacja bez kosztów — `npm run eval`
+
+**Zasada: strojenie REGUŁ nie wymaga czytania kart modelem.** Dopracowanie reguł
+(przerwy, stawki nieobecności, bramka auto) kosztowało ~$100, bo po każdej zmianie
+przepuszczaliśmy te same karty przez model od nowa — 13 przebiegów, ~380 stron.
+Zmieniała się przy tym wyłącznie walidacja.
+
+Od teraz:
+
+1. przebieg z `{"zapiszSurowe": true}` zwraca w każdej karcie pole `surowe`
+   (odczyt główny + ślepy odczyt nazwiska + ślepa kolumna RAZEM + użyty okres),
+2. zrzucamy je do `korpus/surowe/<okres>-<obiekt>-<strona>.json`,
+3. `npm run eval` przepuszcza zapisane odczyty przez **aktualną** walidację
+   i porównuje z `korpus/wzorce/<okres>.json` — **zero wywołań API**.
+   Kod wyjścia 1, gdy jakakolwiek karta weszłaby jako `auto` z błędną liczbą.
+
+Model wołamy dopiero wtedy, gdy zmieniamy sposób **czytania** (prompty, cięcie
+obrazów, model). `node eval/z-wynikow.js <katalog>` odtwarza korpus ze starych
+wyników — wiernie poza kartami, gdzie nieobecności oznaczono ptaszkiem
+(w wyniku zapisują się jako null); takie karty eval oznacza jako
+`niepełna rekonstrukcja` i nie liczy ich jako różnic.
 
 ## HTTP
 

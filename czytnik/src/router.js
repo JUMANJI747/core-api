@@ -30,8 +30,9 @@ function sprzatajPrzebiegi() {
 
 function wyciagnijOpcje(body) {
   const { strony, rok, miesiac, nazwiska, rownolegle, model, dpi,
-    stawkiDnia, domyslnaStawkaDnia } = body || {};
-  return { strony, rok, miesiac, nazwiska, rownolegle, model, dpi, stawkiDnia, domyslnaStawkaDnia };
+    stawkiDnia, domyslnaStawkaDnia, zapiszSurowe } = body || {};
+  return { strony, rok, miesiac, nazwiska, rownolegle, model, dpi,
+    stawkiDnia, domyslnaStawkaDnia, zapiszSurowe };
 }
 
 function router(express, token) {

@@ -172,6 +172,22 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
     wynik.obrazyMeta = obrazy.meta;
     slad.czasMs = Date.now() - t0;
     wynik.slad = slad;
+    /* SUROWY ODCZYT DO PONOWNEGO UZYCIA (opcja zapiszSurowe).
+       Powod: strojenie regul walidacji (przerwy, stawki nieobecnosci, bramka
+       auto) NIE wymaga ponownego czytania obrazow - a wlasnie na tym przepalilismy
+       ~$100 przy dopracowywaniu regul, czytajac te same karty 13 razy. Z surowym
+       odczytem na dysku kazda kolejna zmiana reguly kosztuje ZERO: `npm run eval`
+       przepuszcza zapisane odczyty przez aktualna walidacje offline. */
+    if (opcje.zapiszSurowe) {
+      wynik.surowe = {
+        glowny: glowny.dane,
+        nazwisko: nazwisko2.dane,
+        slepaKolumna: slepaKolumna.dane,
+        model: glowny.model,
+        okres: { rok: opcje.rok, miesiac: opcje.miesiac, nazwiska: opcje.nazwiska,
+                 stawkiDnia: opcje.stawkiDnia, domyslnaStawkaDnia: opcje.domyslnaStawkaDnia },
+      };
+    }
     return wynik;
   } catch (e) {
     return { strona, sha, ok: false, status: 'do_weryfikacji',

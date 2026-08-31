@@ -1,0 +1,996 @@
+{
+ "etykieta": "2026-07 stajnia s.8",
+ "okresNazwa": "2026-07",
+ "strona": 8,
+ "okres": {
+  "rok": 2026,
+  "miesiac": 7,
+  "nazwiska": [
+   "Alicja Gaber",
+   "Andrii Andriichuk",
+   "Andrzej Włoch",
+   "Daniel Wójcik",
+   "Dawid Grenda",
+   "Dunayeva Polina",
+   "Emilia Rafalska",
+   "Izabela Ciepła",
+   "Izabela Madejek",
+   "Karolina Lenczewska",
+   "Marzena Dąbrowska",
+   "Marzena Oszczyk",
+   "Mateusz Korejwo",
+   "Małgorzata Stącel",
+   "Mirosław Owczarek",
+   "Monika Korgul",
+   "Natalia Blank - Kobryń",
+   "Natalia Kuleta",
+   "Nikola Maląg",
+   "Orzełek Adrian",
+   "Patrycja Żak",
+   "Paulina Biziewska",
+   "Paweł Kisiel",
+   "Przemek Podolecki",
+   "Rynkiewicz Martyna",
+   "Sandra Reluga",
+   "Sylwia Czuryłowicz",
+   "Tomasz Żuk",
+   "Urszula Wołoch"
+  ],
+  "stawkiDnia": {
+   "Karolina Lenczewska": 6,
+   "Przemek Podolecki": 6
+  },
+  "domyslnaStawkaDnia": 8
+ },
+ "glowny": {
+  "naglowek": {
+   "nazwisko": "Patrycja Żak",
+   "miesiac": "7",
+   "rok": "2026",
+   "norma": "184"
+  },
+  "dni": [
+   {
+    "d": 1,
+    "zapis": {
+     "od": "12:30",
+     "do": "21",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 2,
+    "zapis": {
+     "od": "9",
+     "do": "21",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 3,
+    "zapis": {
+     "od": "9:30",
+     "do": "21",
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 4,
+    "zapis": {
+     "od": "9:30",
+     "do": "19:30",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 5,
+    "zapis": {
+     "od": "8:30",
+     "do": "18",
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 6,
+    "zapis": {
+     "od": "9:30",
+     "do": "18:30",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 7,
+    "zapis": {
+     "od": "8",
+     "do": "13:30",
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 8,
+    "zapis": {
+     "od": "9",
+     "do": "12",
+     "razem": "2",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "2",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Godzina zakończenia napisana niewyraźnie (wygląda jak '12', możliwe '14'); rozpiętość 9-12 = 3 h nie zgadza się z RAZEM = 2. Przyjęto RAZEM = 2, bo suma dnia z całej kolumny daje dokładnie 146 (zgodnie z wierszem SUMA)."
+   },
+   {
+    "d": 9,
+    "zapis": {
+     "od": "9:30",
+     "do": "18:30",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 10,
+    "zapis": {
+     "od": "9:30",
+     "do": "18:30",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 11,
+    "zapis": {
+     "od": "7",
+     "do": "18",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 12,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "2",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "2",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "niska",
+    "uwaga": "Dzień oznaczony jako W (wolne) w obu kolumnach godzin, ale w RAZEM wpisano 2 z dopiskiem 'dzień przyjazd'. Kod i godziny naraz są sprzeczne; przyjęto 2 h, ponieważ tylko wtedy suma kolumny RAZEM daje 146 zgodne z wierszem SUMA."
+   },
+   {
+    "d": 13,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 14,
+    "zapis": {
+     "od": "7:30",
+     "do": "13:30",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Zakończenie odczytane jako 13:30 (rozpiętość 6 h), a RAZEM = 9; prawdopodobnie chodziło o 16:30/18:30. Przyjęto RAZEM = 9, bo suma kolumny zgadza się wtedy z wierszem SUMA (146)."
+   },
+   {
+    "d": 15,
+    "zapis": {
+     "od": "11:30",
+     "do": "18:30",
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 16,
+    "zapis": {
+     "od": "9",
+     "do": "15",
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "6",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 17,
+    "zapis": {
+     "od": "9",
+     "do": "18",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 18,
+    "zapis": {
+     "od": "9",
+     "do": "16",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "RAZEM jest przerabiane (widoczne '4' i '7'). Wybrano 7, ponieważ tylko wtedy suma kolumny RAZEM = 146, tak jak w wierszu SUMA."
+   },
+   {
+    "d": 19,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 20,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 21,
+    "zapis": {
+     "od": "9",
+     "do": "2:00",
+     "razem": "4",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "4",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Wpisy w tym wierszu są przesunięte: w kolumnie godziny zakończenia jest parafka, a '2:00' znalazło się w kolumnie podpisu; godzina zakończenia (2:00) nie daje 4 h od 9:00 (prawdopodobnie 13:00). RAZEM = 4 przyjęte, bo zgadza się z sumą 146. Dopisek 'kolka'."
+   },
+   {
+    "d": 22,
+    "zapis": {
+     "od": "9",
+     "do": "12",
+     "razem": "3",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "3",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 23,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 24,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 25,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 26,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 27,
+    "zapis": {
+     "od": "W",
+     "do": "W",
+     "razem": "0",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "W"
+    },
+    "pewnosc": "wysoka",
+    "uwaga": "Dzień wolny (W), w RAZEM wpisano 0 – we wniosku pusto."
+   },
+   {
+    "d": 28,
+    "zapis": {
+     "od": "9",
+     "do": "18:30",
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "7",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 29,
+    "zapis": {
+     "od": "9",
+     "do": "18:30",
+     "razem": "5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "5",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Godzina zakończenia napisana niestarannie (wygląda jak '18:70', odczytane jako 18:30); rozpiętość 9,5 h nie zgadza się z RAZEM = 5. Przyjęto RAZEM = 5 – suma kolumny daje wtedy 146 jak w wierszu SUMA."
+   },
+   {
+    "d": 30,
+    "zapis": {
+     "od": "9",
+     "do": "18:30",
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "8",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "wysoka",
+    "uwaga": ""
+   },
+   {
+    "d": 31,
+    "zapis": {
+     "od": "9",
+     "do": "18:30",
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": "",
+     "notatka": ""
+    },
+    "wniosek": {
+     "razem": "9",
+     "sto": "",
+     "nocne": "",
+     "uw": "",
+     "chor": "",
+     "kod": ""
+    },
+    "pewnosc": "niska",
+    "uwaga": "Godzina zakończenia zapisana niewyraźnie ('18:70' / '18:30'); odczytano 18:30. RAZEM = 9 czytelne i zgodne z sumą miesięczną."
+   }
+  ],
+  "suma": {
+   "zapis": {
+    "razem": "146",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "wniosek": {
+    "razem": "146",
+    "sto": "",
+    "nocne": "",
+    "uw": "",
+    "chor": ""
+   },
+   "pewnosc": "wysoka",
+   "uwaga": ""
+  },
+  "rozbieznosci": [
+   {
+    "miejsce": "dzień 8, godz. zakończenia / RAZEM",
+    "zapis": "9 – 12, RAZEM 2",
+    "wniosek": "RAZEM 2",
+    "uzasadnienie": "Rozpiętość 3 h nie zgadza się z wpisanym RAZEM = 2; godzina zakończenia niewyraźna (12 lub 14). RAZEM potwierdzone kontrolą sumy miesięcznej (146)."
+   },
+   {
+    "miejsce": "dzień 12",
+    "zapis": "od W, do W, RAZEM 2, dopisek 'dzień przyjazd'",
+    "wniosek": "RAZEM 2, kod W",
+    "uzasadnienie": "Sprzeczność: dzień oznaczony jako wolny, a jednocześnie wpisane 2 h pracy. 2 h uwzględniono, bo tylko wtedy suma kolumny = 146."
+   },
+   {
+    "miejsce": "dzień 14, godz. zakończenia",
+    "zapis": "7:30 – 13:30, RAZEM 9",
+    "wniosek": "RAZEM 9",
+    "uzasadnienie": "Rozpiętość 6 h wobec RAZEM 9 – prawdopodobny błąd godziny zakończenia (16:30/18:30). Utrzymano RAZEM 9 z uwagi na zgodność z wierszem SUMA."
+   },
+   {
+    "miejsce": "dzień 18, kolumna RAZEM",
+    "zapis": "cyfra poprawiana: 4 przerobione na 7",
+    "wniosek": "7",
+    "uzasadnienie": "Tylko wartość 7 daje sumę kolumny 146 zgodną z wpisanym wierszem SUMA."
+   },
+   {
+    "miejsce": "dzień 21, kolumny godzin/podpisów",
+    "zapis": "od 9, w kolumnie zakończenia parafka, '2:00' w kolumnie podpisu, RAZEM 4, dopisek 'kolka'",
+    "wniosek": "RAZEM 4",
+    "uzasadnienie": "Wpisy przesunięte o jedną kolumnę, godzina '2:00' nierealna (prawdopodobnie 13:00). RAZEM 4 zgodne z sumą miesięczną."
+   },
+   {
+    "miejsce": "dni 29 i 31, godz. zakończenia",
+    "zapis": "'18:70'",
+    "wniosek": "18:30",
+    "uzasadnienie": "Niestaranny zapis cyfry minut; 70 minut nie istnieje, przyjęto 18:30. Dodatkowo dnia 29 rozpiętość (9,5 h) nie zgadza się z RAZEM = 5."
+   },
+   {
+    "miejsce": "wiersz SUMA vs norma z nagłówka",
+    "zapis": "SUMA 146, norma 184",
+    "wniosek": "146 (niedopracowanie 38 h)",
+    "uzasadnienie": "Suma godzin przepracowanych jest niższa od normy miesięcznej – wymaga wyjaśnienia (m.in. dni oznaczone W bez wskazania rodzaju nieobecności)."
+   }
+  ]
+ },
+ "nazwisko": {
+  "zapis": "PATRYCJA ŻAK",
+  "pewnosc": "wysoka"
+ },
+ "slepaKolumna": {
+  "dni": [
+   {
+    "d": "1",
+    "razem": "7"
+   },
+   {
+    "d": "2",
+    "razem": "7"
+   },
+   {
+    "d": "3",
+    "razem": "6"
+   },
+   {
+    "d": "4",
+    "razem": "7"
+   },
+   {
+    "d": "5",
+    "razem": "6"
+   },
+   {
+    "d": "6",
+    "razem": "7"
+   },
+   {
+    "d": "7",
+    "razem": "6"
+   },
+   {
+    "d": "8",
+    "razem": "2"
+   },
+   {
+    "d": "9",
+    "razem": "9"
+   },
+   {
+    "d": "10",
+    "razem": "7"
+   },
+   {
+    "d": "11",
+    "razem": "9"
+   },
+   {
+    "d": "12",
+    "razem": "2"
+   },
+   {
+    "d": "13",
+    "razem": ""
+   },
+   {
+    "d": "14",
+    "razem": "9"
+   },
+   {
+    "d": "15",
+    "razem": "6"
+   },
+   {
+    "d": "16",
+    "razem": "6"
+   },
+   {
+    "d": "17",
+    "razem": "7"
+   },
+   {
+    "d": "18",
+    "razem": "7"
+   },
+   {
+    "d": "19",
+    "razem": ""
+   },
+   {
+    "d": "20",
+    "razem": ""
+   },
+   {
+    "d": "21",
+    "razem": "4"
+   },
+   {
+    "d": "22",
+    "razem": "3"
+   },
+   {
+    "d": "23",
+    "razem": ""
+   },
+   {
+    "d": "24",
+    "razem": ""
+   },
+   {
+    "d": "25",
+    "razem": ""
+   },
+   {
+    "d": "26",
+    "razem": ""
+   },
+   {
+    "d": "27",
+    "razem": ""
+   },
+   {
+    "d": "28",
+    "razem": "7"
+   },
+   {
+    "d": "29",
+    "razem": "5"
+   },
+   {
+    "d": "30",
+    "razem": "8"
+   },
+   {
+    "d": "31",
+    "razem": "9"
+   }
+  ],
+  "suma": "146"
+ },
+ "zrekonstruowane": true,
+ "niepelnaRekonstrukcja": false
+}
