@@ -183,7 +183,14 @@ function rysujKarte(doc, dane) {
   const { poziome, pionowe } = krawedzie(wzor);
   const ostatniDzien = dniMiesiaca(dane.rok, dane.miesiac);
 
-  // 1. szare tło wierszy dni, których w tym miesiącu nie ma
+  // 1a. szare tła pól z wzoru (nagłówek: miesiąc, norma, nazwisko, nr ewd., dział)
+  for (const k of wzor.komorki) {
+    if (!k.tlo) continue;
+    doc.rect(xs[k.c], ys[k.r], xs[k.c + 1] - xs[k.c], ys[k.r + 1] - ys[k.r])
+      .fillColor(k.tlo).fill();   // pdfkit chce [r,g,b], nie „rgb(...)"
+  }
+
+  // 1b. szare tło wierszy dni, których w tym miesiącu nie ma
   for (let d = ostatniDzien + 1; d <= 31; d++) {
     const r = WIERSZ_DNIA_1 + d - 1;
     if (r >= ys.length - 1) break;
@@ -210,9 +217,13 @@ function rysujKarte(doc, dane) {
     if (wartosc === null || wartosc === undefined || wartosc === '') return;
     wypelnienia.set(`${POLA[pole].r}:${POLA[pole].c}`, String(wartosc));
   };
-  dopisz('miesiac', `${MIESIACE[dane.miesiac - 1]} ${dane.rok}`);
+  /* Zapis jak na kartach, które już krążą po firmie: miesiąc i nazwisko
+     WIELKIMI LITERAMI. Rok dopisujemy (na starych kartach go nie ma) — bez
+     niego odczyt musi zgadywać rok z daty przetwarzania, co na przełomie roku
+     potrafi trafić w grudzień poprzedniego. */
+  dopisz('miesiac', `${MIESIACE[dane.miesiac - 1].toUpperCase()} ${dane.rok}`);
   dopisz('norma', dane.norma);
-  dopisz('osoba', dane.osoba);
+  dopisz('osoba', String(dane.osoba).toUpperCase());
   dopisz('dzial', dane.dzial);
   dopisz('nrEwid', dane.nrEwid);
 
@@ -271,9 +282,10 @@ function domyslniPracownicy() {
   try {
     const p = JSON.parse(fs.readFileSync(
       path.join(__dirname, '..', 'korpus', 'pracownicy.json'), 'utf8'));
-    return { osoby: p.lista || [], dzialy: p.dzialy || {} };
+    return { osoby: p.lista || [], dzialy: p.dzialy || {},
+      nazwiskaNaKarcie: p.nazwiskaNaKarcie || {} };
   } catch {
-    return { osoby: [], dzialy: {} };
+    return { osoby: [], dzialy: {}, nazwiskaNaKarcie: {} };
   }
 }
 
@@ -305,16 +317,21 @@ function nastepnyMiesiac(dzis = new Date()) {
  * @param {Object} [o.nrEwid]       {osoba: nr ewidencyjny}
  * @param {'osoba'|'miesiac'} [o.kolejnosc]  grupowanie stron (domyślnie po osobie)
  */
-function planKart({ osoby, od, miesiecy = 3, dzialy, nrEwid = {}, kolejnosc = 'osoba', dzis }) {
+function planKart({ osoby, od, miesiecy = 3, dzialy, zDzialem = false, nrEwid = {},
+  kolejnosc = 'osoba', dzis }) {
   const domyslne = domyslniPracownicy();
   osoby = Array.isArray(osoby) && osoby.length ? osoby : domyslne.osoby;
-  dzialy = { ...domyslne.dzialy, ...(dzialy || {}) };
+  /* Na kartach, które firma drukuje dziś, rubryka „Dział" jest pusta na
+     KAŻDEJ (sprawdzone na skanach czerwca i lipca) — więc domyślnie też jej
+     nie wypełniamy. Mapa działów czeka w pracownicy.json na `zDzialem: true`. */
+  dzialy = zDzialem || dzialy ? { ...domyslne.dzialy, ...(dzialy || {}) } : {};
+  const nazwy = domyslne.nazwiskaNaKarcie || {};
   if (!Array.isArray(osoby) || !osoby.length) throw new Error('brak listy osob');
   if (!(miesiecy >= 1 && miesiecy <= 24)) throw new Error('miesiecy: 1..24');
   const start = od && od.rok && od.miesiac ? od : nastepnyMiesiac(dzis);
   const okresy = miesiaceOd(start.rok, start.miesiac, miesiecy);
   const karta = (osoba, okr) => ({
-    osoba, rok: okr.rok, miesiac: okr.miesiac,
+    osoba: nazwy[osoba] || osoba, rok: okr.rok, miesiac: okr.miesiac,
     norma: wymiarCzasuPracy(okr.rok, okr.miesiac),
     dzial: dzialy[osoba] || null,
     nrEwid: nrEwid[osoba] || null,

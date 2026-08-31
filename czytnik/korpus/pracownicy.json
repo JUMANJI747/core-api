@@ -146,5 +146,9 @@
   "Tomasz Żuk": "Recepcja",
   "Urszula Wołoch": "Pokojowi / Techniczni"
  },
- "uwagaDzialy": "dzial drukowany na pustej karcie. Zrodla: grafiki dzialow (Bar, Recepcja, Pokojowi__Techniczni, Kuchnia - 16 osob dopasowanych po imionach), grupa 'stajnia' i 'kuchnia' z arkusza GODZINY, Marketing wprost od uzytkownika (Natalia Blank - Kobryn). Osoby spoza tej mapy (Izabela Ciepla, Przemek Podolecki) dostaja karte z pustym polem 'Dzial: ......' - dopisuje Ala."
+ "uwagaDzialy": "dzial drukowany na pustej karcie. Zrodla: grafiki dzialow (Bar, Recepcja, Pokojowi__Techniczni, Kuchnia - 16 osob dopasowanych po imionach), grupa 'stajnia' i 'kuchnia' z arkusza GODZINY, Marketing wprost od uzytkownika (Natalia Blank - Kobryn). Osoby spoza tej mapy (Izabela Ciepla, Przemek Podolecki) dostaja karte z pustym polem 'Dzial: ......' - dopisuje Ala.",
+ "nazwiskaNaKarcie": {
+  "Przemek Podolecki": "Przemysław Podolecki"
+ },
+ "uwagaNazwiskaNaKarcie": "imie w wersji z dotychczasowych kart papierowych (na skanach czerwca i lipca stoi PRZEMYSLAW PODOLECKI, w arkuszu GODZINY jest Przemek). Do sprawdzenia u Ali: karty pisza ANDRII ANDRICHUK, a lista Andrii Andriichuk - ktora pisownia jest w umowie."
 }

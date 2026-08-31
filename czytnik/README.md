@@ -78,15 +78,24 @@ Wypełniamy dokładnie te pola, które i tak były wpisywane ręcznie:
 
 | pole wzoru | co wchodzi |
 |---|---|
-| `C2` Miesiąc/rok | np. „Wrzesień 2026" |
+| `C2` Miesiąc/rok | np. „WRZESIEŃ 2026" |
 | `J2` Ilość godzin do przepracowania | wymiar z art. 130 KP (`kalendarz.js`) |
-| `G3` Nazwisko i imię | z listy `korpus/pracownicy.json` |
-| `M2` Dział | z mapy `dzialy` (27 z 29 osób; reszta zostaje „Dział: ......") |
+| `G3` Nazwisko i imię | z listy `korpus/pracownicy.json`, WIELKIMI LITERAMI |
 | `C3` Nr ewd. | tylko gdy podany w wywołaniu |
+| `M2` Dział | **domyślnie pusty** — patrz niżej |
+
+Zapis odtwarza to, co stoi na kartach krążących dziś po firmie (sprawdzone na
+skanach czerwca i lipca): miesiąc i nazwisko wielkimi literami, wymiar godzin
+w ramce, rubryka **Dział pusta na każdej karcie** — dlatego działów nie
+wpisujemy, choć mapa `dzialy` czeka w `pracownicy.json` na `zDzialem: true`.
+Jedyne odstępstwo: **dopisujemy rok** („WRZESIEŃ 2026" zamiast „CZERWIEC"), bo
+bez roku odczyt musi go zgadywać z daty przetwarzania i na przełomie roku trafia
+w grudzień poprzedniego.
 
 Reszta zostaje pusta — wypełnia pracownik i przełożony. Dni, których w miesiącu
 nie ma (30-dniowy wrzesień, luty), mają pusty numer i szary wiersz, żeby nikt
-tam nic nie wpisał.
+tam nic nie wpisał. Szare tła pól nagłówka są ze wzoru — pokazują, gdzie coś ma
+stanąć.
 
 **Wzór nie jest przepisany z palca.** `assets/karta-wzor.json` powstał z
 oryginalnego pliku kadrowego (`Karta_ewid.cz._pr.obowiązuje_OK.xls`, arkusz
@@ -140,7 +149,7 @@ Każda odpowiedź niesie `tokeny: {we, wy}` i `kosztUSD` (realne zużycie przebi
   przeszło niepełne. Odtworzenie lipca z czerwca zgadza się z prawdziwą zakładką
   w 26 z 27 wierszy (dwie różnice to ręczne korekty w arkuszu).
 - `POST /czytnik/karty-do-druku` body: `{od?: "2026-09", miesiecy?: 3, osoby?: [...],
-  dzialy?: {osoba: dział}, nrEwid?: {osoba: nr}, kolejnosc?: "osoba"|"miesiac"}`
+  zDzialem?: false, dzialy?: {osoba: dział}, nrEwid?: {osoba: nr}, kolejnosc?: "osoba"|"miesiac"}`
   → `{stron, okresy, karty, plik: {nazwa, mime, data (base64 PDF)}}`.
   Bez `od` bierze **następny miesiąc** po dzisiejszym, bez `osoby` — całą listę
   umów o pracę. `kolejnosc: "osoba"` (domyślnie) trzyma trzy miesiące jednej

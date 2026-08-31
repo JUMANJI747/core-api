@@ -38,6 +38,8 @@ def main(zrodlo, cel):
             fnt = b.font_list[xf.font_index]
             ramki = [bd.left_line_style, bd.right_line_style,
                      bd.top_line_style, bd.bottom_line_style]
+            # pola wypelniane maja we wzorze szare tlo — to po nim widac,
+            # gdzie ma cos stanac; odtwarzamy je na wydruku
             fmt = b.format_map[xf.format_key].format_str
             v = cell.value
             if isinstance(v, float):
@@ -45,11 +47,14 @@ def main(zrodlo, cel):
             else:
                 tekst = str(v)
             tekst = tekst.strip()
-            if not tekst and not any(ramki):
+            if not tekst and not any(ramki) and bd.left_line_style is not None and not xf.background.fill_pattern:
                 continue                      # pusta i bez ramki — nie ma czego rysować
+            bg = xf.background
+            tlo = b.colour_map.get(bg.pattern_colour_index) if bg.fill_pattern == 1 else None
             komorki.append({
                 "r": r, "c": c, "t": tekst,
                 "ramki": ramki,
+                **({"tlo": list(tlo)} if tlo else {}),
                 "sz": fnt.height / 20.0, "pogrubiona": bool(fnt.bold),
                 "poziomo": al.hor_align, "pionowo": al.vert_align,
                 "zawijaj": bool(al.text_wrapped),
