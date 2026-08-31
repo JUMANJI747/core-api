@@ -18,14 +18,24 @@ deterministyczną walidację i pomiar na korpusie.
    nakazane, ale tylko w osobnym kanale z obowiązkową uwagą,
 4. równolegle drugi, ślepy odczyt nazwiska (sam nagłówek, bez listy w prompcie;
    dopasowanie do zamkniętej listy robi kod — dekorelacja),
-5. walidacja w kodzie: **godziny wejścia/wyjścia jako SUFIT** (wpis mniejszy =
-   odliczona przerwa, normalne; wpis większy = alarm i karta do człowieka),
-   Σdni↔wiersz SUMA jako kontrola, kolumny 100%/UW/Chor., norma z art. 130 KP,
-   święta, zakresy; **C liczy wyłącznie kod**,
-6. urlop i chorobowe = **liczba dni × stawka osoby** (8 h; 6 h dla Lenczewskiej
-   i Podoleckiego — `korpus/pracownicy.json`), niezależnie od tego, czy na karcie
-   jest ptaszek, liczba godzin, czy nic,
-7. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę
+5. walidacja w kodzie; **źródło godzin zależy od obiektu** (`zrodloGodzin`):
+   - **stajnia** → wpisane RAZEM (tam ludzie odliczają przerwy), a czas między
+     wejściem a wyjściem jest tylko SUFITEM,
+   - **reszta** (hotel, kuchnia, bar) → **godziny wejścia/wyjścia są źródłem
+     prawdy**, a rozjazd z kolumną RAZEM to błąd w sumowaniu → do raportu
+     (`bledySumowania`); różnica ponad 2 h to raczej źle odczytana godzina niż
+     pomyłka w dodawaniu, więc idzie jako pole sporne,
+   - wpisane więcej niż wynika z obecności → zawsze alarm i karta do człowieka,
+6. urlop i chorobowe: **godziny wpisane przy dniach są wiążące** (dzień
+   nieobecności = długość zmiany danej osoby); sam ptaszek → dni × stawka;
+   wyjątek: osoby z jawną stawką (3/4 etatu) liczone zawsze wg swojej stawki,
+7. **grafik zmianowy 12/12** (`grafikZmianowy` w `korpus/pracownicy.json`):
+   ptaszek stoi przy każdym dniu kalendarzowym nieobecności, a płatne są tylko
+   dni, w których osoba miała zmianę — tego z karty nie widać, więc system
+   **nie zgaduje, tylko wstrzymuje kartę i pyta, ile z tych dni to zmiany**,
+8. **brakujący wpis** (jest godzina rozpoczęcia, nie ma zakończenia ani sumy)
+   → pole sporne; taki dzień potrafi ukryć cały dzień pracy (Czuryłowicz 6/2026),
+9. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę
    potwierdza ścieżka NIEZALEŻNA od głównego odczytu (ślepa transkrypcja kolumny
    RAZEM albo wiersz SUMA — wiersza SUMA może nie być, to nie blokuje karty)
    ORAZ zero spornych.

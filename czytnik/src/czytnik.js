@@ -185,7 +185,8 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
         slepaKolumna: slepaKolumna.dane,
         model: glowny.model,
         okres: { rok: opcje.rok, miesiac: opcje.miesiac, nazwiska: opcje.nazwiska,
-                 stawkiDnia: opcje.stawkiDnia, domyslnaStawkaDnia: opcje.domyslnaStawkaDnia },
+                 stawkiDnia: opcje.stawkiDnia, domyslnaStawkaDnia: opcje.domyslnaStawkaDnia,
+                 zrodloGodzin: opcje.zrodloGodzin, grafikZmianowy: opcje.grafikZmianowy },
       };
     }
     return wynik;
@@ -230,6 +231,10 @@ async function odczytajTeczke(pdf, opcje = {}) {
       // domyslnie 8 h, wyjatki per osoba (3/4 etatu = 6 h)
       stawkiDnia: opcje.stawkiDnia && typeof opcje.stawkiDnia === 'object' ? opcje.stawkiDnia : null,
       domyslnaStawkaDnia: Number(opcje.domyslnaStawkaDnia) || 8,
+      // 'razem' = stajnia (ludzie odliczaja przerwy), 'odDo' = reszta obiektow
+      zrodloGodzin: opcje.zrodloGodzin === 'razem' ? 'razem' : 'odDo',
+      // osoby w grafiku zmianowym 12/12 - ptaszek nieobecnosci wymaga grafiku
+      grafikZmianowy: Array.isArray(opcje.grafikZmianowy) ? opcje.grafikZmianowy : null,
       model: opcje.model || MODEL_DOM, dpi: opcje.dpi,
     };
         const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));

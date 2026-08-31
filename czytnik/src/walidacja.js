@@ -179,6 +179,9 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
 
   const dni = [];
   let zgodneOdDo = 0, niezgodneOdDo = 0, brakOdDo = 0, odliczonePrzerwy = 0;
+  const bledySumowania = [], brakujaceWpisy = [];
+  // stajnia liczy z kolumny RAZEM, reszta z godzin wejscia/wyjscia
+  const zrodloRazem = (okres.zrodloGodzin || 'odDo') === 'razem';
   for (let i = 0; i < p0.dni.length; i++) {
     const w = p0.dni[i];
     const d = Number(w.d) || i + 1;
@@ -215,6 +218,16 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       }
     } else if (razem !== null && razem > 0) brakOdDo++;
 
+    // Brakujacy wpis: jest godzina rozpoczecia, a nie ma ani zakonczenia, ani RAZEM.
+    // To nie jest dzien wolny - ktos po prostu nie dokonczyl wiersza (Czurylowicz
+    // 6/2026 dz.28: przepracowane 8 h, ktorych na karcie nie ma wcale).
+    if (razem === null && zCzasu === null && String(zapis.od || '').trim()
+        && !String(zapis.do || '').trim() && !wniosek.kod) {
+      brakujaceWpisy.push(d);
+      sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.od, wniosek: null,
+        uwaga: `wpisano godzine rozpoczecia (${zapis.od}), brak zakonczenia i sumy - ile godzin tego dnia?` });
+    }
+
     // 100% tylko w swieta
     const sto = L(wniosek.sto);
     if (sto !== null && sto !== 0 && rok && mies) {
@@ -230,8 +243,29 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
 
     // Godziny dnia: wpisane RAZEM, ale NIGDY wiecej niz czas obecnosci.
     // Przekroczenie i tak jest juz zgloszone jako sporne wyzej.
-    const godziny = (razem !== null && zCzasu !== null) ? Math.min(razem, zCzasu)
-      : (razem !== null ? razem : zCzasu);
+    /* ZRODLO GODZIN zalezy od obiektu (ustalenie z uzytkownikiem):
+       - stajnia: liczy sie WPISANE RAZEM (ludzie odliczaja tam przerwy), a czas
+         obecnosci jest tylko sufitem,
+       - reszta (hotel, kuchnia, bar): zrodlem prawdy sa GODZINY WEJSCIA/WYJSCIA,
+         a rozjazd z kolumna RAZEM to blad w sumowaniu - do raportu. */
+    let godziny;
+    if (zrodloRazem) {
+      godziny = (razem !== null && zCzasu !== null) ? Math.min(razem, zCzasu)
+        : (razem !== null ? razem : zCzasu);
+    } else {
+      godziny = zCzasu !== null ? zCzasu : razem;
+      if (zCzasu !== null && razem !== null && !rowne(zCzasu, razem) && !przekroczenie) {
+        const roz = Math.round((razem - zCzasu) * 100) / 100;
+        if (Math.abs(roz) > 2) {
+          // duza roznica to raczej zle odczytana godzina niz pomylka w dodawaniu
+          sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.razem ?? null, wniosek: razem, zGodzin: zCzasu,
+            uwaga: `godziny ${zapis.od}-${zapis.do} daja ${zCzasu} h, a wpisano ${razem} - roznica ${roz} h jest za duza na pomylke w dodawaniu` });
+        } else {
+          bledySumowania.push({ dzien: d, wpisano: razem, zGodzin: zCzasu, roznica: roz });
+          ostrzezenia.push(`dzien ${d}: blad w sumowaniu - z godzin ${zapis.od}-${zapis.do} wychodzi ${zCzasu} h, wpisano ${razem}`);
+        }
+      }
+    }
     dni.push({ d, razem: godziny, razemWpisane: razem, razemZapis, kod: wniosek.kod || null,
       sto, nocne: L(wniosek.nocne), uw: L(wniosek.uw), chor: L(wniosek.chor),
       od: zapis.od ?? null, do: zapis.do ?? null, zCzasu, przekroczenie,
@@ -327,6 +361,11 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
      (Kuleta 7/2026: "56" = 7 dni x 8 h). Regula od kadr (Ala, 2026-08-29):
      dzien nieobecnosci = 8 h; wyjatki w okres.stawkiDnia (3/4 etatu = 6 h). */
   const nadpisanaStawka = !!(okres.stawkiDnia && nazwisko && okres.stawkiDnia[nazwisko]);
+  // Osoby w grafiku zmianowym (12/12): ptaszek stoi na kazdym dniu kalendarzowym
+  // nieobecnosci, ale platne sa tylko te dni, w ktorych mialy zmiane - a tego
+  // z karty nie widac. Zamiast zgadywac, pytamy.
+  const grafikZmianowy = !!(okres.grafikZmianowy && nazwisko
+    && okres.grafikZmianowy.includes(nazwisko));
   const stawkaDnia = (nadpisanaStawka && okres.stawkiDnia[nazwisko])
     || Number(okres.domyslnaStawkaDnia) || 8;
   const czyPtaszek = v => /^[vV+xX\u2713\u2714]$/.test(String(v || '').trim());
@@ -338,6 +377,16 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     const kodow = dni.filter(x => String(x.kod || '').toUpperCase().startsWith(lit)).length;
     if (ozn > 0) {
       // ptaszki = dni nieobecnosci (regula kadr: dzien x stawka)
+      /* GRAFIK ZMIANOWY (12/12): ptaszek stoi przy KAZDYM dniu kalendarzowym
+         nieobecnosci, ale platne sa tylko te dni, w ktorych osoba miala zmiane.
+         Z karty tego nie widac (Korgul 6/2026: 6 ptaszkow, arkusz placi za 3),
+         a rytm pracy bywa nieregularny - wiec nie zgadujemy, tylko pytamy. */
+      if (grafikZmianowy) {
+        sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: null, dniOznaczone: ozn,
+          uwaga: `${ozn} dni oznaczonych ptaszkiem, ale osoba pracuje w grafiku zmianowym `
+            + `- ile z tych dni to jej zmiany? (kazda x ${stawkaDnia} h)` });
+        return 0;
+      }
       if (zSumy === null || rowne(zSumy, ozn)) {
         ostrzezenia.push(`${etykieta}: ${ozn} dni (ptaszki) x ${stawkaDnia} h = ${ozn * stawkaDnia} h`);
         return ozn * stawkaDnia;
@@ -428,6 +477,8 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     C, G, sumaDni, wierszSuma: sciezkaB, brakWierszaSumy, sto, uw, chor,
     sciezki, potwierdzenia,
     problemy, ostrzezenia, sporne,
+    bledySumowania, brakujaceWpisy,
+    zrodloGodzin: zrodloRazem ? 'razem' : 'odDo',
     rozbieznosci: p0.rozbieznosci || [],
     dni,
   };

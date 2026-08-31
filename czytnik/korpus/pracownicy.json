@@ -36,5 +36,69 @@
   "Karolina Lenczewska": 6,
   "Przemek Podolecki": 6
  },
- "uwagaStawki": "regula od kadr (Ala, 2026-08-29): dzien UW/Chor. = 8 h; Lenczewska i Podolecki 3/4 etatu = 6 h"
+ "uwagaStawki": "regula od kadr (Ala, 2026-08-29): dzien UW/Chor. = 8 h; Lenczewska i Podolecki 3/4 etatu = 6 h",
+ "grupy": {
+  "grupa-rozowa": [
+   "Dawid Grenda",
+   "Emilia Rafalska",
+   "Tomasz Żuk"
+  ],
+  "kuchnia": [
+   "Karolina Lenczewska",
+   "Mateusz Korejwo",
+   "Nikola Maląg",
+   "Paulina Biziewska"
+  ],
+  "grupa-brzoskwiniowa": [
+   "Andrzej Włoch"
+  ],
+  "bar": [
+   "Alicja Gaber",
+   "Andrii Andriichuk",
+   "Izabela Madejek",
+   "Marzena Oszczyk",
+   "Monika Korgul",
+   "Natalia Kuleta",
+   "Sandra Reluga"
+  ],
+  "grupa-zielona": [
+   "Marzena Dąbrowska",
+   "Urszula Wołoch"
+  ],
+  "grupa-fioletowa": [
+   "Natalia Blank - Kobryń",
+   "Przemek Podolecki",
+   "Sylwia Czuryłowicz"
+  ],
+  "stajnia": [
+   "Daniel Wójcik",
+   "Dunayeva Polina",
+   "Małgorzata Stącel",
+   "Mirosław Owczarek",
+   "Orzełek Adrian",
+   "Patrycja Żak",
+   "Paweł Kisiel",
+   "Rynkiewicz Martyna"
+  ],
+  "grupa-czerwona": [
+   "Izabela Ciepła"
+  ]
+ },
+ "grafikZmianowy": [
+  "Alicja Gaber",
+  "Andrii Andriichuk",
+  "Izabela Madejek",
+  "Karolina Lenczewska",
+  "Marzena Oszczyk",
+  "Mateusz Korejwo",
+  "Monika Korgul",
+  "Natalia Kuleta",
+  "Nikola Maląg",
+  "Sandra Reluga"
+ ],
+ "zrodloGodzin": {
+  "stajnia": "razem",
+  "domyslne": "odDo"
+ },
+ "uwagaGrupy": "grupy odczytane z kolorow arkusza GODZINY (lipiec 2026); kuchnia=jasnozielony, bar=niebieski wg wskazania uzytkownika - DO POTWIERDZENIA. Osoby w grafikZmianowym pracuja 12/12: przy nieobecnosci oznaczonej samym ptaszkiem system nie liczy godzin, tylko pyta, ile z tych dni bylo zmianami."
 }
