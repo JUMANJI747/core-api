@@ -170,6 +170,12 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     ostrzezenia.push('brak zamknietej listy pracownikow - przynaleznosc nazwiska niezweryfikowana');
   }
 
+  /* GRAFIK ZMIAN — POMOC, NIE ZRODLO. Zrodlem prawdy jest karta; grafik mowi
+     tylko, KTORE dni byly zmianami (i po ile godzin), czego z karty nie widac
+     przy nieobecnosciach osob na 12/12. */
+  const grafikOsoby = (okres.grafik && nazwisko && okres.grafik[nazwisko]) || null;
+  const grafikDni = (grafikOsoby && grafikOsoby.dni) || null;
+
   /* dni: kanały zapis/wniosek + kontrole per wiersz */
   const dniWMies = (rok && mies) ? dniMiesiaca(rok, mies) : 31;
   const swieta = (rok && mies) ? swietaMiesiaca(rok, mies) : [];
@@ -270,6 +276,23 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       sto, nocne: L(wniosek.nocne), uw: L(wniosek.uw), chor: L(wniosek.chor),
       od: zapis.od ?? null, do: zapis.do ?? null, zCzasu, przekroczenie,
       pewnosc: w.pewnosc, uwaga: w.uwaga || null });
+  }
+
+  /* Dni, ktore grafik zna jako ZMIANE, a karta ma pusty wiersz. Nie doliczamy
+     ich - zrodlem jest karta - ale zglaszamy, bo to zwykle zapomniany wpis
+     (Korgul 6/2026 dzien 17: 12 h w grafiku, na karcie nic). */
+  if (grafikDni) {
+    for (const [dStr, g] of Object.entries(grafikDni)) {
+      const d = Number(dStr);
+      if (!g || g.kod || !(g.godziny > 0)) continue;
+      const w = dni.find(x => x.d === d);
+      const pustyNaKarcie = !w || (w.razem === null && !w.kod);
+      if (pustyNaKarcie) {
+        sporne.push({ dzien: d, pole: 'RAZEM', wniosek: null, zGrafiku: g.godziny,
+          uwaga: `grafik ma tego dnia zmiane ${g.godziny} h, a na karcie pusty wiersz `
+            + `- czy pracowala i zapomniala wpisac?` });
+      }
+    }
   }
 
   /* sumy i ścieżki dowodowe */
@@ -381,10 +404,32 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
          nieobecnosci, ale platne sa tylko te dni, w ktorych osoba miala zmiane.
          Z karty tego nie widac (Korgul 6/2026: 6 ptaszkow, arkusz placi za 3),
          a rytm pracy bywa nieregularny - wiec nie zgadujemy, tylko pytamy. */
+      /* Najpierw grafik: on wie, ktore z oznaczonych dni byly zmianami i po ile
+         godzin. Dni bez zmiany daja 0 (i tak by nie pracowala), dni bez wpisu
+         w grafiku zostaja pytaniem - nie zgadujemy. */
+      if (grafikDni) {
+        const oznaczone = p0.dni.filter(x => czyPtaszek(x.zapis && x.zapis[pole])
+          || czyPtaszek(x.wniosek && x.wniosek[pole])).map(x => Number(x.d));
+        let suma = 0; const bezDanych = [], zmiany = [];
+        for (const d of oznaczone) {
+          const g = grafikDni[d];
+          if (!g || g.godziny === null || g.godziny === undefined) { bezDanych.push(d); continue; }
+          if (g.godziny > 0) { suma += g.godziny; zmiany.push(d); }
+        }
+        if (bezDanych.length) {
+          sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: suma, dniBezGrafiku: bezDanych,
+            uwaga: `wg grafiku ${zmiany.length} zmian = ${suma} h, ale dni ${bezDanych.join(', ')} `
+              + `nie maja godzin w grafiku - ile ich bylo?` });
+        } else {
+          ostrzezenia.push(`${etykieta}: ${ozn} dni oznaczonych, wg grafiku ${zmiany.length} to zmiany `
+            + `(${zmiany.join(', ')}) = ${suma} h`);
+        }
+        return suma;
+      }
       if (grafikZmianowy) {
         sporne.push({ dzien: 'SUMA', pole: etykieta, wniosek: null, dniOznaczone: ozn,
           uwaga: `${ozn} dni oznaczonych ptaszkiem, ale osoba pracuje w grafiku zmianowym `
-            + `- ile z tych dni to jej zmiany? (kazda x ${stawkaDnia} h)` });
+            + `- ile z tych dni to jej zmiany? (brak grafiku dla tego miesiaca)` });
         return 0;
       }
       if (zSumy === null || rowne(zSumy, ozn)) {

@@ -29,10 +29,19 @@ deterministyczną walidację i pomiar na korpusie.
 6. urlop i chorobowe: **godziny wpisane przy dniach są wiążące** (dzień
    nieobecności = długość zmiany danej osoby); sam ptaszek → dni × stawka;
    wyjątek: osoby z jawną stawką (3/4 etatu) liczone zawsze wg swojej stawki,
-7. **grafik zmianowy 12/12** (`grafikZmianowy` w `korpus/pracownicy.json`):
-   ptaszek stoi przy każdym dniu kalendarzowym nieobecności, a płatne są tylko
-   dni, w których osoba miała zmianę — tego z karty nie widać, więc system
-   **nie zgaduje, tylko wstrzymuje kartę i pyta, ile z tych dni to zmiany**,
+7. **grafik zmian** (`grafik` albo `grafikArkusze` w wywołaniu — arkusze Google
+   działów: bar, kuchnia, recepcja, pokojowi, marketing) — **pomoc, nie źródło**.
+   Źródłem prawdy jest karta; grafik odpowiada na trzy pytania, których z karty
+   nie widać:
+   - **które dni były zmianami** przy nieobecności osób na 12/12 (ptaszek stoi
+     przy każdym dniu kalendarzowym, a płatne są tylko zmiany — Korgul 6/2026:
+     6 ptaszków, grafik pokazuje 2 zmiany po 12 h),
+   - **po ile godzin** liczyć te dni (grafik ma to wpisane wprost),
+   - **których dni brakuje na karcie** — grafik ma zmianę, karta pusty wiersz
+     (Korgul 6/2026 dzień 17: 12 h w grafiku, na karcie nic). Godzin **nie
+     doliczamy** — zgłaszamy do sprawdzenia.
+   Dzień oznaczony na karcie, którego grafik nie zna → pytanie, nie zgadywanie.
+   Bez grafiku osoby z `grafikZmianowy` mają nieobecności wstrzymywane,
 8. **brakujący wpis** (jest godzina rozpoczęcia, nie ma zakończenia ani sumy)
    → pole sporne; taki dzień potrafi ukryć cały dzień pracy (Czuryłowicz 6/2026),
 9. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę

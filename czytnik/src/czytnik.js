@@ -23,6 +23,7 @@ const { zapytaj, MODEL_DOM } = require('./silnik');
 const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO,
   SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA, SCHEMAT_KOLUMNA, PROMPT_KOLUMNA } = require('./prompty');
 const { zszyjIKontroluj } = require('./walidacja');
+const { zbudujGrafikMiesiaca } = require('./grafik');
 const { wymiarCzasuPracy } = require('./kalendarz');
 
 // pola sporne, które umiemy dograć zoomem (mapa: nazwa z walidacji -> kolumna)
@@ -235,6 +236,10 @@ async function odczytajTeczke(pdf, opcje = {}) {
       zrodloGodzin: opcje.zrodloGodzin === 'razem' ? 'razem' : 'odDo',
       // osoby w grafiku zmianowym 12/12 - ptaszek nieobecnosci wymaga grafiku
       grafikZmianowy: Array.isArray(opcje.grafikZmianowy) ? opcje.grafikZmianowy : null,
+      // grafik zmian: gotowa mapa albo surowe arkusze z Google Sheets do sparsowania
+      grafik: opcje.grafik && typeof opcje.grafik === 'object' ? opcje.grafik
+        : (Array.isArray(opcje.grafikArkusze) && Array.isArray(opcje.nazwiska)
+            ? zbudujGrafikMiesiaca(opcje.grafikArkusze, opcje.nazwiska).grafik : null),
       model: opcje.model || MODEL_DOM, dpi: opcje.dpi,
     };
         const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));
