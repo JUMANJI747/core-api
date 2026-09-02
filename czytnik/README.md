@@ -138,7 +138,11 @@ Od teraz:
 
 1. przebieg z `{"zapiszSurowe": true}` zwraca w każdej karcie pole `surowe`
    (odczyt główny + ślepy odczyt nazwiska + ślepa kolumna RAZEM + użyty okres),
-2. zrzucamy je do `korpus/surowe/<okres>-<obiekt>-<strona>.json`,
+2. zrzucamy je do `korpus/surowe/<okres>-<obiekt>-<strona>.json` — zapisywany
+   jest odczyt **po dogrywce zoomem** (ten, z którego naprawdę policzono wynik);
+   przed poprawką szedł tam odczyt sprzed zoomu i ewaluacja offline pokazywała
+   więcej pól spornych niż produkcja (stajnia 8/2026: Stącel 2 na produkcji, 6
+   w ewaluacji), przez co porównania „przed/po zmianie reguły" myliły,
 3. `npm run eval` przepuszcza zapisane odczyty przez **aktualną** walidację
    i porównuje z `korpus/wzorce/<okres>.json` — **zero wywołań API**.
    Kod wyjścia 1, gdy jakakolwiek karta weszłaby jako `auto` z błędną liczbą.

@@ -23,7 +23,14 @@ const { swietaMiesiaca, wymiarCzasuPracy, domyslnyRok, dniMiesiaca } = require('
 
 const L = v => {
   if (v === null || v === undefined || v === '') return null;
-  const n = Number(String(v).replace(',', '.').replace(/\s/g, '').replace(/−/g, '-'));
+  /* Jednostka po liczbie jest do wyrzucenia, nie do potkniecia sie o nia:
+     slepa transkrypcja kolumny RAZEM w stajni 8/2026 zwrocila "8.5h", a
+     Number("8.5h") to NaN - przez co cztery dni karty Rynkiewicz zostaly
+     zgloszone jako rozjazd miedzy odczytami i karta poszla do czlowieka,
+     mimo ze OBA odczyty mowily to samo. */
+  const t = String(v).replace(',', '.').replace(/\s/g, '')
+    .replace(/−/g, '-').replace(/(godz\.?|h)$/i, '');
+  const n = Number(t);
   return Number.isFinite(n) ? n : null;
 };
 
@@ -284,6 +291,17 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     if (zrodloRazem) {
       godziny = (razem !== null && zCzasu !== null) ? Math.min(razem, zCzasu)
         : (razem !== null ? razem : zCzasu);
+      /* SUFIT UCIAL CZYSTA LICZBE NA BRZYDKI UŁAMEK -> pytamy.
+         Karty wypelnia sie w polowkach godziny. Gdy z godzin obecnosci wychodzi
+         wartosc, ktora polowka nie jest (Zak 8/2026 dzien 20: wpisane 9 h,
+         a 9:40-18:30 daje 8,83), to zwykle zle odczytane MINUTY, nie realny
+         czas pracy - a wynik i tak podmienia czysta liczbe z karty. */
+      if (razem !== null && zCzasu !== null && godziny < razem
+          && Math.abs(godziny * 2 - Math.round(godziny * 2)) > 1e-9) {
+        sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.razem ?? null, wniosek: godziny, zGodzin: zCzasu,
+          uwaga: `wpisano ${razem} h, ale z godzin ${zapis.od}-${zapis.do} wychodzi ${godziny} h `
+            + '- to nie jest pelna polowka godziny, wiec minuty moga byc zle odczytane' });
+      }
     } else {
       godziny = zCzasu !== null ? zCzasu : razem;
       if (zCzasu !== null && razem !== null && !rowne(zCzasu, razem) && !przekroczenie) {

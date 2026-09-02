@@ -150,6 +150,13 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
     // Werdykt zoomu przyjmujemy TYLKO, gdy karta po nim jest lepsza (mniej
     // problemów+spornych albo pełne auto) — zoom też bywa omylny ("8,5" vs 85)
     // i nie wolno mu psuć dobrego odczytu głównego.
+    /* Odczyt, ktory FAKTYCZNIE dal wynik - to jego zapisujemy do korpusu.
+       Zapisywanie odczytu sprzed dogrywki bylo cicha skaza ewaluacji: offline
+       odtwarzalo pierwsze podejscie, a produkcja liczyla z odczytu po zoomie,
+       wiec `npm run eval` pokazywal wiecej pol spornych niz przebieg (stajnia
+       8/2026: Stacel 2 sporne na produkcji, 6 w ewaluacji) i porownania
+       "przed/po zmianie reguly" myliy. */
+    let daneKoncowe = glowny.dane;
     if (wynik.status !== 'auto' && (wynik.sporne || []).length) {
       const kopia = JSON.parse(JSON.stringify(glowny.dane));
       const poprawki = await dogrywkaZoom(png, kopia, wynik, opcje, slad);
@@ -159,6 +166,7 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
         if (wynik2.status === 'auto' || kara(wynik2) < kara(wynik)) {
           wynik = wynik2;
           wynik.dogrywka = poprawki;
+          daneKoncowe = kopia;
         } else {
           wynik.dogrywkaOdrzucona = poprawki;   // ślad: zoom nie poprawił karty
         }
@@ -181,7 +189,8 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
        przepuszcza zapisane odczyty przez aktualna walidacje offline. */
     if (opcje.zapiszSurowe) {
       wynik.surowe = {
-        glowny: glowny.dane,
+        glowny: daneKoncowe,          // po dogrywce, jesli zoom zostal przyjety
+        glownyPrzedZoomem: daneKoncowe === glowny.dane ? undefined : glowny.dane,
         nazwisko: nazwisko2.dane,
         slepaKolumna: slepaKolumna.dane,
         model: glowny.model,

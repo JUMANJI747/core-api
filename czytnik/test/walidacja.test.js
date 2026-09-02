@@ -72,3 +72,27 @@ test('kod nieobecnosci razem z godzinami nadal jest problemem', () => {
   const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 10, slepa(dni));
   assert.ok(w.problemy.some(p => /kod "Uw"/.test(p)));
 });
+
+test('jednostka przy liczbie ze slepego odczytu nie jest rozjazdem (stajnia 8/2026: "8.5h")', () => {
+  const dni = { 15: { od: '8:00', do: '16:30', razem: '8,5' } };
+  const slepaZJednostka = { dni: [{ d: '15', razem: '8.5h' }], suma: '' };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' },
+    { ...OKRES, zrodloGodzin: 'razem' }, 4, slepaZJednostka);
+  assert.deepEqual(w.sporne.filter(s => /slepa transkrypcja/.test(s.uwaga || '')), [],
+    '"8.5h" i 8,5 to ta sama liczba');
+});
+
+test('sufit z godzin obcinajacy na brzydki ulamek pyta o minuty (Zak 8/2026 dzien 20)', () => {
+  const dni = { 20: { od: '9:40', do: '18:30', razem: '9' } };   // 8,83 h - nie polowka
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' },
+    { ...OKRES, zrodloGodzin: 'razem' }, 3, slepa(dni));
+  assert.ok(w.sporne.some(s => /minuty moga byc zle odczytane/.test(s.uwaga || '')));
+});
+
+test('sufit obcinajacy na rowna polowke nie budzi alarmu (normalna przerwa w stajni)', () => {
+  const dni = { 20: { od: '8:00', do: '18:00', razem: '10' }, 21: { od: '8:00', do: '18:00', razem: '9,5' } };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' },
+    { ...OKRES, zrodloGodzin: 'razem' }, 3, slepa(dni));
+  assert.deepEqual(w.sporne.filter(s => /minuty/.test(s.uwaga || '')), []);
+  assert.equal(w.C, 19.5, 'odliczona przerwa jest normalna: liczy sie wpisane RAZEM');
+});
