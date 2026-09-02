@@ -255,8 +255,19 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       if (!swieta.includes(d)) ostrzezenia.push(`dzien ${d}: godziny 100% w dniu, ktory nie jest swietem`);
       else if (razem !== null && !rowne(sto, razem)) ostrzezenia.push(`dzien ${d}: 100% (${sto}) rozni sie od RAZEM (${razem})`);
     }
+    /* PRACA W SWIETO BEZ WPISU W KOLUMNIE 100% -> POLE SPORNE, nie ostrzezenie.
+       Ostrzezenie nie blokuje bramki `auto`, a wlasnie tedy uciekl blad: karta
+       Malag 8/2026 przeszla automatem z 155,5 h, bo silnik zgubil 12,5 h
+       wpisane w kolumnie 100% przy 15 sierpnia (poprawnie: 168 h). Niezalezne
+       potwierdzenie sprawdza WYLACZNIE kolumne RAZEM i wiersz SUMA, wiec
+       zgubiona setka przechodzila bez sladu. Swiat w miesiacu jest jeden lub
+       zaden, a wpis 100% zwykle jest - w sierpniu 2026 na 12 osob pracujacych
+       15.08 brakowalo go w dwoch przypadkach, wiec regula nie zaleje czlowieka
+       pytaniami, a lapie dokladnie ten rodzaj cichej straty. */
     if (razem !== null && razem > 0 && swieta.includes(d) && (sto === null || sto === 0)) {
-      ostrzezenia.push(`dzien ${d} to swieto, przepracowano ${razem} h, kolumna 100% pusta - sprawdz`);
+      sporne.push({ dzien: d, pole: '100%', zapis: zapis.sto ?? null, wniosek: sto,
+        uwaga: `dzien ${d} to swieto ustawowe, przepracowano ${razem} h, `
+          + 'a kolumna 100% jest pusta - czy naleza sie godziny 100%?' });
     }
     if (w.pewnosc === 'niska' && !(zCzasu !== null && razem !== null && rowne(zCzasu, razem))) {
       sporne.push({ dzien: d, pole: 'RAZEM', zapis: zapis.razem ?? null, wniosek: razem, uwaga: w.uwaga || null });

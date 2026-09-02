@@ -52,9 +52,14 @@ deterministyczną walidację i pomiar na korpusie.
    grafiku z arkuszem GODZINY dla dwóch miesięcy: Kuchnia/Marzenka = Oszczyk,
    Pokojowi/Marzena = Dąbrowska, Kuchnia/Natalia = Kuleta, Marketing/Natalia =
    Blank‑Kobryń). Bez mapy grafik rozpoznawał 13 osób, z mapą 16,
-8. **brakujący wpis** (jest godzina rozpoczęcia, nie ma zakończenia ani sumy)
+8. **praca w święto bez wpisu w kolumnie 100%** → pole sporne (nie ostrzeżenie).
+   Tędy uciekł jedyny błędny `auto` sierpnia 2026: karta Maląg przeszła z 155,5 h,
+   bo silnik zgubił 12,5 h wpisane w 100% przy 15 sierpnia (poprawnie 168 h) —
+   niezależne potwierdzenie sprawdza **wyłącznie kolumnę RAZEM i wiersz SUMA**,
+   więc zgubiona setka przechodziła bez śladu,
+9. **brakujący wpis** (jest godzina rozpoczęcia, nie ma zakończenia ani sumy)
    → pole sporne; taki dzień potrafi ukryć cały dzień pracy (Czuryłowicz 6/2026),
-9. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę
+10. status `auto` tylko gdy nazwisko potwierdzone dwoma odczytami ORAZ sumę
    potwierdza ścieżka NIEZALEŻNA od głównego odczytu (ślepa transkrypcja kolumny
    RAZEM albo wiersz SUMA — wiersza SUMA może nie być, to nie blokuje karty)
    ORAZ zero spornych.
