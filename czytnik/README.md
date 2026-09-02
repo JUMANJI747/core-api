@@ -95,8 +95,15 @@ Arkuszy), a `DOCUMENT_TEXT_DETECTION` czyta pismo odręczne i jest **darmowy do
 1000 stron/miesiąc** (robimy ~30). Wymaga włączenia Vision API w projekcie GCP.
 Trasa jest na razie POMIAROWA, nie wpięta w odczyt: najpierw mierzymy zgodność.
 
-**Drugi czytelnik, innego dostawcy** (`src/silnik-openai.js`, trasa
-`POST /czytnik/drugi-odczyt`). Powtórka tym samym modelem dziedziczy te same
+**Drugi czytelnik, innego dostawcy — WPIĘTY jako ścieżka dowodowa E**
+(`src/silnik-openai.js`; trasa pomiarowa `POST /czytnik/drugi-odczyt` została).
+Zmierzone na sierpniu 2026 (27 kart, **462 pola dzienne): 98,9% zgodności**
+z odczytem głównym, a **wszystkie 5 rozjazdów** wypadło dokładnie na polach, które
+i tak wymagały człowieka — w tym Wołoch dzień 9, gdzie drugi czytelnik trafił
+(9,5), a główny się pomylił (8,5), co potwierdza suma wpisana na karcie.
+Koszt: **0,175 USD za cały miesiąc** wobec 8,39 USD za przebieg, czyli 2%
+rachunku za najmocniejsze potwierdzenie, jakie mamy. Błąd drugiego czytelnika
+NIE przerywa odczytu — to świadek, nie warunek (`drugiOdczyt: false` wyłącza). Powtórka tym samym modelem dziedziczy te same
 skłonności — przy niewyraźnym „10 czy 11" oba odczyty ciągną w tę samą stronę,
 co widać po przebiegu kontrolnym (inna liczba na 2 z 27 kart). Inny dostawca
 ma inny enkoder obrazu i inny trening, więc myli się gdzie indziej. Interfejs

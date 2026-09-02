@@ -23,6 +23,7 @@ const { zapytaj, MODEL_DOM } = require('./silnik');
 const { PROMPT_KARTA, PROMPT_NAZWISKO, SCHEMAT_KARTY, SCHEMAT_NAZWISKO,
   SCHEMAT_ZOOM, PROMPT_ZOOM, PROMPT_ZOOM_SUMA, SCHEMAT_KOLUMNA, PROMPT_KOLUMNA } = require('./prompty');
 const { zszyjIKontroluj } = require('./walidacja');
+const silnikOpenai = require('./silnik-openai');
 const { zbudujGrafikMiesiaca } = require('./grafik');
 const { wymiarCzasuPracy } = require('./kalendarz');
 
@@ -130,6 +131,9 @@ async function paczkaRewizyjna(png, wynik) {
 // Cennik claude-opus-5 (USD za 1M tokenów, stan 2026-06). Przy zmianie modelu
 // domyślnego zaktualizować — koszt w odpowiedzi ma być prawdziwy, nie ozdobny.
 const CENY_USD_MTOK = { we: 5, wy: 25 };
+// Cennik gpt-5.6-luna (stan 09/2026) - drugi czytelnik ma WLASNE stawki, wiec
+// wrzucenie go do puli opus-5 zawyzaloby koszt przebiegu 25-krotnie.
+const CENY_DRUGI_MTOK = { we: 0.2, wy: 1.2 };
 
 async function przetworzStrone(pdfPath, dir, strona, opcje) {
   const t0 = Date.now();
@@ -143,7 +147,14 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       problemy: [`przygotowanie obrazow nie powiodlo sie: ${e.message}`], ostrzezenia: [], sporne: [] };
   }
   try {
-    const [glowny, nazwisko2, slepaKolumna] = await Promise.all([
+    /* DRUGI CZYTELNIK, INNEGO DOSTAWCY - wlaczany opcja `drugiOdczyt`.
+       Zmierzone na sierpniu 2026 (27 kart, 462 pola dzienne): 98,9% zgodnosci
+       z odczytem glownym, a wszystkie rozjazdy wypadly na polach, ktore i tak
+       wymagaly czlowieka. Kosztuje 0,175 USD za caly miesiac wobec 8,39 USD za
+       przebieg - czyli 2% rachunku za najmocniejsze potwierdzenie, jakie mamy.
+       Blad drugiego czytelnika NIE przerywa odczytu: to swiadek, nie warunek. */
+    const chceDrugi = opcje.drugiOdczyt !== false && silnikOpenai.skonfigurowany();
+    const [glowny, nazwisko2, slepaKolumna, drugi] = await Promise.all([
       zapytaj([obrazy.calaStrona, obrazy.naglowek, obrazy.gornaPolowka, obrazy.dolnaPolowka],
         PROMPT_KARTA, SCHEMAT_KARTY, { model: opcje.model, effort: 'high' }),
       zapytaj([obrazy.naglowek], PROMPT_NAZWISKO, SCHEMAT_NAZWISKO,
@@ -156,13 +167,22 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
          Kosztuje to ~0,03 USD na karte przy 0,24 USD za odczyt glowny. */
       zapytaj([obrazy.gornaPolowka, obrazy.dolnaPolowka], PROMPT_KOLUMNA, SCHEMAT_KOLUMNA,
         { model: opcje.model, effort: 'high', maxTokens: 6000 }),
+      chceDrugi
+        ? silnikOpenai.zapytaj([obrazy.calaStrona, obrazy.naglowek, obrazy.gornaPolowka, obrazy.dolnaPolowka],
+          PROMPT_KARTA, SCHEMAT_KARTY, { model: opcje.modelDrugi })
+          .catch(e => ({ blad: e.message }))
+        : Promise.resolve(null),
     ]);
     const slad = {
       model: glowny.model,
-      tokeny: { glowny: glowny.tokeny, nazwisko: nazwisko2.tokeny, slepaKolumna: slepaKolumna.tokeny },
+      modelDrugi: (drugi && drugi.model) || null,
+      bladDrugiego: (drugi && drugi.blad) || null,
+      tokeny: { glowny: glowny.tokeny, nazwisko: nazwisko2.tokeny, slepaKolumna: slepaKolumna.tokeny,
+        drugi: (drugi && drugi.tokeny) || null },
       thinking: (glowny.thinking || '').slice(0, 4000) || null,
     };
-    let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona, slepaKolumna.dane);
+    const daneDrugiego = drugi && !drugi.blad ? drugi.dane : null;
+    let wynik = zszyjIKontroluj(glowny.dane, nazwisko2.dane, opcje, strona, slepaKolumna.dane, daneDrugiego);
 
     // P1: sporne pola dogrywamy zoomem NA KOPII danych i walidujemy od nowa.
     // Werdykt zoomu przyjmujemy TYLKO, gdy karta po nim jest lepsza (mniej
@@ -179,7 +199,7 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       const kopia = JSON.parse(JSON.stringify(glowny.dane));
       const poprawki = await dogrywkaZoom(png, kopia, wynik, opcje, slad);
       if (poprawki) {
-        const wynik2 = zszyjIKontroluj(kopia, nazwisko2.dane, opcje, strona, slepaKolumna.dane);
+        const wynik2 = zszyjIKontroluj(kopia, nazwisko2.dane, opcje, strona, slepaKolumna.dane, daneDrugiego);
         const kara = w => (w.problemy || []).length + (w.sporne || []).length;
         if (wynik2.status === 'auto' || kara(wynik2) < kara(wynik)) {
           wynik = wynik2;
@@ -208,6 +228,7 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
     if (opcje.zapiszSurowe) {
       wynik.surowe = {
         glowny: daneKoncowe,          // po dogrywce, jesli zoom zostal przyjety
+        drugi: daneDrugiego,
         glownyPrzedZoomem: daneKoncowe === glowny.dane ? undefined : glowny.dane,
         nazwisko: nazwisko2.dane,
         slepaKolumna: slepaKolumna.dane,
@@ -295,19 +316,27 @@ async function odczytajTeczke(pdf, opcje = {}) {
 
     // Podliczenie kosztu przebiegu z realnego zużycia (user chce widzieć,
     // ile kosztuje miesiąc — każda odpowiedź niesie tokeny i USD).
-    let tokWe = 0, tokWy = 0;
+    let tokWe = 0, tokWy = 0, drWe = 0, drWy = 0;
     for (const k of karty) {
       const t = k.slad && k.slad.tokeny;
-      if (t) for (const x of Object.values(t)) if (x) { tokWe += x.we || 0; tokWy += x.wy || 0; }
+      if (!t) continue;
+      for (const [nazwa, x] of Object.entries(t)) {
+        if (!x) continue;
+        if (nazwa === 'drugi') { drWe += x.we || 0; drWy += x.wy || 0; }
+        else { tokWe += x.we || 0; tokWy += x.wy || 0; }
+      }
     }
+    const kosztGlowny = tokWe / 1e6 * CENY_USD_MTOK.we + tokWy / 1e6 * CENY_USD_MTOK.wy;
+    const kosztDrugi = drWe / 1e6 * CENY_DRUGI_MTOK.we + drWy / 1e6 * CENY_DRUGI_MTOK.wy;
 
     return {
       silnik: 'czytnik-p0', stron, przetworzone: wybrane, rok, miesiac,
       norma: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) : null,
       normaCzesc: (rok && miesiac) ? wymiarCzasuPracy(rok, miesiac) * 0.75 : null,
       kartOk: karty.filter(k => k.ok).length,
-      tokeny: { we: tokWe, wy: tokWy },
-      kosztUSD: +(tokWe / 1e6 * CENY_USD_MTOK.we + tokWy / 1e6 * CENY_USD_MTOK.wy).toFixed(3),
+      tokeny: { we: tokWe, wy: tokWy, drugiCzytelnik: { we: drWe, wy: drWy } },
+      kosztUSD: +(kosztGlowny + kosztDrugi).toFixed(3),
+      kosztRozbicie: { odczytGlowny: +kosztGlowny.toFixed(3), drugiCzytelnik: +kosztDrugi.toFixed(3) },
       problemyOgolne,
       // "dni" zostaja po stronie serwera w wersji z baza; na razie zwracamy je,
       // bo pelnia role sladu (eval porownuje per pole)

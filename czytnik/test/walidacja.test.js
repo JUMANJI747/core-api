@@ -157,3 +157,28 @@ test('OCR: tabela z naszej siatki trafia liczby we wlasciwe dni i kolumny', () =
   assert.equal(t.dni[1].razem, '', 'puste dni zostaja puste');
   assert.equal(t.suma, '195,5');
 });
+
+test('drugi czytelnik potwierdza sume i otwiera droge do auto (sciezka E)', () => {
+  // pelny miesiac: 20 dni po 8 h = 160 h (norma sierpnia 2026), z pominieciem
+  // 15 sierpnia - swieto ma wlasna regule i slusznie wstrzymuje karte bez wpisu 100%
+  const dni = {}; const dniDrugiego = [];
+  for (const d of [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23]) {
+    dni[d] = { od: '8:00', do: '16:00', razem: '8' };
+    dniDrugiego.push({ d, wniosek: { razem: '8' } });
+  }
+  const drugi = { naglowek: { nazwisko: 'NIKOLA MALĄG', miesiac: '8', rok: '2026', norma: '160' },
+    dni: dniDrugiego };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 1, null, drugi);
+  assert.ok(w.sciezki.zgodne.includes('drugiOdczyt'), 'zgodny drugi odczyt to sciezka dowodowa');
+  assert.equal(w.C, 160);
+  assert.equal(w.status, 'auto', 'sam drugi czytelnik wystarcza jako niezalezne potwierdzenie');
+});
+
+test('rozjazd z drugim czytelnikiem wstrzymuje karte (Woloch 8/2026 dzien 9)', () => {
+  const dni = { 9: { od: '6:00', do: '15:30', razem: '8,5' } };
+  const drugi = { naglowek: { nazwisko: 'NIKOLA MALĄG' },
+    dni: [{ d: 9, wniosek: { razem: '9,5' } }] };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 3, null, drugi);
+  assert.notEqual(w.status, 'auto');
+  assert.ok(w.sporne.some(s => s.dzien === 9 && /drugi czytelnik/.test(s.uwaga || '')));
+});

@@ -10,8 +10,8 @@
  *    między wejściem a wyjściem: wpis mniejszy = odliczona przerwa (normalne,
  *    tak wypełnia karty stajnia), wpis większy = alarm i karta do człowieka,
  *  - karta wychodzi jako "auto" tylko, gdy sumę potwierdzi ścieżka NIEZALEŻNA od
- *    głównego odczytu: ślepa transkrypcja kolumny RAZEM albo wiersz SUMA
- *    (wiersza SUMA może nie być — to nie blokuje karty),
+ *    głównego odczytu: PEŁNY ODCZYT DRUGIEGO DOSTAWCY, ślepa transkrypcja kolumny
+ *    RAZEM albo wiersz SUMA (wiersza SUMA może nie być — to nie blokuje karty),
  *  - nazwisko: dwa zdekorelowane odczyty muszą wskazać TĘ SAMĄ pozycję zamkniętej
  *    listy; cokolwiek innego => człowiek, bez wyjątków,
  *  - brak danych != konflikt: pusty wiersz SUMA to brak ścieżki, nie problem.
@@ -143,15 +143,14 @@ const sumuj = a => Math.round(a.reduce((x, y) => x + (Number(y) || 0), 0) * 100)
 const rowne = (a, b) => a !== null && b !== null && Math.abs(a - b) <= 0.011;
 
 /**
- * @param {object} p0        wynik głównego odczytu (dane wg SCHEMAT_KARTY)
- * @param {object} nazwisko2 wynik ślepego odczytu nagłówka {zapis, pewnosc}
- * @param {object} okres     {rok, miesiac, nazwiska} narzucone z zewnątrz (opcjonalne)
- * @param {*} strona
- * @param {object} [slepy]   ślepa transkrypcja kolumny RAZEM {dni:[{d,razem}], suma}
- *                           — NIEZALEŻNE wywołanie; jedyna ścieżka (obok wiersza
- *                           SUMA), która widzi dzień zgubiony przez odczyt główny
+ * @param {object} p0        odczyt glowny
+ * @param {object} nazwisko2 slepy odczyt nazwiska
+ * @param {object} okres     rok/miesiac/lista/stawki/zrodloGodzin/grafik
+ * @param {number} strona
+ * @param {object} slepy     slepa transkrypcja kolumn (RAZEM, 100%, nocne)
+ * @param {object} drugi     PELNY odczyt karty przez DRUGIEGO DOSTAWCE (opcjonalny)
  */
-function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null) {
+function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null, drugi = null) {
   const problemy = [], ostrzezenia = [], sporne = [];
   if (!p0 || !p0.naglowek || !Array.isArray(p0.dni)) {
     return { strona, ok: false, status: 'do_weryfikacji',
@@ -432,11 +431,48 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     }
   }
 
+  /* SCIEZKA E: PELNY ODCZYT DRUGIEGO DOSTAWCY.
+     Najmocniejsze potwierdzenie, jakie mamy: inny enkoder obrazu, inny trening,
+     ten sam prompt i ten sam schemat. Pomiar na sierpniu 2026 (27 kart, 462 pola
+     dzienne): 98,9% zgodnosci, a WSZYSTKIE 5 rozjazdow wypadlo dokladnie na
+     polach, ktore i tak byly sporne albo bledne - m.in. Woloch dzien 9, gdzie
+     drugi czytelnik trafil (9,5), a glowny sie pomylil (8,5), co potwierdza
+     suma wpisana na karcie. Koszt calego miesiaca: 0,175 USD. */
+  let sciezkaE = null;
+  if (drugi && Array.isArray(drugi.dni) && drugi.dni.length) {
+    let suma = 0, kompletna = true;
+    for (let d = 1; d <= dniWMies; d++) {
+      const dd = drugi.dni.find(x => Number(x.d) === d);
+      const dv = dd ? L((dd.wniosek || {}).razem ?? (dd.zapis || {}).razem) : null;
+      const wiersz = dni.find(x => x.d === d);
+      const pv = wiersz ? (wiersz.razemWpisane !== undefined ? wiersz.razemWpisane : wiersz.razem) : null;
+      if (dv === null && pv === null) continue;
+      if (dv === null || pv === null || !rowne(dv, pv)) {
+        kompletna = false;
+        sporne.push({ dzien: d, pole: 'RAZEM', wniosek: pv, drugiOdczyt: dv,
+          uwaga: 'drugi czytelnik (inny dostawca) odczytal ten dzien inaczej' });
+      }
+      suma += dv || 0;
+    }
+    sciezkaE = kompletna ? Math.round(suma * 100) / 100 : null;
+    if (sciezkaE !== null && odliczonePrzerwy > 0
+        && Math.abs(sciezkaE - odliczonePrzerwy - sumaDni) <= 0.011) sciezkaE = sumaDni;
+    // nazwisko: trzeci glos, z ta sama tolerancja literowki co slepy odczyt
+    const nazwDrugi = (drugi.naglowek || {}).nazwisko;
+    if (nazwisko && nazwDrugi && okres.nazwiska) {
+      const dop = dopasujDoListy(nazwDrugi, okres.nazwiska);
+      if (!dop || dop.pozycja !== nazwisko) {
+        ostrzezenia.push(`drugi czytelnik odczytal nazwisko jako "${nazwDrugi}"`);
+      }
+    }
+  }
+
   const sciezki = {
-    zapisyDni: sciezkaA, wierszSuma: sciezkaB, slepaKolumna: sciezkaD,
+    zapisyDni: sciezkaA, wierszSuma: sciezkaB, slepaKolumna: sciezkaD, drugiOdczyt: sciezkaE,
     odliczonePrzerwy: Math.round(odliczonePrzerwy * 100) / 100, przekroczen,
     zgodne: [
       ['zapisyDni', sciezkaA], ['wierszSuma', sciezkaB], ['slepaKolumna', sciezkaD],
+      ['drugiOdczyt', sciezkaE],
     ].filter(([, v]) => rowne(v, sumaDni)).map(([k]) => k),
   };
   const brakWierszaSumy = sciezkaB === null;
@@ -592,7 +628,8 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
      zapisyDni i czasyOdDo pochodzą z tego samego wywołania co wynik — same
      siebie nie potwierdzają (zgubiony dzień psuje je zgodnie; case Żuk 7/2026). */
   const potwierdzenia = sciezki.zgodne.length;
-  const niezalezne = sciezki.zgodne.filter(k => k === 'wierszSuma' || k === 'slepaKolumna').length;
+  const niezalezne = sciezki.zgodne
+    .filter(k => k === 'wierszSuma' || k === 'slepaKolumna' || k === 'drugiOdczyt').length;
   let status = 'do_weryfikacji';
   if (nazwiskoOk && niezalezne >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto';
   else if (nazwiskoOk && potwierdzenia >= 1 && problemy.length === 0 && sporne.length === 0) status = 'auto_slabe';
