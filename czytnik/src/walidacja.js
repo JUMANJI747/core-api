@@ -398,9 +398,17 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
        Malag przeszla przez to automatem z 155,5 h zamiast 168 - silnik zgubil
        12,5 h wpisane w kolumnie 100% przy 15 sierpnia i nikt tego nie zauwazyl.
        Porownujemy dzien po dniu; rozjazd = pole sporne (idzie tez do zoomu). */
+    /* Sasiedztwo kolumn w tabeli: ... | 100% | nocne | UW | Chor. | ...
+       Slepy odczyt bywa przesuniety o jedna kolumne (Korejwo 8/2026: wpisal
+       12 h urlopu jako "nocne" w pieciu dniach, bo UW stoi tuz obok) - a wtedy
+       "rozjazd" nie jest rozjazdem odczytu tylko pomylka rubryki i nie ma po co
+       fatygowac czlowieka. Rozpoznajemy to po tym, ze wartosc ze slepego odczytu
+       zgadza sie z SASIEDNIA kolumna odczytu glownego. */
+    const SASIEDZI = { sto: ['nocne'], nocne: ['sto', 'uw'] };
     for (const [pole, etykieta] of [['sto', '100%'], ['nocne', 'nocne']]) {
       const maKolumne = slepy.dni.some(w => w[pole] !== undefined);
       if (!maKolumne) continue;                 // starszy odczyt bez tych kolumn
+      let przesuniete = 0;
       for (const w of slepy.dni) {
         const d = Number(w.d);
         if (!(d >= 1 && d <= dniWMies)) continue;
@@ -410,8 +418,16 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
         const wiersz = dni.find(x => x.d === d);
         const pv = wiersz ? L(wiersz[pole]) : null;
         if ((sn === null && pv === null) || rowne(sn, pv)) continue;
+        if (wiersz && sn !== null && SASIEDZI[pole].some(s => rowne(sn, L(wiersz[s])))) {
+          przesuniete++;                        // wartosc z sasiedniej rubryki
+          continue;
+        }
         sporne.push({ dzien: d, pole: etykieta, wniosek: pv, slepaKolumna: sv,
           uwaga: `slepa transkrypcja kolumny ${etykieta} rozni sie od odczytu glownego` });
+      }
+      if (przesuniete) {
+        ostrzezenia.push(`slepy odczyt pomylil kolumne ${etykieta} z sasiednia w ${przesuniete} dniach `
+          + '- pominiete jako przesuniecie rubryki, nie rozjazd odczytu');
       }
     }
   }

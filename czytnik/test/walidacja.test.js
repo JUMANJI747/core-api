@@ -107,3 +107,20 @@ test('siatka z przekrzywionej strony jest odrzucana (stajnia 8/2026 str.8: rowH 
   assert.ok(wysokoscWierszaSensowna(85, H));
   assert.equal(wysokoscWierszaSensowna(53.2, H), false, 'zla geometria ma byc odrzucona');
 });
+
+test('slepy odczyt przesuniety o kolumne nie jest rozjazdem (Korejwo 8/2026: UW 12 h wpisane jako nocne)', () => {
+  const dni = { 20: { uw: '12' }, 21: { uw: '12' } };
+  const slepyZPrzesunieciem = { dni: [{ d: '20', razem: '', sto: '', nocne: '12' },
+    { d: '21', razem: '', sto: '', nocne: '12' }], suma: '' };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 11, slepyZPrzesunieciem);
+  assert.deepEqual(w.sporne.filter(s => s.pole === 'nocne'), [],
+    'wartosc rowna sasiedniej rubryce to pomylka kolumny, nie rozjazd odczytu');
+  assert.ok(w.ostrzezenia.some(o => /pomylil kolumne/.test(o)), 'ale ma zostac slad w ostrzezeniach');
+});
+
+test('prawdziwy rozjazd w kolumnie 100% nadal wstrzymuje karte (Malag 8/2026: zgubione 12,5 h)', () => {
+  const dni = { 15: { od: '11:00', do: '23:30', razem: '12,5' } };   // glowny nie widzi 100%
+  const slepyZeSetka = { dni: [{ d: '15', razem: '12.5', sto: '12.5', nocne: '' }], suma: '' };
+  const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 10, slepyZeSetka);
+  assert.ok(w.sporne.some(s => s.pole === '100%' && s.dzien === 15));
+});
