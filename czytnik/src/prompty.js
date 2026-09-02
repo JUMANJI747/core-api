@@ -124,8 +124,9 @@ const SCHEMAT_KOLUMNA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { d: { type: 'string' }, razem: { type: 'string' } },
-        required: ['d', 'razem'],
+        properties: { d: { type: 'string' }, razem: { type: 'string' },
+          sto: { type: 'string' }, nocne: { type: 'string' } },
+        required: ['d', 'razem', 'sto', 'nocne'],
         additionalProperties: false,
       },
     },
@@ -143,7 +144,15 @@ w niej napisane. Nic nie wyliczaj, nic nie poprawiaj, nie patrz na inne kolumny 
 - "8/2" przepisz jako "8/2" (dwie zmiany), "6,5" jako "6.5"
 - PRZECINEK DZIESIETNY TO NIE CYFRA: mala kreska/kropka przy dole linii miedzy cyframi to separator,
   po ktorym moze stac wylacznie 5 albo 0
-- w polu "suma" przepisz wartosc RAZEM z wiersza SUMA (ostatni wiersz, bez numeru dnia); pusta -> "", nieczytelna -> "?"`;
+- w polu "suma" przepisz wartosc RAZEM z wiersza SUMA (ostatni wiersz, bez numeru dnia); pusta -> "", nieczytelna -> "?"
+
+Oprocz kolumny RAZEM przepisz jeszcze DWIE kolumny z prawej strony, tak samo slepo, wiersz po wierszu:
+- "sto"   = kolumna "100%" (naglowek: Godziny przepracowane -> w tym godziny -> 100%)
+- "nocne" = kolumna "nocne" (zaraz po prawej od 100%)
+Te same zasady: pusta -> "", nieczytelna -> "?". Nie przenos wartosci miedzy kolumnami - jesli nie masz
+pewnosci, w ktorej kolumnie stoi liczba, wpisz ja w tej, nad ktora jest jej srodek.
+DLACZEGO to wazne: godziny 100% DOLICZAJA sie do miesiaca, a dotad nikt ich niezaleznie nie sprawdzal -
+na jednej karcie sierpnia 2026 zgubione 12,5 h w tej kolumnie przeszlo bez sladu.`;
 
 /* --- dogrywka P1: neutralny odczyt jednej komórki (zero kotwiczenia) --- */
 

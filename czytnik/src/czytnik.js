@@ -28,7 +28,12 @@ const { wymiarCzasuPracy } = require('./kalendarz');
 
 // pola sporne, które umiemy dograć zoomem (mapa: nazwa z walidacji -> kolumna)
 const POLA_ZOOM = { 'RAZEM': 'razem', '100%': 'sto', 'nocne': 'nocne', 'UW': 'uw', 'Chor.': 'chor' };
-const MAX_POL_ZOOM = 6;
+/* Ile pol dogrywamy zoomem. Bylo 6 - z regula "wiecej niz 6 => NIE ZOOMUJ WCALE",
+   czyli najgorsze karty nie dostawaly zadnej pomocy. W sierpniu 2026 wypadly tak
+   cztery karty naraz (Biziewska 19 pol spornych, Owczarek 14, Zak 10, Wojcik 10),
+   a zoom kosztuje 0,0074 USD za pole - limit oszczedzal grosze kosztem kart.
+   Teraz zoomujemy do 16 NAJWAZNIEJSZYCH pol zamiast rezygnowac. */
+const MAX_POL_ZOOM = 16;
 
 /**
  * Dogrywka P1: każde sporne pole wycinamy ×4 i czytamy PONOWNIE, neutralnie
@@ -50,12 +55,20 @@ async function dogrywkaZoom(png, p0, wynik, opcje, slad) {
     widziane.add(k);
     return true;
   });
-  if (!sporneZoom.length || sporneZoom.length > MAX_POL_ZOOM) return null;
+  if (!sporneZoom.length) return null;
+  /* Gdy pol jest wiecej niz limit, wybieramy NAJWAZNIEJSZE zamiast odpuszczac:
+     najpierw wiersz SUMA (brama sciezki dowodowej), potem rozjazdy ze slepa
+     transkrypcja (tam wiemy, ze ktos sie myli), na koncu reszta. */
+  const waga = s => (s.dzien === 'SUMA' ? 0 : (s.slepaKolumna !== undefined ? 1 : 2));
+  sporneZoom.sort((a, b) => waga(a) - waga(b));
+  const doZoomu = sporneZoom.slice(0, MAX_POL_ZOOM);
+  const pominietych = sporneZoom.length - doZoomu.length;
   let g;
   try { g = await detectGrid(png); } catch (e) { return null; }   // bez siatki nie ma zoomu
 
   const poprawki = [];
-  for (const s of sporneZoom) {
+  if (pominietych) slad.zoomPominiete = pominietych;
+  for (const s of doZoomu) {
     const pole = POLA_ZOOM[s.pole];
     try {
       const obraz = await wytnijKomorke(png, g, s.dzien, pole);
@@ -136,8 +149,13 @@ async function przetworzStrone(pdfPath, dir, strona, opcje) {
       zapytaj([obrazy.naglowek], PROMPT_NAZWISKO, SCHEMAT_NAZWISKO,
         { model: opcje.model, effort: 'low', maxTokens: 2000 }),
       // niezależna ścieżka dowodowa: ślepa transkrypcja kolumny RAZEM
+      /* effort HIGH, nie low: ta sciezka jest brama dla wszystkiego (bez niej nie
+         ma statusu auto), a jako jedyna czytala karte "na pol gwizdka" - w sierpniu
+         2026 rozjazd ze slepa transkrypcja wstrzymal 9 z 16 kart, czyli slabszy
+         czytelnik klocil sie z mocniejszym i wygrywal remis na niekorzysc karty.
+         Kosztuje to ~0,03 USD na karte przy 0,24 USD za odczyt glowny. */
       zapytaj([obrazy.gornaPolowka, obrazy.dolnaPolowka], PROMPT_KOLUMNA, SCHEMAT_KOLUMNA,
-        { model: opcje.model, effort: 'low', maxTokens: 4000 }),
+        { model: opcje.model, effort: 'high', maxTokens: 6000 }),
     ]);
     const slad = {
       model: glowny.model,

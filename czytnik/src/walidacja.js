@@ -391,6 +391,29 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
       sporne.push({ dzien: 'SUMA', pole: 'RAZEM', wniosek: sciezkaB, slepaKolumna: slepy.suma,
         uwaga: 'slepa transkrypcja wiersza SUMA rozni sie od odczytu glownego' });
     }
+
+    /* KOLUMNY 100% I NOCNE TEZ MAJA MIEC DRUGI GLOS.
+       Godziny 100% DOLICZAJA sie do miesiaca, a do sierpnia 2026 zadna sciezka
+       ich nie sprawdzala: slepa transkrypcja czytala wylacznie RAZEM. Karta
+       Malag przeszla przez to automatem z 155,5 h zamiast 168 - silnik zgubil
+       12,5 h wpisane w kolumnie 100% przy 15 sierpnia i nikt tego nie zauwazyl.
+       Porownujemy dzien po dniu; rozjazd = pole sporne (idzie tez do zoomu). */
+    for (const [pole, etykieta] of [['sto', '100%'], ['nocne', 'nocne']]) {
+      const maKolumne = slepy.dni.some(w => w[pole] !== undefined);
+      if (!maKolumne) continue;                 // starszy odczyt bez tych kolumn
+      for (const w of slepy.dni) {
+        const d = Number(w.d);
+        if (!(d >= 1 && d <= dniWMies)) continue;
+        const sv = String(w[pole] ?? '');
+        if (sv === '?') continue;
+        const sn = L(sv);
+        const wiersz = dni.find(x => x.d === d);
+        const pv = wiersz ? L(wiersz[pole]) : null;
+        if ((sn === null && pv === null) || rowne(sn, pv)) continue;
+        sporne.push({ dzien: d, pole: etykieta, wniosek: pv, slepaKolumna: sv,
+          uwaga: `slepa transkrypcja kolumny ${etykieta} rozni sie od odczytu glownego` });
+      }
+    }
   }
 
   const sciezki = {

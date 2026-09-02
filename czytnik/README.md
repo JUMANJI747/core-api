@@ -24,7 +24,12 @@ deterministyczną walidację i pomiar na korpusie.
    transkrypcji nie wolno poprawiać, wnioskowanie po nadmiarowości karty jest
    nakazane, ale tylko w osobnym kanale z obowiązkową uwagą,
 4. równolegle drugi, ślepy odczyt nazwiska (sam nagłówek, bez listy w prompcie;
-   dopasowanie do zamkniętej listy robi kod — dekorelacja),
+   dopasowanie do zamkniętej listy robi kod — dekorelacja) oraz **ślepa
+   transkrypcja kolumn RAZEM, 100% i nocne** — `effort: high`, bo to brama dla
+   statusu `auto`: w sierpniu 2026 rozjazd z tą ścieżką wstrzymał **9 z 16**
+   kart, czyli słabszy czytelnik (`low`) kłócił się z mocniejszym i remis szedł
+   na niekorzyść karty. Kolumny 100% i nocne doszły, bo **doliczają się do
+   miesiąca, a nie miały żadnego niezależnego potwierdzenia** (Maląg 8/2026),
 5. walidacja w kodzie; **źródło godzin zależy od obiektu** (`zrodloGodzin`):
    - **stajnia** → wpisane RAZEM (tam ludzie odliczają przerwy), a czas między
      wejściem a wyjściem jest tylko SUFITEM,
