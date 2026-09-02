@@ -95,6 +95,17 @@ Arkuszy), a `DOCUMENT_TEXT_DETECTION` czyta pismo odręczne i jest **darmowy do
 1000 stron/miesiąc** (robimy ~30). Wymaga włączenia Vision API w projekcie GCP.
 Trasa jest na razie POMIAROWA, nie wpięta w odczyt: najpierw mierzymy zgodność.
 
+**Drugi czytelnik, innego dostawcy** (`src/silnik-openai.js`, trasa
+`POST /czytnik/drugi-odczyt`). Powtórka tym samym modelem dziedziczy te same
+skłonności — przy niewyraźnym „10 czy 11" oba odczyty ciągną w tę samą stronę,
+co widać po przebiegu kontrolnym (inna liczba na 2 z 27 kart). Inny dostawca
+ma inny enkoder obrazu i inny trening, więc myli się gdzie indziej. Interfejs
+jest identyczny z `silnik.zapytaj`: **ten sam prompt, ten sam JSON Schema, ta
+sama walidacja** — zmienia się wyłącznie ten, kto patrzy na obrazek. Domyślnie
+`gpt-5.6-luna` (0,20 USD/1M wejścia, 1,20 USD/1M wyjścia — ~25× taniej niż
+odczyt główny); `CZYTNIK_MODEL_OPENAI` przełącza na mocniejszy bez zmiany kodu.
+Wymaga `OPENAI_API_KEY`. Trasa POMIAROWA — najpierw liczby, potem głosowanie.
+
 Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 + formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres
 (pełny ślad, idempotencja per strona), snapshot-backup tabel Google Sheets.

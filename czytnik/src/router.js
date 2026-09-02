@@ -231,6 +231,47 @@ function router(express, token) {
     }
   });
 
+  /* DRUGI CZYTELNIK, INNEGO DOSTAWCY (pomiarowo, jak /ocr-proba).
+     Ten sam prompt i ten sam schemat co odczyt główny — zmienia się wyłącznie
+     ten, kto patrzy na obrazek. Najpierw mierzymy, w ilu polach zgadza się
+     z odczytem głównym i który z nich ma rację tam, gdzie się różnią; dopiero
+     potem wpinamy jako ścieżkę dowodową i pozwalamy głosować. */
+  r.post('/czytnik/drugi-odczyt', express.json({ limit: '48mb' }), async (req, res) => {
+    if (!auth(req, res)) return;
+    const fsp = require('fs/promises'); const os = require('os'); const path = require('path');
+    const { renderPage } = require('./render');
+    const { przygotujObrazy } = require('./obrazy');
+    const { PROMPT_KARTA, SCHEMAT_KARTY } = require('./prompty');
+    const oa = require('./silnik-openai');
+    if (!oa.skonfigurowany()) return res.status(400).json({ blad: 'brak OPENAI_API_KEY' });
+    const { data, strony, model } = req.body || {};
+    if (!data) return res.status(400).json({ blad: 'brak pola data' });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'drugi-'));
+    try {
+      const pdfPath = path.join(dir, 'in.pdf');
+      await fsp.writeFile(pdfPath, Buffer.from(data, 'base64'));
+      const out = [];
+      let we = 0, wy = 0;
+      for (const p of (Array.isArray(strony) && strony.length ? strony : [1])) {
+        try {
+          const png = await renderPage(pdfPath, p, dir, 300);
+          const o = await przygotujObrazy(png);
+          const w = await oa.zapytaj([o.calaStrona, o.naglowek, o.gornaPolowka, o.dolnaPolowka],
+            PROMPT_KARTA, SCHEMAT_KARTY, { model });
+          if (w.tokeny) { we += w.tokeny.we; wy += w.tokeny.wy; }
+          out.push({ strona: p, model: w.model, czasMs: w.czasMs, odczyt: w.dane });
+        } catch (e) {
+          out.push({ strona: p, blad: e.message });
+        }
+      }
+      res.json({ ok: true, model: model || oa.MODEL_DOM_OPENAI, tokeny: { we, wy }, strony: out });
+    } catch (e) {
+      res.status(500).json({ blad: e.message });
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   r.get('/czytnik/przebieg/:id', (req, res) => {
     if (!auth(req, res)) return;
     const p = przebiegi.get(req.params.id);
