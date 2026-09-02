@@ -112,6 +112,11 @@ ekstrakcję i kod zostaje bez zmian. Czcionka (Liberation Sans, metrycznie zgodn
 z Arialem ze wzoru) leży w `assets/fonty/` — obraz Dockera nie ma żadnych
 czcionek, a PDF bez osadzonego kroju nie zapisze polskich znaków.
 
+Kody **PZ (praca zdalna)** i **D (delegacja służbowa)** to DNI PRZEPRACOWANE, nie
+nieobecności — legenda na dole karty miesza jedno z drugim. Bez tego rozróżnienia
+karta z pracą zdalną dostawała po jednym fałszywym problemie na każdy taki dzień
+(Biziewska 8/2026: 19 sztuk) i szła do człowieka bez powodu.
+
 Drogę wydruku pilnuje `npm test` (wbudowany `node:test`, bez zależności i bez
 wywołań API) — testy idą **przez router**, tak jak n8n, bo pierwsza wersja
 przepuściła błąd, którego nie było widać z CLI: router wysyła `dzialy: {}`,

@@ -241,6 +241,12 @@ async function odczytajTeczke(pdf, opcje = {}) {
         : (Array.isArray(opcje.grafikArkusze) && Array.isArray(opcje.nazwiska)
             ? zbudujGrafikMiesiaca(opcje.grafikArkusze, opcje.nazwiska, opcje.imionaGrafiku).grafik : null),
       model: opcje.model || MODEL_DOM, dpi: opcje.dpi,
+      /* MUSI tu byc, choc to nie jest cecha okresu: `przetworzStrone` dostaje
+         WYLACZNIE ten obiekt, wiec kazda opcja spoza niego jest dla niej
+         niewidoczna. Bez tej linii `zapiszSurowe` bylo martwe od poczatku -
+         przebieg sierpnia 2026 (19 kart, $5,24) wrocil bez surowych odczytow
+         i nie dalo sie go przepuscic przez `npm run eval` za darmo. */
+      zapiszSurowe: !!opcje.zapiszSurowe,
     };
         const zepsute = (okres.nazwiska || []).filter(n => /[\uFFFD]|[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(String(n)));
     if (zepsute.length) throw new Error('lista nazwisk dotarla z uszkodzonym kodowaniem - wyslij body jako UTF-8');

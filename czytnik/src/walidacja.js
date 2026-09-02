@@ -56,6 +56,16 @@ function czasZOdDo(od, do_) {
   return Math.round(suma * 100) / 100;
 }
 
+/* KODY OZNACZAJACE PRACE, NIE NIEOBECNOSC.
+   Legenda na dole karty miesza jedno z drugim: wiekszosc kodow to nieobecnosci
+   (C choroba, Uw urlop, Ub bezplatny, Op opieka, X wychowawczy, NUP, NN, O, SW),
+   ale PZ (praca zdalna) i D (delegacja sluzbowa) to DNI PRZEPRACOWANE - godziny
+   sa wpisane normalnie w RAZEM i tak maja byc liczone. Bez tego rozroznienia
+   karta Biziewskiej za 8/2026 dostala 19 falszywych problemow "kod PZ i
+   jednoczesnie N h" i poszla do czlowieka bez powodu. */
+const KODY_PRACY = new Set(['PZ', 'D']);
+const czyKodPracy = k => KODY_PRACY.has(String(k || '').trim().toUpperCase());
+
 /* ------------------------------------------------- nazwiska (zamknięta lista) */
 
 /* Aliasy: w arkuszu kadrowym bywa zdrobnienie, na karcie pelne imie
@@ -205,7 +215,7 @@ function zszyjIKontroluj(p0, nazwisko2, okres = {}, strona = null, slepy = null)
     if (razem !== null) {
       if (razem < 0 || razem > 24) problemy.push(`dzien ${d}: RAZEM poza zakresem 0-24 (${razem})`);
       if (Math.abs(razem * 2 - Math.round(razem * 2)) > 1e-9) ostrzezenia.push(`dzien ${d}: RAZEM nie jest wielokrotnoscia 0,5 (${razem})`);
-      if (wniosek.kod) problemy.push(`dzien ${d}: kod "${wniosek.kod}" i jednoczesnie ${razem} h`);
+      if (wniosek.kod && !czyKodPracy(wniosek.kod)) problemy.push(`dzien ${d}: kod "${wniosek.kod}" i jednoczesnie ${razem} h`);
     }
     // K10: wniosek != zapis wymaga uwagi
     if (razemZapis !== null && razem !== null && !rowne(razemZapis, razem) && !w.uwaga) {
