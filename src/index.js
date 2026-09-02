@@ -14,6 +14,25 @@ const express = require('express');
 const prisma = require('./db');
 
 const app = express();
+
+// ============ STATYCZNE OBRAZKI STOPKI MAILOWEJ ============
+// /img/* -> public/img/*. Te pliki pobierają KLIENCI POCZTOWI (Gmail, Outlook)
+// przy otwieraniu maila: anonimowo, bez żadnych nagłówków. Dlatego trasa musi
+// być CAŁKOWICIE otwarta — stąd montaż na samej górze, przed jakąkolwiek
+// autoryzacją i przed globalnym parserem JSON (statyk nie czyta ciała żądania,
+// a tak nie zależy od limitów body). Auth i tak siedzi na `app.use('/api')`,
+// ale kolejność zostawiamy jednoznaczną: 401 w stopce = pusty obrazek u odbiorcy.
+//
+// Cache 30 dni + immutable: klienty pocztowe i proxy Gmaila (googleusercontent)
+// cache'ują agresywnie, a te pliki się nie zmieniają. Gdyby logo miało się
+// zmienić — nowa NAZWA pliku, nie podmiana treści pod tym samym adresem.
+app.use('/img', express.static(require('path').join(__dirname, '..', 'public', 'img'), {
+  maxAge: '30d',
+  immutable: true,
+  index: false,
+  dotfiles: 'ignore',
+}));
+
 // ============ PREPROCESS SCAN (n8n) ============
 // Montowany PRZED globalnym express.json: route ma WŁASNY parser (limit 25 MB
 // tylko dla niego) i żyje POZA /api (auth = x-token / PREPROCESS_TOKEN,
