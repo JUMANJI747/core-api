@@ -28,7 +28,11 @@ deterministyczną walidację i pomiar na korpusie.
    - wpisane więcej niż wynika z obecności → zawsze alarm i karta do człowieka,
 6. urlop i chorobowe: **godziny wpisane przy dniach są wiążące** (dzień
    nieobecności = długość zmiany danej osoby); sam ptaszek → dni × stawka;
-   wyjątek: osoby z jawną stawką (3/4 etatu) liczone zawsze wg swojej stawki,
+   wyjątek: osoby z jawną stawką (3/4 etatu) liczone zawsze wg swojej stawki.
+   **Kody PZ (praca zdalna) i D (delegacja) to praca, nie nieobecność** — legenda
+   na dole karty miesza jedno z drugim, a bez tego rozróżnienia dzień z kodem
+   i godzinami dawał fałszywy problem „kod X i jednocześnie N h" (Biziewska
+   8/2026: 19 sztuk na jednej karcie),
 7. **grafik zmian** (`grafik` albo `grafikArkusze` w wywołaniu — arkusze Google
    działów: bar, kuchnia, recepcja, pokojowi, marketing) — **pomoc, nie źródło**.
    Źródłem prawdy jest karta; grafik odpowiada na trzy pytania, których z karty
@@ -111,11 +115,6 @@ na puste komórki i ucinaniem przed zajętymi. Gdy Ala zmieni wzór, powtarzamy
 ekstrakcję i kod zostaje bez zmian. Czcionka (Liberation Sans, metrycznie zgodna
 z Arialem ze wzoru) leży w `assets/fonty/` — obraz Dockera nie ma żadnych
 czcionek, a PDF bez osadzonego kroju nie zapisze polskich znaków.
-
-Kody **PZ (praca zdalna)** i **D (delegacja służbowa)** to DNI PRZEPRACOWANE, nie
-nieobecności — legenda na dole karty miesza jedno z drugim. Bez tego rozróżnienia
-karta z pracą zdalną dostawała po jednym fałszywym problemie na każdy taki dzień
-(Biziewska 8/2026: 19 sztuk) i szła do człowieka bez powodu.
 
 Drogę wydruku pilnuje `npm test` (wbudowany `node:test`, bez zależności i bez
 wywołań API) — testy idą **przez router**, tak jak n8n, bo pierwsza wersja
