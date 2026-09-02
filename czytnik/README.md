@@ -7,7 +7,14 @@ deterministyczną walidację i pomiar na korpusie.
 
 ## Silnik (P0)
 
-1. render 300 dpi (pdftoppm) + deskew (imagemagick),
+1. render 300 dpi (pdftoppm) + deskew (imagemagick) **w samym Czytniku** — NIE
+   przez `/preprocess-scan` z core-api (tamten endpoint obsługuje raporty kasowe
+   w n8n i skaluje wynik do 2000 px, co dla karty byłoby stratą; tu pełną
+   rozdzielczość skalujemy sami do budżetu API). Po detekcji siatki działa
+   **kontrola geometrii**: wysokość wiersza musi zgadzać się z proporcjami
+   formularza (±20%), bo przekrzywiona o 1° strona daje siatkę, która wygląda
+   na dobrą — stajnia 8/2026 str. 8 (Wójcik) miała 53,2 px zamiast 84 i `bladSiatki: null`.
+   Odrzucona siatka → fallback na ułamki wysokości + ślad w metadanych,
 2. 4 obrazy: cała strona (kontekst) + nagłówek + dwie połówki tabeli
    (cięcie TYLKO poziome, wiersze całe, prawa krawędź przycięta do kolumny Chor.;
    ~54 px na wiersz zamiast ~31 przy całej stronie), skalowanie lanczos po naszej

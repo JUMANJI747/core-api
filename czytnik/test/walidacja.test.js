@@ -96,3 +96,14 @@ test('sufit obcinajacy na rowna polowke nie budzi alarmu (normalna przerwa w sta
   assert.deepEqual(w.sporne.filter(s => /minuty/.test(s.uwaga || '')), []);
   assert.equal(w.C, 19.5, 'odliczona przerwa jest normalna: liczy sie wpisane RAZEM');
 });
+
+/* --- geometria siatki (obrazy.js) ------------------------------------- */
+const { oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna } = require('../src/obrazy');
+
+test('siatka z przekrzywionej strony jest odrzucana (stajnia 8/2026 str.8: rowH 53,2 zamiast 84)', () => {
+  const H = 3524;                        // wysokosc renderu 300 dpi strony A4
+  assert.ok(Math.abs(oczekiwanaWysokoscWiersza(H) - 85.3) < 1);
+  assert.ok(wysokoscWierszaSensowna(84, H), 'proste karty maja przechodzic');
+  assert.ok(wysokoscWierszaSensowna(85, H));
+  assert.equal(wysokoscWierszaSensowna(53.2, H), false, 'zla geometria ma byc odrzucona');
+});

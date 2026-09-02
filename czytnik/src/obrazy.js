@@ -43,6 +43,11 @@ function findLines(profile, minHits, minGap) {
   return groups.map(g => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
 }
 
+/** wysokosc wiersza wynikajaca z geometrii formularza (ta sama, co w fallbacku) */
+const oczekiwanaWysokoscWiersza = H => (H * 0.938 - H * 0.163) / ROWS;
+const wysokoscWierszaSensowna = (rowH, H) =>
+  rowH > oczekiwanaWysokoscWiersza(H) * 0.8 && rowH < oczekiwanaWysokoscWiersza(H) * 1.2;
+
 async function detectGrid(png) {
   const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
   const { width: W, height: H } = info;
@@ -79,6 +84,20 @@ async function detectGrid(png) {
   const zgrubna = (bottom - top) / ROWS;
   const sensowne = odstepy.filter(d => d > zgrubna * 0.7 && d < zgrubna * 1.4).sort((a, b) => a - b);
   const rowH = sensowne.length >= 5 ? sensowne[Math.floor(sensowne.length / 2)] : zgrubna;
+
+  /* KONTROLA ZDROWEGO ROZSADKU: wiersz karty ma znana wysokosc wzgledem strony
+     (formularz jest zawsze ten sam), wiec zmierzona wartosc musi sie w nia
+     trafic. Bez tego przekrzywiona strona daje siatke, ktora WYGLADA na dobra:
+     rozmazane linie mnoza sie w profilu, mediana odstepow spada i mamy cicho
+     zla geometrie. Stajnia 8/2026 str.8 (Wojcik, przekrzywienie 1 stopien):
+     rowH 53,2 px zamiast 84 jak na pozostalych siedmiu kartach - polowki byly
+     ciete nie tam, gdzie trzeba, a `bladSiatki` pokazywal null.
+     Rzut tutaj oznacza zejscie na siatke z ulamkow (ta sama geometria, tylko
+     bez pomiaru) i - co wazniejsze - zostawia slad w metadanych. */
+  if (!wysokoscWierszaSensowna(rowH, H)) {
+    throw new Error(`wysokosc wiersza ${rowH.toFixed(1)} px odbiega od oczekiwanej `
+      + `${oczekiwanaWysokoscWiersza(H).toFixed(1)} px - strona zapewne przekrzywiona, siatka niepewna`);
+  }
 
   return { W, H, left, right, tw, top, rowH, metoda: 'siatka' };
 }
@@ -205,4 +224,4 @@ async function wytnijKomorke(png, g, dzien, pole) {
     .normalise().sharpen().jpeg({ quality: 90, mozjpeg: true }).toBuffer()).toString('base64');
 }
 
-module.exports = { przygotujObrazy, detectGrid, wytnijKomorke, KOLUMNY };
+module.exports = { przygotujObrazy, detectGrid, wytnijKomorke, oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna, KOLUMNY };
