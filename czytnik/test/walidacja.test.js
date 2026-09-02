@@ -124,3 +124,36 @@ test('prawdziwy rozjazd w kolumnie 100% nadal wstrzymuje karte (Malag 8/2026: zg
   const w = zszyjIKontroluj(karta(dni), { zapis: 'NIKOLA MALĄG' }, OKRES, 10, slepyZeSetka);
   assert.ok(w.sporne.some(s => s.pole === '100%' && s.dzien === 15));
 });
+
+/* --- OCR jako trzeci glos (ocr-tabela.js) ------------------------------ */
+const { tabelaZOcr, zapisKomorki } = require('../src/ocr-tabela');
+
+test('OCR: slowa rozbite na znaki skladaja sie z powrotem w jedna liczbe', () => {
+  // Vision potrafi zwrocic "8", "," i "5" jako trzy osobne slowa
+  const slowa = [{ tekst: '8', x0: 10, x1: 20, y0: 0, y1: 10 },
+    { tekst: ',', x0: 21, x1: 23, y0: 0, y1: 10 },
+    { tekst: '5', x0: 24, x1: 34, y0: 0, y1: 10 }];
+  assert.equal(zapisKomorki(slowa, 0, 50, -5, 15).tekst, '8,5');
+});
+
+test('OCR: liczba spoza rubryki nie wpada do sasiada', () => {
+  const slowa = [{ tekst: '12', x0: 100, x1: 120, y0: 0, y1: 10 }];
+  assert.equal(zapisKomorki(slowa, 0, 50, -5, 15).tekst, '', 'srodek slowa jest poza rubryka');
+});
+
+test('OCR: tabela z naszej siatki trafia liczby we wlasciwe dni i kolumny', () => {
+  const g = { W: 1000, H: 3500, left: 30, right: 970, tw: 940, top: 570, rowH: 85 };
+  const x = f => g.left + f * g.tw, y = i => g.top + i * g.rowH + g.rowH / 2;
+  const slowa = [
+    { tekst: '11', x0: x(0.41), x1: x(0.44), y0: y(0) - 5, y1: y(0) + 5 },      // dzien 1 RAZEM
+    { tekst: '12,5', x0: x(0.41), x1: x(0.45), y0: y(14) - 5, y1: y(14) + 5 },  // dzien 15 RAZEM
+    { tekst: '12,5', x0: x(0.60), x1: x(0.64), y0: y(14) - 5, y1: y(14) + 5 },  // dzien 15 100%
+    { tekst: '195,5', x0: x(0.41), x1: x(0.46), y0: y(31) - 5, y1: y(31) + 5 }, // wiersz SUMA
+  ];
+  const t = tabelaZOcr(slowa, g, 31);
+  assert.equal(t.dni[0].razem, '11');
+  assert.equal(t.dni[14].razem, '12,5');
+  assert.equal(t.dni[14].sto, '12,5', 'kolumna 100% ma trafic do pola sto');
+  assert.equal(t.dni[1].razem, '', 'puste dni zostaja puste');
+  assert.equal(t.suma, '195,5');
+});

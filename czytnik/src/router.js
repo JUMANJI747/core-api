@@ -190,6 +190,47 @@ function router(express, token) {
   /* Kogo i z jakim działem wydrukujemy, gdy nie podamy listy w wywołaniu. */
   r.get('/czytnik/pracownicy', (req, res) => res.json(domyslniPracownicy()));
 
+  /* PRÓBA TRZECIEGO GŁOSU: ta sama strona przeczytana przez Google Vision,
+     złożona NASZĄ siatką. Osobna trasa, a nie element odczytu — najpierw
+     chcemy ZMIERZYĆ, czy OCR zgadza się z modelem, a dopiero potem ewentualnie
+     wpinać go jako ścieżkę dowodową. Klucz (konto serwisowe od Arkuszy) zostaje
+     na Railway; tu tylko wołamy i oddajemy tabelę do porównania. */
+  r.post('/czytnik/ocr-proba', express.json({ limit: '48mb' }), async (req, res) => {
+    if (!auth(req, res)) return;
+    const fsp = require('fs/promises'); const os = require('os'); const path = require('path');
+    const { renderPage } = require('./render');
+    const { detectGrid } = require('./obrazy');
+    const { slowa, skonfigurowany } = require('./ocr-google');
+    const { tabelaZOcr } = require('./ocr-tabela');
+    const { dniMiesiaca } = require('./kalendarz');
+    if (!skonfigurowany()) return res.status(400).json({ blad: 'brak GOOGLE_SERVICE_ACCOUNT_JSON' });
+    const { data, strony, rok, miesiac } = req.body || {};
+    if (!data) return res.status(400).json({ blad: 'brak pola data' });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ocr-'));
+    try {
+      const pdfPath = path.join(dir, 'in.pdf');
+      await fsp.writeFile(pdfPath, Buffer.from(data, 'base64'));
+      const dni = (rok && miesiac) ? dniMiesiaca(Number(rok), Number(miesiac)) : 31;
+      const out = [];
+      for (const p of (Array.isArray(strony) && strony.length ? strony : [1])) {
+        try {
+          const png = await renderPage(pdfPath, p, dir, 300);
+          const g = await detectGrid(png).catch(() => null);
+          if (!g) { out.push({ strona: p, blad: 'brak pewnej siatki' }); continue; }
+          const w = await slowa(png);
+          out.push({ strona: p, slow: w.length, tabela: tabelaZOcr(w, g, dni) });
+        } catch (e) {
+          out.push({ strona: p, blad: e.message });
+        }
+      }
+      res.json({ ok: true, strony: out });
+    } catch (e) {
+      res.status(500).json({ blad: e.message });
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   r.get('/czytnik/przebieg/:id', (req, res) => {
     if (!auth(req, res)) return;
     const p = przebiegi.get(req.params.id);

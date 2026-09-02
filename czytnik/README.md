@@ -84,6 +84,17 @@ walidację od nowa. Co zostanie sporne, wraca w `paczkaRewizyjna`
 człowieka. Aliasy nazwisk (Przemek→Przemysław, ANDRICHUK z kart = Andriichuk
 z arkusza — jedna osoba) i dopasowanie per słowo.
 
+**Trzeci głos: Google Vision** (`src/ocr-google.js` + `src/ocr-tabela.js`,
+trasa `POST /czytnik/ocr-proba`). Dwa odczyty tym samym modelem mylą się w tych
+samych miejscach — przebieg kontrolny sierpnia 2026 dał inną liczbę na 2 z 27
+kart przy identycznym wejściu. OCR znakowy myli się **inaczej**, więc jego zgoda
+z modelem coś znaczy. Bierzemy od Google wyłącznie SŁOWA ZE WSPÓŁRZĘDNYMI —
+przypisanie „liczba → dzień i rubryka" robi nasza zmierzona siatka, bo to serce
+odczytu i ma zostać po naszej stronie. Konto serwisowe już jest (to samo, co do
+Arkuszy), a `DOCUMENT_TEXT_DETECTION` czyta pismo odręczne i jest **darmowy do
+1000 stron/miesiąc** (robimy ~30). Wymaga włączenia Vision API w projekcie GCP.
+Trasa jest na razie POMIAROWA, nie wpięta w odczyt: najpierw mierzymy zgodność.
+
 Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 + formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres
 (pełny ślad, idempotencja per strona), snapshot-backup tabel Google Sheets.
