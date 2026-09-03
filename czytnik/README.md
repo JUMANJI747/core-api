@@ -142,6 +142,20 @@ Geometria wycinków jest stała (tabela y 0,158–0,727, x 0,09–0,79; zmierzon
 wszystkich 38 kartach, rozrzut ±0,002) — `detectGrid` tu nie działa, bo kontrola
 proporcji jest skrojona pod kartę pracy i słusznie odrzuciłaby ten formularz.
 
+**Rubryka „Liczba godzin" ma trzy postacie naraz** (policzone na 593 wypełnionych
+rubrykach sierpnia 2026, nie wymyślone): 173× sama liczba, ~200× sam przedział,
+**211× przedział I wypisana liczba** („15.30 – 24.00 – 8,5h", „14:00-22:30 8h30min",
+„11  11-22" — liczba bywa też PRZED przedziałem). Zasada jak przy stajni:
+**wypisana przez człowieka liczba jest źródłem, przedział kontrolą**; gdy oba są
+i się nie zgadzają, karta przeczy sama sobie i idzie do człowieka.
+
+Sam wzorzec bywa nierozstrzygalny w oderwaniu: „7 00 - 15 00" to godzina 7:00,
+ale „11 11-22" to jedenaście godzin i przedział 11–22. Dlatego rozbiór generuje
+**warianty i wybiera ten, w którym wypisana liczba zgadza się z przedziałem** —
+karta sama odpowiada, która interpretacja jest właściwa. Po tej poprawce suma
+miesiąca wzrosła z 5442,66 do 5473 h i **zniknęły wszystkie dziwne ułamki**
+(żaden dzień nie wypada poza pełny kwadrans).
+
 Odpowiedź niesie gotową tabelę dla kadr: `osoby: [{imieNazwisko, godziny, status,
 strony, naWieluKartach}]` obok pełnego śladu per strona.
 

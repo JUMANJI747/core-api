@@ -236,3 +236,39 @@ test('zlecenie: wypelniony wiersz SUMA jest darmowa kontrola', () => {
   const w = zl.walidujZlecenie(kartaZl(dni, { suma: '10' }), kartaZl(dni), { rok: 2026, miesiac: 8 }, 1);
   assert.ok(w.sporne.some(s => s.dzien === 'SUMA'), 'suma z karty rozni sie od sumy dni');
 });
+
+test('zlecenie: rubryka bywa przedzialem I wypisana liczba naraz - liczba wygrywa', () => {
+  // wzorce policzone na 593 rubrykach sierpnia 2026 (211 z nich ma jawna liczbe)
+  assert.equal(zl.rozbierzZapis('15.30 - 24.00 - 8,5h').deklarowane, 8.5);
+  assert.equal(zl.rozbierzZapis('11 - 23 30  /12,5h').zakres, 12.5);
+  assert.equal(zl.rozbierzZapis('7⁰⁰ - 15⁰⁰ 8h').zakres, 8, 'male zera zlane z godzina');
+  assert.equal(zl.godzinyDnia({ zapis: '9:00-18:20 8,5' }), 8.5,
+    'czlowiek wypisal 8,5 - to jest zrodlo, przedzial jest kontrola');
+});
+
+test('zlecenie: sprzecznosc w rubryce wstrzymuje karte', () => {
+  const dni = [{ d: 1, zapis: '17:00-19:00 6' }];   // przedzial 2 h, a wypisano 6
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni), { rok: 2026, miesiac: 8 }, 1);
+  assert.equal(w.status, 'do_weryfikacji');
+  assert.ok(w.sporne.some(s => /wypisano 6 h, a z godzin/.test(s.uwaga || '')));
+});
+
+test('zlecenie: sama godzina zegarowa nie zamienia sie po cichu w liczbe godzin', () => {
+  const r = zl.rozbierzZapis('8:30');
+  assert.equal(r.deklarowane, null, 'lepiej oddac nic niz wziac "8" z "8:30"');
+  assert.equal(r.zakres, null);
+});
+
+test('zlecenie: liczba godzin wpisana PRZED przedzialem (Walczak 8/2026: "11  11-22")', () => {
+  // sam wzorzec jest nierozstrzygalny ("7 00 - 15 00" to godzina, "11 11-22" to
+  // liczba + przedzial) - rozbior wybiera wariant, w ktorym oba zapisy sie zgadzaja
+  const a = zl.rozbierzZapis('11    11-22');
+  assert.equal(a.zakres, 11);
+  assert.equal(a.deklarowane, 11);
+  const b = zl.rozbierzZapis('7 00 - 15 00');
+  assert.equal(b.zakres, 8, 'tu "7 00" to godzina 7:00, nie siedem godzin');
+  assert.equal(b.od, '7:00');
+  const c = zl.rozbierzZapis('10 - 22  12');   // liczba PO przedziale
+  assert.equal(c.zakres, 12);
+  assert.equal(c.deklarowane, 12);
+});

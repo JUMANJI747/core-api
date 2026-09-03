@@ -50,16 +50,155 @@ function numerMiesiaca(v) {
   return i >= 0 ? i + 1 : null;
 }
 
-/** godziny jednego dnia: z przedziału od-do, a gdy go nie ma - z samej liczby */
+/* JAK LUDZIE WYPELNIAJA RUBRYKE "Liczba godzin" - policzone na 593 wypelnionych
+   rubrykach sierpnia 2026, nie wymyslone:
+     173x  sama liczba godzin ("8", "9,5")
+     ~200x sam przedzial ("7 00 - 15 00", "9:00-17:00", "8 14")
+     211x  PRZEDZIAL I WYPISANA LICZBA naraz ("15.30 - 24.00 - 8,5h", "11 - 23 30 /12,5h")
+   Tej trzeciej postaci pierwsza wersja w ogole nie widziala i liczyla wszystko
+   z przedzialu - stad na karcie Lugowskiego wyszlo 153,16 h zamiast 8,5 h w dniu,
+   gdzie czlowiek sam napisal "8,5h" obok zapisu 9:00-18:20.
+
+   ZASADA (ta sama, co przy stajni): WYPISANA PRZEZ CZLOWIEKA LICZBA JEST ZRODLEM,
+   przedzial jest kontrola. Gdy oba sa i sie nie zgadzaja - karta sama sobie
+   przeczy i idzie do czlowieka, bez zgadywania ktore ma racje. */
+
+/** "15 30" | "15:30" | "15.30" | "1530" | "9" -> "15:30" (albo null) */
+function czasToken(t) {
+  const x = String(t || '').trim().replace(/\s+/g, ' ');
+  if (!x) return null;
+  let m = x.match(/^(\d{1,2})\s*[:.]\s*(\d{2})$/) || x.match(/^(\d{1,2})\s+(\d{2})$/);
+  if (m) return `${m[1]}:${m[2]}`;
+  /* PRZECINEK W GODZINIE ZNACZY DWIE ROZNE RZECZY - i obie sa na tych kartach:
+       "22,30" -> 22:30 (minuty),      "13,5" -> 13:30 (polowa godziny).
+     Bez tego "7 - 13,5" czytalo sie jako 7:00-13:00, wiec zamiast 6,5 h
+     wychodzilo 6 i karta Subotowicz dostawala siedem falszywych sprzecznosci. */
+  m = x.match(/^(\d{1,2})\s*,\s*(\d{1,2})$/);
+  if (m && Number(m[1]) <= 24) {
+    const min = m[2].length === 1 ? Math.round(Number(m[2]) / 10 * 60) : Number(m[2]);
+    if (min < 60) return `${m[1]}:${String(min).padStart(2, '0')}`;
+  }
+  m = x.match(/^(\d{1,2})(\d{2})$/);            // "700", "1530" - male zera zlaly sie z godzina
+  if (m && Number(m[1]) <= 24 && Number(m[2]) < 60) return `${m[1]}:${m[2]}`;
+  m = x.match(/^(\d{1,2})$/);
+  return (m && Number(m[1]) <= 24) ? `${m[1]}:00` : null;
+}
+
+// czas w przedziale: "9", "900", "9:00", "9.00", "9 00"
+const CZAS = '\\d{1,2}(?:\\s*[:.,]\\s*\\d{1,2}|\\s\\d{2}|\\d{2})?';
+
+/**
+ * Rozbiera rubryke na to, co w niej naprawde jest: przedzial i/albo wypisana
+ * liczbe godzin. Wzorce wziete z 593 wypelnionych rubryk sierpnia 2026.
+ * @returns {{zakres: number|null, deklarowane: number|null, od: string, do: string}}
+ */
+function rozbierzZapis(zapis) {
+  let t = String(zapis || '').replace(/[⁰°]/g, '0').replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s+/g, ' ').trim();
+  if (!t || t === '-') return { zakres: null, deklarowane: null, od: '', do: '' };
+
+  // 1. jawnie wypisane godziny: "8,5h" albo "/ 12,5"
+  let deklarowane = null;
+  /* "8h30min", "6h30", "7h 30 m" - godziny I MINUTY. Bez tego z "8h30min"
+     zostawalo samo 8 i karta Kopinskiego dostawala dziesiec falszywych
+     sprzecznosci po pol godziny kazda. */
+  const zHiMin = t.match(/(\d{1,2})\s*h\s*(\d{1,2})\s*(?:min|m)?\b/i);
+  if (zHiMin && Number(zHiMin[2]) < 60) {
+    deklarowane = Number(zHiMin[1]) + Number(zHiMin[2]) / 60;
+    deklarowane = Math.round(deklarowane * 100) / 100;
+    t = t.replace(zHiMin[0], ' ');
+  }
+  const zH = deklarowane === null && t.match(/(\d{1,2}(?:[.,]\d+)?)\s*(?:h|godz\.?)\b/i);
+  if (zH) { deklarowane = Number(zH[1].replace(',', '.')); t = t.replace(zH[0], ' '); }
+  else if (deklarowane === null) {
+    const zUkosnikiem = t.match(/\/\s*(\d{1,2}(?:[.,]\d+)?)/);
+    if (zUkosnikiem) { deklarowane = Number(zUkosnikiem[1].replace(',', '.')); t = t.replace(zUkosnikiem[0], ' '); }
+  }
+
+  /* 2. przedzial "od - do". Trudnosc: liczba godzin bywa wpisana PRZED albo PO
+     przedziale, bez zadnego separatora ("11   11-22", "10 - 22  12"), a zapis
+     godziny bywa "7 00". Same wzorce sa nierozstrzygalne w oderwaniu:
+     "7 00 - 15 00" to 7:00-15:00, ale "11 11-22" to 11 godzin i przedzial 11-22.
+     Dlatego zamiast zgadywac generujemy WARIANTY ROZBIORU i wybieramy ten,
+     w ktorym wypisana liczba zgadza sie z przedzialem - karta sama sobie
+     odpowiada, ktora interpretacja jest wlasciwa. */
+  let od = '', doo = '';
+  const grupy = t.split('-').map(x => x.trim()).filter(Boolean);
+  if (grupy.length >= 2) {
+    /* Trzecia grupa to wypisana liczba godzin: "6 - 14 - 8" znaczy 6:00-14:00
+       i osiem godzin. Bez tego (branie pierwszego myslnika zamiast podzialu na
+       grupy) karta Bobrowicz gubila 55 h - przedzial przepadal, a zostawala
+       sama "6" jako liczba godzin. */
+    if (grupy.length >= 3 && deklarowane === null) {
+      const d = Number(String(grupy[grupy.length - 1]).replace(',', '.'));
+      if (Number.isFinite(d) && d >= 0 && d <= 24) deklarowane = d;
+    }
+    const lewo = grupy[0].split(/\s+/).filter(Boolean);
+    const prawo = grupy[1].split(/\s+/).filter(Boolean);
+    const wariantyL = [{ czas: lewo.join(' '), extra: null }];
+    if (lewo.length > 1) wariantyL.push({ czas: lewo.slice(1).join(' '), extra: lewo[0] });
+    const wariantyP = [{ czas: prawo.join(' '), extra: null }];
+    if (prawo.length > 1) wariantyP.push({ czas: prawo.slice(0, -1).join(' '), extra: prawo[prawo.length - 1] });
+
+    let najlepszy = null;
+    for (const l of wariantyL) {
+      for (const pr of wariantyP) {
+        const a = czasToken(l.czas), b = czasToken(pr.czas);
+        if (!a || !b) continue;
+        const zak = czasZOdDo(a, b);
+        if (zak === null || zak <= 0 || zak > 24) continue;
+        const extra = l.extra ?? pr.extra;
+        const dekl = deklarowane !== null ? deklarowane
+          : (extra !== null ? Number(String(extra).replace(',', '.')) : null);
+        let punkty = 0;
+        if (dekl !== null && Number.isFinite(dekl) && Math.abs(dekl - zak) <= 0.011) punkty += 3;
+        if (Math.abs(zak * 4 - Math.round(zak * 4)) < 1e-9) punkty += 1;   // pelne kwadranse
+        if (l.extra === null && pr.extra === null) punkty += 0.5;          // bez naddatkow
+        if (!najlepszy || punkty > najlepszy.punkty) najlepszy = { a, b, zak, dekl, punkty };
+      }
+    }
+    if (najlepszy) {
+      od = najlepszy.a; doo = najlepszy.b;
+      if (deklarowane === null && najlepszy.dekl !== null && Number.isFinite(najlepszy.dekl)
+          && najlepszy.dekl >= 0 && najlepszy.dekl <= 24) deklarowane = najlepszy.dekl;
+      t = '';
+    }
+  } else if (grupy.length === 1) {
+    const bezMyslnika = t.match(new RegExp(`^(${CZAS})\\s+(${CZAS})$`));
+    if (bezMyslnika) {
+      od = czasToken(bezMyslnika[1]) || ''; doo = czasToken(bezMyslnika[2]) || '';
+      if (od && doo) t = '';
+    }
+  }
+
+  // 3. co zostalo po wycieciu przedzialu to wypisana liczba godzin.
+  //    ALE: jesli w resztce nadal siedzi cos wygladajacego na GODZINE ZEGAROWA
+  //    ("8:30"), to znaczy, ze nie zrozumielismy rubryki - lepiej oddac null
+  //    i wyslac karte do czlowieka, niz wziac "8" z "8:30" jako osiem godzin.
+  const reszta = t.replace(/[-\/]/g, ' ').trim();
+  if (deklarowane === null && reszta) {
+    if (/\d{1,2}\s*[:.]\s*\d{2}/.test(reszta)) {
+      return { zakres: null, deklarowane: null, od: '', do: '', nieczytelne: true };
+    }
+    const liczba = reszta.match(/(\d{1,2}(?:[.,]\d+)?)/);
+    if (liczba) {
+      const d = Number(liczba[1].replace(',', '.'));
+      if (Number.isFinite(d) && d >= 0 && d <= 24) deklarowane = d;
+    }
+  }
+  const zakres = (od && doo) ? czasZOdDo(od, doo) : null;
+  return { zakres, deklarowane, od, do: doo };
+}
+
+/** godziny jednego dnia: wypisana liczba ma pierwszenstwo, przedzial to kontrola */
 function godzinyDnia(w) {
+  const r = rozbierzZapis(w.zapis);
+  if (r.deklarowane !== null) return r.deklarowane;
+  if (r.zakres !== null) return r.zakres;
+  // model rozbil przedzial na pola od/do, a w "zapis" nic sensownego nie zostalo
   const z = czasZOdDo(w.od, w.do);
   if (z !== null) return z;
   const liczba = L(w.zapis);
-  // sam "7-15" bez rozbicia na od/do tez umiemy
-  if (liczba === null && /\d/.test(String(w.zapis || ''))) {
-    const m = String(w.zapis).replace(/\s/g, '').match(/^(\d{1,2}(?:[:.]\d{2})?)-(\d{1,2}(?:[:.]\d{2})?)$/);
-    if (m) return czasZOdDo(m[1], m[2]);
-  }
   return liczba !== null && liczba >= 0 && liczba <= 24 ? liczba : null;
 }
 
@@ -94,6 +233,14 @@ function walidujZlecenie(p0, drugi, okres = {}, strona = null) {
     if (String(w.zapis || '').includes('?')) {
       sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: g,
         uwaga: w.uwaga || 'rubryka nieczytelna' });
+    }
+    /* KARTA PRZECZY SAMA SOBIE: wypisana liczba godzin nie zgadza sie
+       z przedzialem obok niej. Nie zgadujemy, ktore ma racje. */
+    const r = rozbierzZapis(w.zapis);
+    if (r.deklarowane !== null && r.zakres !== null && Math.abs(r.deklarowane - r.zakres) > 0.011) {
+      sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: r.deklarowane,
+        zZakresu: r.zakres,
+        uwaga: `wypisano ${r.deklarowane} h, a z godzin ${r.od}-${r.do} wychodzi ${r.zakres} h` });
     }
     // godziny bez podpisu i podpis bez godzin: zapisujemy, nie alarmujemy —
     // to normalne na tych kartach, ale idzie do sladu
@@ -270,4 +417,5 @@ async function odczytajTeczkeZlecen(pdfBuf, opcje = {}) {
   }
 }
 
-module.exports = { odczytajTeczkeZlecen, przetworzStroneZlecenia, walidujZlecenie, godzinyDnia, numerMiesiaca };
+module.exports = { odczytajTeczkeZlecen, przetworzStroneZlecenia, walidujZlecenie, godzinyDnia,
+  rozbierzZapis, czasToken, numerMiesiaca };
