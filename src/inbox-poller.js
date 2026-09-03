@@ -417,9 +417,54 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX', meta = null) {
   });
 }
 
-// Zapisz decyzję pominięcia maila (newsletter / SPAM / AUTO_REPLY), żeby
+/* Czy z tym nadawcą MAMY JUŻ RELACJĘ — czyli czy na pewno nie jest to spam.
+ *
+ * Trzy niezależne dowody, każdy wystarcza:
+ *   1. sami kiedyś do niego pisaliśmy (Email OUTBOUND na ten adres),
+ *   2. jest w CRM jako kontakt kontrahenta,
+ *   3. jego domena jest na liście naszych własnych/partnerskich firm.
+ *
+ * Powód: klasyfikator ocenia TREŚĆ, a treść bywa myląca — krótki test, sama
+ * stopka z logotypami, przesłane zdjęcie. Relacja z nadawcą jest twardym
+ * faktem z bazy i bije ocenę modelu. Bez tego michal@ przez 20 dni nie
+ * dostał ani jednego maila od aleksandra.gorna@abcwork.pl.
+ */
+const DOMENY_WLASNE = ['surfstickbell.com', 'abcwork.pl'];
+
+async function czyZnanyNadawca(fromEmail) {
+  const adres = String(fromEmail || '').trim().toLowerCase();
+  if (!adres || !adres.includes('@')) return false;
+  const domena = adres.split('@')[1];
+  if (DOMENY_WLASNE.includes(domena)) return true;
+  const dodatkowe = String(process.env.ZAUFANE_DOMENY || '')
+    .split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
+  if (dodatkowe.includes(domena)) return true;
+  try {
+    const pisalismy = await prisma.email.findFirst({
+      where: { direction: 'OUTBOUND', toEmail: { contains: adres, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (pisalismy) return true;
+    const kontakt = await prisma.contractorContact.findFirst({
+      where: { type: 'email', value: { equals: adres, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (kontakt) return true;
+  } catch (e) {
+    /* Baza nie odpowiada — NIE zgadujemy, że to spam. Przy wątpliwości
+       mail ma przejść: fałszywy alarm kosztuje jedno powiadomienie,
+       fałszywe odrzucenie kosztuje zagubioną wiadomość od klienta. */
+    console.error('[inbox-poller] czyZnanyNadawca:', e.message);
+    return true;
+  }
+  return false;
+}
+
+// Zapisz decyzję pominięcia maila (newsletter / bounce), żeby
 // rescan jej nie cofnął. Best-effort: brak messageId → nie ma jak dedupować,
 // trudno (rescan i tak przefiltruje newslettery heurystyką).
+// UWAGA: od 3.09.2026 NIE używamy tego dla decyzji MODELU (SPAM/AUTO_REPLY) —
+// ocena modelu może ukryć maila, ale nie może go skasować.
 async function recordSkip(messageId, inbox, fromEmail, reason) {
   if (!messageId) return;
   try {
@@ -1188,7 +1233,8 @@ async function processAccount(account) {
           continue;
         }
 
-        const { category, country, language, subject_pl, summary_pl, vat_numbers } = classification;
+        let { category } = classification;
+        const { country, language, subject_pl, summary_pl, vat_numbers } = classification;
         console.log(`[inbox-poller] ${inbox}: uid=${mail.uid} category=${category}`);
 
         // Fallback tlumaczenia: czasem Haiku oddaje summary_pl w oryginalnym
@@ -1233,11 +1279,33 @@ async function processAccount(account) {
           }
         }
 
-        // Skip spam and auto-reply — don't save, don't notify. Decyzja
-        // ZAPISANA (EmailSkip), żeby rescan nie wpuścił maila z powrotem.
+        /* SPAM / AUTO_REPLY wg MODELU — od 3.09.2026 NIE KASUJEMY.
+         *
+         * Co sie stalo: michal@ przez 20 dni nie mial w CRM ani jednego maila,
+         * bo Haiku oznaczal je jako SPAM, recordSkip zapisywal decyzje i mail
+         * przepadal — bez zapisu, bez powiadomienia, bez bledu, BEZ SLADU
+         * widocznego dla czlowieka. A poniewaz EmailSkip jest trwaly, zaden
+         * rescan juz go nie wpuszczal. Model jednym slowem kasowal poczte
+         * bezpowrotnie i nikt nie mial jak tego zauwazyc.
+         *
+         * Nowa zasada: FILTR MOZE UKRYC, NIE MOZE SKASOWAC. Mail zapisujemy
+         * z tagiem i jako przeczytany (nie zasmieca skrzynki, nie idzie na
+         * Telegram), ale JEST — da sie go znalezc, odzyskac i policzyc.
+         * EmailSkip zostaje tylko dla filtrow deterministycznych (bounce,
+         * newsletter z naglowkiem List-Unsubscribe), gdzie nie ma miejsca
+         * na pomylke ocenna. */
+        let ukryjJakoSpam = false;
         if (category === 'SPAM' || category === 'AUTO_REPLY') {
-          await recordSkip(mail.messageId, inbox, mail.fromEmail, `ai:${category}`);
-          continue;
+          if (await czyZnanyNadawca(mail.fromEmail)) {
+            /* Nadawca, do ktorego SAMI kiedys pisalismy albo ktory jest w CRM,
+             * nie jest spamem — nawet gdy tresc tak wyglada (krotki test, sama
+             * stopka z logo, przeslane zdjecie). To wlasnie ta klasa maili
+             * ginela na michal@. */
+            console.log(`[inbox-poller] ${inbox}: ${category} od ZNANEGO nadawcy ${mail.fromEmail} — nie ukrywam`);
+            category = 'CLIENT_REPLY';
+          } else {
+            ukryjJakoSpam = true;
+          }
         }
 
         // Save to DB
@@ -1330,8 +1398,12 @@ async function processAccount(account) {
             messageId: mail.messageId || null,
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
-            tags: [category, effectiveCountry, effectiveLanguage].filter(Boolean),
+            tags: [category, effectiveCountry, effectiveLanguage,
+              ukryjJakoSpam ? 'ukryty-filtrem' : null].filter(Boolean),
             contractorId,
+            // Ukryty filtrem = od razu przeczytany: nie zasmieca skrzynki i nie
+            // idzie na Telegram (patrz bramka niżej), ale JEST i da się go znaleźć.
+            isRead: ukryjJakoSpam ? true : undefined,
           },
         });
 
@@ -1849,6 +1921,52 @@ let pollCycleCount = 0;
 const RESCAN_EVERY_N_CYCLES = 12;
 
 let pollInFlight = false;
+/* CZUWANIE NAD CISZĄ. Dotychczasowy alert budził się TYLKO wtedy, gdy
+ * połączenie IMAP rzuciło błędem. Awaria michal@ nie rzuciła niczym:
+ * połączenie działało, maile przychodziły, klasyfikator kasował je jako spam
+ * i skrzynka po prostu milczała przez 20 dni. Cisza jest objawem, więc od
+ * teraz cisza sama się zgłasza.
+ *
+ * Dwa pytania zadawane raz na godzinę, per skrzynka:
+ *   1. czy filtr coś wyrzuca, a jednocześnie NIC nie zapisujemy? (dzisiejsza awaria)
+ *   2. czy skrzynka, która normalnie pracuje, zamilkła na dobę? (typowa awaria)
+ * Alert idzie raz na skrzynkę na dobę — ma budzić, nie męczyć. */
+const CZUWANIE_CO_N_CYKLI = 12;                  // 12 × 5 min = co godzinę
+const CZUWANIE_THROTTLE_MS = 24 * 60 * 60 * 1000;
+const _ostatniAlertCiszy = new Map();            // inbox -> timestamp
+
+async function czuwajNadCisza(accounts) {
+  const doba = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const tydzien = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  for (const account of accounts) {
+    const inbox = account.inbox;
+    try {
+      const [zapisaneDoba, ukryteDoba, zapisaneTydzien] = await Promise.all([
+        prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: doba } } }),
+        prisma.emailSkip.count({ where: { inbox, createdAt: { gte: doba } } }),
+        prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: tydzien } } }),
+      ]);
+
+      let alarm = null;
+      if (ukryteDoba > 0 && zapisaneDoba === 0) {
+        alarm = `⚠️ Skrzynka ${inbox}@ — filtr odrzucił ${ukryteDoba} mail(i) w ciągu doby, a NIC nie trafiło do CRM.\n`
+          + 'Wygląda, jakby filtr zjadał pocztę. Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
+      } else if (zapisaneDoba === 0 && zapisaneTydzien >= 5) {
+        alarm = `⚠️ Skrzynka ${inbox}@ milczy od doby, a w tygodniu miała ${zapisaneTydzien} maili.\n`
+          + 'Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
+      }
+      if (!alarm) continue;
+
+      const ostatni = _ostatniAlertCiszy.get(inbox) || 0;
+      if (Date.now() - ostatni < CZUWANIE_THROTTLE_MS) continue;
+      _ostatniAlertCiszy.set(inbox, Date.now());
+      await sendInboxAlert(alarm);
+    } catch (e) {
+      console.error(`[inbox-poller] czuwanie ${inbox}:`, e.message);
+    }
+  }
+}
+
 async function pollAll() {
   // Anty-nakładanie: cykl potrafi przekroczyć interwał (LLM + VIES + załączniki).
   // Bez guardu dwa cykle czytały ten sam lastUid → podwójny koszt LLM i
@@ -1887,6 +2005,10 @@ async function pollAll() {
   }
   if (shouldRescan) {
     console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
+  }
+  if (pollCycleCount % CZUWANIE_CO_N_CYKLI === 0) {
+    try { await czuwajNadCisza(accounts); }
+    catch (e) { console.error('[inbox-poller] czuwanie nad ciszą nieudane:', e.message); }
   }
   } finally {
     pollInFlight = false;
@@ -1949,7 +2071,17 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         if (newsletterFilter(mail)) { filteredOut++; continue; }
         if (mail.messageId) {
           const skipped = await prisma.emailSkip.findUnique({ where: { messageId: mail.messageId } }).catch(() => null);
-          if (skipped) { filteredOut++; continue; }
+          /* Stare decyzje MODELU (reason 'ai:SPAM' / 'ai:AUTO_REPLY') NIE
+           * blokują już rescanu. To one zjadły pocztę michal@ na 20 dni,
+           * a EmailSkip czynił stratę nieodwracalną — rescan sam siebie
+           * odcinał od maili, które miał ratować. Decyzje deterministyczne
+           * (bounce, newsletter) nadal blokują: tam nie ma pomyłki ocennej. */
+          const zDecyzjiModelu = skipped && String(skipped.reason || '').startsWith('ai:');
+          if (skipped && !zDecyzjiModelu) { filteredOut++; continue; }
+          if (zDecyzjiModelu) {
+            await prisma.emailSkip.delete({ where: { messageId: mail.messageId } }).catch(() => {});
+            console.log(`[rescan] ${inbox}: cofam starą decyzję modelu (${skipped.reason}) dla ${mail.fromEmail}`);
+          }
         }
 
         // Dedup po messageId — JEZELI istnieje, to sprawdz czy createdAt
