@@ -154,6 +154,30 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
     wynik.powody.push(`odczyt EmailSkip nieudany: ${e.message}`);
   }
 
+  // 3b) KANAREK — aktywny test drożności. To jedyny dowód, że poczta na tej
+  //     skrzynce naprawdę dochodzi; cisza nie dowodzi niczego.
+  try {
+    const k = await prisma.kanarekPoczty.findFirst({
+      where: { inbox }, orderBy: { wyslanoO: 'desc' },
+    });
+    if (k) {
+      wynik.kanarek = {
+        nadawca: k.nadawca,
+        wyslano: k.wyslanoO.toISOString(),
+        wyslanoMinTemu: minutTemu(k.wyslanoO),
+        potwierdzony: !!k.potwierdzonoO,
+        dolecialWSekundach: k.potwierdzonoO
+          ? Math.round((new Date(k.potwierdzonoO) - new Date(k.wyslanoO)) / 1000) : null,
+        bladWysylki: k.bladWysylki || null,
+        zaalarmowano: k.zaalarmowanoO ? k.zaalarmowanoO.toISOString() : null,
+      };
+    } else {
+      wynik.kanarek = { brak: 'jeszcze nie wysłano ani jednego testu' };
+    }
+  } catch (e) {
+    wynik.kanarek = { blad: e.message };
+  }
+
   // 4) co widac na serwerze IMAP NA ZYWO
   let imap = null;
   try {
@@ -184,6 +208,13 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
   // 5) werdykt
   if (wynik.serwer && wynik.serwer.blad) {
     wynik.stan = 'awaria';
+  } else if (wynik.kanarek && wynik.kanarek.bladWysylki) {
+    wynik.stan = 'awaria';
+    wynik.powody.push(`nie udało się wysłać testowego maila: ${wynik.kanarek.bladWysylki}`);
+  } else if (wynik.kanarek && wynik.kanarek.potwierdzony === false
+      && wynik.kanarek.wyslanoMinTemu != null && wynik.kanarek.wyslanoMinTemu > 30) {
+    wynik.stan = 'awaria';
+    wynik.powody.push(`testowy mail wysłany ${wynik.kanarek.wyslanoMinTemu} min temu NIE DOTARŁ`);
   } else if (wynik.zaleglosc > 0) {
     wynik.stan = 'zaleglosc';
     wynik.powody.push(`na serwerze jest ${wynik.zaleglosc} wiadomosci powyzej naszego lastUid=${wynik.lastUid}`);
