@@ -1937,23 +1937,51 @@ const _ostatniAlertCiszy = new Map();            // inbox -> timestamp
 
 async function czuwajNadCisza(accounts) {
   const doba = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const tydzien = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   for (const account of accounts) {
     const inbox = account.inbox;
     try {
-      const [zapisaneDoba, ukryteDoba, zapisaneTydzien] = await Promise.all([
+      const [zapisaneDoba, ukryteDoba] = await Promise.all([
         prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: doba } } }),
         prisma.emailSkip.count({ where: { inbox, createdAt: { gte: doba } } }),
-        prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: tydzien } } }),
       ]);
 
       let alarm = null;
       if (ukryteDoba > 0 && zapisaneDoba === 0) {
+        /* DOWÓD UTRATY, nie brak poczty: coś przyszło i zostało wyrzucone,
+         * a nic nie zostało zapisane. To jest twardy sygnał i idzie zawsze. */
         alarm = `⚠️ Skrzynka ${inbox}@ — filtr odrzucił ${ukryteDoba} mail(i) w ciągu doby, a NIC nie trafiło do CRM.\n`
           + 'Wygląda, jakby filtr zjadał pocztę. Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
-      } else if (zapisaneDoba === 0 && zapisaneTydzien >= 5) {
-        alarm = `⚠️ Skrzynka ${inbox}@ milczy od doby, a w tygodniu miała ${zapisaneTydzien} maili.\n`
-          + 'Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
+      } else if (zapisaneDoba === 0) {
+        /* CISZA. Pierwsza wersja alarmowała po dobie ciszy przy ≥5 mailach
+         * w tygodniu — i od razu wywołała fałszywy alarm na info@, która
+         * dostaje ~1 mail dziennie, więc doba przerwy jest tam NORMĄ.
+         * Płaski próg nie ma jak działać: każda skrzynka ma swój rytm.
+         * Liczymy więc MEDIANĘ odstępów między ostatnimi mailami tej
+         * skrzynki i alarmujemy dopiero, gdy obecna cisza jest 3× dłuższa
+         * niż jej własna norma (i nie krócej niż 48 h). Alert, który wyje
+         * bez powodu, przestaje być czytany — a wtedy wracamy do punktu
+         * wyjścia, czyli awarii, której nikt nie zauważa. */
+        const ostatnie = await prisma.email.findMany({
+          where: { inbox, direction: 'INBOUND' },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: { createdAt: true },
+        });
+        if (ostatnie.length >= 4) {
+          const odstepy = [];
+          for (let i = 1; i < ostatnie.length; i++) {
+            odstepy.push(ostatnie[i - 1].createdAt - ostatnie[i].createdAt);
+          }
+          odstepy.sort((a, b) => a - b);
+          const mediana = odstepy[Math.floor(odstepy.length / 2)];
+          const cisza = Date.now() - ostatnie[0].createdAt.getTime();
+          const prog = Math.max(mediana * 3, 48 * 60 * 60 * 1000);
+          if (cisza > prog) {
+            alarm = `⚠️ Skrzynka ${inbox}@ milczy ${Math.round(cisza / 3600000)} h.\n`
+              + `Normalnie mail przychodzi tam co ~${Math.round(mediana / 3600000)} h, więc to ${Math.round(cisza / mediana)}× dłużej niż zwykle.\n`
+              + 'Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
+          }
+        }
       }
       if (!alarm) continue;
 

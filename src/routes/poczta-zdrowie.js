@@ -45,6 +45,31 @@ function polacz(Imap, account, timeoutMs = 15000) {
   });
 }
 
+/* Data NAJNOWSZEJ wiadomości leżącej na serwerze. To jest dana, która
+ * odróżnia dwie zupełnie różne sytuacje wyglądające tak samo z zewnątrz:
+ *   - „nic nie przyszło"  → skrzynka po prostu milczy, nie ma awarii,
+ *   - „przyszło, a u nas tego nie ma" → poczta ginie i trzeba działać.
+ * Bez tego alert o ciszy nie umie odróżnić spokojnego dnia od awarii.
+ * Czytamy po NUMERZE PORZĄDKOWYM (nie po UID), bo najwyższy UID mógł zostać
+ * skasowany, a wtedy fetch po nim nie zwróciłby nic. Pobieramy wyłącznie
+ * atrybuty (INTERNALDATE) — bez treści, bez nagłówków. */
+function dataNajnowszej(imap, box) {
+  return new Promise(resolve => {
+    const ile = box && box.wiadomosci;
+    if (!ile) return resolve(null);
+    let data = null;
+    let f;
+    try { f = imap.seq.fetch(`${ile}:${ile}`, { bodies: '' , struct: false }); }
+    catch (e) { return resolve(null); }
+    const strazak = setTimeout(() => resolve(data), 10000);
+    f.on('message', msg => {
+      msg.once('attributes', attrs => { if (attrs && attrs.date) data = attrs.date; });
+    });
+    f.once('error', () => { clearTimeout(strazak); resolve(null); });
+    f.once('end', () => { clearTimeout(strazak); resolve(data); });
+  });
+}
+
 function statusSkrzynki(imap, nazwa = 'INBOX') {
   return new Promise(resolve => {
     imap.openBox(nazwa, true, (err, box) => {
@@ -135,6 +160,11 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
     imap = await polacz(Imap, account);
     const box = await statusSkrzynki(imap, 'INBOX');
     wynik.serwer = box;
+    if (box && !box.blad) {
+      const najnowsza = await dataNajnowszej(imap, box);
+      wynik.ostatniaNaSerwerze = najnowsza ? new Date(najnowsza).toISOString() : null;
+      wynik.ostatniaNaSerwerzeMinTemu = najnowsza ? minutTemu(najnowsza) : null;
+    }
     if (box && !box.blad && box.uidNext != null && wynik.lastUid != null) {
       /* uidNext to numer, ktory dostanie NASTEPNA wiadomosc, wiec najwyzszy
          istniejacy UID to uidNext-1. Roznica ponad nasz lastUid to dokladnie
@@ -157,6 +187,16 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
   } else if (wynik.zaleglosc > 0) {
     wynik.stan = 'zaleglosc';
     wynik.powody.push(`na serwerze jest ${wynik.zaleglosc} wiadomosci powyzej naszego lastUid=${wynik.lastUid}`);
+  } else if (wynik.ostatniaNaSerwerzeMinTemu != null && wynik.ostatniMailMinTemu != null
+      && wynik.ostatniMailMinTemu - wynik.ostatniaNaSerwerzeMinTemu > 60) {
+    /* Na serwerze leży wiadomość NOWSZA niż cokolwiek, co mamy w bazie
+       (z godzinnym marginesem na opóźnienie cyklu). Zaległość po UID może
+       przy tym wynosić zero — np. gdy poczta trafia do innego folderu albo
+       gdy mail został pobrany i porzucony po drodze. */
+    wynik.stan = 'gubimy';
+    wynik.powody.push(
+      `najnowsza wiadomość na serwerze jest sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h, `
+      + `a najnowsza u nas sprzed ${Math.round(wynik.ostatniMailMinTemu / 60)} h`);
   } else if (wynik.ostatniUdanyCyklMinTemu != null && wynik.ostatniUdanyCyklMinTemu > 20) {
     wynik.stan = 'awaria';
     wynik.powody.push(`ostatni udany cykl ${wynik.ostatniUdanyCyklMinTemu} min temu (poller chodzi co 5 min)`);
@@ -165,6 +205,9 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
     wynik.powody.push(wynik.ostatniMail
       ? `ostatni mail ${Math.round(wynik.ostatniMailMinTemu / 60)} h temu`
       : 'w bazie nie ma ani jednego maila przychodzacego z tej skrzynki');
+    if (wynik.ostatniaNaSerwerzeMinTemu != null) {
+      wynik.powody.push(`na serwerze też nic nowszego (najnowsza sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h) — nikt po prostu nie napisał`);
+    }
   } else {
     wynik.stan = 'ok';
   }
@@ -221,6 +264,7 @@ function router(express, token) {
         ok: skrzynki.filter(s => s.stan === 'ok').length,
         zaleglosc: skrzynki.filter(s => s.stan === 'zaleglosc').length,
         awaria: skrzynki.filter(s => s.stan === 'awaria').length,
+        gubimy: skrzynki.filter(s => s.stan === 'gubimy').length,
         cisza: skrzynki.filter(s => s.stan === 'cisza').length,
       },
       skrzynki,
