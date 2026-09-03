@@ -84,16 +84,34 @@ walidację od nowa. Co zostanie sporne, wraca w `paczkaRewizyjna`
 człowieka. Aliasy nazwisk (Przemek→Przemysław, ANDRICHUK z kart = Andriichuk
 z arkusza — jedna osoba) i dopasowanie per słowo.
 
-**Trzeci głos: Google Vision** (`src/ocr-google.js` + `src/ocr-tabela.js`,
-trasa `POST /czytnik/ocr-proba`). Dwa odczyty tym samym modelem mylą się w tych
-samych miejscach — przebieg kontrolny sierpnia 2026 dał inną liczbę na 2 z 27
-kart przy identycznym wejściu. OCR znakowy myli się **inaczej**, więc jego zgoda
-z modelem coś znaczy. Bierzemy od Google wyłącznie SŁOWA ZE WSPÓŁRZĘDNYMI —
-przypisanie „liczba → dzień i rubryka" robi nasza zmierzona siatka, bo to serce
-odczytu i ma zostać po naszej stronie. Konto serwisowe już jest (to samo, co do
-Arkuszy), a `DOCUMENT_TEXT_DETECTION` czyta pismo odręczne i jest **darmowy do
-1000 stron/miesiąc** (robimy ~30). Wymaga włączenia Vision API w projekcie GCP.
-Trasa jest na razie POMIAROWA, nie wpięta w odczyt: najpierw mierzymy zgodność.
+**Trzeci głos: Google Vision — ZMIERZONE I ODRZUCONE.** Hipoteza była taka, że
+OCR znakowy myli się inaczej niż model, więc jego zgoda coś znaczy — a przede
+wszystkim, że mechaniczny przepisywacz złapie wpisy, które model **przeoczył**
+(jak zgubione 12,5 h w kolumnie 100% u Maląg). Pomiar na tych samych 27 kartach
+sierpnia 2026 (`src/ocr-google.js` + `src/ocr-tabela.js`, trasa
+`POST /czytnik/ocr-proba`, koszt 0 zł w darmowym progu):
+
+| | wynik |
+|---|---|
+| pól dziennych porównanych | 437 |
+| zgodnych z silnikiem | **297 = 68%** |
+| pól, których OCR w ogóle nie odczytał | 113 = 26% |
+| realnych rozjazdów | 27 = 6% |
+| **wpisów przeoczonych przez model, a złapanych przez OCR** | **0** |
+
+Rozjazdy to w większości artefakty pisma odręcznego: `8 → 88`, `8 → 888888`,
+`8,5 → 815`, `12 → 1212`. W kolumnie 100% OCR odezwał się dwa razy i **oba razy
+przekręcił wartość, którą silnik miał dobrze** (12 → „128", 9,5 → „915").
+Setki u Maląg nie zobaczył w ogóle.
+
+Wniosek: **na piśmie odręcznym Vision nie nadaje się ani na głosującego (68% to
+za mało, blokowałby co trzecie pole), ani na wyłapywacza przeoczeń (0 trafień).**
+Kod zostaje jako pomiarowy — mógłby się przydać na formularzach **drukowanych** —
+ale nie jest i nie ma być wpięty w tor wypłat. Potwierdzeniem zostaje drugi
+czytelnik innego dostawcy (98,9% zgodności, patrz niżej).
+
+Przy okazji pomiar potwierdził kontrolę geometrii: przekrzywiona karta Wójcika
+została odrzucona z „brak pewnej siatki" zamiast wyprodukować śmieci.
 
 **Drugi czytelnik, innego dostawcy — WPIĘTY jako ścieżka dowodowa E**
 (`src/silnik-openai.js`; trasa pomiarowa `POST /czytnik/drugi-odczyt` została).
