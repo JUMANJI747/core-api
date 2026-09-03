@@ -146,6 +146,75 @@ async function obrazyZlecenia(png) {
   };
 }
 
+/**
+ * PASKI WIERSZY — ten sam formularz zlecenia, ale pokrojony na waskie paski
+ * po kilka wierszy, kazdy POWIEKSZONY.
+ *
+ * Po co: model myli cyfry (5/6, 8/9, 2/3) nie dlatego, ze patrzy w zle miejsce,
+ * tylko dlatego, ze dostaje ich za malo w pikselach. Zmierzone na sierpniu 2026:
+ * przy podziale na polowki tabeli jeden wiersz to ~96 tokenow obrazu; gdy
+ * czytalem recznie pojedyncze wiersze w powiekszeniu, bylo ich ~440 — i wtedy
+ * te same cyfry czytaly sie bez pomylek. 8 z 15 blednych dni to byly wlasnie
+ * czyste pomylki cyfr.
+ *
+ * Granice wierszy bierzemy z PRAWDZIWYCH linii tabeli (siatka.js), a nie ze
+ * stalego kroku — stala dryfuje i przy dniu 21 pasek zaczyna sie na sasiednim
+ * wierszu.
+ *
+ * @param {Buffer} png            strona w 300 dpi
+ * @param {number} wierszyNaPasek ile dni na jednym obrazie
+ * @param {number} szerokosc      docelowa szerokosc paska w px (powiekszenie)
+ */
+const PASEK_DLUGI_BOK = 2576;   // maks. dluzszy bok dla klasy wysokiej rozdzielczosci
+const PASEK_X0 = 0.055, PASEK_X1 = 0.62;
+
+async function obrazyZleceniaPaski(png, { wierszyNaPasek = 4, dlugiBok = PASEK_DLUGI_BOK,
+  x0 = PASEK_X0, x1 = PASEK_X1 } = {}) {
+  const { linieTabeli, wierszDnia } = require('./siatka');
+  const g = await linieTabeli(png);
+  const pierwszy = wierszDnia(g.linie, 1, g.H);
+  if (!pierwszy) throw new Error('nie wykryto siatki tabeli');
+
+  /* Szerokosc: obcinamy PUSTA prawa czesc kolumny podpisu. Tokeny obrazu to
+     platki 28x28, a dluzszy bok jest przycinany przez API do 2576 px — kazdy
+     px zmarnowany na pustke to px odebrany cyfrom. Zostawiamy poczatek kolumny
+     podpisu, bo na czesci kart to TAM czlowiek wpisuje liczbe godzin. */
+  const left = Math.round(g.W * x0);
+  const szer = Math.round(g.W * (x1 - x0));
+  const paski = [];
+  for (let od = 1; od <= 32; od += wierszyNaPasek) {
+    const doo = Math.min(32, od + wierszyNaPasek - 1);      // 32 = wiersz SUMA
+    const a = wierszDnia(g.linie, od, g.H);
+    const b = wierszDnia(g.linie, doo, g.H);
+    if (!a || !b) continue;
+    const top = Math.max(0, Math.round(a.gora - a.krok * 0.2));
+    const dol = Math.min(g.H, Math.round(b.dol + b.krok * 0.2));
+    /* Powiekszamy DO limitu API, nie ponad: powyzej 2576 px na dluzszym boku
+       serwis i tak skaluje w dol, wiec wieksze pliki to sam transfer bez zysku. */
+    const wysZrodla = dol - top;
+    const skala = dlugiBok / Math.max(szer, wysZrodla);
+    const buf = await sharp(png)
+      .extract({ left, top, width: szer, height: wysZrodla })
+      .resize({ width: Math.round(szer * skala), kernel: 'lanczos3' })
+      .normalise().sharpen()
+      .jpeg({ quality: JAKOSC, mozjpeg: true }).toBuffer();
+    paski.push({ od, doo, jpeg: buf });
+  }
+  const nag = await zmiesc(sharp(png).extract({
+    left: 0, top: 0, width: g.W, height: Math.round(g.H * 0.16),
+  }));
+  return {
+    naglowek: nag.jpeg.toString('base64'),
+    paski: paski.map(p => ({ od: p.od, do: p.doo, obraz: p.jpeg.toString('base64') })),
+    meta: {
+      formularz: 'zlecenie-paski',
+      wierszyNaPasek, dlugiBok, x0, x1,
+      pasków: paski.length,
+      krokWiersza: Math.round(pierwszy.krok),
+    },
+  };
+}
+
 /* ---------------------------------------------------------------- składanie */
 
 async function zmiesc(bufOrSharp, maxPx = MPX) {
@@ -259,4 +328,4 @@ async function wytnijKomorke(png, g, dzien, pole) {
     .normalise().sharpen().jpeg({ quality: 90, mozjpeg: true }).toBuffer()).toString('base64');
 }
 
-module.exports = { przygotujObrazy, obrazyZlecenia, detectGrid, wytnijKomorke, zmiesc, oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna, KOLUMNY };
+module.exports = { przygotujObrazy, obrazyZlecenia, obrazyZleceniaPaski, detectGrid, wytnijKomorke, zmiesc, oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna, KOLUMNY };

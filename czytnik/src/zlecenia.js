@@ -25,10 +25,10 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { pdfPageCount, renderPage } = require('./render');
-const { obrazyZlecenia } = require('./obrazy');
+const { obrazyZlecenia, obrazyZleceniaPaski } = require('./obrazy');
 const { zapytaj } = require('./silnik');
 const silnikOpenai = require('./silnik-openai');
-const { SCHEMAT_ZLECENIE, PROMPT_ZLECENIE } = require('./prompty-zlecenie');
+const { SCHEMAT_ZLECENIE, PROMPT_ZLECENIE, PROMPT_ZLECENIE_PASKI } = require('./prompty-zlecenie');
 const { czasZOdDo, L } = require('./walidacja');
 const { dniMiesiaca } = require('./kalendarz');
 
@@ -383,18 +383,30 @@ async function przetworzStroneZlecenia(pdfPath, dir, strona, opcje) {
   try {
     png = await renderPage(pdfPath, strona, dir, opcje.dpi || 300);
     sha = crypto.createHash('sha256').update(png).digest('hex').slice(0, 16);
-    obrazy = await obrazyZlecenia(png);
+    obrazy = opcje.trybObrazow === 'paski'
+      ? await obrazyZleceniaPaski(png, { wierszyNaPasek: opcje.wierszyNaPasek })
+      : await obrazyZlecenia(png);
   } catch (e) {
     return { strona, ok: false, status: 'do_weryfikacji',
       problemy: [`przygotowanie obrazow nie powiodlo sie: ${e.message}`], ostrzezenia: [], sporne: [] };
   }
-  const komplet = [obrazy.calaStrona, obrazy.naglowek, obrazy.gornaPolowka, obrazy.dolnaPolowka];
+  /* PASKI: nagłówek + tabela pocięta na wąskie paski w powiększeniu.
+   * Mierzone na sierpniu 2026: przy podziale na połówki model dostaje ~100
+   * tokenów obrazu na wiersz, przy paskach ~414 — a 8 z 15 błędnych dni to
+   * były czyste pomyłki cyfr (5/6, 8/9, 2/3), czyli brak pikseli, nie brak
+   * reguły. Tokeny obrazu to płytki 28×28, a API i tak przycina dłuższy bok
+   * do 2576 px, więc powiększamy DOKŁADNIE do tego limitu i obcinamy pustą
+   * prawą część karty, żeby nie płacić tokenami za biel. */
+  const komplet = opcje.trybObrazow === 'paski'
+    ? [obrazy.naglowek, ...obrazy.paski.map(p => p.obraz)]
+    : [obrazy.calaStrona, obrazy.naglowek, obrazy.gornaPolowka, obrazy.dolnaPolowka];
+  const prompt = opcje.trybObrazow === 'paski' ? PROMPT_ZLECENIE_PASKI : PROMPT_ZLECENIE;
   try {
     const chceDrugi = opcje.drugiOdczyt !== false && silnikOpenai.skonfigurowany();
     const [glowny, drugi] = await Promise.all([
-      zapytaj(komplet, PROMPT_ZLECENIE, SCHEMAT_ZLECENIE, { model: opcje.model, effort: 'high' }),
+      zapytaj(komplet, prompt, SCHEMAT_ZLECENIE, { model: opcje.model, effort: 'high' }),
       chceDrugi
-        ? silnikOpenai.zapytaj(komplet, PROMPT_ZLECENIE, SCHEMAT_ZLECENIE, { model: opcje.modelDrugi })
+        ? silnikOpenai.zapytaj(komplet, prompt, SCHEMAT_ZLECENIE, { model: opcje.modelDrugi })
           .catch(e => ({ blad: e.message }))
         : Promise.resolve(null),
     ]);

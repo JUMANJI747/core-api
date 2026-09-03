@@ -94,7 +94,8 @@ function router(express, token) {
     const o = req.body || {};
     const opcje = { strony: o.strony, rok: o.rok, miesiac: o.miesiac, rownolegle: o.rownolegle,
       model: o.model, modelDrugi: o.modelDrugi, dpi: o.dpi,
-      drugiOdczyt: o.drugiOdczyt, zapiszSurowe: o.zapiszSurowe };
+      drugiOdczyt: o.drugiOdczyt, zapiszSurowe: o.zapiszSurowe,
+      trybObrazow: o.trybObrazow, wierszyNaPasek: o.wierszyNaPasek };
     if (tryb) {
       sprzatajPrzebiegi();
       const id = crypto.randomBytes(8).toString('hex');
