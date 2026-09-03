@@ -54,9 +54,11 @@ const SCHEMAT_ZLECENIE = {
           podpis: S(),     // "tak" gdy w trzeciej kolumnie jest podpis, inaczej ""
           zapisPodpis: S(),// co jeszcze stoi w kolumnie podpisu poza samym podpisem
           skreslone: S(),  // "tak" gdy CAŁY wiersz jest przekreślony, inaczej ""
+          podpisSkreslony: S(), // "tak" gdy kreska idzie także przez podpis
           uwaga: S(),
         },
-        required: ['d', 'zapis', 'zapis2', 'od', 'do', 'podpis', 'zapisPodpis', 'skreslone', 'uwaga'],
+        required: ['d', 'zapis', 'zapis2', 'od', 'do', 'podpis', 'zapisPodpis', 'skreslone',
+          'podpisSkreslony', 'uwaga'],
         additionalProperties: false,
       },
     },
@@ -88,7 +90,9 @@ ZASADY:
   co było skreślone. Nie sklejaj skreślonej i poprawionej wartości w jeden ciąg.
 - CAŁY WIERSZ PRZEKREŚLONY (kreska/kreski przez cały wpis, często też przez podpis) —
   wpisz "tak" w polu "skreslone" i mimo to przepisz treść do "zapis". Godzin nie usuwaj,
-  od odliczenia jest kod. W "uwaga" napisz, czy podpis też jest przekreślony.
+  od odliczenia jest kod. Osobno odpowiedz w polu "podpisSkreslony": "tak", jeżeli kreska
+  idzie TAKŻE przez podpis, "" jeżeli podpis został nietknięty. To rozstrzyga, czy dzień
+  odwołano, czy tylko poprawiono zapis — nie pisz tego w "uwaga", tylko w tym polu.
   To jest osobna rzecz niż poprawka: poprawka ma wartość zastępczą, skreślenie nie ma.
 - DWIE ZMIANY W JEDNYM DNIU: jeżeli w wierszu są DWA osobne przedziały
   (np. "6:00-8:30" i "11:00-22:00"), pierwszy idzie do "zapis", drugi do "zapis2".

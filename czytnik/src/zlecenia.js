@@ -283,8 +283,12 @@ function walidujZlecenie(p0, drugi, okres = {}, strona = null) {
        nietkniety: wtedy nie wiadomo, czy dzien odwolano, czy poprawiono zapis. */
     if (czySkreslone(w)) {
       const podpisany = /tak/i.test(String(w.podpis || ''));
-      const podpisTezSkreslony = /podpis[^.]*(przekre|skres)|(przekre|skres)[^.]*podpis/i
-        .test(String(w.uwaga || ''));
+      /* Czy podpis tez jest przekreslony, MODEL MA POWIEDZIEC WPROST - osobnym
+         polem, nie zdaniem w uwadze. Pierwsza wersja czytala to regexem z uwagi
+         i na Dabrowskiej d6 ("wpis godzin przekreslony; podpis nieprzekreslony")
+         wyszlo jej, ze podpis jest skreslony - czyli dokladnie odwrotnie.
+         Karta przeszla jako auto zamiast trafic do czlowieka. */
+      const podpisTezSkreslony = /^tak$/i.test(String(w.podpisSkreslony || '').trim());
       ostrzezenia.push(`dzien ${d}: wiersz przekreslony, nie wliczony do sumy`);
       if (podpisany && !podpisTezSkreslony) {
         sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: 0,

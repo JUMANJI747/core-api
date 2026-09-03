@@ -207,7 +207,8 @@ const kartaZl = (dni, extra = {}) => ({
   dni: dni.map(d => ({ d: String(d.d), zapis: d.zapis || '', zapis2: d.zapis2 || '',
     od: d.od || '', do: d.do || '',
     podpis: d.podpis === undefined ? 'tak' : d.podpis,
-    zapisPodpis: d.zapisPodpis || '', skreslone: d.skreslone || '', uwaga: d.uwaga || '' })),
+    zapisPodpis: d.zapisPodpis || '', skreslone: d.skreslone || '',
+    podpisSkreslony: d.podpisSkreslony || '', uwaga: d.uwaga || '' })),
 });
 
 test('zlecenie: zgodni czytelnicy daja auto, a suma liczy sie z godzin', () => {
@@ -328,4 +329,22 @@ test('zlecenie: dopisek z jednym przedzialem nie udaje liczby godzin', () => {
   assert.equal(zl.wartoscZDopisku('8,5h'), 8.5);
   assert.equal(zl.wartoscZDopisku(''), null);
   assert.equal(zl.wartoscZDopisku('-'), null);
+});
+
+test('zlecenie: o przekreslony podpis pytamy modelu, nie zgadujemy z uwagi (Dabrowska d6)', () => {
+  // Pierwsza wersja czytala to regexem z pola "uwaga" i na zdaniu
+  // "wpis godzin przekreslony; podpis nieprzekreslony" wychodzilo jej, ze podpis
+  // JEST skreslony - czyli dokladnie odwrotnie. Karta przechodzila jako auto.
+  const zUwaga = [{ d: 6, zapis: '7 30 - 14 00', skreslone: 'tak', podpis: 'tak',
+    uwaga: 'wpis godzin przekreslony pozioma kreska; podpis nieprzekreslony' }];
+  const a = zl.walidujZlecenie(kartaZl(zUwaga), kartaZl(zUwaga), { rok: 2026, miesiac: 8 }, 37);
+  assert.equal(a.status, 'do_weryfikacji', 'zdanie w uwadze nie zdejmuje pytania');
+  assert.ok(a.sporne.some(s => s.dzien === 6));
+
+  // Kreska idzie takze przez podpis - dzien odwolany, nie ma o co pytac.
+  const jawne = [{ d: 6, zapis: '7 30 - 14 00', skreslone: 'tak', podpis: 'tak',
+    podpisSkreslony: 'tak' }];
+  const b = zl.walidujZlecenie(kartaZl(jawne), kartaZl(jawne), { rok: 2026, miesiac: 8 }, 19);
+  assert.equal(b.godziny, 0);
+  assert.equal(b.status, 'auto');
 });
