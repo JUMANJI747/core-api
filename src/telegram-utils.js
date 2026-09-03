@@ -2,6 +2,23 @@
 
 const https = require('https');
 
+/* ZDROWIE KANALU POWIADOMIEN.
+ *
+ * sendTelegram oddawal cokolwiek, co przyszlo z API, i uznawal to za sukces —
+ * takze HTTP 403 „bot was blocked by the user". Efekt: powiadomienia przestaja
+ * dochodzic, kod jest przekonany, ze wysyla, i nikt sie nie dowiaduje. Nie
+ * mozna tez tego zglosic... Telegramem, bo to wlasnie on jest zepsuty.
+ * Dlatego stan kanalu zapisujemy tutaj, a czyta go /poczta/zdrowie, ktore od
+ * Telegrama nie zalezy.
+ *
+ * Swiadomie NIE rzucamy wyjatkiem: sendTelegram ma 28 wywolan w kodzie i
+ * wiekszosc nie jest opakowana w try/catch — rzucenie wywracaloby proces
+ * zamiast tracic jedno powiadomienie. Zwracamy {ok:false} i zostawiamy slad.
+ */
+const stanKanalu = { wyslane: 0, bledy: 0, ostatniBlad: null, ostatniBladO: null, ostatniSukcesO: null };
+
+const TG_TIMEOUT_MS = 15000;
+
 async function sendTelegram(botToken, chatId, text, opts = {}) {
   // Default to plain text. parse_mode='HTML' chokes on Markdown-style **bold**
   // that LLMs love to emit ("Can't find end of the entity"). Caller can opt
@@ -10,18 +27,47 @@ async function sendTelegram(botToken, chatId, text, opts = {}) {
   if (opts.parseMode) payload.parse_mode = opts.parseMode;
   if (opts.replyMarkup) payload.reply_markup = opts.replyMarkup; // inline_keyboard (przyciski)
   const body = Buffer.from(JSON.stringify(payload));
-  return new Promise((resolve, reject) => {
+
+  const niepowodzenie = (powod) => {
+    stanKanalu.bledy += 1;
+    stanKanalu.ostatniBlad = String(powod).slice(0, 300);
+    stanKanalu.ostatniBladO = new Date().toISOString();
+    console.error('[telegram] NIE wyslano powiadomienia:', stanKanalu.ostatniBlad);
+    return { ok: false, error: stanKanalu.ostatniBlad };
+  };
+
+  return new Promise(resolve => {
+    let zamkniete = false;
+    const koniec = (wynik) => { if (!zamkniete) { zamkniete = true; resolve(wynik); } };
+
     const req = https.request({
       hostname: 'api.telegram.org',
       path: `/bot${botToken}/sendMessage`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
+      timeout: TG_TIMEOUT_MS,
     }, res => {
-      let chunks = [];
+      const chunks = [];
       res.on('data', c => chunks.push(c));
-      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+      res.on('end', () => {
+        const tekst = Buffer.concat(chunks).toString();
+        let dane = null;
+        try { dane = JSON.parse(tekst); } catch (_) { /* API oddalo nie-JSON */ }
+        // Telegram sygnalizuje bledy POLEM ok, nie tylko kodem HTTP
+        if (res.statusCode >= 400 || !dane || dane.ok === false) {
+          const opis = dane && dane.description ? dane.description : tekst.slice(0, 200);
+          return koniec(niepowodzenie(`HTTP ${res.statusCode}: ${opis}`));
+        }
+        stanKanalu.wyslane += 1;
+        stanKanalu.ostatniSukcesO = new Date().toISOString();
+        koniec(dane);
+      });
     });
-    req.on('error', reject);
+    /* Bez tego jedno zawieszone polaczenie z api.telegram.org wisi bez konca
+       W SRODKU cyklu pollera, a poller ma guard pollInFlight — czyli poczta
+       przestaje byc pobierana calkiem. */
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} koniec(niepowodzenie(`timeout ${TG_TIMEOUT_MS} ms`)); });
+    req.on('error', e => koniec(niepowodzenie(e.message)));
     req.write(body);
     req.end();
   });
@@ -127,4 +173,4 @@ function editMessageReplyMarkup(botToken, chatId, messageId, replyMarkup) {
   return tgApi(botToken, 'editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup || { inline_keyboard: [] } }).catch(() => null);
 }
 
-module.exports = { sendTelegram, sendTelegramPhoto, sendTelegramDocument, tgApi, answerCallbackQuery, editMessageReplyMarkup };
+module.exports = { sendTelegram, sendTelegramPhoto, sendTelegramDocument, tgApi, answerCallbackQuery, editMessageReplyMarkup, stanKanalu };

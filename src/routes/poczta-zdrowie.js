@@ -255,10 +255,30 @@ function router(express, token) {
     for (const konto of wybrane) {
       skrzynki.push(await zbadajSkrzynke(Imap, konto, { progCiszyMin: req.query.progCiszyMin }));
     }
+    /* ZDROWIE KANALU POWIADOMIEN. Uzytkownik zglosil brak powiadomien jako
+     * OSOBNY objaw obok braku maili — i slusznie, bo to niezalezna awaria:
+     * mail moze byc w CRM, a Telegram moze go nie dostarczyc. Zablokowany bot
+     * odpowiada HTTP 403, co dotad bylo brane za sukces. Stan czytamy tutaj,
+     * bo ten endpoint jako jedyny nie zalezy od Telegrama. */
+    let powiadomienia = null;
+    try {
+      const { stanKanalu } = require('../telegram-utils');
+      powiadomienia = {
+        wyslane: stanKanalu.wyslane,
+        bledy: stanKanalu.bledy,
+        ostatniSukces: stanKanalu.ostatniSukcesO,
+        ostatniBlad: stanKanalu.ostatniBlad,
+        ostatniBladO: stanKanalu.ostatniBladO,
+        // liczniki sa od startu procesu — po redeployu zaczynaja od zera
+        uwaga: 'liczniki od ostatniego startu procesu',
+      };
+    } catch (e) { powiadomienia = { blad: e.message }; }
+
     const zle = skrzynki.filter(s => s.stan !== 'ok');
     res.json({
-      ok: zle.length === 0,
+      ok: zle.length === 0 && !(powiadomienia && powiadomienia.bledy > 0),
       sprawdzono: new Date().toISOString(),
+      powiadomienia,
       podsumowanie: {
         skrzynek: skrzynki.length,
         ok: skrzynki.filter(s => s.stan === 'ok').length,

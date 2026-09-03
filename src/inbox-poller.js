@@ -106,13 +106,32 @@ async function markInboxFail(inbox, errMsg) {
   inboxHealth.set(inbox, h);
 }
 
+/* Zly JSON w IMAP_ACCOUNTS oddawal pusta liste, a pusta lista znaczyla
+ * „nie ma czego odpytywac" — poller konczyl cykl z komunikatem w logu i
+ * WSZYSTKIE skrzynki cicho przestawaly dzialac. Ta sama cisza co przy
+ * usunieciu skrzynki z konfiguracji. Teraz jedno i drugie krzyczy. */
+let _ostatniAlertKonfiguracji = 0;
 function getAccounts() {
   try {
-    return JSON.parse(process.env.IMAP_ACCOUNTS || '[]');
+    const konta = JSON.parse(process.env.IMAP_ACCOUNTS || '[]');
+    if (!Array.isArray(konta) || konta.length === 0) {
+      alertKonfiguracji('IMAP_ACCOUNTS jest puste — poller NIE odpytuje żadnej skrzynki.');
+      return [];
+    }
+    return konta;
   } catch (e) {
     console.error('[inbox-poller] Invalid IMAP_ACCOUNTS JSON:', e.message);
+    alertKonfiguracji(`IMAP_ACCOUNTS ma niepoprawny JSON (${e.message}) — poller NIE odpytuje żadnej skrzynki.`);
     return [];
   }
+}
+
+function alertKonfiguracji(tresc) {
+  const teraz = Date.now();
+  if (teraz - _ostatniAlertKonfiguracji < 60 * 60 * 1000) return;
+  _ostatniAlertKonfiguracji = teraz;
+  sendInboxAlert(`🛑 POCZTA STOI. ${tresc}\nSprawdź zmienną IMAP_ACCOUNTS w Railway → Variables.`)
+    .catch(e => console.error('[inbox-poller] alert konfiguracji nieudany:', e.message));
 }
 
 // ============ VAT CACHE ============
@@ -202,7 +221,7 @@ function bounceFilter(mail) {
   return false;
 }
 
-function hardFilter(mail) {
+function hardFilter(mail, inbox = null) {
   const fromEmail = (mail.fromEmail || '').toLowerCase();
   const subject = (mail.subject || '').toLowerCase();
   const autoSubmitted = (mail.autoSubmitted || '').toLowerCase();
@@ -210,16 +229,21 @@ function hardFilter(mail) {
   // Block auto-submitted (except "no")
   if (autoSubmitted && autoSubmitted !== 'no') return false;
 
-  // Block own domain — except web-order notifications from the B2B
-  // panel. WooCommerce wysyla "New customer quote request #(N)" /
-  // "Order request #N" z From=info@surfstickbell.com To=info@..., bo
-  // panel uzywa naszego SMTP. Bez tego wyjatku hardFilter ucinal je
-  // przed processWebOrder → VIES → Telegram (poller mial je za
-  // self-loop). Subject deterministycznie identyfikuje notyfikacje
-  // panela; pozostale wewnetrzne maile dalej blokujemy.
+  /* WLASNA DOMENA. Wczesniej ten warunek kasowal KAZDY mail z
+   * @surfstickbell.com — i to bez sladu: bez wiersza w Email, bez EmailSkip,
+   * bez Telegrama. Skrzynka wygladala na cicha, a poczta byla niszczona.
+   * Uzytkownik zglosil dokladnie ten objaw („sam sobie wysylam z innych
+   * skrzynek, w CRM nic nie ma").
+   *
+   * Blokada mialaby sens wylacznie dla SELF-LOOPA, czyli gdy nadawca to TA
+   * SAMA skrzynka, do ktorej mail przyszedl (tak dziala panel WooCommerce:
+   * From=info@ To=info@). Mail z info@ do michal@ to normalna poczta
+   * wewnetrzna i nie ma powodu jej wyrzucac. */
   if (fromEmail.endsWith('@surfstickbell.com')) {
     const isOrderNotification = /quote request|order request|new customer quote/i.test(mail.subject || '');
-    if (!isOrderNotification) return false;
+    const nadawcaLokalnie = fromEmail.split('@')[0];
+    const selfLoop = inbox && nadawcaLokalnie === String(inbox).toLowerCase();
+    if (selfLoop && !isOrderNotification) return false;
   }
 
   // Block from keywords
@@ -257,6 +281,26 @@ function stripLinks(text) {
 
 // ============ IMAP FETCH ============
 
+/* NIC W TYM PLIKU NIE MOZE CZEKAC W NIESKONCZONOSC.
+ *
+ * connTimeout i authTimeout pilnuja tylko ZESTAWIENIA polaczenia. Gdy sesja
+ * IMAP zestawi sie poprawnie, a potem serwer przestanie odpowiadac w polowie
+ * pobierania, `await` w processAccount nie wraca NIGDY. A poniewaz pollAll ma
+ * guard `pollInFlight`, kolejne cykle sa pomijane — poczta przestaje byc
+ * pobierana ze WSZYSTKICH skrzynek, bez jednego wyjatku i bez alertu, bo
+ * markInboxFail nigdy nie zostanie wywolane. To najcichsza z mozliwych awarii:
+ * proces zyje, health-check odpowiada, a poczta stoi.
+ */
+function zTimeoutem(promise, ms, opis) {
+  let budzik;
+  const strazak = new Promise((_, reject) => {
+    budzik = setTimeout(() => reject(new Error(`${opis}: przekroczono ${Math.round(ms / 1000)} s`)), ms);
+  });
+  return Promise.race([promise, strazak]).finally(() => clearTimeout(budzik));
+}
+
+const IMAP_LIMIT_CYKLU_MS = 4 * 60 * 1000;   // krocej niz interwal pollera (5 min)
+
 function connectImap(account) {
   return new Promise((resolve, reject) => {
     const imap = new Imap({
@@ -268,10 +312,18 @@ function connectImap(account) {
       tlsOptions: { rejectUnauthorized: false },
       connTimeout: 30000,
       authTimeout: 15000,
+      // Cisza na gniezdzie dluzsza niz 90 s = zerwana sesja, nie „wolny serwer".
+      socketTimeout: 90000,
     });
 
-    imap.once('ready', () => resolve(imap));
-    imap.once('error', reject);
+    let rozstrzygniete = false;
+    const koniec = (fn, arg) => { if (!rozstrzygniete) { rozstrzygniete = true; fn(arg); } };
+    imap.once('ready', () => koniec(resolve, imap));
+    imap.once('error', e => koniec(reject, e));
+    // node-imap potrafi zamknac polaczenie bez zdarzenia 'error' — wtedy
+    // obietnica wisialaby bez konca.
+    imap.once('close', () => koniec(reject, new Error('polaczenie IMAP zamkniete przed gotowoscia')));
+    imap.once('end', () => koniec(reject, new Error('polaczenie IMAP zakonczone przed gotowoscia')));
     imap.connect();
   });
 }
@@ -1100,10 +1152,13 @@ async function processAccount(account) {
     const lastUid = state ? state.lastUid : 0;
     console.log(`[inbox-poller] ${inbox}: lastUid=${lastUid}`);
 
-    // Connect and fetch
-    imap = await connectImap(account);
+    // Connect and fetch — POD LIMITEM CZASU. Zawieszony serwer nie moze
+    // zatrzymac calego pollingu (patrz komentarz przy zTimeoutem).
+    imap = await zTimeoutem(connectImap(account), 60000, `${inbox}: polaczenie IMAP`);
     const boxMeta = {};
-    const mails = await fetchMailsFromUid(imap, lastUid, 'INBOX', boxMeta);
+    const mails = await zTimeoutem(
+      fetchMailsFromUid(imap, lastUid, 'INBOX', boxMeta),
+      IMAP_LIMIT_CYKLU_MS, `${inbox}: pobieranie z INBOX`);
     imap.end();
     imap = null;
 
@@ -1196,14 +1251,19 @@ async function processAccount(account) {
         }
 
         // Hard filter
-        if (!hardFilter(mail)) {
+        if (!hardFilter(mail, inbox)) {
           console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
+          // Slad OBOWIAZKOWY: bez niego /poczta/zdrowie liczy 0 odfiltrowanych
+          // i pokazuje „cisza", czyli sugeruje, ze nikt nie pisze — podczas gdy
+          // maile sa wyrzucane. Diagnostyka bez sladu klamie.
+          await recordSkip(mail.messageId, inbox, mail.fromEmail, 'hard:self-loop-lub-blokada');
           continue;
         }
 
         // Bounce filter
         if (bounceFilter(mail)) {
           console.log(`[inbox-poller] filtered (bounce) uid=${mail.uid} subject=${mail.subject}`);
+          await recordSkip(mail.messageId, inbox, mail.fromEmail, 'bounce:zwrot-lub-DSN');
           continue;
         }
 
@@ -1940,8 +2000,18 @@ async function czuwajNadCisza(accounts) {
   for (const account of accounts) {
     const inbox = account.inbox;
     try {
+      /* „Zapisane" musi znaczyc PRAWDZIWA poczte do czlowieka. Maile ukryte
+       * filtrem i automaty PGF sa zapisywane w tej samej tabeli, wiec liczone
+       * naiwnie rozbrajaly czuwanie: skrzynka zasypywana automatami wygladala
+       * na zdrowa, choc zaden mail od czlowieka nie docieral. Na michal@
+       * wystarczylby jeden automat dziennie, zeby alarm nigdy nie zadzialal. */
       const [zapisaneDoba, ukryteDoba] = await Promise.all([
-        prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: doba } } }),
+        prisma.email.count({
+          where: {
+            inbox, direction: 'INBOUND', createdAt: { gte: doba },
+            NOT: { tags: { hasSome: ['ukryty-filtrem', 'pgf'] } },
+          },
+        }),
         prisma.emailSkip.count({ where: { inbox, createdAt: { gte: doba } } }),
       ]);
 
@@ -1962,7 +2032,7 @@ async function czuwajNadCisza(accounts) {
          * bez powodu, przestaje być czytany — a wtedy wracamy do punktu
          * wyjścia, czyli awarii, której nikt nie zauważa. */
         const ostatnie = await prisma.email.findMany({
-          where: { inbox, direction: 'INBOUND' },
+          where: { inbox, direction: 'INBOUND', NOT: { tags: { hasSome: ['ukryty-filtrem', 'pgf'] } } },
           orderBy: { createdAt: 'desc' },
           take: 20,
           select: { createdAt: true },
@@ -1995,15 +2065,31 @@ async function czuwajNadCisza(accounts) {
   }
 }
 
+const LIMIT_ZAWIESZONEGO_CYKLU_MS = 15 * 60 * 1000;   // 3 pominiete ticki
+let pollStartedAt = null;
+
 async function pollAll() {
   // Anty-nakładanie: cykl potrafi przekroczyć interwał (LLM + VIES + załączniki).
   // Bez guardu dwa cykle czytały ten sam lastUid → podwójny koszt LLM i
   // dublowane maile bez messageId (2× Telegram).
   if (pollInFlight) {
-    console.warn('[inbox-poller] poprzedni cykl wciąż trwa — pomijam ten tick');
-    return;
+    /* Guard chroni przed nakladaniem sie cykli, ale sam potrafil zablokowac
+       polling NA ZAWSZE: gdy jeden cykl zawisl (serwer IMAP albo Telegram bez
+       timeoutu), flaga zostawala true i kazdy kolejny tick byl pomijany —
+       poczta stawala ze WSZYSTKICH skrzynek, bez wyjatku i bez alertu.
+       Teraz zawieszony cykl jest po czasie porzucany i zglaszany. */
+    const trwa = Date.now() - (pollStartedAt || Date.now());
+    if (trwa < LIMIT_ZAWIESZONEGO_CYKLU_MS) {
+      console.warn(`[inbox-poller] poprzedni cykl wciąż trwa (${Math.round(trwa / 1000)} s) — pomijam ten tick`);
+      return;
+    }
+    console.error(`[inbox-poller] poprzedni cykl wisi ${Math.round(trwa / 60000)} min — porzucam go i startuję nowy`);
+    await sendInboxAlert(
+      `⚠️ Poller poczty zawiesił się na ${Math.round(trwa / 60000)} min i został porzucony.\n`
+      + 'Przez ten czas NIE pobierano maili z żadnej skrzynki. Sprawdź: GET /poczta/zdrowie');
   }
   pollInFlight = true;
+  pollStartedAt = Date.now();
   try {
   const accounts = getAccounts();
   if (accounts.length === 0) {
@@ -2040,6 +2126,7 @@ async function pollAll() {
   }
   } finally {
     pollInFlight = false;
+    pollStartedAt = null;
   }
 }
 
@@ -2091,7 +2178,7 @@ async function rescanInboxSince(inbox, daysBack = 3) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
         if (!mail.fromEmail) continue;
-        if (!hardFilter(mail)) { filteredOut++; continue; }
+        if (!hardFilter(mail, inbox)) { filteredOut++; continue; }
         if (bounceFilter(mail)) { filteredOut++; continue; }
         // Te same filtry co główny poller — wcześniej rescan pomijał
         // newsletterFilter i decyzje AI (SPAM/AUTO_REPLY nie są w Email,
