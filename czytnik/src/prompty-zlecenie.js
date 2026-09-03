@@ -120,14 +120,9 @@ const PROMPT_ZLECENIE_PASKI = PROMPT_ZLECENIE.replace(
   'Dostajesz zdjęcia jednej karty „EWIDENCJONOWANIE CZASU WYKONYWANIA UMOWY ZLECENIE"\n(cała strona, nagłówek, górna połowa tabeli, dolna połowa tabeli).',
   `Dostajesz zdjęcia jednej karty „EWIDENCJONOWANIE CZASU WYKONYWANIA UMOWY ZLECENIE":
 najpierw NAGŁÓWEK karty, a potem TABELĘ pociętą na kolejne PASKI po kilka wierszy,
-każdy w dużym powiększeniu. Paski idą po kolei od dnia 1 do wiersza SUMA i razem
-pokrywają całą tabelę — żaden dzień nie jest pominięty i żaden nie powtarza się
-dwa razy. W każdym pasku pierwsza kolumna to numer dnia: czytaj go i przypisuj
-godziny do TEGO numeru, nie do pozycji paska.
-Paski są przycięte z prawej strony — widać kolumnę „Dzień", całą kolumnę
-„Liczba godzin" i POCZĄTEK kolumny podpisu, bo na części kart to właśnie tam
-człowiek dopisuje liczbę godzin. Sam podpis (nazwisko) może być ucięty i to jest
-w porządku — pole „podpis" wypełnij na podstawie tego, czy w wierszu widać
-jakikolwiek ślad pisma w tej kolumnie.`);
+każdy w powiększeniu. Paski idą po kolei od dnia 1 do wiersza SUMA i razem pokrywają
+całą tabelę — żaden dzień nie jest pominięty i żaden nie powtarza się dwa razy.
+W każdym pasku pierwsza kolumna to numer dnia: czytaj go i przypisuj godziny do TEGO
+numeru, nie do pozycji w pasku.`);
 
 module.exports = { SCHEMAT_ZLECENIE, PROMPT_ZLECENIE, PROMPT_ZLECENIE_PASKI };

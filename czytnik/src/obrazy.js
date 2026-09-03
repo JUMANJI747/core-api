@@ -166,7 +166,14 @@ async function obrazyZlecenia(png) {
  * @param {number} szerokosc      docelowa szerokosc paska w px (powiekszenie)
  */
 const PASEK_DLUGI_BOK = 2576;   // maks. dluzszy bok dla klasy wysokiej rozdzielczosci
-const PASEK_X0 = 0.055, PASEK_X1 = 0.62;
+/* PELNA szerokosc tabeli. Pierwsza wersja obcinala do 0,62, zeby nie placic
+   tokenami za bialy margines — i na karcie Lugowskiego zepsula trzy dni:
+   model przestal przepisywac liczbe dopisana po prawej stronie rubryki.
+   Pasek NIE byl ucieta (sprawdzone na obrazie), wiec winny byl prompt, ktory
+   uprzedzal o przycieciu. Wniosek: nie opisuj modelowi ograniczenia, tylko go
+   nie twórz. Pelna szerokosc daje ~300 tokenow na wiersz zamiast ~414, wciaz
+   trzy razy wiecej niz polowki. */
+const PASEK_X0 = 0.055, PASEK_X1 = 0.815;
 
 async function obrazyZleceniaPaski(png, { wierszyNaPasek = 4, dlugiBok = PASEK_DLUGI_BOK,
   x0 = PASEK_X0, x1 = PASEK_X1 } = {}) {
