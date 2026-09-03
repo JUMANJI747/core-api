@@ -81,6 +81,19 @@ try {
   console.error('[startup] tymczasowe trasy /czytnik/* wyłączone:', e.message);
 }
 
+// ZDROWIE POCZTY — jedno zapytanie mówiące, czy skrzynki naprawdę pobierają.
+// Poza /api (jak /czytnik/*), bo to trasa operacyjna: x-token = PREPROCESS_TOKEN.
+// Oddaje wyłącznie metadane (liczniki, znaczniki czasu, powody odfiltrowania),
+// nigdy treści maili. Powstało po tym, jak michal@ przestał pobierać maile
+// i nie było ani alertu, ani sposobu, żeby to sprawdzić.
+try {
+  const pocztaToken = (process.env.PREPROCESS_TOKEN || '').trim() || undefined;
+  app.use('/', require('./routes/poczta-zdrowie').router(express, pocztaToken));
+  if (!pocztaToken) console.warn('[startup] /poczta/zdrowie BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+} catch (e) {
+  console.error('[startup] trasa /poczta/zdrowie wyłączona:', e.message);
+}
+
 // Limit podniesiony, bo wysylka maila z zalacznikami idzie jako JSON z base64
 // (base64 zwieksza rozmiar o ~33%). UI dopuszcza ~20 MB realnych plikow ->
 // po zakodowaniu ~27 MB, wiec backend musi przyjac wiekszy body. Wczesniej '5mb'
