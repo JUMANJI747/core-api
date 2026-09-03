@@ -117,6 +117,34 @@ Do zrobienia w kolejnych etapach: P2 (drugi pełny odczyt), mail z wycinkiem
 + formularz odpowiedzi dla człowieka (PATCH zatwierdzenia), baza Postgres
 (pełny ślad, idempotencja per strona), snapshot-backup tabel Google Sheets.
 
+## Drugi formularz: umowy zlecenie
+
+`POST /czytnik/zlecenia` (`async: true` jak przy kartach pracy) →
+`src/zlecenia.js` + `src/prompty-zlecenie.js`. To **osobna ścieżka, nie flaga**,
+bo to inny dokument:
+
+| | karta pracy | umowa zlecenie |
+|---|---|---|
+| kolumny | 15 (RAZEM, 100%, nocne, UW, Chor. …) | 3: Dzień, Liczba godzin, Podpis |
+| godziny dnia | liczba w rubryce RAZEM | **przedział** „7:00 – 15:00" — sumę liczy KOD |
+| wiersz SUMA | zwykle wypełniony | pusty na **38 z 38** kart sierpnia 2026 |
+| nazwiska | zamknięta lista pracowników | pismo odręczne, bez listy |
+| urlop/chorobowe/100% | są | nie ma czego doliczać |
+
+Odpadły przez to dwie z trzech ścieżek dowodowych karty pracy, więc
+potwierdzeniem jest **drugi czytelnik innego dostawcy**: obaj czytają tę samą
+kartę osobno, a kod porównuje dzień po dniu. Priorytet od użytkownika — „literówki
+w nazwisku nie są straszne, najważniejsze żeby suma godzin się zgadzała" — więc
+bramką `auto` jest **zgodność godzin**, a rozjazd w nazwisku to ostrzeżenie
+z obiema wersjami w śladzie.
+
+Geometria wycinków jest stała (tabela y 0,158–0,727, x 0,09–0,79; zmierzone na
+wszystkich 38 kartach, rozrzut ±0,002) — `detectGrid` tu nie działa, bo kontrola
+proporcji jest skrojona pod kartę pracy i słusznie odrzuciłaby ten formularz.
+
+Odpowiedź niesie gotową tabelę dla kadr: `osoby: [{imieNazwisko, godziny, status,
+strony, naWieluKartach}]` obok pełnego śladu per strona.
+
 ## Puste karty do wydruku
 
 Druga strona Czytnika: zanim karty przeczytamy, trzeba je rozdać. Dotąd Ala co

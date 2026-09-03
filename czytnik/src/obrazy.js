@@ -111,6 +111,41 @@ function siatkaZUlamkow(W, H) {
     tw: Math.round(W * 0.944), top, rowH, metoda: 'fallback-ulamki' };
 }
 
+/* --------------------------------------------------- drugi formularz: zlecenie
+ * Karta zlecenia ma INNĄ geometrię niż karta pracy: tabela zajmuje y 0,158-0,727
+ * wysokości strony i x 0,09-0,79 (zmierzone na wszystkich 38 kartach sierpnia
+ * 2026, rozrzut ±0,002). Nie używamy tu `detectGrid`: kontrola geometrii jest
+ * skrojona pod proporcje karty pracy i słusznie odrzuciłaby ten formularz.
+ * Ułamki są stabilne, bo to ten sam wydruk co miesiąc. */
+const ZLEC = { y0: 0.150, y1: 0.735, x0: 0.055, x1: 0.815, srodek: 0.45 };
+
+async function obrazyZlecenia(png) {
+  const m = await sharp(png).metadata();
+  const { width: W, height: H } = m;
+  const wytnij = (a, b) => {
+    const top = Math.max(0, Math.round(H * a));
+    const wys = Math.min(H - top, Math.round(H * (b - a)));
+    const left = Math.max(0, Math.round(W * ZLEC.x0));
+    const szer = Math.min(W - left, Math.round(W * (ZLEC.x1 - ZLEC.x0)));
+    return sharp(png).extract({ left, top, width: szer, height: wys });
+  };
+  const [cala, nag, gora, dol] = await Promise.all([
+    zmiesc(png),
+    zmiesc(sharp(png).extract({ left: 0, top: 0, width: W, height: Math.round(H * 0.16) })),
+    zmiesc(wytnij(ZLEC.y0, ZLEC.srodek + 0.02)),      // naglowek kolumn + dni 1-16
+    zmiesc(wytnij(ZLEC.srodek - 0.02, ZLEC.y1)),      // dni 16-31 + wiersz SUMA
+  ]);
+  return {
+    calaStrona: cala.jpeg.toString('base64'),
+    naglowek: nag.jpeg.toString('base64'),
+    gornaPolowka: gora.jpeg.toString('base64'),
+    dolnaPolowka: dol.jpeg.toString('base64'),
+    meta: { formularz: 'zlecenie', wymiary: {
+      calaStrona: `${cala.szer}x${cala.wys}`, naglowek: `${nag.szer}x${nag.wys}`,
+      gorna: `${gora.szer}x${gora.wys}`, dolna: `${dol.szer}x${dol.wys}` } },
+  };
+}
+
 /* ---------------------------------------------------------------- składanie */
 
 async function zmiesc(bufOrSharp, maxPx = MPX) {
@@ -224,4 +259,4 @@ async function wytnijKomorke(png, g, dzien, pole) {
     .normalise().sharpen().jpeg({ quality: 90, mozjpeg: true }).toBuffer()).toString('base64');
 }
 
-module.exports = { przygotujObrazy, detectGrid, wytnijKomorke, oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna, KOLUMNY };
+module.exports = { przygotujObrazy, obrazyZlecenia, detectGrid, wytnijKomorke, zmiesc, oczekiwanaWysokoscWiersza, wysokoscWierszaSensowna, KOLUMNY };

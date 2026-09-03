@@ -22,6 +22,7 @@ const { odczytajTeczke } = require('./czytnik');
 const { nowaZakladka } = require('./arkusz');
 const { wymiarCzasuPracy } = require('./kalendarz');
 const { kartyDoDruku, domyslniPracownicy } = require('./karta-druk');
+const { odczytajTeczkeZlecen } = require('./zlecenia');
 const { spakuj } = require('./zip');
 const { MODEL_DOM } = require('./silnik');
 
@@ -76,6 +77,35 @@ function router(express, token) {
     }
     try {
       res.json(await odczytajTeczke(pdf, opcje));
+    } catch (e) {
+      res.status(500).json({ blad: e.message });
+    }
+  });
+
+  /* DRUGI FORMULARZ: umowy zlecenie. Osobna trasa, bo to inny dokument, nie
+     wariant karty pracy: trzy kolumny, godziny jako PRZEDZIAL, brak listy
+     nazwisk, brak urlopow i setek. Zwraca gotowa tabele dla kadr (`osoby`:
+     imie i nazwisko + godziny miesiaca) obok pelnego sladu per strona. */
+  r.post('/czytnik/zlecenia', express.json({ limit: '48mb' }), async (req, res) => {
+    if (!auth(req, res)) return;
+    const { data, async: tryb } = req.body || {};
+    if (!data) return res.status(400).json({ blad: 'brak pola data' });
+    const pdf = Buffer.from(data, 'base64');
+    const o = req.body || {};
+    const opcje = { strony: o.strony, rok: o.rok, miesiac: o.miesiac, rownolegle: o.rownolegle,
+      model: o.model, modelDrugi: o.modelDrugi, dpi: o.dpi,
+      drugiOdczyt: o.drugiOdczyt, zapiszSurowe: o.zapiszSurowe };
+    if (tryb) {
+      sprzatajPrzebiegi();
+      const id = crypto.randomBytes(8).toString('hex');
+      przebiegi.set(id, { status: 'w_toku', start: Date.now() });
+      odczytajTeczkeZlecen(pdf, opcje)
+        .then(w => przebiegi.set(id, { status: 'gotowy', start: Date.now(), wynik: w }))
+        .catch(e => przebiegi.set(id, { status: 'blad', start: Date.now(), blad: e.message }));
+      return res.status(202).json({ przebiegId: id });
+    }
+    try {
+      res.json(await odczytajTeczkeZlecen(pdf, opcje));
     } catch (e) {
       res.status(500).json({ blad: e.message });
     }

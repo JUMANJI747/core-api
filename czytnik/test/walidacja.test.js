@@ -182,3 +182,57 @@ test('rozjazd z drugim czytelnikiem wstrzymuje karte (Woloch 8/2026 dzien 9)', (
   assert.notEqual(w.status, 'auto');
   assert.ok(w.sporne.some(s => s.dzien === 9 && /drugi czytelnik/.test(s.uwaga || '')));
 });
+
+/* --- drugi formularz: umowa zlecenie (zlecenia.js) --------------------- */
+const zl = require('../src/zlecenia');
+
+test('zlecenie: godziny licza sie z PRZEDZIALU, nie z liczby', () => {
+  assert.equal(zl.godzinyDnia({ od: '7:00', do: '15:00', zapis: '7 00 - 15 00' }), 8);
+  assert.equal(zl.godzinyDnia({ od: '', do: '', zapis: '7-15' }), 8, 'przedzial bez rozbicia tez');
+  assert.equal(zl.godzinyDnia({ od: '', do: '', zapis: '8' }), 8, 'sama liczba, gdy ktos tak wpisal');
+  assert.equal(zl.godzinyDnia({ od: '9:30', do: '17:00', zapis: '' }), 7.5);
+  assert.equal(zl.godzinyDnia({ od: '', do: '', zapis: '' }), null);
+});
+
+test('zlecenie: nazwa miesiaca slownie jest rozumiana', () => {
+  assert.equal(zl.numerMiesiaca('SIERPIEŃ'), 8);
+  assert.equal(zl.numerMiesiaca('sierpien'), 8);
+  assert.equal(zl.numerMiesiaca('8'), 8);
+  assert.equal(zl.numerMiesiaca(''), null);
+});
+
+const kartaZl = (dni, extra = {}) => ({
+  imieNazwisko: extra.nazwisko || 'JACEK SIENIUC', miesiac: 'SIERPIEŃ', rok: '2026',
+  suma: extra.suma || '', uwagaOgolna: '',
+  dni: dni.map(d => ({ d: String(d.d), zapis: d.zapis || '', od: d.od || '', do: d.do || '',
+    podpis: 'tak', uwaga: '' })),
+});
+
+test('zlecenie: zgodni czytelnicy daja auto, a suma liczy sie z godzin', () => {
+  const dni = [{ d: 1, od: '7:00', do: '15:00' }, { d: 3, od: '7:00', do: '15:00' }];
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni), { rok: 2026, miesiac: 8 }, 1);
+  assert.equal(w.godziny, 16);
+  assert.equal(w.status, 'auto');
+});
+
+test('zlecenie: rozjazd godzin miedzy czytelnikami wstrzymuje karte', () => {
+  const a = [{ d: 1, od: '7:00', do: '15:00' }];
+  const b = [{ d: 1, od: '7:00', do: '16:00' }];
+  const w = zl.walidujZlecenie(kartaZl(a), kartaZl(b), { rok: 2026, miesiac: 8 }, 1);
+  assert.equal(w.status, 'do_weryfikacji');
+  assert.ok(w.sporne.some(s => s.dzien === 1));
+});
+
+test('zlecenie: literowka w nazwisku NIE blokuje, suma decyduje', () => {
+  const dni = [{ d: 1, od: '7:00', do: '15:00' }];
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni, { nazwisko: 'JACEK SIENIUK' }),
+    { rok: 2026, miesiac: 8 }, 1);
+  assert.equal(w.status, 'auto', 'godziny sie zgadzaja, wiec karta przechodzi');
+  assert.ok(w.ostrzezenia.some(o => /nazwisko/.test(o)), 'ale obie wersje ida do sladu');
+});
+
+test('zlecenie: wypelniony wiersz SUMA jest darmowa kontrola', () => {
+  const dni = [{ d: 1, od: '7:00', do: '15:00' }];
+  const w = zl.walidujZlecenie(kartaZl(dni, { suma: '10' }), kartaZl(dni), { rok: 2026, miesiac: 8 }, 1);
+  assert.ok(w.sporne.some(s => s.dzien === 'SUMA'), 'suma z karty rozni sie od sumy dni');
+});
