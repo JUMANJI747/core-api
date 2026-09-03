@@ -3,6 +3,7 @@
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 const https = require('https');
+const crypto = require('crypto');
 const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const { parseOrderWithLLM } = require('./order-llm-parser');
@@ -1251,6 +1252,28 @@ async function processAccount(account) {
         }
 
         // Hard filter
+        /* KANAREK — nasz wlasny test drożności. Rozpoznajemy po tokenie
+         * w temacie, potwierdzamy w bazie, kasujemy z serwera i idziemy
+         * dalej: nie zapisujemy jako poczty i nie powiadamiamy. Sprawdzenie
+         * MUSI byc przed filtrami, bo kanarek idzie z naszej domeny. */
+        if (String(mail.subject || '').includes(MARKER_KANARKA)) {
+          const tk = String(mail.subject).split(MARKER_KANARKA)[1].trim().split(/\s/)[0];
+          try {
+            const wpis = await prisma.kanarekPoczty.findUnique({ where: { token: tk } });
+            if (wpis && !wpis.potwierdzonoO) {
+              await prisma.kanarekPoczty.update({
+                where: { token: tk }, data: { potwierdzonoO: new Date() },
+              });
+              const ile = Math.round((Date.now() - new Date(wpis.wyslanoO).getTime()) / 1000);
+              console.log(`[kanarek] ${inbox}: doleciał w ${ile} s (token=${tk})`);
+            }
+          } catch (e) {
+            console.error('[kanarek] potwierdzenie nieudane:', e.message);
+          }
+          setImmediate(() => usunKanarkaZSerwera(account, mail.uid, tk));
+          continue;
+        }
+
         if (!hardFilter(mail, inbox)) {
           console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
           // Slad OBOWIAZKOWY: bez niego /poczta/zdrowie liczy 0 odfiltrowanych
@@ -1865,6 +1888,8 @@ async function processSentFolderOnce(imap, inbox, folderName, sentKey) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
         if (!mail.toEmail || !mail.fromEmail) continue;
+        // Kanarek nie jest korespondencja — jego kopia w Wyslanych tez nie.
+        if (String(mail.subject || '').includes(MARKER_KANARKA)) continue;
 
         // Dedup po messageId — gdy mail wysłaliśmy przez nasz sendMail,
         // już jest w Email. Nie dublujemy.
@@ -2021,38 +2046,14 @@ async function czuwajNadCisza(accounts) {
          * a nic nie zostało zapisane. To jest twardy sygnał i idzie zawsze. */
         alarm = `⚠️ Skrzynka ${inbox}@ — filtr odrzucił ${ukryteDoba} mail(i) w ciągu doby, a NIC nie trafiło do CRM.\n`
           + 'Wygląda, jakby filtr zjadał pocztę. Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
-      } else if (zapisaneDoba === 0) {
-        /* CISZA. Pierwsza wersja alarmowała po dobie ciszy przy ≥5 mailach
-         * w tygodniu — i od razu wywołała fałszywy alarm na info@, która
-         * dostaje ~1 mail dziennie, więc doba przerwy jest tam NORMĄ.
-         * Płaski próg nie ma jak działać: każda skrzynka ma swój rytm.
-         * Liczymy więc MEDIANĘ odstępów między ostatnimi mailami tej
-         * skrzynki i alarmujemy dopiero, gdy obecna cisza jest 3× dłuższa
-         * niż jej własna norma (i nie krócej niż 48 h). Alert, który wyje
-         * bez powodu, przestaje być czytany — a wtedy wracamy do punktu
-         * wyjścia, czyli awarii, której nikt nie zauważa. */
-        const ostatnie = await prisma.email.findMany({
-          where: { inbox, direction: 'INBOUND', NOT: { tags: { hasSome: ['ukryty-filtrem', 'pgf'] } } },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          select: { createdAt: true },
-        });
-        if (ostatnie.length >= 4) {
-          const odstepy = [];
-          for (let i = 1; i < ostatnie.length; i++) {
-            odstepy.push(ostatnie[i - 1].createdAt - ostatnie[i].createdAt);
-          }
-          odstepy.sort((a, b) => a - b);
-          const mediana = odstepy[Math.floor(odstepy.length / 2)];
-          const cisza = Date.now() - ostatnie[0].createdAt.getTime();
-          const prog = Math.max(mediana * 3, 48 * 60 * 60 * 1000);
-          if (cisza > prog) {
-            alarm = `⚠️ Skrzynka ${inbox}@ milczy ${Math.round(cisza / 3600000)} h.\n`
-              + `Normalnie mail przychodzi tam co ~${Math.round(mediana / 3600000)} h, więc to ${Math.round(cisza / mediana)}× dłużej niż zwykle.\n`
-              + 'Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
-          }
-        }
       }
+      /* Pasywny alarm „skrzynka milczy" zostal USUNIETY. Brak maila nie jest
+       * awaria — na karolina@, sales@ i david@ nikt nie pisze od miesiecy,
+       * a alarm i tak wyl codziennie. Kalibracja mediana tego nie ratowala:
+       * przy kilku mailach w historii mediana wychodzila ~1 h, wiec kazda
+       * przerwa byla „1600× dluzsza niz zwykle". Ciszy nie da sie odroznic
+       * od awarii przez OBSERWACJE. Od tego jest kanarek: system sam wysyla
+       * maila i sprawdza, czy doszedl (patrz wyslijKanarki/sprawdzKanarki). */
       if (!alarm) continue;
 
       const ostatni = _ostatniAlertCiszy.get(inbox) || 0;
@@ -2062,6 +2063,132 @@ async function czuwajNadCisza(accounts) {
     } catch (e) {
       console.error(`[inbox-poller] czuwanie ${inbox}:`, e.message);
     }
+  }
+}
+
+/* ============ KANAREK POCZTY ============
+ *
+ * Aktywny test drożności zamiast domyślania się z ciszy. Raz na 6 h każda
+ * skrzynka dostaje maila z INNEJ naszej skrzynki, z unikalnym tokenem
+ * w temacie. Poller rozpoznaje go po tokenie, potwierdza w bazie, NIE
+ * zapisuje jako poczty, nie powiadamia i kasuje z serwera — po cichu.
+ *
+ * Alarm leci TYLKO wtedy, gdy kanarek nie doleciał w 30 minut. To jest
+ * prawdziwy dowód awarii: przeszedł całą drogę SMTP → serwer → IMAP →
+ * poller → baza, więc jeśli go nie ma, to któryś element naprawdę nie
+ * działa. Cisza na skrzynce nie znaczy nic i nie jest już raportowana.
+ */
+const MARKER_KANARKA = '[CRM-KANAREK]';
+const KANAREK_CO_N_CYKLI = 72;                 // 72 × 5 min = 6 h
+const KANAREK_LIMIT_MS = 30 * 60 * 1000;       // po tylu minutach uznajemy, że nie doleciał
+
+function tokenKanarka(inbox) {
+  return `${inbox}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+async function wyslijKanarki(accounts) {
+  if (accounts.length < 2) return;             // potrzebujemy nadawcy INNEGO niż odbiorca
+  const { sendMail } = require('./mail-sender');
+  for (const konto of accounts) {
+    const nadawca = accounts.find(a => a.inbox !== konto.inbox);
+    if (!nadawca) continue;
+    const token = tokenKanarka(konto.inbox);
+    try {
+      await prisma.kanarekPoczty.create({
+        data: { inbox: konto.inbox, nadawca: nadawca.inbox, token },
+      });
+      await sendMail({
+        from: nadawca.user,
+        to: konto.user,
+        subject: `${MARKER_KANARKA} ${token}`,
+        body: 'Automatyczny test drożności skrzynki. Ta wiadomość kasuje się sama.',
+      });
+      /* sendMail zapisuje kazdy wyslany mail jako OUTBOUND. Kanarek to nie
+         korespondencja, tylko sonda — kasujemy jego slad, zeby nie zasmiecal
+         skrzynki w CRM. Token jest unikalny, wiec warunek nie moze trafic
+         w nic innego. */
+      await prisma.email.deleteMany({
+        where: { direction: 'OUTBOUND', subject: { contains: token } },
+      }).catch(e => console.error('[kanarek] sprzatanie OUTBOUND:', e.message));
+      console.log(`[kanarek] ${nadawca.inbox}@ → ${konto.inbox}@ token=${token}`);
+    } catch (e) {
+      console.error(`[kanarek] wysyłka do ${konto.inbox} nieudana:`, e.message);
+      await prisma.kanarekPoczty.updateMany({
+        where: { token }, data: { bladWysylki: String(e.message).slice(0, 300) },
+      }).catch(() => {});
+      /* Nie da się nawet WYSŁAĆ — to też awaria poczty, tyle że po stronie
+         SMTP. Zgłaszamy od razu, nie czekając na limit czasu. */
+      await sendInboxAlert(
+        `⚠️ Nie udało się wysłać testowego maila na ${konto.inbox}@ (z ${nadawca.inbox}@).\n`
+        + `Błąd: ${e.message}\nWysyłka poczty nie działa — sprawdź konfigurację SMTP.`);
+    }
+  }
+}
+
+async function sprawdzKanarki() {
+  const granica = new Date(Date.now() - KANAREK_LIMIT_MS);
+  let spoznione = [];
+  try {
+    spoznione = await prisma.kanarekPoczty.findMany({
+      where: { potwierdzonoO: null, zaalarmowanoO: null, bladWysylki: null, wyslanoO: { lt: granica } },
+    });
+  } catch (e) {
+    console.error('[kanarek] odczyt nieudany:', e.message);
+    return;
+  }
+  for (const k of spoznione) {
+    const minut = Math.round((Date.now() - new Date(k.wyslanoO).getTime()) / 60000);
+    await sendInboxAlert(
+      `🛑 Skrzynka ${k.inbox}@ NIE ODEBRAŁA testowego maila wysłanego ${minut} min temu z ${k.nadawca}@.\n`
+      + 'To nie jest cisza — to znaczy, że poczta na tej skrzynce faktycznie nie dochodzi.\n'
+      + `Sprawdź: GET /poczta/zdrowie?inbox=${k.inbox}`);
+    await prisma.kanarekPoczty.update({
+      where: { id: k.id }, data: { zaalarmowanoO: new Date() },
+    }).catch(() => {});
+  }
+  // sprzątanie: potwierdzone kanarki starsze niż tydzień są już bez wartości
+  await prisma.kanarekPoczty.deleteMany({
+    where: { wyslanoO: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+  }).catch(() => {});
+}
+
+/** Kasuje kanarka z serwera IMAP — po cichu, żeby nie zaśmiecał skrzynki.
+ *  Kasujemy WYŁĄCZNIE wiadomość, której temat zawiera nasz token: przed
+ *  usunięciem czytamy temat z serwera i porównujemy. Nigdy nie kasujemy
+ *  „po UID", bo UID mógł się w międzyczasie odnosić do czegoś innego. */
+async function usunKanarkaZSerwera(account, uid, token) {
+  let imap;
+  try {
+    imap = await zTimeoutem(connectImap(account), 30000, `${account.inbox}: kasowanie kanarka`);
+    await new Promise((resolve, reject) => {
+      imap.openBox('INBOX', false, (err) => err ? reject(err) : resolve());
+    });
+    const temat = await new Promise((resolve) => {
+      let t = '';
+      const f = imap.fetch(uid, { bodies: 'HEADER.FIELDS (SUBJECT)' });
+      f.on('message', m => m.on('body', st => {
+        let buf = '';
+        st.on('data', d => { buf += d.toString('utf8'); });
+        st.once('end', () => { t = buf; });
+      }));
+      f.once('error', () => resolve(''));
+      f.once('end', () => resolve(t));
+    });
+    if (!temat.includes(token)) {
+      console.warn(`[kanarek] ${account.inbox}: uid=${uid} nie zawiera tokenu — NIE kasuję`);
+      return false;
+    }
+    await new Promise((resolve, reject) => {
+      imap.addFlags(uid, '\\Deleted', e => e ? reject(e) : resolve());
+    });
+    await new Promise((resolve) => { try { imap.expunge(() => resolve()); } catch (_) { resolve(); } });
+    console.log(`[kanarek] ${account.inbox}: skasowany z serwera (uid=${uid})`);
+    return true;
+  } catch (e) {
+    console.error(`[kanarek] ${account.inbox}: kasowanie nieudane:`, e.message);
+    return false;
+  } finally {
+    try { if (imap) imap.end(); } catch (_) {}
   }
 }
 
@@ -2124,6 +2251,13 @@ async function pollAll() {
     try { await czuwajNadCisza(accounts); }
     catch (e) { console.error('[inbox-poller] czuwanie nad ciszą nieudane:', e.message); }
   }
+  // Kanarek: wysylka co 6 h, sprawdzanie w KAZDYM cyklu (limit to 30 min).
+  if (pollCycleCount % KANAREK_CO_N_CYKLI === 1) {
+    try { await wyslijKanarki(accounts); }
+    catch (e) { console.error('[kanarek] wysyłka nieudana:', e.message); }
+  }
+  try { await sprawdzKanarki(); }
+  catch (e) { console.error('[kanarek] sprawdzanie nieudane:', e.message); }
   } finally {
     pollInFlight = false;
     pollStartedAt = null;

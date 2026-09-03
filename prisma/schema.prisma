@@ -957,3 +957,25 @@ model SalesAgentOperation {
 
   @@index([agentId, date])
 }
+
+/// Kanarek poczty — AKTYWNY test drożności skrzynki.
+///
+/// Powód: alert „skrzynka milczy" jest z zasady bezwartościowy, bo brak maila
+/// nie jest awarią. Pierwsza wersja zasypała właściciela 14 powiadomieniami
+/// o skrzynkach, na które od miesięcy nikt nie pisze. Zamiast domyślać się
+/// z ciszy, system SAM wysyła maila z jednej skrzynki na drugą i sprawdza,
+/// czy dotarł. Cisza nic nie znaczy; znaczenie ma tylko kanarek, który nie
+/// doleciał — i dopiero to jest alert.
+model KanarekPoczty {
+  id            String    @id @default(uuid())
+  inbox         String    // skrzynka TESTOWANA (odbiorca)
+  nadawca       String    // z której skrzynki poszedł
+  token         String    @unique
+  wyslanoO      DateTime  @default(now())
+  potwierdzonoO DateTime? // kiedy dotarł i został rozpoznany przez pollera
+  zaalarmowanoO DateTime? // kiedy zgłosiliśmy, że nie doleciał (alarm raz)
+  bladWysylki   String?   // gdy nie udało się nawet wysłać
+
+  @@index([inbox])
+  @@index([potwierdzonoO])
+}
