@@ -174,6 +174,33 @@ karta sama odpowiada, która interpretacja jest właściwa. Po tej poprawce suma
 miesiąca wzrosła z 5442,66 do 5473 h i **zniknęły wszystkie dziwne ułamki**
 (żaden dzień nie wypada poza pełny kwadrans).
 
+### Czego nauczyła ślepa kontrola (38 kart, trzeci czytelnik, 8/2026)
+
+Dwa silniki zgodne ze sobą to jeszcze nie prawda. Trzeci czytelnik przeczytał te
+same 38 kart od zera, bez dostępu do naszych wyników: **25 kart co do godziny
+identycznych, 13 rozjechanych — w tym 4 karty z etykietą `auto`**, czyli takie,
+których nikt by już nie sprawdził. Rozjazdy nie były przypadkowe, złożyły się na
+trzy wzorce, których formularz po prostu wymaga, a my ich nie znaliśmy:
+
+| wzorzec | co się działo | przykład |
+|---|---|---|
+| **wiersz przekreślony** | model czytał cyfry i nie widział kreski; drugi czytelnik miał tę samą ślepotę, więc obaj zgodnie potwierdzali anulowany dzień | Szejerska d2: „11" przekreślone, bez podpisu → +11 h na karcie `auto` |
+| **dwie zmiany w jednym dniu** | brany był jeden przedział, drugi przepadał | Fedorstova d10: „6-8³⁰" i „11-22" = 13,5 h, my mieliśmy 5 h; karta zaniżona o 21 h |
+| **liczba godzin przy podpisie** | na części kart to JEDYNE miejsce, gdzie człowiek podaje wynik | Stępnowski d17: rubryka „11-19 kl. 11-20", przy podpisie jego „9" — my wpisaliśmy 20 h |
+
+Stąd trzy nowe pola w schemacie: `skreslone`, `zapis2`, `zapisPodpis`. Kod
+odlicza przekreślony wiersz (0 h), sumuje dwie zmiany i traktuje dopisek przy
+podpisie jako źródło, gdy rubryka milczy — a jako kontrolę, gdy mówi swoje.
+Przekreślenie **z nietkniętym podpisem** nie jest rozstrzygane automatem: wtedy
+nie wiadomo, czy dzień odwołano, czy poprawiono zapis, i karta idzie do człowieka.
+Prompt dostał też regułę na poprawki: przepisujemy **wartość ostateczną**, a nie
+skreśloną i poprawioną sklejone w jeden ciąg.
+
+Wniosek na przyszłość, wart więcej niż same łatki: **zgodność dwóch czytelników
+wyłapuje błędy odczytu, ale nie wyłapuje wspólnej ślepoty na to, czego prompt nie
+opisał.** Ślepa kontrola na losowej próbce kart jest tania i jest jedynym testem,
+który to widzi.
+
 Odpowiedź niesie gotową tabelę dla kadr: `osoby: [{imieNazwisko, godziny, status,
 strony, naWieluKartach}]` obok pełnego śladu per strona.
 

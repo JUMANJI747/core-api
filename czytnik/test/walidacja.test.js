@@ -204,8 +204,10 @@ test('zlecenie: nazwa miesiaca slownie jest rozumiana', () => {
 const kartaZl = (dni, extra = {}) => ({
   imieNazwisko: extra.nazwisko || 'JACEK SIENIUC', miesiac: 'SIERPIEŃ', rok: '2026',
   suma: extra.suma || '', uwagaOgolna: '',
-  dni: dni.map(d => ({ d: String(d.d), zapis: d.zapis || '', od: d.od || '', do: d.do || '',
-    podpis: 'tak', uwaga: '' })),
+  dni: dni.map(d => ({ d: String(d.d), zapis: d.zapis || '', zapis2: d.zapis2 || '',
+    od: d.od || '', do: d.do || '',
+    podpis: d.podpis === undefined ? 'tak' : d.podpis,
+    zapisPodpis: d.zapisPodpis || '', skreslone: d.skreslone || '', uwaga: d.uwaga || '' })),
 });
 
 test('zlecenie: zgodni czytelnicy daja auto, a suma liczy sie z godzin', () => {
@@ -271,4 +273,59 @@ test('zlecenie: liczba godzin wpisana PRZED przedzialem (Walczak 8/2026: "11  11
   const c = zl.rozbierzZapis('10 - 22  12');   // liczba PO przedziale
   assert.equal(c.zakres, 12);
   assert.equal(c.deklarowane, 12);
+});
+
+/* --- czego uczyla slepa kontrola sierpnia 2026 (trzeci czytelnik, 38 kart) --- */
+
+test('zlecenie: przekreslony wiersz nie wchodzi do sumy (Szejerska 8/2026, dzien 2)', () => {
+  // "11" przekreslone ukosna kreska, w kolumnie podpisu pusto. Oba silniki
+  // czytaly sama cyfre, zgadzaly sie ze soba i karta dostawala "auto" z 11 h
+  // za dzien, ktory zostal odwolany.
+  assert.equal(zl.godzinyDnia({ zapis: '11', skreslone: 'tak' }), 0);
+  const dni = [{ d: 1, zapis: '11' }, { d: 2, zapis: '11', skreslone: 'tak', podpis: '' }];
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni), { rok: 2026, miesiac: 8 }, 11);
+  assert.equal(w.godziny, 11, 'liczy sie tylko dzien nieprzekreslony');
+  assert.equal(w.status, 'auto', 'skreslenie bez podpisu jest jednoznaczne, nie ma o co pytac');
+  assert.ok(w.ostrzezenia.some(o => /dzien 2: wiersz przekreslony/.test(o)));
+});
+
+test('zlecenie: przekreslone godziny przy nietknietym podpisie ida do czlowieka (Dabrowska d6)', () => {
+  // "7 30 - 14 00" zamazane grubymi kreskami, ale podpis w wierszu zostal.
+  // Nie wiadomo, czy dzien odwolano, czy poprawiono zapis - to pytanie do kadr.
+  const dni = [{ d: 6, zapis: '7 30 - 14 00', skreslone: 'tak', podpis: 'tak' }];
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni), { rok: 2026, miesiac: 8 }, 37);
+  assert.equal(w.godziny, 0);
+  assert.equal(w.status, 'do_weryfikacji');
+  assert.ok(w.sporne.some(s => s.dzien === 6 && /podpis w wierszu zostal/.test(s.uwaga)));
+});
+
+test('zlecenie: dwie zmiany w jednym dniu sumuja sie (Fedorstova 8/2026, dzien 10)', () => {
+  // "6 - 8 30" rano i "11 - 22" po poludniu = 13,5 h. Braliśmy jeden przedzial,
+  // przez co karta byla zanizona o 21 h.
+  assert.equal(zl.godzinyDnia({ zapis: '6 00 - 8 30', zapis2: '11 00 - 22 00' }), 13.5);
+  assert.equal(zl.wartoscZDopisku('6 - 8 30  11 - 22'), 13.5,
+    'dwa przedzialy w jednym dopisku tez sie sumuja');
+});
+
+test('zlecenie: liczba przy podpisie jest zrodlem, gdy rubryka milczy (Stepnowski d17)', () => {
+  // Na czesci kart przedzial jest w rubryce, a wlasna liczba godzin czlowieka
+  // stoi dopiero w kolumnie podpisu - i tylko ona jest jednoznaczna.
+  assert.equal(zl.godzinyDnia({ zapis: '', zapisPodpis: '9' }), 9);
+  assert.equal(zl.godzinyDnia({ zapis: '11', zapisPodpis: '11 - 22' }), 11,
+    'gdy rubryka mowi swoje, dopisek jest tylko kontrola');
+});
+
+test('zlecenie: rozjazd rubryka kontra dopisek przy podpisie wstrzymuje karte', () => {
+  const dni = [{ d: 17, zapis: '11 - 20', zapisPodpis: '12' }];
+  const w = zl.walidujZlecenie(kartaZl(dni), kartaZl(dni), { rok: 2026, miesiac: 8 }, 8);
+  assert.equal(w.status, 'do_weryfikacji');
+  assert.ok(w.sporne.some(s => /przy podpisie napisano 12/.test(s.uwaga || '')));
+});
+
+test('zlecenie: dopisek z jednym przedzialem nie udaje liczby godzin', () => {
+  assert.equal(zl.wartoscZDopisku('11 - 22'), 11);
+  assert.equal(zl.wartoscZDopisku('7 00 - 15 00'), 8);
+  assert.equal(zl.wartoscZDopisku('8,5h'), 8.5);
+  assert.equal(zl.wartoscZDopisku(''), null);
+  assert.equal(zl.wartoscZDopisku('-'), null);
 });

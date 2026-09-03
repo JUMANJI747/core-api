@@ -190,16 +190,60 @@ function rozbierzZapis(zapis) {
   return { zakres, deklarowane, od, do: doo };
 }
 
+const czySkreslone = w => /^tak$/i.test(String((w && w.skreslone) || '').trim());
+
+/**
+ * Dopisek z kolumny podpisu albo druga zmiana: sama liczba ("9"), jeden przedzial
+ * ("11 - 22") albo dwa przedzialy ("6-8 30  11-22" = 13,5 h). Zwraca liczbe godzin
+ * albo null, gdy nic sensownego z tego nie wychodzi.
+ *
+ * Po co: na czesci kart TO JEST jedyne miejsce, gdzie czlowiek podal wynik.
+ * Stepnowski dzien 17: w rubryce "11-19 kl. 11-20", przy podpisie jego "9".
+ */
+function wartoscZDopisku(tekst) {
+  const t = String(tekst || '').replace(/[⁰°]/g, '0').replace(/[–—]/g, '-')
+    .replace(/\s+/g, ' ').trim();
+  if (!t || t === '-') return null;
+  /* Skanujemy PRZEDZIALY, a nie oddajemy tego rozbierzZapis - tam podzial na
+     grupy po myslniku bierze ostatnia grupe za wypisana liczbe godzin, wiec
+     "6 - 8 30  11 - 22" konczylo sie jako 22 h zamiast 13,5 h. */
+  const re = new RegExp(`(${CZAS})\\s*-\\s*(${CZAS})`, 'g');
+  let suma = null, m;
+  while ((m = re.exec(t)) !== null) {
+    const a = czasToken(m[1]), b = czasToken(m[2]);
+    const z = (a && b) ? czasZOdDo(a, b) : null;
+    if (z === null || z <= 0 || z > 24) continue;
+    suma = (suma || 0) + z;
+  }
+  if (suma !== null) return Math.round(suma * 100) / 100;
+  const liczba = L(t);
+  return (liczba !== null && liczba >= 0 && liczba <= 24) ? liczba : null;
+}
+
 /** godziny jednego dnia: wypisana liczba ma pierwszenstwo, przedzial to kontrola */
 function godzinyDnia(w) {
+  // Wiersz przekreslony = dzien anulowany. Model przepisuje tresc, odlicza kod.
+  if (czySkreslone(w)) return 0;
   const r = rozbierzZapis(w.zapis);
-  if (r.deklarowane !== null) return r.deklarowane;
-  if (r.zakres !== null) return r.zakres;
-  // model rozbil przedzial na pola od/do, a w "zapis" nic sensownego nie zostalo
-  const z = czasZOdDo(w.od, w.do);
-  if (z !== null) return z;
-  const liczba = L(w.zapis);
-  return liczba !== null && liczba >= 0 && liczba <= 24 ? liczba : null;
+  let g = null;
+  if (r.deklarowane !== null) g = r.deklarowane;
+  else if (r.zakres !== null) g = r.zakres;
+  else {
+    // model rozbil przedzial na pola od/do, a w "zapis" nic sensownego nie zostalo
+    const z = czasZOdDo(w.od, w.do);
+    if (z !== null) g = z;
+    else {
+      const liczba = L(w.zapis);
+      if (liczba !== null && liczba >= 0 && liczba <= 24) g = liczba;
+    }
+  }
+  /* DRUGA ZMIANA TEGO SAMEGO DNIA - doliczamy, nie zastepujemy. */
+  const g2 = wartoscZDopisku(w.zapis2);
+  if (g2 !== null) g = Math.round(((g || 0) + g2) * 100) / 100;
+  /* Rubryka pusta albo nieczytelna, a przy podpisie czlowiek napisal ile
+     przepracowal - to jest wtedy jedyne zrodlo. */
+  if (g === null) g = wartoscZDopisku(w.zapisPodpis);
+  return g;
 }
 
 /**
@@ -233,6 +277,28 @@ function walidujZlecenie(p0, drugi, okres = {}, strona = null) {
     if (String(w.zapis || '').includes('?')) {
       sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: g,
         uwaga: w.uwaga || 'rubryka nieczytelna' });
+    }
+    /* WIERSZ PRZEKRESLONY. Sam w sobie nie jest sporny - jest anulowany i tyle.
+       Sporny robi sie wtedy, gdy kreska idzie przez godziny, ale podpis zostal
+       nietkniety: wtedy nie wiadomo, czy dzien odwolano, czy poprawiono zapis. */
+    if (czySkreslone(w)) {
+      const podpisany = /tak/i.test(String(w.podpis || ''));
+      const podpisTezSkreslony = /podpis[^.]*(przekre|skres)|(przekre|skres)[^.]*podpis/i
+        .test(String(w.uwaga || ''));
+      ostrzezenia.push(`dzien ${d}: wiersz przekreslony, nie wliczony do sumy`);
+      if (podpisany && !podpisTezSkreslony) {
+        sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: 0,
+          uwaga: 'godziny przekreslone, ale podpis w wierszu zostal - dzien anulowany czy poprawiony?' });
+      }
+    }
+    /* LICZBA GODZIN PRZY PODPISIE. Gdy rubryka i dopisek daja co innego, karta
+       przeczy sama sobie tak samo, jak przy przedziale kontra wypisana liczba. */
+    const zPodpisu = wartoscZDopisku(w.zapisPodpis);
+    if (!czySkreslone(w) && zPodpisu !== null && g !== null
+        && Math.abs(zPodpisu - g) > 0.011) {
+      sporne.push({ dzien: d, pole: 'godziny', zapis: w.zapis, wniosek: g,
+        przyPodpisie: zPodpisu,
+        uwaga: `z rubryki wychodzi ${g} h, a przy podpisie napisano ${zPodpisu}` });
     }
     /* KARTA PRZECZY SAMA SOBIE: wypisana liczba godzin nie zgadza sie
        z przedzialem obok niej. Nie zgadujemy, ktore ma racje. */
@@ -418,4 +484,4 @@ async function odczytajTeczkeZlecen(pdfBuf, opcje = {}) {
 }
 
 module.exports = { odczytajTeczkeZlecen, przetworzStroneZlecenia, walidujZlecenie, godzinyDnia,
-  rozbierzZapis, czasToken, numerMiesiaca };
+  rozbierzZapis, wartoscZDopisku, czasToken, numerMiesiaca };
