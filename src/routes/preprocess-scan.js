@@ -4,9 +4,10 @@
 // POST /preprocess-scan  body: { data: <base64>, mime: 'application/pdf'|'image/jpeg'|... }
 //  - cyfrowy PDF (pdftotext > 200 znaków) → { skip: true } (nie ruszamy),
 //  - skan-PDF → pdftoppm -r 300 -png (strony 1-3); obraz → convert do PNG,
-//  - per strona: tesseract --psm 0 (OSD "Rotate: N", pad → 0) i convert
-//    -rotate N -deskew 40% -normalize -resize '2000x2000<',
-//  - wynik: { pages: ["<base64 PNG>", ...] }.
+//  - per strona: tesseract --psm 0 (OSD "Rotate: N", pad → 0), convert
+//    -rotate N -deskew 40% -normalize, potem PRZYCIĘCIE DO TREŚCI i
+//    powiększenie do limitu API (services/kadr-skanu.js),
+//  - wynik: { pages: ["<base64 PNG>", ...], kadry: [{przyciete, udzialTresci, wymiary}] }.
 // Auth: nagłówek x-token == PREPROCESS_TOKEN (brak env = endpoint otwarty).
 // Montowany POZA /api (nie podlega x-api-key) i PRZED globalnym express.json —
 // ma WŁASNY parser z limitem 25 MB. Wymaga: poppler-utils, imagemagick,
@@ -17,6 +18,8 @@ const { execFile } = require('child_process');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
+
+const { kadrujDoTresci } = require('../services/kadr-skanu');
 
 const router = express.Router();
 
@@ -82,6 +85,7 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
 
     // c) Per strona: detekcja obrotu (tesseract OSD) + korekta/czyszczenie.
     const pages = [];
+    const kadry = []; // per strona: czy przycięto i do jakich wymiarów — widać w n8n
     for (const p of pagePaths.slice(0, MAX_PAGES)) {
       let rotate = 0;
       try {
@@ -92,12 +96,32 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
         console.warn('[preprocess-scan] OSD padł (rotate=0):', e.message);
       }
       const cleaned = p.replace(/\.png$/, '-clean.png');
-      // -resize '2000x2000<' powiększa TYLKO obrazy mniejsze niż 2000px.
-      await run('convert', [p, '-rotate', String(rotate), '-deskew', '40%', '-normalize', '-resize', '2000x2000<', cleaned], { timeout: 60000 });
-      pages.push((await fs.readFile(cleaned)).toString('base64'));
+      // Bez -resize: rozmiar ustala kadrowanie niżej (do limitu API), a nie
+      // stała, która na skanie A4 i tak nie działała ('2000x2000<' = tylko powiększ).
+      await run('convert', [p, '-rotate', String(rotate), '-deskew', '40%', '-normalize', cleaned], { timeout: 60000 });
+      const wyprostowana = await fs.readFile(cleaned);
+
+      /* d) PRZYCIĘCIE DO TREŚCI + powiększenie do limitu API. Paragon z 04.09.2026
+         zajmował 11% kartki — model dostawał białą stronę z drobnym drukiem i
+         pomylił cyfrę. Wyłączalne przez PREPROCESS_BEZ_KADRU=1 (awaryjnie). */
+      if (process.env.PREPROCESS_BEZ_KADRU === '1') {
+        pages.push(wyprostowana.toString('base64'));
+        kadry.push({ przyciete: false, powod: 'wyłączone przez PREPROCESS_BEZ_KADRU' });
+      } else {
+        try {
+          const k = await kadrujDoTresci(wyprostowana);
+          pages.push(k.png.toString('base64'));
+          kadry.push({ przyciete: k.przyciete, udzialTresci: k.udzialTresci, wymiary: k.wymiary });
+        } catch (e) {
+          // kadrowanie nie może zatrzymać odczytu — oddajemy stronę bez kadru i mówimy o tym
+          console.warn('[preprocess-scan] kadrowanie padło, strona bez kadru:', e.message);
+          pages.push(wyprostowana.toString('base64'));
+          kadry.push({ przyciete: false, blad: e.message });
+        }
+      }
     }
 
-    res.json({ pages });
+    res.json({ pages, kadry });
   } catch (e) {
     console.error('[preprocess-scan]', e.message);
     res.status(500).json({ error: e.message });
