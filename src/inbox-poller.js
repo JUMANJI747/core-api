@@ -222,13 +222,22 @@ function bounceFilter(mail) {
   return false;
 }
 
-function hardFilter(mail, inbox = null) {
+/* Zwraca POWÓD odrzucenia (string) albo null, gdy mail przechodzi.
+ *
+ * Wcześniej funkcja zwracała true/false, a ślad w EmailSkip dostawał JEDEN
+ * sztywny napis „hard:self-loop-lub-blokada" dla wszystkich pięciu reguł.
+ * Przy pierwszej prawdziwej diagnozie (info@, 07.09.2026, dwa maile
+ * z correo.gob.es) ten napis okazał się NIEPRAWDĄ: nadawca nie był z naszej
+ * domeny, więc self-loop nie mógł zadziałać — a która reguła zadziałała,
+ * nie dało się ustalić bez zgadywania. Ślad, który myli co do przyczyny,
+ * jest gorszy niż brak śladu, bo diagnozę prowadzi w złą stronę. */
+function powodOdrzucenia(mail, inbox = null) {
   const fromEmail = (mail.fromEmail || '').toLowerCase();
   const subject = (mail.subject || '').toLowerCase();
   const autoSubmitted = (mail.autoSubmitted || '').toLowerCase();
 
   // Block auto-submitted (except "no")
-  if (autoSubmitted && autoSubmitted !== 'no') return false;
+  if (autoSubmitted && autoSubmitted !== 'no') return `hard:auto-submitted=${autoSubmitted.slice(0, 40)}`;
 
   /* WLASNA DOMENA. Wczesniej ten warunek kasowal KAZDY mail z
    * @surfstickbell.com — i to bez sladu: bez wiersza w Email, bez EmailSkip,
@@ -244,19 +253,28 @@ function hardFilter(mail, inbox = null) {
     const isOrderNotification = /quote request|order request|new customer quote/i.test(mail.subject || '');
     const nadawcaLokalnie = fromEmail.split('@')[0];
     const selfLoop = inbox && nadawcaLokalnie === String(inbox).toLowerCase();
-    if (selfLoop && !isOrderNotification) return false;
+    if (selfLoop && !isOrderNotification) return 'hard:self-loop';
   }
 
   // Block from keywords
-  if (BLOCKED_FROM_KEYWORDS.some(k => fromEmail.includes(k))) return false;
+  const kNadawca = BLOCKED_FROM_KEYWORDS.find(k => fromEmail.includes(k));
+  if (kNadawca) return `hard:nadawca-zawiera-${kNadawca}`;
 
   // Block subject keywords
-  if (BLOCKED_SUBJECT_KEYWORDS.some(k => subject.includes(k))) return false;
+  const kTemat = BLOCKED_SUBJECT_KEYWORDS.find(k => subject.includes(k));
+  if (kTemat) return `hard:temat-zawiera-${kTemat}`;
 
   // Block courier/marketing domains
-  if (BLOCKED_DOMAINS.some(d => fromEmail.includes(d))) return false;
+  const kDomena = BLOCKED_DOMAINS.find(d => fromEmail.includes(d));
+  if (kDomena) return `hard:domena-${kDomena}`;
 
-  return true;
+  return null;
+}
+
+/* Stara sygnatura logiczna — zostaje, bo rescan i testy pytają tylko „przejdzie
+ * czy nie". Jedno źródło reguł, dwa sposoby zapytania. */
+function hardFilter(mail, inbox = null) {
+  return powodOdrzucenia(mail, inbox) === null;
 }
 
 // ============ HTML STRIP ============
@@ -1274,12 +1292,14 @@ async function processAccount(account) {
           continue;
         }
 
-        if (!hardFilter(mail, inbox)) {
-          console.log(`[inbox-poller] ${inbox}: filtered (hard) uid=${mail.uid} from=${mail.fromEmail}`);
+        const powodHard = powodOdrzucenia(mail, inbox);
+        if (powodHard) {
+          console.log(`[inbox-poller] ${inbox}: filtered (${powodHard}) uid=${mail.uid} from=${mail.fromEmail}`);
           // Slad OBOWIAZKOWY: bez niego /poczta/zdrowie liczy 0 odfiltrowanych
           // i pokazuje „cisza", czyli sugeruje, ze nikt nie pisze — podczas gdy
-          // maile sa wyrzucane. Diagnostyka bez sladu klamie.
-          await recordSkip(mail.messageId, inbox, mail.fromEmail, 'hard:self-loop-lub-blokada');
+          // maile sa wyrzucane. Diagnostyka bez sladu klamie, a slad z ogolnym
+          // powodem klamie o przyczynie — dlatego idzie KONKRETNA regula.
+          await recordSkip(mail.messageId, inbox, mail.fromEmail, powodHard);
           continue;
         }
 
@@ -2006,55 +2026,78 @@ let pollCycleCount = 0;
 const RESCAN_EVERY_N_CYCLES = 12;
 
 let pollInFlight = false;
-/* CZUWANIE NAD CISZĄ. Dotychczasowy alert budził się TYLKO wtedy, gdy
- * połączenie IMAP rzuciło błędem. Awaria michal@ nie rzuciła niczym:
- * połączenie działało, maile przychodziły, klasyfikator kasował je jako spam
- * i skrzynka po prostu milczała przez 20 dni. Cisza jest objawem, więc od
- * teraz cisza sama się zgłasza.
+/* CZUWANIE NAD FILTREM (dawniej „nad ciszą").
  *
- * Dwa pytania zadawane raz na godzinę, per skrzynka:
- *   1. czy filtr coś wyrzuca, a jednocześnie NIC nie zapisujemy? (dzisiejsza awaria)
- *   2. czy skrzynka, która normalnie pracuje, zamilkła na dobę? (typowa awaria)
- * Alert idzie raz na skrzynkę na dobę — ma budzić, nie męczyć. */
+ * Historia tego alarmu to historia dwóch fałszywych tropów:
+ *   1. „skrzynka milczy od doby" — USUNIĘTE. Brak maila nie jest awarią; na
+ *      karolina@, sales@ i david@ nikt nie pisze od miesięcy. Ciszy nie da się
+ *      odróżnić od awarii przez OBSERWACJĘ — od tego jest kanarek, który sam
+ *      wysyła maila i sprawdza, czy doszedł (wyslijKanarki/sprawdzKanarki).
+ *   2. „filtr coś wyrzucił, a NIC nie trafiło do CRM" — USUNIĘTE 07.09.2026.
+ *      To była ta sama zakazana myśl w przebraniu: druga połowa warunku znaczy
+ *      dokładnie „dawno nie było maila od człowieka". Na info@ (13 maili
+ *      tygodniowo) zwykła niedziela spełnia ją sama z siebie, więc alarm
+ *      poszedł mimo że kanarek 3 h wcześniej potwierdził drożność skrzynki.
+ *
+ * Zostaje JEDEN warunek, który jest dowodem, a nie poszlaką: wyrzuciliśmy
+ * bezpowrotnie mail od nadawcy, z którym NAPRAWDĘ korespondujemy. Odrzucenie
+ * twardym filtrem nie zostawia wiersza w Email, a rescan stosuje ten sam filtr
+ * ponownie — więc takiej poczty nie odzyskamy z bazy (na serwerze IMAP zostaje).
+ * Jeżeli mamy z tą domeną historię, to nie jest newsletter i ktoś musi na to
+ * spojrzeć. Jeżeli nie mamy — to szum i alarm milczy. */
 const CZUWANIE_CO_N_CYKLI = 12;                  // 12 × 5 min = co godzinę
 const CZUWANIE_THROTTLE_MS = 24 * 60 * 60 * 1000;
 const _ostatniAlertCiszy = new Map();            // inbox -> timestamp
+
+/* Reguły twardego filtra, które MOGĄ się mylić na prawdziwej poczcie firmowej.
+ * Blokada domen (amazon, ebay, mailchimp) i tematów zwrotek jest zamierzona
+ * i nie ma o czym pisać. Ale „Auto-Submitted" i słowo w adresie nadawcy biją
+ * także w powiadomienia urzędów, banków i przewoźników — te są generowane
+ * automatycznie i idą z adresów typu noreply@, a bywają ważne. */
+const POWODY_OMYLNE = [/^hard:auto-submitted/, /^hard:nadawca-zawiera-/];
+
+/** Czy z tą domeną mamy historię korespondencji poza tym, co filtr ukrył. */
+async function znanaDomena(domena) {
+  if (!domena) return false;
+  const sufiks = '@' + domena;
+  const n = await prisma.email.count({
+    where: {
+      OR: [{ fromEmail: { endsWith: sufiks } }, { toEmail: { endsWith: sufiks } }],
+      NOT: { tags: { hasSome: ['ukryty-filtrem'] } },
+    },
+  });
+  return n > 0;
+}
 
 async function czuwajNadCisza(accounts) {
   const doba = new Date(Date.now() - 24 * 60 * 60 * 1000);
   for (const account of accounts) {
     const inbox = account.inbox;
     try {
-      /* „Zapisane" musi znaczyc PRAWDZIWA poczte do czlowieka. Maile ukryte
-       * filtrem i automaty PGF sa zapisywane w tej samej tabeli, wiec liczone
-       * naiwnie rozbrajaly czuwanie: skrzynka zasypywana automatami wygladala
-       * na zdrowa, choc zaden mail od czlowieka nie docieral. Na michal@
-       * wystarczylby jeden automat dziennie, zeby alarm nigdy nie zadzialal. */
-      const [zapisaneDoba, ukryteDoba] = await Promise.all([
-        prisma.email.count({
-          where: {
-            inbox, direction: 'INBOUND', createdAt: { gte: doba },
-            NOT: { tags: { hasSome: ['ukryty-filtrem', 'pgf'] } },
-          },
-        }),
-        prisma.emailSkip.count({ where: { inbox, createdAt: { gte: doba } } }),
-      ]);
+      const odrzucone = await prisma.emailSkip.findMany({
+        where: { inbox, createdAt: { gte: doba } },
+        select: { reason: true, fromEmail: true },
+        take: 100,
+      });
+      const omylne = odrzucone.filter(o => POWODY_OMYLNE.some(re => re.test(o.reason || '')));
+      if (!omylne.length) continue;
 
-      let alarm = null;
-      if (ukryteDoba > 0 && zapisaneDoba === 0) {
-        /* DOWÓD UTRATY, nie brak poczty: coś przyszło i zostało wyrzucone,
-         * a nic nie zostało zapisane. To jest twardy sygnał i idzie zawsze. */
-        alarm = `⚠️ Skrzynka ${inbox}@ — filtr odrzucił ${ukryteDoba} mail(i) w ciągu doby, a NIC nie trafiło do CRM.\n`
-          + 'Wygląda, jakby filtr zjadał pocztę. Sprawdź: GET /poczta/zdrowie?inbox=' + inbox;
-      }
-      /* Pasywny alarm „skrzynka milczy" zostal USUNIETY. Brak maila nie jest
-       * awaria — na karolina@, sales@ i david@ nikt nie pisze od miesiecy,
-       * a alarm i tak wyl codziennie. Kalibracja mediana tego nie ratowala:
-       * przy kilku mailach w historii mediana wychodzila ~1 h, wiec kazda
-       * przerwa byla „1600× dluzsza niz zwykle". Ciszy nie da sie odroznic
-       * od awarii przez OBSERWACJE. Od tego jest kanarek: system sam wysyla
-       * maila i sprawdza, czy doszedl (patrz wyslijKanarki/sprawdzKanarki). */
-      if (!alarm) continue;
+      // Dopiero teraz pytamy bazę o historię — jedno zapytanie na domenę, nie na mail.
+      const domeny = [...new Set(omylne.map(o => (o.fromEmail || '').split('@')[1]).filter(Boolean))];
+      const znane = [];
+      for (const d of domeny) if (await znanaDomena(d)) znane.push(d);
+      if (!znane.length) continue;
+
+      const wyrzucone = omylne
+        .filter(o => znane.includes((o.fromEmail || '').split('@')[1]))
+        .map(o => `  • ${(o.fromEmail || '').split('@')[1]} — reguła ${o.reason}`);
+
+      const alarm = `⚠️ Skrzynka ${inbox}@ — twardy filtr wyrzucił pocztę od nadawcy, z którym korespondujemy:\n`
+        + [...new Set(wyrzucone)].join('\n')
+        + '\n\nTa poczta NIE trafiła do CRM i rescan jej nie odzyska (zastosuje tę samą regułę),'
+        + '\nale nadal leży na serwerze IMAP — nic nie zostało skasowane.'
+        + '\nJeśli reguła jest zła, poprawka jest w hardFilter/BLOCKED_FROM_KEYWORDS.'
+        + `\nSzczegóły: GET /poczta/zdrowie?inbox=${inbox}`;
 
       const ostatni = _ostatniAlertCiszy.get(inbox) || 0;
       if (Date.now() - ostatni < CZUWANIE_THROTTLE_MS) continue;
