@@ -2051,23 +2051,26 @@ const _ostatniAlertCiszy = new Map();            // inbox -> timestamp
 
 /* Reguły twardego filtra, które MOGĄ się mylić na prawdziwej poczcie firmowej.
  * Blokada domen (amazon, ebay, mailchimp) i tematów zwrotek jest zamierzona
- * i nie ma o czym pisać. Ale „Auto-Submitted" i słowo w adresie nadawcy biją
- * także w powiadomienia urzędów, banków i przewoźników — te są generowane
- * automatycznie i idą z adresów typu noreply@, a bywają ważne. */
-const POWODY_OMYLNE = [/^hard:auto-submitted/, /^hard:nadawca-zawiera-/];
-
-/** Czy z tą domeną mamy historię korespondencji poza tym, co filtr ukrył. */
-async function znanaDomena(domena) {
-  if (!domena) return false;
-  const sufiks = '@' + domena;
-  const n = await prisma.email.count({
-    where: {
-      OR: [{ fromEmail: { endsWith: sufiks } }, { toEmail: { endsWith: sufiks } }],
-      NOT: { tags: { hasSome: ['ukryty-filtrem'] } },
-    },
-  });
-  return n > 0;
-}
+ * i nie ma o czym pisać.
+ *
+ * Auto-Submitted rozróżniamy po WARTOŚCI (RFC 3834), bo to dwie różne rzeczy:
+ *   - `auto-replied` = autoresponder urlopowy. Odrzucenie jest zamierzone
+ *     (mamy już „out of office" w BLOCKED_SUBJECT_KEYWORDS) i nigdy nie jest
+ *     błędem. Pierwsza wersja tej listy łapała całe `auto-submitted` i alarm
+ *     poszedł na autoodpowiedź z naszego własnego serwera pocztowego.
+ *   - `auto-generated` = poczta maszynowa: awizo przewoźnika, pismo z urzędu,
+ *     potwierdzenie zamówienia. TA potrafi być ważna i tylko ona budzi.
+ * Tak samo dzielimy BLOCKED_FROM_KEYWORDS. `mailer-daemon`, `postmaster`,
+ * `bounce`, `daemon`, `returned` to infrastruktura zwrotek — nigdy nie pisze
+ * z nich człowiek ani urząd, więc odrzucenie zawsze jest trafne. Ale
+ * `noreply@`, `notification@`, `alert@`, `system@` to adresy, z których
+ * przychodzą awiza, wezwania i potwierdzenia — i tylko one budzą. */
+const POWODY_OMYLNE = [
+  // wszystko poza autoresponderem urlopowym — także wartości spoza RFC 3834,
+  // żeby nowy, nieznany rodzaj automatu nie znikał po cichu
+  /^hard:auto-submitted=(?!auto-replied)/,
+  /^hard:nadawca-zawiera-(noreply|no-reply|donotreply|notification@|alert@|system@)/,
+];
 
 async function czuwajNadCisza(accounts) {
   const doba = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -2082,14 +2085,19 @@ async function czuwajNadCisza(accounts) {
       const omylne = odrzucone.filter(o => POWODY_OMYLNE.some(re => re.test(o.reason || '')));
       if (!omylne.length) continue;
 
-      // Dopiero teraz pytamy bazę o historię — jedno zapytanie na domenę, nie na mail.
-      const domeny = [...new Set(omylne.map(o => (o.fromEmail || '').split('@')[1]).filter(Boolean))];
+      /* „Korespondujemy z nim" sprawdzamy TYM SAMYM testem, co reszta pollera:
+       * czy pisaliśmy pod ten KONKRETNY adres albo czy jest w ContractorContact.
+       * Pierwsza wersja pytała o samą DOMENĘ i o dowolny wiersz Email — przez
+       * co adres systemowy naszego serwera pocztowego (h22.seohost.pl) wyszedł
+       * na „nadawcę, z którym korespondujemy" i wywołał fałszywy alarm.
+       * Relacja to konkretny człowiek albo firma, nie domena infrastruktury. */
+      const adresy = [...new Set(omylne.map(o => (o.fromEmail || '').toLowerCase()).filter(Boolean))];
       const znane = [];
-      for (const d of domeny) if (await znanaDomena(d)) znane.push(d);
+      for (const a of adresy) if (await czyZnanyNadawca(a)) znane.push(a);
       if (!znane.length) continue;
 
       const wyrzucone = omylne
-        .filter(o => znane.includes((o.fromEmail || '').split('@')[1]))
+        .filter(o => znane.includes((o.fromEmail || '').toLowerCase()))
         .map(o => `  • ${(o.fromEmail || '').split('@')[1]} — reguła ${o.reason}`);
 
       const alarm = `⚠️ Skrzynka ${inbox}@ — twardy filtr wyrzucił pocztę od nadawcy, z którym korespondujemy:\n`
