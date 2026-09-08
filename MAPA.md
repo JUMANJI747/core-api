@@ -112,7 +112,7 @@ przy starcie — `services/bin-check.js`.
 - `logistics-agent.js` — kurier (quote/order/track/label/delete, szukanie adresu). Model `LOGISTICS_AGENT_MODEL`.
 - `accounting-agent.js` — FV PL, NIP/VIES, **upsert_contractor** (rozbija adres na pola; nazwa prawna > handlowa), **extract_nip** (skan pełnych treści maili nadawcy zanim powie „brak VAT").
 - `accounting-agent-es.js` — FV ES/Kanary.
-- `communication-agent.js` / `communication-agent-es.js` — maile/odpowiedzi/tłumaczenia.
+- `communication-agent.js` / `communication-agent-es.js` — maile/odpowiedzi/tłumaczenia. **Wykrywanie intencji (`forcedTool`) rozdziela CZASOWNIK od RZECZOWNIKA**: wspólny prefiks `WYSLIJ` = `(wyślij|prześlij)` + do 3 dowolnych słów + rzeczownik. Sztywne `\bwyślij ofert` nie łapało „wyślij POLSKĄ ofertę" ani „wyślij KORYGUJĄCĄ fakturę" — model dostawał wolną rękę, dopytywał zamiast wysłać, a master raportował „brak confirmation block" (8.09.2026). Gdy w zdaniu są OBA rzeczowniki, decyduje ten stojący WCZEŚNIEJ, nie kolejność w łańcuchu `else-if`.
 - `operations-agent.js` — deale, transakcje, matching FV↔wysyłka, Google Sheets.
 - `sudo-agent.js` — administracyjny (call_endpoint).
 

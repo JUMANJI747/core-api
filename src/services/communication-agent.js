@@ -347,8 +347,17 @@ const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
 // "mail z treścią" — bez tokenu faktury, więc to zwykła wiadomość, nie ponowna FV.
 // "mail\b" nie złapie "mailem" (→ "wyślij fakturę mailem" tu nie wpada).
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć]|wy[sś]lij(?: drugi| kolejny| nowy| jeszcze jeden)? mail\b|(?:drugi|kolejny|nowy|jeszcze jeden) mail\b|mail z tre[sś]ci|wiadomo[sś][cć] z tre[sś]ci)/iu;
-const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
-const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
+/* CZASOWNIK i RZECZOWNIK ROZDZIELONE. Poprzednie `\bwyślij ofert` wymagało,
+ * żeby „ofert" stało BEZPOŚREDNIO po czasowniku — a user prawie zawsze wstawia
+ * przymiotnik: „wyślij POLSKĄ ofertę", „wyślij KORYGUJĄCĄ fakturę". Wtedy
+ * intencja nie była wykrywana, model dostawał wolną rękę, dopytywał zamiast
+ * wysłać, a master raportował „brak confirmation block" (8.09.2026).
+ * Najlepszy dowód, że to przeoczenie: `detectOfferLang` niżej rozpoznaje
+ * „francuską"/„polską" ofertę, czyli dokładnie te zdania, których ten regex
+ * nie widział. Do trzech słów w środku — dalej to już inne zdanie. */
+const WYSLIJ = String.raw`\b(?:wy[sś]lij|prze[sś]lij)\b(?:\s+\S+){0,3}?\s+`;
+const OFFER_INTENT = new RegExp(WYSLIJ + 'ofert', 'iu');
+const SEND_INVOICE_INTENT = new RegExp(WYSLIJ + '(?:fakt|fv)', 'iu');
 // Faktura + WŁASNA treść → draft (jęz. odbiorcy + tłumaczenie PL), nie jednokrokowy send.
 // "wyślij fakturę I NAPISZ że...", "napisz do kontrahenta że ... fv ...".
 const INVOICE_TOKEN = /\b(faktur|fakt\b|fv)\b/iu;
@@ -405,8 +414,15 @@ async function processCommunicationQuery(query, ctx = {}) {
   else if (EXTRACT_NIP_INTENT.test(query)) forcedTool = 'extract_nip';
   else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';
   else if (PARSE_INTENT.test(query)) forcedTool = 'parse_attachments';
-  else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'send_invoice_email';
-  else if (OFFER_INTENT.test(query)) forcedTool = 'send_offer';
+  /* Gdy w zdaniu są OBA rzeczowniki („wyślij ofertę i fakturę"), decyduje ten,
+     który stoi WCZEŚNIEJ — kolejność w łańcuchu else-if dawałaby zawsze fakturę,
+     niezależnie od tego, o co user prosił najpierw. */
+  else if (SEND_INVOICE_INTENT.test(query) || OFFER_INTENT.test(query)) {
+    const poz = (re) => { const i = query.search(re); return i < 0 ? Infinity : i; };
+    forcedTool = poz(/\bofert/iu) < poz(/\b(?:faktur|fakt\b|fv)\b/iu) && OFFER_INTENT.test(query)
+      ? 'send_offer'
+      : (SEND_INVOICE_INTENT.test(query) ? 'send_invoice_email' : 'send_offer');
+  }
   else if (REPLY_INTENT.test(query) || NEW_MAIL_INTENT.test(query)) forcedTool = 'send_email';
   else if (SEARCH_INTENT.test(query)) forcedTool = 'recent_emails';
 

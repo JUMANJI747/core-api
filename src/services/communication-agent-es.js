@@ -264,8 +264,12 @@ const SEARCH_INTENT = /\b(poka[zż] mail|znajd[zź] mail|szukaj mail|ostatnie ma
 const REPLY_INTENT = /\b(odpisz|odpowiedz|napisz odpowied|odpowied[zź])/iu;
 const ANALYZE_LEADS_INTENT = /\b(przeanaliz\w*\s+mail|status\s+lead|kto\s+czeka|co\s+wymaga|zaleg[lł]\w*\s+w[ąa]tk|kto\s+dosta[lł]\s+sample|martw\w*\s+w[ąa]tk|wymaga\w*\s+akcj|do\s+odpis)/iu;
 const NEW_MAIL_INTENT = /\b(napisz (nowy )?mail|wy[sś]lij wiadomo[sś][cć])/iu;
-const OFFER_INTENT = /\bwy[sś]lij ofert/iu;
-const SEND_INVOICE_INTENT = /\bwy[sś]lij (fakt|fv)/iu;
+/* Czasownik i rzeczownik rozdzielone — jak w wersji PL. Sztywne
+ * `\bwyślij ofert` nie widziało „wyślij HISZPAŃSKĄ ofertę" i model dopytywał
+ * zamiast wysłać (8.09.2026). Do trzech słów w środku. */
+const WYSLIJ = String.raw`\b(?:wy[sś]lij|prze[sś]lij)\b(?:\s+\S+){0,3}?\s+`;
+const OFFER_INTENT = new RegExp(WYSLIJ + 'ofert', 'iu');
+const SEND_INVOICE_INTENT = new RegExp(WYSLIJ + '(?:fakt|fv)', 'iu');
 const PARSE_INTENT = /\bparsuj zal|otw[oó]rz zal|sprawd[zź] zal/iu;
 const CHECK_SENT_INTENT = /\bczy (fakt|fv).{0,40}(wysy[lł]ana|wys[lł]aliśmy|by[lł]a wys)/iu;
 // Samo "wyślij"/"wyślij go/ją" = confirm TYLKO gdy to cała wiadomość — inaczej
@@ -287,8 +291,13 @@ async function processCommunicationEsQuery(query, ctx = {}) {
   else if (CHECK_SENT_INTENT.test(query)) forcedTool = 'check_sent';
   else if (ANALYZE_LEADS_INTENT.test(query)) forcedTool = 'analyze_leads';
   else if (PARSE_INTENT.test(query)) forcedTool = 'parse_attachments';
-  else if (SEND_INVOICE_INTENT.test(query)) forcedTool = 'send_invoice_email';
-  else if (OFFER_INTENT.test(query)) forcedTool = 'send_offer';
+  // Oba rzeczowniki w zdaniu → decyduje ten, który stoi wcześniej (jak w PL).
+  else if (SEND_INVOICE_INTENT.test(query) || OFFER_INTENT.test(query)) {
+    const poz = (re) => { const i = query.search(re); return i < 0 ? Infinity : i; };
+    forcedTool = poz(/\bofert/iu) < poz(/\b(?:faktur|fakt\b|fv)\b/iu) && OFFER_INTENT.test(query)
+      ? 'send_offer'
+      : (SEND_INVOICE_INTENT.test(query) ? 'send_invoice_email' : 'send_offer');
+  }
   else if (REPLY_INTENT.test(query) || NEW_MAIL_INTENT.test(query)) forcedTool = 'send_email';
   else if (SEARCH_INTENT.test(query)) forcedTool = 'recent_emails';
 
