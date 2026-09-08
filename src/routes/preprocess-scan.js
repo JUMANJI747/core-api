@@ -25,6 +25,47 @@ const router = express.Router();
 
 const MAX_PAGES = 3;
 
+/* SUFIT ROZDZIELCZOŚCI RENDERU (dłuższy bok w pikselach).
+ *
+ * `-r 300` to rozdzielczość liczona od ZADEKLAROWANEGO rozmiaru strony, a nie
+ * od tego, ile w niej realnie treści. Skaner z 07.09.2026 zapisał stronę jako
+ * 2550×3507 PUNKTÓW (35×49 cali — obraz wstawiony jeden piksel na punkt),
+ * więc `-r 300` kazało wyrenderować 10625×14613 px, czyli 155 megapikseli
+ * i ~0,43 GB surowego RGB. ImageMagick padł na „cache resources exhausted",
+ * a całe żądanie skończyło się kodem 500.
+ *
+ * 4000 px dobrane tak, żeby NIC nie zmienić dla normalnych dokumentów: A4 ma
+ * dłuższy bok 842 pt, więc przy 300 dpi wychodzi 3508 px i sufit go nie tyka.
+ * Clamp włącza się dopiero przy stronach absurdalnie zadeklarowanych.
+ * I tak kadrujemy potem do 2576 px, więc nic użytecznego nie tracimy. */
+const MAX_PX_RENDERU = 4000;
+
+/** Rozdzielczość renderu: 300 dpi, chyba że strona jest tak duża, że trzeba zejść. */
+async function dpiDlaPdf(pdfPath) {
+  try {
+    const { stdout } = await run('pdfinfo', [pdfPath], { timeout: 15000 });
+    const m = stdout.match(/^Page size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts/m);
+    if (!m) return { dpi: 300, powod: 'pdfinfo nie podał rozmiaru strony' };
+    const dluzszyBokPt = Math.max(parseFloat(m[1]), parseFloat(m[2]));
+    if (!(dluzszyBokPt > 0)) return { dpi: 300, powod: 'rozmiar strony nie do odczytania' };
+    const dpi = Math.min(300, Math.floor((MAX_PX_RENDERU * 72) / dluzszyBokPt));
+    if (dpi >= 300) return { dpi: 300 };
+    /* Bez sztucznej podłogi typu „min. 72 dpi" — ona rozbraja cały sufit:
+       przy stronie zadeklarowanej na 10000 pt wyliczone 28 dpi podniesione
+       do 72 dawałoby z powrotem render 10000 px. dpi to tu tylko przelicznik
+       na PIKSELE, a pikseli chcemy najwyżej MAX_PX_RENDERU. */
+    return {
+      dpi: Math.max(1, dpi),
+      powod: `strona zadeklarowana jako ${m[1]}x${m[2]} pt — przy 300 dpi render miałby `
+        + `${Math.round((dluzszyBokPt / 72) * 300)} px na dłuższym boku`,
+    };
+  } catch (e) {
+    // pdfinfo niedostępne/padło — zostaje dotychczasowe 300 dpi
+    console.warn('[preprocess-scan] pdfinfo padł, dpi=300:', e.message);
+    return { dpi: 300, powod: `pdfinfo padł: ${e.message}` };
+  }
+}
+
 function run(cmd, args, { timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -49,6 +90,8 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
   if (!data || !mime) return res.status(400).json({ error: 'data (base64) i mime są wymagane' });
 
   let tmp = null;
+  let renderDpi = null;      // faktyczne dpi renderu — widoczne w odpowiedzi, bo bywa niższe niż 300
+  let renderPowod = null;
   try {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'prescan-'));
     const buf = Buffer.from(String(data), 'base64');
@@ -72,8 +115,12 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
         console.warn('[preprocess-scan] pdftotext padł — traktuję jak skan:', e.message);
       }
 
-      // b) Skan-PDF → render stron do PNG (300 dpi, strony 1..MAX_PAGES).
-      await run('pdftoppm', ['-r', '300', '-png', '-f', '1', '-l', String(MAX_PAGES), pdfPath, path.join(tmp, 'page')], { timeout: 60000 });
+      // b) Skan-PDF → render stron do PNG (do 300 dpi, strony 1..MAX_PAGES).
+      const { dpi, powod } = await dpiDlaPdf(pdfPath);
+      if (powod) console.log(`[preprocess-scan] dpi=${dpi} zamiast 300: ${powod}`);
+      renderDpi = dpi;
+      renderPowod = powod || null;
+      await run('pdftoppm', ['-r', String(dpi), '-png', '-f', '1', '-l', String(MAX_PAGES), pdfPath, path.join(tmp, 'page')], { timeout: 60000 });
       const rendered = (await fs.readdir(tmp)).filter(f => f.startsWith('page') && f.endsWith('.png')).sort();
       if (!rendered.length) return res.status(500).json({ error: 'pdftoppm nie wyrenderował żadnej strony' });
       pagePaths.push(...rendered.map(f => path.join(tmp, f)));
@@ -146,9 +193,9 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
        wart więcej niż błąd: n8n dostaje strony, które się udały, i widzi
        w `kadry`, co poszło nie tak z resztą. */
     if (!pages.length) {
-      return res.status(500).json({ error: 'żadnej strony nie udało się przygotować', kadry });
+      return res.status(500).json({ error: 'żadnej strony nie udało się przygotować', kadry, dpi: renderDpi });
     }
-    res.json({ pages, kadry });
+    res.json({ pages, kadry, dpi: renderDpi, dpiPowod: renderPowod });
   } catch (e) {
     console.error('[preprocess-scan]', e.message);
     res.status(500).json({ error: e.message });
