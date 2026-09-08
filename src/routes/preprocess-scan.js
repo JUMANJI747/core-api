@@ -53,6 +53,9 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'prescan-'));
     const buf = Buffer.from(String(data), 'base64');
     if (!buf.length) return res.status(400).json({ error: 'pusty plik po dekodowaniu base64' });
+    /* Log wejścia. Gdy n8n zgłosi 500, w mailu jest sam kod statusu — bez tej
+       linii w logu Railway nie da się nawet powiedzieć, JAK DUŻY plik poległ. */
+    console.log(`[preprocess-scan] wejście: ${mime}, ${(buf.length / 1048576).toFixed(1)} MB`);
 
     const pagePaths = [];
     if (/pdf/i.test(String(mime))) {
@@ -86,41 +89,65 @@ router.post('/preprocess-scan', express.json({ limit: '25mb' }), async (req, res
     // c) Per strona: detekcja obrotu (tesseract OSD) + korekta/czyszczenie.
     const pages = [];
     const kadry = []; // per strona: czy przycięto i do jakich wymiarów — widać w n8n
+    /* JEDNA STRONA NIE MOŻE ZABRAĆ CAŁEGO SKANU. Wcześniej `convert` stał tu
+       goły: awaria albo timeout na DOWOLNEJ stronie leciała do zewnętrznego
+       catch i całe żądanie kończyło się 500 — także wtedy, gdy strona 1 była
+       już gotowa. n8n dostawał zero stron i szedł do modelu z oryginałem
+       (raport BAR z 07.09.2026). Surowy render z pdftoppm już leży na dysku
+       i jest lepszy niż nic: bez prostowania, ale czytelny. */
     for (const p of pagePaths.slice(0, MAX_PAGES)) {
-      let rotate = 0;
       try {
-        const { stdout, stderr } = await run('tesseract', [p, 'stdout', '--psm', '0'], { timeout: 30000 });
-        const m = (stdout + '\n' + stderr).match(/Rotate:\s*(\d+)/i);
-        if (m) rotate = parseInt(m[1], 10) || 0;
-      } catch (e) {
-        console.warn('[preprocess-scan] OSD padł (rotate=0):', e.message);
-      }
-      const cleaned = p.replace(/\.png$/, '-clean.png');
-      // Bez -resize: rozmiar ustala kadrowanie niżej (do limitu API), a nie
-      // stała, która na skanie A4 i tak nie działała ('2000x2000<' = tylko powiększ).
-      await run('convert', [p, '-rotate', String(rotate), '-deskew', '40%', '-normalize', cleaned], { timeout: 60000 });
-      const wyprostowana = await fs.readFile(cleaned);
-
-      /* d) PRZYCIĘCIE DO TREŚCI + powiększenie do limitu API. Paragon z 04.09.2026
-         zajmował 11% kartki — model dostawał białą stronę z drobnym drukiem i
-         pomylił cyfrę. Wyłączalne przez PREPROCESS_BEZ_KADRU=1 (awaryjnie). */
-      if (process.env.PREPROCESS_BEZ_KADRU === '1') {
-        pages.push(wyprostowana.toString('base64'));
-        kadry.push({ przyciete: false, powod: 'wyłączone przez PREPROCESS_BEZ_KADRU' });
-      } else {
+        let rotate = 0;
         try {
-          const k = await kadrujDoTresci(wyprostowana);
-          pages.push(k.png.toString('base64'));
-          kadry.push({ przyciete: k.przyciete, udzialTresci: k.udzialTresci, wymiary: k.wymiary });
+          const { stdout, stderr } = await run('tesseract', [p, 'stdout', '--psm', '0'], { timeout: 30000 });
+          const m = (stdout + '\n' + stderr).match(/Rotate:\s*(\d+)/i);
+          if (m) rotate = parseInt(m[1], 10) || 0;
         } catch (e) {
-          // kadrowanie nie może zatrzymać odczytu — oddajemy stronę bez kadru i mówimy o tym
-          console.warn('[preprocess-scan] kadrowanie padło, strona bez kadru:', e.message);
+          console.warn('[preprocess-scan] OSD padł (rotate=0):', e.message);
+        }
+        const cleaned = p.replace(/\.png$/, '-clean.png');
+        // Bez -resize: rozmiar ustala kadrowanie niżej (do limitu API), a nie
+        // stała, która na skanie A4 i tak nie działała ('2000x2000<' = tylko powiększ).
+        await run('convert', [p, '-rotate', String(rotate), '-deskew', '40%', '-normalize', cleaned], { timeout: 60000 });
+        const wyprostowana = await fs.readFile(cleaned);
+
+        /* d) PRZYCIĘCIE DO TREŚCI + powiększenie do limitu API. Paragon z 04.09.2026
+           zajmował 11% kartki — model dostawał białą stronę z drobnym drukiem i
+           pomylił cyfrę. Wyłączalne przez PREPROCESS_BEZ_KADRU=1 (awaryjnie). */
+        if (process.env.PREPROCESS_BEZ_KADRU === '1') {
           pages.push(wyprostowana.toString('base64'));
-          kadry.push({ przyciete: false, blad: e.message });
+          kadry.push({ przyciete: false, powod: 'wyłączone przez PREPROCESS_BEZ_KADRU' });
+        } else {
+          try {
+            const k = await kadrujDoTresci(wyprostowana);
+            pages.push(k.png.toString('base64'));
+            kadry.push({ przyciete: k.przyciete, udzialTresci: k.udzialTresci, wymiary: k.wymiary });
+          } catch (e) {
+            // kadrowanie nie może zatrzymać odczytu — oddajemy stronę bez kadru i mówimy o tym
+            console.warn('[preprocess-scan] kadrowanie padło, strona bez kadru:', e.message);
+            pages.push(wyprostowana.toString('base64'));
+            kadry.push({ przyciete: false, blad: e.message });
+          }
+        }
+      } catch (e) {
+        console.warn(`[preprocess-scan] strona ${path.basename(p)} bez obróbki:`, e.message);
+        try {
+          pages.push((await fs.readFile(p)).toString('base64'));
+          kadry.push({ przyciete: false, surowa: true, blad: e.message });
+        } catch (e2) {
+          // renderu też nie da się odczytać — tej jednej strony po prostu nie ma
+          console.error(`[preprocess-scan] strona ${path.basename(p)} stracona:`, e2.message);
+          kadry.push({ przyciete: false, stracona: true, blad: `${e.message} | render: ${e2.message}` });
         }
       }
     }
 
+    /* 500 dopiero wtedy, gdy NAPRAWDĘ nie ma czego oddać. Częściowy wynik jest
+       wart więcej niż błąd: n8n dostaje strony, które się udały, i widzi
+       w `kadry`, co poszło nie tak z resztą. */
+    if (!pages.length) {
+      return res.status(500).json({ error: 'żadnej strony nie udało się przygotować', kadry });
+    }
     res.json({ pages, kadry });
   } catch (e) {
     console.error('[preprocess-scan]', e.message);
