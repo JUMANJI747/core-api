@@ -97,6 +97,14 @@ async function runAgentLoop({
   // "Akceptuj", który woła confirm-endpoint WPROST (bez Anthropic). Confirm nie
   // zwraca previewId, więc po potwierdzeniu zostaje null.
   let pendingPreview = null;
+  /* TWARDY FAKT WYSYŁKI — z odpowiedzi backendu, nie z prozy modelu.
+   * 8.09.2026: po poleceniu „wyślij Polską ofertę na karol@" backend wysłał
+   * ofertę i zwrócił `sent: true`, a model mimo to zapytał „o jaką ofertę
+   * chodzi?". Master nie znalazł potwierdzenia w tekście, zgłosił awarię
+   * i poprosił usera o doprecyzowanie — a mail był już u odbiorcy. Ponowna
+   * próba wysłałaby go drugi raz. O tym, czy wysyłka się odbyła, ma
+   * decydować backend, nie to, co model napisał obok. */
+  const wyslane = [];
   while (response.stop_reason === 'tool_use' && iterations < maxIter) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
@@ -107,6 +115,10 @@ async function runAgentLoop({
       console.log(`${logPrefix} tool_use: ${tu.name}`, JSON.stringify(tu.input).slice(0, 300));
       const result = await executeTool(tu.name, tu.input, ctx);
       if (result && result.previewId) pendingPreview = { tool: tu.name, previewId: result.previewId };
+      // `deduplicated` NIE liczy się jako świeża wysyłka — backend nic nie wysłał.
+      if (result && result.sent === true && !result.deduplicated) {
+        wyslane.push({ narzedzie: tu.name, to: result.to || null, messageId: result.messageId || null });
+      }
       if (logResult) console.log(`${logPrefix} tool_result ${tu.name}:`, JSON.stringify(result).slice(0, 400));
       if (onToolResult) {
         const forced = onToolResult(tu.name, result, ctx);
@@ -133,12 +145,26 @@ async function runAgentLoop({
 
   // Laczymy WSZYSTKIE bloki tekstowe (model czasem rozbija odpowiedz na kilka).
   // Wczesniej brano tylko pierwszy — gubilo to dalsze fragmenty.
-  const text = response.content
+  let text = response.content
     .filter(b => b.type === 'text')
     .map(b => b.text)
     .join('\n')
     .trim();
-  return { text, iterations, stopReason: response.stop_reason, pendingPreview };
+
+  /* Skoro backend potwierdził wysyłkę, odpowiedź MUSI się z tym zgadzać.
+   * Pytanie zadane po udanej wysyłce jest nieprawdziwe i wprost szkodliwe:
+   * zaprasza usera do powtórzenia polecenia, czyli do drugiego maila. */
+  if (wyslane.length) {
+    const naglowek = 'OK — wysłano: ' + wyslane
+      .map(w => `${w.narzedzie}${w.to ? ` → ${w.to}` : ''}`).join('; ');
+    if (!text || text.includes('?')) {
+      if (text) console.warn(`${logPrefix} model pytał mimo udanej wysyłki — tekst zastąpiony: ${text.slice(0, 200)}`);
+      text = naglowek;
+    } else if (!/^\s*ok\b/i.test(text)) {
+      text = `${naglowek}\n${text}`;
+    }
+  }
+  return { text, wyslane, iterations, stopReason: response.stop_reason, pendingPreview };
   } catch (e) {
     if (isOverloadError(e)) {
       console.warn(`${logPrefix} Anthropic OVERLOADED po retry:`, e.status || e.message);

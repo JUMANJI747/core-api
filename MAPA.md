@@ -107,7 +107,7 @@ przy starcie — `services/bin-check.js`.
 ## 4. Serwisy (`src/services/`)
 
 ### Agenci AI
-- `agent-loop-base.js` — pętla narzędzi, prompt caching, obsługa overloaded (`OVERLOAD_TEXT`).
+- `agent-loop-base.js` — pętla narzędzi, prompt caching, obsługa overloaded (`OVERLOAD_TEXT`). **`wyslane[]` — twardy fakt wysyłki z backendu, nie z prozy modelu**: każdy wynik narzędzia z `sent:true` (bez `deduplicated`) trafia na listę zwracaną obok `text` (i dalej w odpowiedzi `/api/agent`, żeby master sprawdzał FAKT zamiast parsować zdanie). Gdy wysyłka się udała, a model milczy albo zadaje pytanie, tekst jest zastępowany linią `OK — wysłano: <narzędzie> → <adres>`; gdy model potwierdził inaczej niż „OK", linia idzie przed jego tekstem. Powód: 8.09.2026 backend wysłał ofertę (`sent:true`) i sam wypchnął potwierdzenie SMTP na Telegram, a model obok zapytał „o jaką ofertę chodzi?" — master uznał brak potwierdzenia za awarię i poprosił usera o doprecyzowanie, choć mail był już u odbiorcy; powtórzenie polecenia wysłałoby go drugi raz.
 - `agent-runtime.js` — `buildExecuteTool`, `selfCall` (wewn. HTTP), sanitizacja.
 - `logistics-agent.js` — kurier (quote/order/track/label/delete, szukanie adresu). Model `LOGISTICS_AGENT_MODEL`.
 - `accounting-agent.js` — FV PL, NIP/VIES, **upsert_contractor** (rozbija adres na pola; nazwa prawna > handlowa), **extract_nip** (skan pełnych treści maili nadawcy zanim powie „brak VAT").

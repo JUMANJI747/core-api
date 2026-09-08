@@ -622,7 +622,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     try {
       const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-6) });
       console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
-      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r) });
+      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
     } catch (e) {
       return res.json({ ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' });
     }
@@ -653,7 +653,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
         const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-8) });
-        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r) });
+        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
       } catch (e) {
         return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
       }
