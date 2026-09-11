@@ -150,6 +150,25 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
       domena: (o.fromEmail || '').split('@')[1] || null,
       kiedy: o.createdAt.toISOString(),
     }));
+
+    /* NAJNOWSZY ŚLAD PRZETWORZENIA — zapisany mail ALBO świadomie odrzucony.
+       Werdykt „gubimy" porównywał serwer z ostatnim ZAPISANYM mailem, więc
+       każdy newsletter i każda autoodpowiedź, którą filtr slusznie wyrzucił,
+       robiła z niej „na serwerze jest coś nowszego niż u nas". 11.09.2026
+       siedem skrzynek na jedenaście stało w tym stanie, choć wszystkie
+       kanarki dochodziły — i wyszło z tego podejrzenie, że CRM nie pobiera
+       poczty. Odrzucenie to też przetworzenie: wiemy o tym mailu, mamy jego
+       ślad, po prostu nie chcieliśmy go w CRM. */
+    const ostatniSkip = await prisma.emailSkip.findFirst({
+      where: { inbox }, orderBy: { createdAt: 'desc' }, select: { createdAt: true, reason: true },
+    });
+    if (ostatniSkip) {
+      wynik.ostatnieOdrzucenie = ostatniSkip.createdAt.toISOString();
+      wynik.ostatnieOdrzuceniePowod = ostatniSkip.reason;
+    }
+    const sladyMin = [wynik.ostatniMailMinTemu, ostatniSkip ? minutTemu(ostatniSkip.createdAt) : null]
+      .filter(v => v != null);
+    wynik.ostatniSladMinTemu = sladyMin.length ? Math.min(...sladyMin) : null;
   } catch (e) {
     wynik.powody.push(`odczyt EmailSkip nieudany: ${e.message}`);
   }
@@ -218,16 +237,18 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
   } else if (wynik.zaleglosc > 0) {
     wynik.stan = 'zaleglosc';
     wynik.powody.push(`na serwerze jest ${wynik.zaleglosc} wiadomosci powyzej naszego lastUid=${wynik.lastUid}`);
-  } else if (wynik.ostatniaNaSerwerzeMinTemu != null && wynik.ostatniMailMinTemu != null
-      && wynik.ostatniMailMinTemu - wynik.ostatniaNaSerwerzeMinTemu > 60) {
-    /* Na serwerze leży wiadomość NOWSZA niż cokolwiek, co mamy w bazie
-       (z godzinnym marginesem na opóźnienie cyklu). Zaległość po UID może
-       przy tym wynosić zero — np. gdy poczta trafia do innego folderu albo
-       gdy mail został pobrany i porzucony po drodze. */
+  } else if (wynik.ostatniaNaSerwerzeMinTemu != null && wynik.ostatniSladMinTemu != null
+      && wynik.ostatniSladMinTemu - wynik.ostatniaNaSerwerzeMinTemu > 60) {
+    /* Na serwerze leży wiadomość NOWSZA niż cokolwiek, co PRZETWORZYLIŚMY
+       (z godzinnym marginesem na opóźnienie cyklu). Porównujemy z ostatnim
+       ŚLADEM, czyli zapisanym mailem ALBO świadomym odrzuceniem — inaczej
+       każdy odfiltrowany newsletter robił fałszywe „gubimy". Zaległość po UID
+       może przy tym wynosić zero: poczta trafia do innego folderu albo mail
+       został pobrany i porzucony po drodze bez śladu. */
     wynik.stan = 'gubimy';
     wynik.powody.push(
       `najnowsza wiadomość na serwerze jest sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h, `
-      + `a najnowsza u nas sprzed ${Math.round(wynik.ostatniMailMinTemu / 60)} h`);
+      + `a ostatni ślad przetworzenia (zapis lub odrzucenie) sprzed ${Math.round(wynik.ostatniSladMinTemu / 60)} h`);
   } else if (wynik.ostatniUdanyCyklMinTemu != null && wynik.ostatniUdanyCyklMinTemu > 20) {
     wynik.stan = 'awaria';
     wynik.powody.push(`ostatni udany cykl ${wynik.ostatniUdanyCyklMinTemu} min temu (poller chodzi co 5 min)`);
@@ -237,7 +258,13 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
       ? `ostatni mail ${Math.round(wynik.ostatniMailMinTemu / 60)} h temu`
       : 'w bazie nie ma ani jednego maila przychodzacego z tej skrzynki');
     if (wynik.ostatniaNaSerwerzeMinTemu != null) {
-      wynik.powody.push(`na serwerze też nic nowszego (najnowsza sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h) — nikt po prostu nie napisał`);
+      /* Dwie różne ciszy: nikt nie napisał, albo pisali same automaty, które
+         filtr wyrzucił. Dawniej obie brzmiały „nikt po prostu nie napisał". */
+      const serwerNowszy = wynik.ostatniMailMinTemu == null
+        || wynik.ostatniMailMinTemu - wynik.ostatniaNaSerwerzeMinTemu > 60;
+      wynik.powody.push(serwerNowszy && wynik.ostatnieOdrzucenie
+        ? `na serwerze jest coś nowszego (sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h), ale to poczta ODRZUCONA przez filtr (ostatnio: ${wynik.ostatnieOdrzuceniePowod}) — nie zguba`
+        : `na serwerze też nic nowszego (najnowsza sprzed ${Math.round(wynik.ostatniaNaSerwerzeMinTemu / 60)} h) — nikt po prostu nie napisał`);
     }
   } else {
     wynik.stan = 'ok';
