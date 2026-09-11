@@ -271,10 +271,47 @@ function powodOdrzucenia(mail, inbox = null) {
   return null;
 }
 
-/* Stara sygnatura logiczna — zostaje, bo rescan i testy pytają tylko „przejdzie
+/* Stara sygnatura logiczna — zostaje, bo testy pytają tylko „przejdzie
  * czy nie". Jedno źródło reguł, dwa sposoby zapytania. */
 function hardFilter(mail, inbox = null) {
   return powodOdrzucenia(mail, inbox) === null;
+}
+
+/* Reguły twardego filtra, które MOGĄ się mylić na prawdziwej poczcie firmowej.
+ * Blokada domen (amazon, ebay, mailchimp) i tematów zwrotek jest zamierzona.
+ *
+ * Auto-Submitted rozróżniamy po WARTOŚCI (RFC 3834):
+ *   - `auto-replied` = autoresponder urlopowy, odrzucenie zawsze trafne,
+ *   - `auto-generated` = poczta maszynowa: awizo, pismo z urzędu, ale też
+ *     odpowiedź człowieka wysłana przez system ticketowy, który stempluje
+ *     ten nagłówek. TA potrafi być prawdziwą korespondencją.
+ * Ze słów w adresie nadawcy omylne są tylko te, spod których pisze się do
+ * klientów (noreply@, notification@); mailer-daemon i postmaster nigdy. */
+const POWODY_OMYLNE = [
+  // wszystko poza autoresponderem urlopowym — także wartości spoza RFC 3834,
+  // żeby nowy, nieznany rodzaj automatu nie znikał po cichu
+  /^hard:auto-submitted=(?!auto-replied)/,
+  /^hard:nadawca-zawiera-(noreply|no-reply|donotreply|notification@|alert@|system@)/,
+];
+const czyOmylnaRegula = (powod) => POWODY_OMYLNE.some(re => re.test(powod || ''));
+
+/* FILTR MOŻE UKRYĆ, NIE MOŻE SKASOWAĆ — także twardy.
+ *
+ * 11.09.2026 sofarma.pt odpisała na naszego maila, a odpowiedź przyszła
+ * ze stemplem `Auto-Submitted: auto-generated` (tak robią systemy ticketowe)
+ * i wylądowała w koszu. Dzień wcześniej z tej samej domeny przyszedł
+ * autoresponder — i to było trafne. Różnicy nie da się orzec z nagłówka,
+ * za to da się z RELACJI: do sofarmy sami pisaliśmy.
+ *
+ * Dlatego omylna reguła NIE kasuje poczty od nadawcy, z którym
+ * korespondujemy — mail idzie normalną ścieżką i dalej ocenia go
+ * klasyfikator. Autoresponder urlopowy (`auto-replied`) leci do kosza jak
+ * dotąd, więc to nie wpuszcza z powrotem szumu. */
+async function czyOdrzucicTwardo(mail, inbox, powod) {
+  if (!powod) return null;
+  if (!czyOmylnaRegula(powod)) return powod;
+  if (await czyZnanyNadawca(mail.fromEmail)) return null;
+  return powod;
 }
 
 // ============ HTML STRIP ============
@@ -1292,7 +1329,11 @@ async function processAccount(account) {
           continue;
         }
 
-        const powodHard = powodOdrzucenia(mail, inbox);
+        const powodWstepny = powodOdrzucenia(mail, inbox);
+        const powodHard = await czyOdrzucicTwardo(mail, inbox, powodWstepny);
+        if (powodWstepny && !powodHard) {
+          console.log(`[inbox-poller] ${inbox}: ${powodWstepny} od ZNANEGO nadawcy ${mail.fromEmail} — NIE wyrzucam`);
+        }
         if (powodHard) {
           console.log(`[inbox-poller] ${inbox}: filtered (${powodHard}) uid=${mail.uid} from=${mail.fromEmail}`);
           // Slad OBOWIAZKOWY: bez niego /poczta/zdrowie liczy 0 odfiltrowanych
@@ -2049,28 +2090,7 @@ const CZUWANIE_CO_N_CYKLI = 12;                  // 12 × 5 min = co godzinę
 const CZUWANIE_THROTTLE_MS = 24 * 60 * 60 * 1000;
 const _ostatniAlertCiszy = new Map();            // inbox -> timestamp
 
-/* Reguły twardego filtra, które MOGĄ się mylić na prawdziwej poczcie firmowej.
- * Blokada domen (amazon, ebay, mailchimp) i tematów zwrotek jest zamierzona
- * i nie ma o czym pisać.
- *
- * Auto-Submitted rozróżniamy po WARTOŚCI (RFC 3834), bo to dwie różne rzeczy:
- *   - `auto-replied` = autoresponder urlopowy. Odrzucenie jest zamierzone
- *     (mamy już „out of office" w BLOCKED_SUBJECT_KEYWORDS) i nigdy nie jest
- *     błędem. Pierwsza wersja tej listy łapała całe `auto-submitted` i alarm
- *     poszedł na autoodpowiedź z naszego własnego serwera pocztowego.
- *   - `auto-generated` = poczta maszynowa: awizo przewoźnika, pismo z urzędu,
- *     potwierdzenie zamówienia. TA potrafi być ważna i tylko ona budzi.
- * Tak samo dzielimy BLOCKED_FROM_KEYWORDS. `mailer-daemon`, `postmaster`,
- * `bounce`, `daemon`, `returned` to infrastruktura zwrotek — nigdy nie pisze
- * z nich człowiek ani urząd, więc odrzucenie zawsze jest trafne. Ale
- * `noreply@`, `notification@`, `alert@`, `system@` to adresy, z których
- * przychodzą awiza, wezwania i potwierdzenia — i tylko one budzą. */
-const POWODY_OMYLNE = [
-  // wszystko poza autoresponderem urlopowym — także wartości spoza RFC 3834,
-  // żeby nowy, nieznany rodzaj automatu nie znikał po cichu
-  /^hard:auto-submitted=(?!auto-replied)/,
-  /^hard:nadawca-zawiera-(noreply|no-reply|donotreply|notification@|alert@|system@)/,
-];
+// POWODY_OMYLNE i czyOmylnaRegula — patrz sekcja twardego filtra wyżej.
 
 async function czuwajNadCisza(accounts) {
   const doba = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -2082,7 +2102,7 @@ async function czuwajNadCisza(accounts) {
         select: { reason: true, fromEmail: true },
         take: 100,
       });
-      const omylne = odrzucone.filter(o => POWODY_OMYLNE.some(re => re.test(o.reason || '')));
+      const omylne = odrzucone.filter(o => czyOmylnaRegula(o.reason));
       if (!omylne.length) continue;
 
       /* „Korespondujemy z nim" sprawdzamy TYM SAMYM testem, co reszta pollera:
@@ -2363,7 +2383,9 @@ async function rescanInboxSince(inbox, daysBack = 3) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
         if (!mail.fromEmail) continue;
-        if (!hardFilter(mail, inbox)) { filteredOut++; continue; }
+        // Ta sama ulga co w pollerze — inaczej rescan nie odzyskałby maili,
+        // które twardy filtr wyrzucił omylnie (po to się go uruchamia).
+        if (await czyOdrzucicTwardo(mail, inbox, powodOdrzucenia(mail, inbox))) { filteredOut++; continue; }
         if (bounceFilter(mail)) { filteredOut++; continue; }
         // Te same filtry co główny poller — wcześniej rescan pomijał
         // newsletterFilter i decyzje AI (SPAM/AUTO_REPLY nie są w Email,
@@ -2377,10 +2399,16 @@ async function rescanInboxSince(inbox, daysBack = 3) {
            * odcinał od maili, które miał ratować. Decyzje deterministyczne
            * (bounce, newsletter) nadal blokują: tam nie ma pomyłki ocennej. */
           const zDecyzjiModelu = skipped && String(skipped.reason || '').startsWith('ai:');
-          if (skipped && !zDecyzjiModelu) { filteredOut++; continue; }
-          if (zDecyzjiModelu) {
+          /* Stary ślad z reguły OMYLNEJ też nie blokuje rescanu — jeżeli mail
+             dotarł aż tutaj, to znaczy, że filtr przepuścił go wyżej (nadawca
+             znany), więc dawne odrzucenie było właśnie tym błędem, po który
+             uruchamia się rescan. Maile sofarma.pt z 10-11.09 wracają tą drogą. */
+          const zOmylnejReguly = skipped && czyOmylnaRegula(skipped.reason);
+          const doCofniecia = zDecyzjiModelu || zOmylnejReguly;
+          if (skipped && !doCofniecia) { filteredOut++; continue; }
+          if (doCofniecia) {
             await prisma.emailSkip.delete({ where: { messageId: mail.messageId } }).catch(() => {});
-            console.log(`[rescan] ${inbox}: cofam starą decyzję modelu (${skipped.reason}) dla ${mail.fromEmail}`);
+            console.log(`[rescan] ${inbox}: cofam stare odrzucenie (${skipped.reason}) dla ${mail.fromEmail}`);
           }
         }
 
