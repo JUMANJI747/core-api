@@ -1279,6 +1279,32 @@ router.post('/glob/order', async (req, res) => {
         .trim();
     }
 
+    /* NUMER DOMU I LOKALU — osobne pola, tak jak chce GlobKurier.
+     *
+     * Dokumentacja GK (developer.globkurier.pl, POST /v1/order) podaje dla
+     * obiektów senderAddress/receiverAddress pole `apartmentNumber` (string,
+     * opcjonalne, do 50 znaków) i mówi wprost, że w `houseNumber` ukośnik JEST
+     * dozwolony. My nigdy tego pola nie wysyłaliśmy, a `sanitizeGkText` wyżej
+     * zamieniał ukośnik na SPACJĘ — i to spacja była powodem odrzucenia:
+     * „MORSKA 4A/10" jechało jako houseNumber „4A 10". Wpisanie „m10" nie
+     * pomagało, bo to też nie jest poprawny numer budynku.
+     *
+     * Dlatego: numer rozbijamy PRZED sanitizacją, dom i lokal lecą w swoich
+     * polach, a do GK trafiają tylko znaki, które on w numerze dopuszcza. */
+    function rozbijNumerDomu(surowy) {
+      const s = String(surowy || '').trim();
+      if (!s) return { dom: '', lokal: '' };
+      // "4A/10", "4A / 10"
+      const ukosnik = s.match(/^([^/\s]+)\s*\/\s*([^/\s]+)$/);
+      if (ukosnik) return { dom: ukosnik[1], lokal: ukosnik[2] };
+      // "12 m. 5", "12 m5", "12 lok. 5", "12 mieszkanie 5"
+      const lokal = s.match(/^(\S+)\s*(?:m|lok|mieszk\w*)\.?\s*([\w-]+)$/i);
+      if (lokal) return { dom: lokal[1], lokal: lokal[2] };
+      return { dom: s, lokal: '' };
+    }
+    // W numerze GK przyjmuje cyfry, litery i ukośnik. Spacja i kropka — nie.
+    const numerGk = (s) => String(s || '').replace(/[^0-9A-Za-zĄąĆćĘꣳŃńÓóŚśŹźŻż/-]/g, '').trim();
+
     const DEFAULT_SENDER_PHONE = '+48502189886';
     const DEFAULT_SENDER_EMAIL = 'delivery@surfstickbell.com';
     const DEFAULT_RECEIVER_PHONE = '000000000';
@@ -1302,7 +1328,9 @@ router.post('/glob/order', async (req, res) => {
 
     const senderName = trimName(senderExtras.name || sender.companyName || sender.name || 'Surf Stick Bell');
     const senderStreet = senderExtras.street || sender.street || '';
-    const senderHouse = senderExtras.houseNumber || sender.houseNumber || '';
+    const senderRozbity = rozbijNumerDomu(senderExtras.houseNumber || sender.houseNumber || '');
+    const senderHouse = numerGk(senderRozbity.dom);
+    const senderApartment = numerGk(senderExtras.apartmentNumber || sender.apartmentNumber || senderRozbity.lokal);
     const senderPostCode = sender.postCode || senderExtras.postCode || '';
     const senderCity = sender.city || senderExtras.city || '';
     const senderPhone = senderExtras.phone || sender.phone || DEFAULT_SENDER_PHONE;
@@ -1310,7 +1338,14 @@ router.post('/glob/order', async (req, res) => {
 
     const receiverName = sanitizeGkText(trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || prevLoc.name || 'Receiver'));
     const receiverStreet = sanitizeGkText(receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || prevLoc.street || '');
-    const receiverHouse = sanitizeGkText(receiver.houseNumber || cGkData.houseNumber || prevLoc.houseNumber || '');
+    /* Rozbijamy PRZED sanitizacją — sanitizeGkText zabiłby ukośnik, po którym
+       poznajemy, że to dom/mieszkanie. Jawny apartmentNumber (z formularza,
+       z książki adresowej GK albo z poprzedniej wysyłki) ma pierwszeństwo nad
+       tym, co wyciągniemy z ukośnika. */
+    const receiverRozbity = rozbijNumerDomu(receiver.houseNumber || cGkData.houseNumber || prevLoc.houseNumber || '');
+    const receiverHouse = numerGk(receiverRozbity.dom);
+    const receiverApartment = numerGk(
+      receiver.apartmentNumber || cGkData.apartmentNumber || prevLoc.apartmentNumber || receiverRozbity.lokal);
     const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || prevLoc.postCode || '';
     const receiverCity = sanitizeGkText(receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || prevLoc.city || '');
     // Mail odbiorcy: sprawdz primaryEmail i ContractorContact (CRM v2), nie tylko
@@ -1424,6 +1459,9 @@ router.post('/glob/order', async (req, res) => {
         name: sanitizeName(senderName),
         street: sanitizeName(senderStreet),
         houseNumber: senderHouse || '1',
+        // Pole opcjonalne u GK — wysyłamy TYLKO gdy jest co wysłać, żeby nie
+        // dostać „Nadmiarowe pole" na produktach, które go nie obsługują.
+        ...(senderApartment ? { apartmentNumber: senderApartment } : {}),
         postCode: senderPostCode,
         city: senderCity,
         countryId: quote.quoteParams.senderCountryId || sender.countryId || COUNTRY_IDS[sender.country] || 1,
@@ -1434,6 +1472,7 @@ router.post('/glob/order', async (req, res) => {
         name: sanitizeName(receiverName),
         street: sanitizeName(receiverStreet),
         houseNumber: cleanReceiverHouse,
+        ...(receiverApartment ? { apartmentNumber: receiverApartment } : {}),
         postCode: receiverPostCode,
         city: receiverCity,
         countryId: quote.quoteParams.receiverCountryId || receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
@@ -2261,8 +2300,10 @@ router.get('/glob/country-ids', async (req, res) => {
 // POST /api/glob/parse-address
 // Parsuje paste-blob (lub krotka nazwe) na strukture odbiorcy. Klient
 // wkleja "Maria Schmidt, Pozo Winds SL, C/ Mayor 12, 35600 Puerto del
-// Rosario, Spain" → dostaje {name, street, houseNumber, postCode, city,
-// country, phone, email}. Jak to krotka nazwa bez adresu → zwraca tylko
+// Rosario, Spain" → dostaje {name, street, houseNumber, apartmentNumber,
+// postCode, city, country, phone, email}. Lokal MUSI byc osobnym polem:
+// GlobKurier ma na to `apartmentNumber`, a numer domu z ukosnikiem gubil sie
+// w sanitizacji (zglosenie z 17.09.2026: "MORSKA 4A/10" odrzucane). Jak to krotka nazwa bez adresu → zwraca tylko
 // {name}, frontend uzyje jako receiverSearch (fuzzy match po
 // kontrahentach).
 //
@@ -2279,7 +2320,7 @@ router.post('/glob/parse-address', async (req, res) => {
   const MODEL = process.env.ADDRESS_PARSE_MODEL || 'claude-haiku-4-5-20251001';
   const systemPrompt = 'Jestes parserem adresow odbiorcow paczek. Zwracasz TYLKO JSON, bez komentarzy ani markdownu, bez ``` wokol.';
   const userPrompt = `Wyciagnij dane odbiorcy z ponizszego tekstu. Zwroc JSON w formacie:
-{"name": string|null, "street": string|null, "houseNumber": string|null, "postCode": string|null, "city": string|null, "country": string|null, "phone": string|null, "email": string|null}
+{"name": string|null, "street": string|null, "houseNumber": string|null, "apartmentNumber": string|null, "postCode": string|null, "city": string|null, "country": string|null, "phone": string|null, "email": string|null}
 
 Zasady:
 - Jak to TYLKO nazwa firmy/osoby bez adresu (krotki tekst): zwroc tylko {"name": "..."} reszta null.
@@ -2287,7 +2328,11 @@ Zasady:
 - country: ISO-2 (PL/ES/DE/FR/IT/PT/NL/GB/...). Jak nie da sie ustalic, daj null.
 - postCode: format docelowy (bez spacji w PL/ES, ze spacja w GB jak jest).
 - houseNumber: oddziel od ulicy jak rozpoznasz (np. "Mayor 12" -> street:"Mayor", houseNumber:"12").
-- Jak ulica + numer wspolnie ("Calle Mayor 12, planta 3"): street="Calle Mayor", houseNumber="12, planta 3".
+- NUMER MIESZKANIA/LOKALU zawsze do OSOBNEGO pola apartmentNumber, nigdy do houseNumber:
+  "MORSKA 4A/10" -> street:"MORSKA", houseNumber:"4A", apartmentNumber:"10" (UKOSNIK = dom/mieszkanie),
+  "Kwiatowa 34 m. 3" -> houseNumber:"34", apartmentNumber:"3",
+  "Calle Mayor 12, planta 3" -> houseNumber:"12", apartmentNumber:"planta 3".
+  W houseNumber zostaw SAM numer budynku (cyfry i litery), bez przecinkow, kropek i slow.
 - phone: cyfry + ewentualny + na poczatku.
 - email: tylko jak jest jawnie podany.
 

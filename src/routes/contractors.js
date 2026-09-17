@@ -1557,7 +1557,7 @@ router.get('/:id/shipment-addresses', async (req, res) => {
 router.post('/:id/delivery-address', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
-    const { street, city, postCode, country, houseNumber, contactPerson, phone, email, source } = req.body || {};
+    const { street, city, postCode, country, houseNumber, apartmentNumber, contactPerson, phone, email, source } = req.body || {};
     if (!street && !city) return res.status(400).json({ error: 'Provide at least street or city' });
 
     const c = await prisma.contractor.findUnique({ where: { id: req.params.id } });
@@ -1571,6 +1571,9 @@ router.post('/:id/delivery-address', async (req, res) => {
     const newLoc = {
       street: street || null,
       houseNumber: houseNumber || null,
+      // Numer lokalu osobno — GlobKurier ma na to pole `apartmentNumber`,
+      // a po ukośniku w numerze domu gubiliśmy go w sanitizacji adresu.
+      apartmentNumber: apartmentNumber || null,
       city: city || null,
       postCode: postCode || null,
       country: country || c.country || null,
