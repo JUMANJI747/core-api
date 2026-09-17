@@ -1809,10 +1809,17 @@ router.post('/glob/order', async (req, res) => {
               recipientName: receiver.name || null,
               street: receiver.street || null,
               houseNumber: receiver.houseNumber || null,
+              apartment: receiver.apartmentNumber || null,
               postalCode: receiver.postCode || null,
               city: receiver.city || null,
               country: receiver.country || null,
-              fullAddress: [receiver.street, receiver.postCode, receiver.city, receiver.country].filter(Boolean).join(', ') || null,
+              // Numer domu i lokalu W fullAddress — bez nich czytelny adres
+              // w CRM konczyl sie na samej ulicy ("MORSKA, 84-240, REDA").
+              fullAddress: [
+                [receiver.street, receiver.houseNumber && (receiver.apartmentNumber
+                  ? `${receiver.houseNumber}/${receiver.apartmentNumber}` : receiver.houseNumber)].filter(Boolean).join(' '),
+                receiver.postCode, receiver.city, receiver.country,
+              ].filter(Boolean).join(', ') || null,
               source: 'gk',
             });
           }

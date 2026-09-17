@@ -98,7 +98,7 @@ async function upsertAddress(prisma, contractorId, addr) {
     const wantedKey = normAddrKey(addr);
     const existing = await prisma.contractorAddress.findMany({
       where: { contractorId, type: addr.type },
-      select: { id: true, street: true, city: true, postalCode: true, country: true },
+      select: { id: true, street: true, city: true, postalCode: true, country: true, houseNumber: true, apartment: true, recipientName: true, lat: true, lng: true },
     });
     const match = existing.find(e => normAddrKey({ type: addr.type, ...e }) === wantedKey);
     if (match) {
@@ -106,6 +106,11 @@ async function upsertAddress(prisma, contractorId, addr) {
       // recipientName) nie tracac wartosci ktore ktos recznie wpisal.
       const data = {};
       if (addr.recipientName && !match.recipientName) data.recipientName = addr.recipientName;
+      // Numer domu i LOKALU domykamy tak samo jak reszte — klucz dedup liczy sie
+      // z ulicy/miasta/kodu, wiec ten sam adres bez lokalu i z lokalem to jeden
+      // wiersz i bez tego lokal nigdy by do niego nie dojechal.
+      if (addr.houseNumber && !match.houseNumber) data.houseNumber = addr.houseNumber;
+      if (addr.apartment && !match.apartment) data.apartment = addr.apartment;
       if (addr.country && !match.country) data.country = addr.country;
       if (addr.lat != null && !match.lat) data.lat = addr.lat;
       if (addr.lng != null && !match.lng) data.lng = addr.lng;
@@ -123,6 +128,7 @@ async function upsertAddress(prisma, contractorId, addr) {
         recipientName: addr.recipientName || null,
         street: addr.street || null,
         houseNumber: addr.houseNumber || null,
+        apartment: addr.apartment || null,
         postalCode: addr.postalCode || null,
         city: addr.city || null,
         region: addr.region || null,
