@@ -322,7 +322,8 @@ router.post('/glob/quote', async (req, res) => {
         email: deliveryAddress.email || matchedLoc.email || (contractor && contractor.email) || '',
         street: deliveryAddress.street || matchedLoc.street || '',
         houseNumber: deliveryAddress.houseNumber || matchedLoc.houseNumber || '',
-        apartmentNumber: deliveryAddress.apartmentNumber || '',
+        // fallback do zapisanej lokacji — wklejka bez lokalu nie ma go wymazywać
+        apartmentNumber: deliveryAddress.apartmentNumber || matchedLoc.apartmentNumber || '',
         contactPerson: deliveryAddress.contactPerson || matchedLoc.contactPerson || null,
       };
       receiverSource = 'inline_address';
@@ -2417,9 +2418,14 @@ ${text}
     return res.json({ ok: false, error: 'parse error', raw: result.slice(0, 500) });
   }
 
-  // Czysci: usun puste stringi
+  /* Czysci: usun puste stringi.
+     UWAGA: ta lista jest BIALA LISTA — pole, ktorego tu nie ma, przepada nawet
+     gdy model je zwroci. Przy dodaniu apartmentNumber (17.09.2026) poprawilem
+     sam prompt i o tej liscie zapomnialem: model oddawal lokal, endpoint go
+     wycinal, a w formularzu pole zostawalo puste. Dodajesz pole do promptu
+     wyzej -> dopisz je TUTAJ. */
   const cleaned = {};
-  for (const k of ['name', 'street', 'houseNumber', 'postCode', 'city', 'country', 'phone', 'email']) {
+  for (const k of ['name', 'street', 'houseNumber', 'apartmentNumber', 'postCode', 'city', 'country', 'phone', 'email']) {
     const v = parsed[k];
     if (v != null && String(v).trim()) cleaned[k] = String(v).trim();
     else cleaned[k] = null;
