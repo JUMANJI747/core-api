@@ -1279,6 +1279,33 @@ router.post('/glob/order', async (req, res) => {
         .trim();
     }
 
+    /* DOZWOLONE ZNAKI SĄ INNE W KAŻDYM POLU — tak podaje dokumentacja GK
+     * (developer.globkurier.pl, POST /v1/order, obiekt Address):
+     *   name            spacja . , ' ( ) - @
+     *   city            spacja . ' ( ) - & /
+     *   street          spacja . ' - & / ,
+     *   houseNumber     /
+     *   apartmentNumber bez ograniczeń
+     *
+     * `sanitizeGkText` wyżej ma JEDNĄ wspólną czarną listę dla wszystkich pól,
+     * a komentarz przy niej twierdzi, że GK odrzuca te znaki „w polach
+     * receiverAddress". To nieprawda: ta lista pasuje najwyżej do `name`.
+     * Przez nią „Calle Mayor, 12" traciło przecinek, „C/ Mayor" ukośnik,
+     * a „Nuevo Portil, Cartaya, Huelva" wszystkie przecinki — adresy jechały
+     * do kuriera zubożone bez żadnego powodu. Zostawiamy tę funkcję (używa jej
+     * jeszcze reszta trasy), ale do payloadu czyścimy już per pole. */
+    function oczyscGk(s, dozwolone) {
+      if (!s) return s;
+      // \p{L}\p{N} zostawia polskie i hiszpańskie znaki diakrytyczne.
+      const poza = new RegExp(`[^\\p{L}\\p{N}\\s${dozwolone}]`, 'gu');
+      return String(s).replace(poza, ' ').replace(/\s+/g, ' ').trim();
+    }
+    // Ukośnik w nazwie jest częsty („Surfstylefever / Stefan"), a GK go tam nie
+    // przyjmuje — zamieniamy na myślnik, którego przyjmuje, zamiast gubić słowo.
+    const gkName = (s) => oczyscGk(String(s || '').replace(/\s*\/\s*/g, ' - '), "\\.,'()\\-@");
+    const gkStreet = (s) => oczyscGk(s, "\\.'\\-&/,");
+    const gkCity = (s) => oczyscGk(s, "\\.'()\\-&/");
+
     /* NUMER DOMU I LOKALU — osobne pola, tak jak chce GlobKurier.
      *
      * Dokumentacja GK (developer.globkurier.pl, POST /v1/order) podaje dla
@@ -1336,8 +1363,8 @@ router.post('/glob/order', async (req, res) => {
     const senderPhone = senderExtras.phone || sender.phone || DEFAULT_SENDER_PHONE;
     const senderEmail = senderExtras.email || sender.email || DEFAULT_SENDER_EMAIL;
 
-    const receiverName = sanitizeGkText(trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || prevLoc.name || 'Receiver'));
-    const receiverStreet = sanitizeGkText(receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || prevLoc.street || '');
+    const receiverName = trimName(receiver.name || cGkData.name || (contractorForReceiver && contractorForReceiver.name) || prevLoc.name || 'Receiver');
+    const receiverStreet = receiver.street || cGkData.street || cBilling.street || (contractorForReceiver && contractorForReceiver.address) || prevLoc.street || '';
     /* Rozbijamy PRZED sanitizacją — sanitizeGkText zabiłby ukośnik, po którym
        poznajemy, że to dom/mieszkanie. Jawny apartmentNumber (z formularza,
        z książki adresowej GK albo z poprzedniej wysyłki) ma pierwszeństwo nad
@@ -1347,7 +1374,7 @@ router.post('/glob/order', async (req, res) => {
     const receiverApartment = numerGk(
       receiver.apartmentNumber || cGkData.apartmentNumber || prevLoc.apartmentNumber || receiverRozbity.lokal);
     const receiverPostCode = receiver.postCode || cGkData.postCode || cBilling.postCode || prevLoc.postCode || '';
-    const receiverCity = sanitizeGkText(receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || prevLoc.city || '');
+    const receiverCity = receiver.city || cGkData.city || cBilling.city || (contractorForReceiver && contractorForReceiver.city) || prevLoc.city || '';
     // Mail odbiorcy: sprawdz primaryEmail i ContractorContact (CRM v2), nie tylko
     // plaskie .email — inaczej maile z auto-importu/backfillu "znikaja" i wpada
     // DEFAULT (nasz delivery@), przez co tracking idzie sam do siebie.
@@ -1428,12 +1455,9 @@ router.post('/glob/order', async (req, res) => {
       return DEFAULT_SENDER_PHONE;
     }
     // GK odrzuca w polach name/street znaki specjalne: / , ; ( ) [ ] & % + " "
-    // Zamieniamy '/' na '-' (najczęstszy case: 'Surfstylefever / Stefan' →
-    // 'Surfstylefever - Stefan'), pozostałe usuwamy.
-    function sanitizeName(s) {
-      if (!s) return s;
-      return String(s).replace(/\s*\/\s*/g, ' - ').replace(/[,;()\[\]&%+"”""]/g, '').trim();
-    }
+    // sanitizeName USUNIĘTA — zastąpiona przez gkName/gkStreet/gkCity (listy
+    // dozwolonych znaków per pole, wg dokumentacji GK). Wycinała m.in. przecinki
+    // i nawiasy, które GK w `name` dopuszcza, a w `street` stosowała listę `name`.
     const cleanReceiverPhone = pickReceiverPhone([
       receiver.phone,
       cGkData.phone,
@@ -1456,25 +1480,25 @@ router.post('/glob/order', async (req, res) => {
         quantity: 1,
       },
       senderAddress: {
-        name: sanitizeName(senderName),
-        street: sanitizeName(senderStreet),
+        name: gkName(senderName),
+        street: gkStreet(senderStreet),
         houseNumber: senderHouse || '1',
         // Pole opcjonalne u GK — wysyłamy TYLKO gdy jest co wysłać, żeby nie
         // dostać „Nadmiarowe pole" na produktach, które go nie obsługują.
         ...(senderApartment ? { apartmentNumber: senderApartment } : {}),
         postCode: senderPostCode,
-        city: senderCity,
+        city: gkCity(senderCity),
         countryId: quote.quoteParams.senderCountryId || sender.countryId || COUNTRY_IDS[sender.country] || 1,
         phone: cleanSenderPhone,
         email: senderEmail,
       },
       receiverAddress: {
-        name: sanitizeName(receiverName),
-        street: sanitizeName(receiverStreet),
+        name: gkName(receiverName),
+        street: gkStreet(receiverStreet),
         houseNumber: cleanReceiverHouse,
         ...(receiverApartment ? { apartmentNumber: receiverApartment } : {}),
         postCode: receiverPostCode,
-        city: receiverCity,
+        city: gkCity(receiverCity),
         countryId: quote.quoteParams.receiverCountryId || receiver.countryId || COUNTRY_IDS[receiver.country] || 1,
         phone: cleanReceiverPhone,
         email: receiverEmail,
