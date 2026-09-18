@@ -43,6 +43,7 @@ model Contractor {
   consignments Consignment[]
   emails       Email[]
   invoices     Invoice[]
+  tasks        Task[]
   transactions Transaction[]
   contacts     ContractorContact[]
   addresses    ContractorAddress[]
@@ -260,6 +261,32 @@ model Activity {
 
   @@index([dealId])
   @@index([type])
+}
+
+// ============ ZADANIA / KALENDARZ ============
+// Powód (18.09.2026): klienci piszą „wyślijcie za półtora miesiąca" albo
+// „odezwijcie się w listopadzie", a potem nie da się odkopać ani maila, ani
+// adresu. Zadanie trzyma link do maila źródłowego, adres nadawcy i co zamawiał.
+model Task {
+  id           String      @id @default(uuid())
+  title        String
+  description  String? // co zamawia / co zrobić — tekst dla człowieka
+  dueDate      DateTime? // null = bez terminu (w liście na samej górze)
+  status       String      @default("OPEN") // OPEN | DONE
+  contractorId String?
+  contractor   Contractor? @relation(fields: [contractorId], references: [id])
+  emailId      String? // mail źródłowy → /emails?open=<id>
+  emailAddress String? // adres nadawcy — żeby było do kogo napisać nawet bez kontrahenta
+  contactName  String?
+  source       String      @default("manual") // manual | ai | agent
+  extras       Json        @default("{}") // { items: [...], subject, dueDateReason }
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  completedAt  DateTime?
+
+  @@index([dueDate])
+  @@index([status])
+  @@index([contractorId])
 }
 
 // ============ INBOX (MAILE) ============
