@@ -897,10 +897,18 @@ router.get('/by-invoice', async (req, res) => {
 
 router.get('/', async (req, res) => {
   const prisma = req.app.locals.prisma;
-  const { search, country, tag, limit } = req.query;
+  const { search, country, tag, limit, id } = req.query;
   const take = parseInt(limit) || 50;
   const where = {};
-  if (search) {
+  /* ?id=<uuid> — DOKLADNIE ten kontrahent, z pelnym `shippingAddress`.
+     Bez tego przejscie „z maila do nowej wysylki" musialo szukac po NAZWIE
+     z podpisu („Schischule & Intersport [SPORT AM JET]"), co przy popularnym
+     slowie („SPORT") zwracalo piec firm do recznego wyboru — mimo ze mail
+     mial juz przypietego kontrahenta. GET /:id nie nadaje sie, bo nie ma
+     wzbogacania o adres wysylkowy (siedzi w tym handlerze). */
+  if (id) {
+    where.id = String(id);
+  } else if (search) {
     // Szukaj po nazwie ORAZ mailu/NIP — agent woła find_contractor z nazwą firmy,
     // ale z maila często mamy tylko adres (np. info@nayarhodes.com), a nazwa z
     // pieczątki/OCR bywa inna niż w bazie. Bez maila kontrahent się nie znajdował.
