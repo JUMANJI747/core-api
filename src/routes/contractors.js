@@ -1001,6 +1001,32 @@ router.get('/', async (req, res) => {
   // Enrich kazdy wiersz o shippingAddress (merged: ContractorAddress shipping/billing,
   // extras.locations[0], extras.billingAddress, fallback Contractor.address/city/country).
   // Frontend /shipments uzywa tego do auto-fill po klik "Znajdz".
+  /* NUMER DOMU DLA FORMULARZA WYSYŁKI.
+   *
+   * Zgłoszenie 22.09.2026 (Schwarzenbacher GmbH, „Unterberggasse 318"):
+   * po kliknięciu „Znajdź" w nowej wysyłce ulica wchodziła bez numeru, a pole
+   * „Nr domu" zostawało puste. Numer BYŁ w bazie — gubił się tutaj, bo
+   * `shippingAddress` budowaliśmy z pięciu pól (street/postCode/city/country/
+   * phone/email) i numeru domu po prostu w nim nie było. Nie da się wysłać
+   * paczki na samą ulicę, więc to był cichy bloker przy każdym kontrahencie.
+   *
+   * Drugi przypadek: stare wiersze mają cały adres w jednym polu
+   * (`Contractor.address` = „Unterberggasse 318"). Wtedy odcinamy końcowy
+   * numer, ale TYLKO gdy nie mamy numeru z osobnej kolumny — dane wpisane
+   * wprost zawsze wygrywają nad zgadywaniem z tekstu. */
+  function zNumerem(street, houseNumber, apartmentNumber) {
+    const ulica = String(street || '').trim();
+    const dom = String(houseNumber || '').trim();
+    const lokal = String(apartmentNumber || '').trim();
+    if (dom) return { street: ulica, houseNumber: dom, apartmentNumber: lokal };
+    // „Unterberggasse 318" / „Morska 4A/10" / „Galiny 110" → ulica + numer.
+    // Wymagamy spacji przed numerem, więc sam numer bez ulicy nie zostanie zjedzony.
+    const m = ulica.match(/^(.*\S)\s+(\d+[A-Za-z]?(?:\s*\/\s*\d+[A-Za-z]?)?)$/);
+    if (!m) return { street: ulica, houseNumber: '', apartmentNumber: lokal };
+    const [domZTekstu, lokalZTekstu] = m[2].split('/').map(x => x.trim());
+    return { street: m[1], houseNumber: domZTekstu, apartmentNumber: lokal || lokalZTekstu || '' };
+  }
+
   function enrichWithShippingAddress(c, addrMap) {
     try {
       const cExtras = c.extras || {};
@@ -1013,7 +1039,7 @@ router.get('/', async (req, res) => {
           return {
             ...c,
             shippingAddress: {
-              street: loc.street || '',
+              ...zNumerem(loc.street, loc.houseNumber, loc.apartmentNumber),
               postCode: loc.postCode || '',
               city: loc.city || '',
               country: loc.country || c.country || '',
@@ -1033,7 +1059,7 @@ router.get('/', async (req, res) => {
         return {
           ...c,
           shippingAddress: {
-            street: addr.street || '',
+            ...zNumerem(addr.street, addr.houseNumber, addr.apartment),
             postCode: addr.postalCode || '',
             city: addr.city || '',
             country: addr.country || c.country || '',
@@ -1050,7 +1076,7 @@ router.get('/', async (req, res) => {
         return {
           ...c,
           shippingAddress: {
-            street: billing.street || '',
+            ...zNumerem(billing.street, billing.houseNumber, billing.apartmentNumber),
             postCode: billing.postCode || '',
             city: billing.city || '',
             country: billing.country || c.country || '',
@@ -1067,7 +1093,7 @@ router.get('/', async (req, res) => {
         return {
           ...c,
           shippingAddress: {
-            street: c.address || '',
+            ...zNumerem(c.address, null, null),
             postCode: postCodeFromAddr || cExtras.postCode || cExtras.zipCode || '',
             city: c.city || '',
             country: c.country || '',
@@ -1494,7 +1520,7 @@ router.get('/:id/shipment-addresses', async (req, res) => {
         orderBy: { updatedAt: 'desc' }, take: 10,
       });
       for (const r of rows) push({
-        street: r.street || '', houseNumber: r.houseNumber || '', postCode: r.postalCode || '',
+        street: r.street || '', houseNumber: r.houseNumber || '', apartmentNumber: r.apartment || '', postCode: r.postalCode || '',
         city: r.city || '', country: r.country || '', phone: '', email: '',
         source: 'baza (adres dostawy)', date: r.updatedAt,
       });
@@ -1510,7 +1536,7 @@ router.get('/:id/shipment-addresses', async (req, res) => {
     }
     locs.sort((a, b) => String((b && (b.lastUsedAt || b.addedAt)) || '').localeCompare(String((a && (a.lastUsedAt || a.addedAt)) || '')));
     for (const l of locs) push({
-      street: l.street || '', houseNumber: l.houseNumber || '', postCode: l.postCode || '',
+      street: l.street || '', houseNumber: l.houseNumber || '', apartmentNumber: l.apartmentNumber || '', postCode: l.postCode || '',
       city: l.city || '', country: l.country || '', phone: l.phone || '', email: l.email || '',
       source: `baza (locations${l.source ? ': ' + l.source : ''})`, date: l.lastUsedAt || l.addedAt || null,
     });
@@ -1533,7 +1559,7 @@ router.get('/:id/shipment-addresses', async (req, res) => {
               const hit = got.find(o => String(o.number || o.orderNumber || '').trim() === num);
               const rc = hit && (hit.receiverAddress || hit.receiver);
               if (rc) push({
-                street: rc.street || '', houseNumber: rc.houseNumber || '', postCode: rc.postCode || '',
+                street: rc.street || '', houseNumber: rc.houseNumber || '', apartmentNumber: rc.apartmentNumber || '', postCode: rc.postCode || '',
                 city: rc.city || '', country: rc.country || '', phone: rc.phone || '', email: rc.email || '',
                 source: `wysyłka ${num}${rc.name ? ' → ' + rc.name : ''}`, date: hit.creationDate || hit.orderDate || null,
               });
