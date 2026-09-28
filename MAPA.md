@@ -20,7 +20,7 @@ Plus: wysyłki kurierskie **GlobKurier**, odbiór i klasyfikacja maili (IMAP),
 agenci AI (Anthropic) sterowani z **Telegrama** (master w n8n) i z panelu CRM.
 
 Stack: Node/Express + Prisma/Postgres. Deploy: `npx prisma db push && node src/index.js`
-(nowe modele/pola wchodzą same). Auth: nagłówek `x-api-key` (`src/index.js` → `auth`).
+(nowe modele/pola wchodzą same). Auth: nagłówek `x-api-key` (`src/index.js` → `auth`) — jedyne uwierzytelnienie. **Tożsamość wołającego (28.09.2026):** front dokleja `x-crm-user` / `x-crm-role` (`owner` | `magazyn`) → `req.crm = {user, role}` do zapisu autora w zamówieniach/audycie; rola `magazyn` poza `/api/magazyn/*` dostaje 403 (DRUGA linia obrony za bramką we froncie — gdyby allowlista w proxy kiedyś puściła). Bez nagłówka (n8n, Telegram, cron) = `req.crm = null`, bez ograniczeń jak dotąd.
 
 **Obraz produkcyjny definiuje `Dockerfile`** (node:22-bookworm-slim + apt:
 poppler-utils, imagemagick, ghostscript, tesseract-ocr, openssl dla silników

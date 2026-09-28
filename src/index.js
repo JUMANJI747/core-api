@@ -114,6 +114,26 @@ function auth(req, res, next) {
 }
 app.use('/api', auth);
 
+/* TOŻSAMOŚĆ WOŁAJĄCEGO (28.09.2026 — konto dla zewnętrznego magazynu).
+ * Front (proxy /api/core i lib/api.ts) dokleja x-crm-user / x-crm-role.
+ * Klucz API pozostaje JEDYNYM uwierzytelnieniem; te nagłówki to informacja
+ * „kto kliknął" do zapisu w zamówieniach/audycie oraz DRUGA linia obrony:
+ * rola magazyn nie ma czego szukać poza /api/magazyn/* — gdyby bramka we
+ * froncie kiedyś puściła (błąd w allowliście, nowy helper omijający proxy),
+ * backend i tak odmówi. Bez nagłówka = wywołanie systemowe (n8n, Telegram,
+ * cron) — traktowane jak dotąd, bez ograniczeń. */
+app.use('/api', (req, res, next) => {
+  const user = String(req.headers['x-crm-user'] || '').trim().slice(0, 200);
+  const roleRaw = String(req.headers['x-crm-role'] || '').trim();
+  const role = roleRaw === 'magazyn' ? 'magazyn' : (user ? 'owner' : null);
+  req.crm = user ? { user, role } : null;
+  if (role === 'magazyn' && !/^\/magazyn(\/|$)/.test(req.path)) {
+    console.warn(`[auth] 403 rola=magazyn user=${user} ${req.method} ${req.path}`);
+    return res.status(403).json({ error: 'Forbidden for role magazyn' });
+  }
+  next();
+});
+
 // ============ PUBLIC MAP (no /api prefix → no auth middleware) ============
 // /map serves the Leaflet HTML page; /map-data returns GeoJSON. Both work
 // anonymously (jitter + no popups) by default. Pass ?key=API_KEY for full data.
