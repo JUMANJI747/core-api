@@ -183,6 +183,7 @@ app.get('/api/_version', async (req, res) => {
 app.use('/api/contractors', require('./routes/contractors'));
 app.use('/api/deals', require('./routes/deals'));
 app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/magazyn', require('./routes/magazyn'));
 app.use('/api/consignments', require('./routes/consignments'));
 app.use('/api', require('./routes/emails'));
 app.use('/api/mailing', require('./routes/mailing'));

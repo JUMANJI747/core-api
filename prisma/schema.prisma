@@ -44,6 +44,7 @@ model Contractor {
   emails       Email[]
   invoices     Invoice[]
   tasks        Task[]
+  warehouseOrders WarehouseOrder[]
   transactions Transaction[]
   contacts     ContractorContact[]
   addresses    ContractorAddress[]
@@ -287,6 +288,97 @@ model Task {
   @@index([dueDate])
   @@index([status])
   @@index([contractorId])
+}
+
+// ============ ZEWNĘTRZNY MAGAZYN (paczki, stock, kartony) ============
+// Powód (28.09.2026): wysyłki idą do zewnętrznego magazynu, który loguje się
+// do CRM rolą „magazyn". My składamy zamówienie na spakowanie, magazyn oznacza
+// „gotowe" z kartonem, my zatwierdzamy i zamawiamy kuriera. Nic z istniejących
+// modeli (Consignment/SalesAgent/Transaction) nie trzyma stanu per produkt —
+// wszędzie pozycje są tekstem — stąd osobne tabele. Stan = SUMA ruchów,
+// nie pole do nadpisania: każda zmiana zostawia ślad, pomyłkę cofa korekta.
+model WarehouseOrder {
+  id            String   @id @default(uuid())
+  numer         Int      @unique @default(autoincrement()) // od 1, widoczny dla obu stron
+  status        String   @default("NOWE") // NOWE | GOTOWE | KURIER | WYSLANE | ANULOWANE
+  contractorId  String?
+  contractor    Contractor? @relation(fields: [contractorId], references: [id])
+  // Migawka odbiorcy — adres z chwili złożenia, niezależny od późniejszych
+  // zmian w karcie kontrahenta (etykieta ma iść tam, gdzie zamówiono).
+  odbiorca      Json     @default("{}") // {name, street, houseNumber, apartmentNumber, postCode, city, country, phone, email}
+  uwagiNasze    String?  // od nas dla magazynu
+  uwagiMagazynu String?  // od magazynu przy „gotowe"
+  invoiceNumber String?
+  emailId       String?
+  // Karton podany przez magazyn przy „gotowe"
+  kartonNazwa   String?
+  dlugoscCm     Int?
+  szerokoscCm   Int?
+  wysokoscCm    Int?
+  wagaKg        Decimal? @db.Decimal(6, 2)
+  // Kurier (etap 4)
+  quoteId       String?
+  gkHash        String?
+  gkNumber      String?
+  carrier       String?
+  utworzyl      String?  // login z x-crm-user
+  gotoweKto     String?
+  zatwierdzilKto String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  gotoweAt      DateTime?
+  zatwierdzonoAt DateTime?
+
+  items         WarehouseOrderItem[]
+  ruchy         StockMovement[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model WarehouseOrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  order     WarehouseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ean       String  // klucz stocku; boxy rozbite na kolory PRZY ZŁOŻENIU (migawka składu)
+  name      String
+  variant   String?
+  qty       Int
+  // Linia „nagłówkowa" boxa (ean BOX-*) ma parentEan=null i packaging;
+  // jej rozbicie na kolory to linie z parentEan=BOX-*. Stock schodzi TYLKO
+  // z linii rozbitych (i z EKSPOZYTOR), nigdy z nagłówka.
+  parentEan String?
+  packaging String? // 'karton' | 'ekspozytor' — tylko na liniach boxów
+  sort      Int     @default(0)
+
+  @@index([orderId])
+}
+
+model StockMovement {
+  id        String   @id @default(uuid())
+  ean       String   // EAN produktu albo klucz specjalny EKSPOZYTOR
+  name      String
+  delta     Int      // + przyjęcie, - wydanie, ± korekta
+  typ       String   // PRZYJECIE | WYDANIE | KOREKTA | COFNIECIE
+  orderId   String?
+  order     WarehouseOrder? @relation(fields: [orderId], references: [id])
+  uwaga     String?
+  kto       String?
+  createdAt DateTime @default(now())
+
+  @@index([ean])
+  @@index([orderId])
+}
+
+model WarehouseBox {
+  id         String   @id @default(uuid())
+  nazwa      String
+  dlugoscCm  Int
+  szerokoscCm Int
+  wysokoscCm Int
+  wagaKg     Decimal  @db.Decimal(6, 2) // waga pustego kartonu / typowa waga paczki
+  aktywny    Boolean  @default(true)
+  createdAt  DateTime @default(now())
 }
 
 // ============ INBOX (MAILE) ============
