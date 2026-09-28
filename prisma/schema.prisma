@@ -306,6 +306,10 @@ model WarehouseOrder {
   // Migawka odbiorcy — adres z chwili złożenia, niezależny od późniejszych
   // zmian w karcie kontrahenta (etykieta ma iść tam, gdzie zamówiono).
   odbiorca      Json     @default("{}") // {name, street, houseNumber, apartmentNumber, postCode, city, country, phone, email}
+  // Auto-list: po „gotowe" system SAM wycenia i zamawia kuriera (najtańsza
+  // oferta), etykieta pojawia się magazynowi. Wymaga pełnego odbiorcy.
+  // Bez tego: kurier zamawiany ręcznie w Wysyłkach i podpinany numerem GK.
+  autoList      Boolean  @default(false)
   uwagiNasze    String?  // od nas dla magazynu
   uwagiMagazynu String?  // od magazynu przy „gotowe"
   invoiceNumber String?
@@ -321,6 +325,7 @@ model WarehouseOrder {
   gkHash        String?
   gkNumber      String?
   carrier       String?
+  kurierBlad    String?  // ostatni błąd auto-listu — widoczny obu stronom, żeby nikt nie czekał na etykietę, której nie będzie
   utworzyl      String?  // login z x-crm-user
   gotoweKto     String?
   zatwierdzilKto String?
