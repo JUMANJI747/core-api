@@ -513,6 +513,15 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   let { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
+  // Tożsamość maila dla narzędzi agenta (upsert_contractor podpina mail i nadawcę).
+  // Adres z „Imię <adres>" albo goły adres — tylko sam adres, małymi literami.
+  const emailCtx = (() => {
+    const id = context && context.emailId ? String(context.emailId) : null;
+    const m = String((context && context.from) || '').match(/<([^>]+)>/);
+    const raw = m ? m[1] : String((context && context.from) || '');
+    const senderEmail = /@/.test(raw) ? raw.trim().toLowerCase() : null;
+    return { ...(id ? { emailId: id } : {}), ...(senderEmail ? { senderEmail } : {}) };
+  })();
   const attachments = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
   if (!query && attachments.length) query = 'Przeanalizuj załączone pliki/zdjęcia i powiedz co z nimi zrobić.';
   if (!query) return res.status(400).json({ error: 'query required' });
@@ -620,7 +629,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   // odpowiadal instrukcja "zrob to przyciskiem Edytuj" zamiast wykonac akcje.
   if (target && ALL_PROCESSORS[target]) {
     try {
-      const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-6) });
+      const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-6) });
       console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
       return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
     } catch (e) {
@@ -652,7 +661,7 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         if (vatsCtxLine) ctxLines.push(vatsCtxLine);
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
-        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-8) });
+        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-8) });
         return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
       } catch (e) {
         return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
@@ -732,7 +741,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
       const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
       const tAgent = Date.now();
       try {
-        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', previousTurns: previousTurns.slice(-6) });
+        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-6) });
         console.log(`[agent/assistant] [timing] agent ${agentName} → ${Date.now() - tAgent}ms (${r.iterations != null ? r.iterations + ' rund' : '?'})`);
         results.push({ agent: agentName, text: pickText(r) });
         const pc = pcFrom(r); if (pc) pendingConfirm = pc;

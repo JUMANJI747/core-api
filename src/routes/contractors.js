@@ -14,7 +14,7 @@ const { geocodeAndSave, geocodeContractor } = require('../services/geocode');
 const { normalizeAddress } = require('../services/llm-geocode');
 const { searchContractor: ifirmaSearchContractor, upsertContractor: ifirmaUpsertContractor } = require('../ifirma-client');
 const { extractPostCode, extractCityAfterPostCode } = require('../utils/address');
-const { isOwnEmail } = require('../services/contractor-sync-helpers');
+const { isOwnEmail, upsertContact: upsertCrmContact } = require('../services/contractor-sync-helpers');
 
 // Fire-and-forget geocode after upsert. We don't block the response; if
 // Nominatim is slow / down we still return the contractor. The 1 req/sec
@@ -389,10 +389,39 @@ router.post('/upsert', async (req, res) => {
       if (!contractor.address && !ba.street) missingForInvoice.push('ulica');
     }
 
+    /* POWIĄZANIE Z MAILEM, Z KTÓREGO DODANO KONTRAHENTA (1.10.2026).
+       Dotąd kontrahent powstawał, a mail zostawał niepowiązany — link dawał
+       tylko inbox-poller przy ODBIORZE, po domenie. Gdy nadawca pisał
+       z prywatnego gmaila, nic go z kontrahentem nie łączyło i „Wyceń paczkę"
+       z tego maila szukało po nazwie z podpisu. Teraz:
+         - linkEmailId  → ten mail dostaje contractorId,
+         - linkSenderEmail → adres nadawcy (także gmail) jako kontakt
+           kontrahenta + wszystkie dotąd niepowiązane maile z tego adresu.
+       Pola wstrzykuje agent (onToolUse), nie model. Best-effort: błąd linkowania
+       nie może cofnąć utworzonego kontrahenta. */
+    let zlinkowanoMaili = 0;
+    try {
+      const linkEmailId = body.linkEmailId ? String(body.linkEmailId) : null;
+      const linkSender = body.linkSenderEmail ? String(body.linkSenderEmail).trim().toLowerCase() : null;
+      if (linkEmailId) {
+        const r = await prisma.email.updateMany({ where: { id: linkEmailId, contractorId: null }, data: { contractorId: contractor.id } });
+        zlinkowanoMaili += r.count;
+      }
+      if (linkSender && /@/.test(linkSender)) {
+        await upsertCrmContact(prisma, contractor.id, { type: 'email', value: linkSender, label: 'nadawca maila', source: 'upsert' });
+        const r = await prisma.email.updateMany({ where: { contractorId: null, direction: 'INBOUND', fromEmail: { equals: linkSender, mode: 'insensitive' } }, data: { contractorId: contractor.id } });
+        zlinkowanoMaili += r.count;
+      }
+      if (zlinkowanoMaili) console.log(`[contractors/upsert] ${contractor.name}: powiązano ${zlinkowanoMaili} maili (${linkSender || linkEmailId})`);
+    } catch (e) {
+      console.warn('[contractors/upsert] linkowanie maila nieudane (non-fatal):', e.message);
+    }
+
     res.json({
       ...contractor,
       ...(deliveryAddress ? { deliveryAddressAdded } : {}),
       ...(missingForInvoice.length ? { missingForInvoice } : {}),
+      ...(zlinkowanoMaili ? { zlinkowanoMaili } : {}),
     });
     scheduleGeocode(prisma, contractor);
     // Fire-and-forget push do iFirmy (jak NIP istnieje). Zapewnia ze przy
@@ -987,6 +1016,38 @@ router.get('/', async (req, res) => {
         } catch (e) {
           console.warn('[contractors/search] email-contact match failed (non-fatal):', e.message);
         }
+
+        /* DOMENA FIRMOWA. Nadawca pisze z office@firma.at, a w karcie mamy
+           info@firma.at — zapytanie „contains" po pełnym adresie nic nie da.
+           Dopasowujemy po domenie: extras.domains (kojarzone przez upsert),
+           email/primaryEmail kończące się na @domena, kontakty. TYLKO domeny
+           firmowe — gmail/wp/onet łączyłyby obcych ludzi w jednego kontrahenta
+           (companyDomain zwraca null dla free mail). */
+        try {
+          const dom = companyDomain(searchLower);
+          if (dom) {
+            const at = '@' + dom;
+            const [byRow, byContact] = await Promise.all([
+              prisma.contractor.findMany({
+                where: { OR: [
+                  { extras: { path: ['domains'], array_contains: dom } },
+                  { email: { endsWith: at, mode: 'insensitive' } },
+                  { primaryEmail: { endsWith: at } },
+                ] },
+                take: 10,
+              }),
+              prisma.contractorContact.findMany({ where: { type: 'email', value: { endsWith: at } }, select: { contractorId: true }, take: 10 }),
+            ]);
+            const ids = [...new Set([...byRow.map(r => r.id), ...byContact.map(c => c.contractorId)])].filter(id => !merged.some(m => m.id === id));
+            if (ids.length) {
+              const rows = await prisma.contractor.findMany({ where: { id: { in: ids } } });
+              for (const r of rows) { if (merged.length >= take) break; merged.push({ ...r, matchedBy: 'domain' }); }
+              console.log(`[contractors/search] domain match: "${search}" → ${dom} → ${rows.length}`);
+            }
+          }
+        } catch (e) {
+          console.warn('[contractors/search] domain match failed (non-fatal):', e.message);
+        }
       }
     }
   }
@@ -1124,10 +1185,17 @@ router.get('/', async (req, res) => {
   // (e.g. "holaola" vs "Hola Ola" — spacing differs) and no other filter
   // narrowed the set, load all contractors and score them against the
   // search term.
-  if (search && merged.length === 0 && !country && !tag) {
+  /* Fuzzy po nazwie NIE dla adresów e-mail: adres to nie nazwa. 1.10.2026
+     „Wyceń paczkę" z maila od tomi@…gmail.com dało 8 obcych firm, bo token
+     „com" z końcówki adresu pasował do „Company", „Comporta", „Compras",
+     „Comune"… — a właściwego kontrahenta nie było wśród nich. Próbka: NAJNOWSZE
+     kontrahenci, nie „pierwsze 500" bez porządku — nowo dodany kontrahent
+     wypadał poza próbkę i był nie do znalezienia. */
+  if (search && merged.length === 0 && !country && !tag && !String(search).includes('@')) {
     const all = await prisma.contractor.findMany({
       select: { id: true, name: true, nip: true, country: true, email: true, phone: true, city: true, address: true, tags: true, source: true, extras: true, createdAt: true, updatedAt: true },
-      take: 500,
+      orderBy: { updatedAt: 'desc' },
+      take: 2000,
     });
     const scored = all
       .map(c => ({ c, score: scoreContractor(c, search) }))

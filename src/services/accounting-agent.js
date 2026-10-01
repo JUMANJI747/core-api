@@ -792,6 +792,18 @@ async function processAccountingQuery(query, ctx = {}) {
   };
   const forcedTool = detectAccIntent(lastLine) || detectAccIntent(query);
 
+  /* „Dodaj kontrahenta" Z MAILA: kontrahent powstaje, ale mail, z którego go
+     dodano, zostawał NIEPOWIĄZANY (link nadawany tylko przy odbiorze, po
+     domenie). Potem „Wyceń paczkę" z tego samego maila nie miało cid i szukało
+     po nazwie z podpisu. Wstrzykujemy do upsert_contractor id maila i adres
+     nadawcy DETERMINISTYCZNIE (nie przez prompt) — backend podpina mail,
+     a adres nadawcy (choćby prywatny gmail) zapisuje jako kontakt kontrahenta. */
+  const onToolUse = (tu) => {
+    if (tu.name === 'upsert_contractor' && ctx && (ctx.emailId || ctx.senderEmail)) {
+      tu.input = { ...tu.input, ...(ctx.emailId ? { linkEmailId: ctx.emailId } : {}), ...(ctx.senderEmail ? { linkSenderEmail: ctx.senderEmail } : {}) };
+    }
+  };
+
   return runAgentLoop({
     anthropic,
     model: MODEL,
@@ -801,6 +813,7 @@ async function processAccountingQuery(query, ctx = {}) {
     firstToolChoice: forcedTool,
     executeTool,
     ctx,
+    onToolUse,
     logPrefix: '[accounting-agent]',
   });
 }
