@@ -69,7 +69,7 @@ Zasady:
 - phone, email jeśli są. notes = inne istotne info (np. osoba kontaktowa) albo null.
 - Pole nieobecne — null.`;
     const msg = await client.messages.create({
-      model: process.env.CONTRACTOR_PARSE_MODEL || 'claude-sonnet-4-5-20250929',
+      model: process.env.CONTRACTOR_PARSE_MODEL || 'claude-sonnet-5-5',
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     });

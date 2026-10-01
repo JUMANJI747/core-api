@@ -15,7 +15,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetr
 const MODEL =
   process.env.ACCOUNTING_AGENT_ES_MODEL ||
   process.env.ACCOUNTING_AGENT_MODEL ||
-  'claude-sonnet-4-5-20250929';
+  'claude-sonnet-5-5';
 
 const BASE_PROMPT = `Jesteś sub-agentem KSIĘGOWOŚĆ KANARY (Contasimple, Hiszpania, IGIC).
 

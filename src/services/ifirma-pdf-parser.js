@@ -44,7 +44,7 @@ async function parseItemsWithLLM(text) {
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
   const resp = await anthropic.messages.create({
-    model: process.env.PDF_PARSE_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929',
+    model: process.env.PDF_PARSE_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-5-5',
     max_tokens: 1500,
     system:
       'Wyciagasz POZYCJE z tekstu faktury (wygenerowany PDF, czysty tekst). ' +

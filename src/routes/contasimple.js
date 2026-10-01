@@ -2481,7 +2481,7 @@ router.post('/ai-match-emails', asyncHandler(async (req, res) => {
     inbox,
     dryRun = false,
     minConfidence = 0.75,
-    model = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929',
+    model = process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-5-5',
   } = req.body || {};
   if (!inbox) return res.status(400).json({ error: 'inbox (string) required — e.g. "nikodem"' });
 

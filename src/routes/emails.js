@@ -572,7 +572,7 @@ ${digest}`;
       let text = '';
       try {
         const llm = await anthropic.messages.create({
-          model: process.env.DEAL_SCAN_MODEL || process.env.ORDER_PARSER_MODEL || 'claude-sonnet-4-5-20250929',
+          model: process.env.DEAL_SCAN_MODEL || process.env.ORDER_PARSER_MODEL || 'claude-sonnet-5-5',
           max_tokens: 1500,
           messages: [{ role: 'user', content: prompt }],
         });
@@ -1722,7 +1722,7 @@ ${tline}`;
 
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
-  const llmModel = model || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
+  const llmModel = model || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-5-5';
   const llm = await anthropic.messages.create({
     model: llmModel,
     max_tokens: 4096,

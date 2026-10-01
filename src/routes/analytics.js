@@ -41,7 +41,7 @@ function httpsPost(url, headers, body) {
 // Model dla NL→SQL i streszczeń. Hardcoded 'claude-sonnet-4-20250514' został
 // wycofany → API zwracało błąd → /api/analytics dawało 500. Default = ten sam
 // działający model co sub-agenci; nadpisywalny env ANALYTICS_MODEL.
-const ANALYTICS_MODEL = process.env.ANALYTICS_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
+const ANALYTICS_MODEL = process.env.ANALYTICS_MODEL || process.env.ACCOUNTING_AGENT_MODEL || 'claude-sonnet-5-5';
 
 async function callClaudeWithRetry(body, maxRetries = 3) {
   const apiKey = process.env.ANTHROPIC_API_KEY;

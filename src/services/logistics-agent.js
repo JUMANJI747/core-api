@@ -5,7 +5,7 @@ const { buildExecuteTool, sanitizeAssistantContent } = require('./agent-runtime'
 const { cacheSystem, cacheTools } = require('./agent-loop-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
-const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-4-5-20250929';
+const MODEL = process.env.LOGISTICS_AGENT_MODEL || 'claude-sonnet-5-5';
 
 const SYSTEM_PROMPT = `Jesteś sub-agentem LOGISTYKA SurfStickBell. Plain text, krótko, ceny brutto.
 

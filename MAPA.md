@@ -191,6 +191,6 @@ przy starcie — `services/bin-check.js`.
 
 - Modele/pola Prisma wchodzą przez `prisma db push` na starcie — nie trzeba migracji ręcznych.
 - Sekrety/konfiguracja: env (Railway) + tabela `Config`.
-- Modele Anthropic przez env (`LOGISTICS_AGENT_MODEL`, `ORDER_PARSER_MODEL`, `WDT_MATCH_MODEL`, …); działające: `claude-opus-4-8`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`.
+- Modele Anthropic przez env (`LOGISTICS_AGENT_MODEL`, `ORDER_PARSER_MODEL`, `WDT_MATCH_MODEL`, …); działające: `claude-opus-4-8`, `claude-sonnet-5-5`, `claude-haiku-4-5-20251001`.
 - Idempotencja wystawiania FV/WZ: zawsze przez `services/confirm-lock.js`.
 - Powiadomienia Telegram per scope: `services/telegram-helper.resolveTelegram` (`pl` / `kanary`).

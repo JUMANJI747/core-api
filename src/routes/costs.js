@@ -35,7 +35,7 @@ function guessMime(fileName, mimeType) {
 // Strategia: PDF z warstwą tekstową → tekst wyciąga LOKALNIE pdf-parse (tanio,
 // dokładnie), do LLM idzie sam tekst. PDF-skan (brak tekstu) → cały PDF do LLM
 // (blok document). Obraz (JPG/PNG) → cały do LLM (blok image).
-const COST_MODEL = () => process.env.COST_PARSE_MODEL || 'claude-sonnet-4-5-20250929';
+const COST_MODEL = () => process.env.COST_PARSE_MODEL || 'claude-sonnet-5-5';
 
 function getAnthropic() {
   const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
