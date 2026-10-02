@@ -5,10 +5,10 @@ const asyncHandler = require('../asyncHandler');
 const { invalidateCatalog } = require('../services/product-catalog');
 
 const SEED_PRODUCTS = [
-  {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579021", name:"SURF GEL extreme waterproof gel spf 50+", category:"ochrona słoneczna", capacity:"40g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579045", name:"SURF DAILY protection spf 50", category:"ochrona słoneczna", capacity:"30g", pricePLN:18, priceEUR:4.5},
-  {ean:"5902082579052", name:"SURF LIPS lip balm spf 50+", category:"ochrona słoneczna", pricePLN:18, priceEUR:4.5},
+  {ean:"5902082579014", name:"SURF CARE hydrating cream", category:"pielęgnacja", capacity:"30g", pricePLN:18, priceEUR:4.5, extras:{symbol:"BfchS"}},
+  {ean:"5902082579021", name:"SURF GEL extreme waterproof gel spf 50+", category:"ochrona słoneczna", capacity:"40g", pricePLN:18, priceEUR:4.5, extras:{symbol:"BgwS"}},
+  {ean:"5902082579045", name:"SURF DAILY protection spf 50", category:"ochrona słoneczna", capacity:"30g", pricePLN:18, priceEUR:4.5, extras:{symbol:"BfdpS"}},
+  {ean:"5902082579052", name:"SURF LIPS lip balm spf 50+", category:"ochrona słoneczna", pricePLN:18, priceEUR:4.5, extras:{symbol:"BlbS"}},
   {ean:"5902082556022", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Blue", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
   {ean:"5902082556053", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Pink", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
   {ean:"5902082556046", name:"SURF STICK zinc stick spf 50+", category:"ochrona słoneczna", variant:"Purple", capacity:"6.8g", pricePLN:18, priceEUR:4.5},
@@ -74,7 +74,10 @@ router.post('/seed', asyncHandler(async (req, res) => {
     const data = { ...p, extras: p.extras || {} };
     const existing = await prisma.product.findUnique({ where: { ean: p.ean } });
     if (existing) {
-      await prisma.product.update({ where: { ean: p.ean }, data: { name: p.name, variant: p.variant ?? null, category: p.category, capacity: p.capacity ?? null, pricePLN: p.pricePLN, priceEUR: p.priceEUR } });
+      // extras: DOŁÓŻ seedowe (symbol magazynowy, composition) do istniejących —
+      // nie nadpisuj całości, bo w bazie mogą siedzieć ręczne dopiski.
+      const extras = { ...((existing.extras && typeof existing.extras === 'object') ? existing.extras : {}), ...(p.extras || {}) };
+      await prisma.product.update({ where: { ean: p.ean }, data: { name: p.name, variant: p.variant ?? null, category: p.category, capacity: p.capacity ?? null, pricePLN: p.pricePLN, priceEUR: p.priceEUR, extras } });
       updated++;
     } else {
       await prisma.product.create({ data });

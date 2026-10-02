@@ -348,6 +348,7 @@ model WarehouseOrderItem {
   ean       String  // klucz stocku; boxy rozbite na kolory PRZY ZŁOŻENIU (migawka składu)
   name      String
   variant   String?
+  symbol    String? // kod magazynowy Bell (Product.extras.symbol, np. BfchS) — migawka, magazyn czyta go z półki
   qty       Int
   // Linia „nagłówkowa" boxa (ean BOX-*) ma parentEan=null i packaging;
   // jej rozbicie na kolory to linie z parentEan=BOX-*. Stock schodzi TYLKO

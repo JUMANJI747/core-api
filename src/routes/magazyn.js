@@ -61,6 +61,9 @@ function toPublic(o) {
 
 /* Rozbicie pozycji z formularza na linie zamówienia (migawka składu boxów).
    Wejście: [{ean, qty, packaging?}]. Wyjście: linie + błędy walidacji. */
+// Kod magazynowy Bell (np. BfchS) — magazyn po nim identyfikuje towar na półce.
+const symbolZ = (p) => (p && p.extras && typeof p.extras === 'object' && p.extras.symbol) ? String(p.extras.symbol) : null;
+
 function rozbijPozycje(items, catalog) {
   const byEan = new Map(catalog.map(p => [p.ean, p]));
   const linie = [];
@@ -77,16 +80,16 @@ function rozbijPozycje(items, catalog) {
     const comp = Array.isArray(ex.composition) ? ex.composition : null;
     if (comp && comp.length) {
       const packaging = it.packaging === 'ekspozytor' ? 'ekspozytor' : 'karton';
-      linie.push({ ean, name: p.name, variant: packaging === 'ekspozytor' ? 'ekspozytor zatowarowany' : 'w kartonie', qty, parentEan: null, packaging, sort: sort++ });
+      linie.push({ ean, name: p.name, variant: packaging === 'ekspozytor' ? 'ekspozytor zatowarowany' : 'w kartonie', symbol: symbolZ(p), qty, parentEan: null, packaging, sort: sort++ });
       for (const c of comp) {
         const cp = byEan.get(c.ean);
-        linie.push({ ean: c.ean, name: cp ? cp.name : p.name, variant: c.variant || (cp && cp.variant) || null, qty: Number(c.qty) * qty, parentEan: ean, packaging: null, sort: sort++ });
+        linie.push({ ean: c.ean, name: cp ? cp.name : p.name, variant: c.variant || (cp && cp.variant) || null, symbol: symbolZ(cp), qty: Number(c.qty) * qty, parentEan: ean, packaging: null, sort: sort++ });
       }
       if (packaging === 'ekspozytor') {
         linie.push({ ean: EKSPOZYTOR.ean, name: EKSPOZYTOR.name, variant: null, qty, parentEan: ean, packaging: null, sort: sort++ });
       }
     } else {
-      linie.push({ ean, name: p.name, variant: p.variant || null, qty, parentEan: null, packaging: null, sort: sort++ });
+      linie.push({ ean, name: p.name, variant: p.variant || null, symbol: symbolZ(p), qty, parentEan: null, packaging: null, sort: sort++ });
     }
   }
   return { linie, bledy };
@@ -379,6 +382,7 @@ router.get('/stan', asyncHandler(async (req, res) => {
       ean: g.ean,
       name: p ? p.name : (g.ean === EKSPOZYTOR.ean ? EKSPOZYTOR.name : (nazwy.get(g.ean) || g.ean)),
       variant: p ? p.variant : null,
+      symbol: symbolZ(p),
       ilosc: g._sum.delta || 0,
     };
   }).sort((a, b) => (a.name + (a.variant || '')).localeCompare(b.name + (b.variant || ''), 'pl'));
