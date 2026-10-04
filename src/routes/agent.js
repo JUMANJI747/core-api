@@ -508,11 +508,30 @@ async function extractEmailAttachments(prisma, anthropic, emailId) {
 // POST /api/agent/assistant — tani router (Haiku) który decyduje którego
 // agenta (Sonnet) wywołać i łączy wyniki. Dla frontu — zero Opus.
 // Body: { query, context: { contractorId?, ... }, previousTurns?, attachments? }
-router.post('/agent/assistant', asyncHandler(async (req, res) => {
-  const prisma = req.app.locals.prisma;
+/* ASYSTENT — jeden mózg dla panelu CRM i dla Telegrama (04.10.2026).
+ * Wcześniej Telegram miał własnego „master agenta" w n8n, który dublował
+ * routing, nie przekazywał sub-agentom historii i zamieniał każde 400 z
+ * backendu w „Bad request - please check your parameters". Teraz obie drogi
+ * wołają tę funkcję. input: { query, context, previousTurns, lastAgent,
+ * target, attachments, chatId, source, scope }. scope 'kanary' zawęża
+ * agentów do ES (accounting-es / communication-es / operations).
+ * Zwraca { status, body } — route /agent/assistant tylko to odsyła. */
+async function uruchomAsystenta(prisma, input) {
   const Anthropic = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES) || 5 });
-  let { query, context = {}, previousTurns = [], lastAgent = null, target = null } = req.body || {};
+  let { query, context = {}, previousTurns = [], lastAgent = null, target = null } = input || {};
+  const kanal = { chatId: input.chatId || null, source: input.source || 'frontend' };
+  const zakres = input.scope === 'kanary' ? 'kanary' : 'pl';
+  // Bot kanaryjski: PL-owe nazwy agentów mapujemy na ES, logistyka odpada.
+  const naZakres = (a) => {
+    if (zakres !== 'kanary') return a;
+    if (a === 'accounting') return 'accounting-es';
+    if (a === 'communication') return 'communication-es';
+    if (a === 'logistics') return null;
+    return a;
+  };
+  target = target ? naZakres(target) : null;
+  lastAgent = lastAgent ? naZakres(lastAgent) : null;
   // Tożsamość maila dla narzędzi agenta (upsert_contractor podpina mail i nadawcę).
   // Adres z „Imię <adres>" albo goły adres — tylko sam adres, małymi literami.
   const emailCtx = (() => {
@@ -522,9 +541,9 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
     const senderEmail = /@/.test(raw) ? raw.trim().toLowerCase() : null;
     return { ...(id ? { emailId: id } : {}), ...(senderEmail ? { senderEmail } : {}) };
   })();
-  const attachments = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
+  const attachments = Array.isArray(input.attachments) ? input.attachments : [];
   if (!query && attachments.length) query = 'Przeanalizuj załączone pliki/zdjęcia i powiedz co z nimi zrobić.';
-  if (!query) return res.status(400).json({ error: 'query required' });
+  if (!query) return { status: 400, body: { error: 'query required' } };
 
   // Załączniki z czatu (zdjęcia/PDF) → odczyt (vision/pdf-parse) i doklejenie do
   // query, żeby tekstowi sub-agenci "widzieli" ich treść (np. zrób fakturę z foto).
@@ -629,11 +648,11 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
   // odpowiadal instrukcja "zrob to przyciskiem Edytuj" zamiast wykonac akcje.
   if (target && ALL_PROCESSORS[target]) {
     try {
-      const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-6) });
+      const r = await ALL_PROCESSORS[target](await buildFullQuery(), { prisma, ...kanal, ...emailCtx, previousTurns: previousTurns.slice(-6) });
       console.log(`[agent/assistant] target=${target} reply: text=${typeof r.text} len=${(r.text || '').length} stop=${r.stopReason || '?'} iter=${r.iterations}`);
-      return res.json({ ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
+      return { status: 200, body: { ok: true, text: pickText(r), agents: [target], source: 'target', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] } };
     } catch (e) {
-      return res.json({ ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' });
+      return { status: 200, body: { ok: true, text: `Blad ${target}: ${e.message}`, agents: [target], source: 'target-error' } };
     }
   }
 
@@ -661,10 +680,10 @@ router.post('/agent/assistant', asyncHandler(async (req, res) => {
         if (vatsCtxLine) ctxLines.push(vatsCtxLine);
         const ctxStr = ctxLines.join('\n');
         const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
-        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-8) });
-        return res.json({ ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] });
+        const r = await fn(fullQuery, { prisma, ...kanal, ...emailCtx, previousTurns: previousTurns.slice(-8) });
+        return { status: 200, body: { ok: true, text: pickText(r), agents: [lastAgent], source: 'continue', pendingConfirm: pcFrom(r), wyslane: (r && r.wyslane) || [] } };
       } catch (e) {
-        return res.json({ ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' });
+        return { status: 200, body: { ok: true, text: `Blad ${lastAgent}: ${e.message}`, agents: [lastAgent], source: 'continue-error' } };
       }
     }
   }
@@ -709,7 +728,9 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
     }
 
     if (routing.agents[0] === 'direct') {
-      return res.json({ ok: true, text: 'To mozesz zrobic przyciskiem "Edytuj" — zmien pole i kliknij Zapisz.', routing, source: 'router' });
+      // Na Telegramie nie ma przycisku „Edytuj" — niech agent zrobi to sam.
+      if (kanal.source === 'telegram') routing.agents = ['accounting'];
+      else return { status: 200, body: { ok: true, text: 'To mozesz zrobic przyciskiem "Edytuj" — zmien pole i kliknij Zapisz.', routing, source: 'router' } };
     }
 
     // Wywołaj agentów po kolei
@@ -724,7 +745,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 
     const results = [];
     let pendingConfirm = null;
-    for (const agentName of (routing.agents || ['accounting']).slice(0, 3)) {
+    for (const agentName of (routing.agents || ['accounting']).map(naZakres).filter(Boolean).slice(0, 3)) {
       const fn = processors[agentName];
       if (!fn) continue;
 
@@ -741,7 +762,7 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
       const fullQuery = ctxStr ? `${ctxStr}\n\n${query}` : query;
       const tAgent = Date.now();
       try {
-        const r = await fn(fullQuery, { prisma, chatId: null, source: 'frontend', ...emailCtx, previousTurns: previousTurns.slice(-6) });
+        const r = await fn(fullQuery, { prisma, ...kanal, ...emailCtx, previousTurns: previousTurns.slice(-6) });
         console.log(`[agent/assistant] [timing] agent ${agentName} → ${Date.now() - tAgent}ms (${r.iterations != null ? r.iterations + ' rund' : '?'})`);
         results.push({ agent: agentName, text: pickText(r) });
         const pc = pcFrom(r); if (pc) pendingConfirm = pc;
@@ -753,14 +774,20 @@ Odpowiedz TYLKO JSON: {"agents":["accounting"],"reason":"..."} lub {"agents":["d
 
     console.log(`[agent/assistant] [timing] CALA TURA → ${Date.now() - tTurn}ms (agenci: ${results.map(r => r.agent).join('+') || 'brak'})`);
     const combined = results.map(r => r.text).join('\n\n---\n\n');
-    res.json({ ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant', pendingConfirm });
+    return { status: 200, body: { ok: true, text: combined, routing, agents: results.map(r => r.agent), source: 'assistant', pendingConfirm } };
   } catch (e) {
     console.error('[agent/assistant]', e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    return { status: 500, body: { ok: false, error: e.message } };
   }
+}
+
+router.post('/agent/assistant', asyncHandler(async (req, res) => {
+  const r = await uruchomAsystenta(req.app.locals.prisma, req.body || {});
+  res.status(r.status).json(r.body);
 }));
 
 module.exports = router;
+module.exports.uruchomAsystenta = uruchomAsystenta;
 // Odczyt załączników maila (PDF → tekst, obraz → vision) — używany też przez
 // /invoice-draft-from-email (prefill FV z maila, gdy zamówienie jest w
 // załączniku). Router to funkcja, więc może nieść dodatkowe property.

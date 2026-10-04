@@ -139,6 +139,10 @@ app.use('/api', (req, res, next) => {
 // anonymously (jitter + no popups) by default. Pass ?key=API_KEY for full data.
 app.use('/', require('./routes/map'));
 
+// ============ BOT TELEGRAM (webhook, poza /api — auth = sekret webhooka) ============
+// Zastępuje mastery z n8n; ten sam silnik asystenta co panel CRM.
+app.use('/', require('./routes/telegram-bot'));
+
 // ============ HEALTH ============
 app.get('/health', async (req, res) => {
   try {

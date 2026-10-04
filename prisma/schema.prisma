@@ -530,6 +530,7 @@ model Memory {
   scope     String?  @default("pl") // 'pl' | 'kanary' — separuje boty na jednej bazie. Domyslnie pl bo historycznie pierwszy bot.
   role      String // user | assistant
   content   String
+  agent     String? // który sub-agent odpowiadał (accounting, logistics…) — bot Telegram kontynuuje „tak/ok" u niego
   createdAt DateTime @default(now())
 
   @@index([chatId, createdAt])
