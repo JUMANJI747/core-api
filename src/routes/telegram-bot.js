@@ -32,7 +32,23 @@ const { sendTelegram, tgApi } = require('../telegram-utils');
 const { selfCall } = require('../services/agent-runtime');
 const { processSudoQuery } = require('../services/sudo-agent');
 
-const SEKRET = () => (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+/* Sekret webhooka: env TELEGRAM_WEBHOOK_SECRET, a gdy go nie ma — Config
+ * 'telegram_webhook_secret' (PUT /api/config/telegram_webhook_secret z Konsoli
+ * API). Druga droga, bo Railway potrafi trzymać zmienną w panelu, a nie
+ * wdrożyć jej do procesu (05.10.2026) — bez niej bot stał. Cache 60 s. */
+let sekretCache = { v: '', t: 0 };
+async function sekret(prisma) {
+  const env = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  if (env) return env;
+  if (Date.now() - sekretCache.t < 60000) return sekretCache.v;
+  let v = '';
+  try {
+    const row = prisma ? await prisma.config.findUnique({ where: { key: 'telegram_webhook_secret' } }) : null;
+    v = row && row.value ? String(row.value).trim() : '';
+  } catch (_) { /* brak tabeli/polaczenia — traktuj jak brak sekretu */ }
+  if (v) sekretCache = { v, t: Date.now() }; // pustego nie cache'ujemy — po wpisaniu do Config ma zadziałać od razu
+  return v;
+}
 const LIMIT_WIADOMOSCI_TG = 4000; // Telegram: 4096 zn. na wiadomość
 const PAMIEC_TUR = 12;
 
@@ -49,8 +65,8 @@ function juzBylo(id) {
 
 const zakresZ = (s) => (s === 'kanary' || s === 'es') ? 'kanary' : 'pl';
 
-function sekretOk(req) {
-  const s = SEKRET();
+async function sekretOk(req) {
+  const s = await sekret(req.app.locals.prisma);
   if (!s) return false;
   const h = String(req.headers['x-telegram-bot-api-secret-token'] || req.query.secret || '');
   return h === s;
@@ -198,9 +214,10 @@ async function obsluzWiadomosc(prisma, scope, msg) {
 }
 
 /* --- Webhook --- */
-router.post('/telegram/webhook/:scope', (req, res) => {
-  if (!SEKRET()) return res.status(503).json({ ok: false, error: 'TELEGRAM_WEBHOOK_SECRET nie ustawiony' });
-  if (!sekretOk(req)) return res.status(403).json({ ok: false, error: 'zły sekret webhooka' });
+router.post('/telegram/webhook/:scope', async (req, res) => {
+  const s = await sekret(req.app.locals.prisma);
+  if (!s) return res.status(503).json({ ok: false, error: 'sekret webhooka nie ustawiony (env TELEGRAM_WEBHOOK_SECRET albo Config telegram_webhook_secret)' });
+  if (!(await sekretOk(req))) return res.status(403).json({ ok: false, error: 'zły sekret webhooka' });
   const scope = zakresZ(req.params.scope);
   const upd = req.body || {};
   res.json({ ok: true }); // Telegram ma dostać 200 od razu; robota leci w tle
@@ -215,6 +232,20 @@ router.post('/telegram/webhook/:scope', (req, res) => {
   if (msg) obsluzWiadomosc(prisma, scope, msg).catch(e => console.error('[telegram-bot] fatal:', e.message));
 });
 
+// Co proces NAPRAWDĘ widzi w env (same nazwy i długości, bez wartości) —
+// rozstrzyga „zmienna jest w panelu Railway, a backend jej nie ma".
+// Auth: x-token / ?token= = PREPROCESS_TOKEN (jak /czytnik, /poczta/zdrowie).
+router.get('/telegram/diag', async (req, res) => {
+  const t = (process.env.PREPROCESS_TOKEN || '').trim();
+  const dany = String(req.headers['x-token'] || req.query.token || '');
+  if (!t || dany !== t) return res.status(403).json({ ok: false, error: 'zły token' });
+  const env = Object.keys(process.env).filter(k => /TELEGRAM|OPENAI|WEBHOOK|PUBLIC_BASE/i.test(k)).sort()
+    .map(k => ({ nazwa: k, dlugosc: String(process.env[k] || '').length }));
+  let config = null;
+  try { const row = await req.app.locals.prisma.config.findUnique({ where: { key: 'telegram_webhook_secret' } }); config = row ? String(row.value || '').length : 0; } catch (e) { config = `błąd: ${e.message}`; }
+  res.json({ ok: true, env, configTelegramWebhookSecretDlugosc: config, sekretAktywny: !!(await sekret(req.app.locals.prisma)) });
+});
+
 // Diagnostyka i przełączanie webhooka — z przeglądarki, ?secret=…
 function bazaUrl(req) {
   const env = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
@@ -223,7 +254,7 @@ function bazaUrl(req) {
   return `https://${host}`;
 }
 router.get('/telegram/webhook/:scope', async (req, res) => {
-  if (!sekretOk(req)) return res.status(403).json({ ok: false, error: 'zły sekret' });
+  if (!(await sekretOk(req))) return res.status(403).json({ ok: false, error: 'zły sekret' });
   const scope = zakresZ(req.params.scope);
   const { token, source } = await resolveToken(req.app.locals.prisma, scope);
   if (!token) return res.status(503).json({ ok: false, error: `brak tokenu bota (${scope})` });
@@ -231,16 +262,16 @@ router.get('/telegram/webhook/:scope', async (req, res) => {
   res.json({ ok: true, scope, tokenSource: source, oczekiwanyUrl: `${bazaUrl(req)}/telegram/webhook/${scope}`, webhook: info && info.result ? info.result : info });
 });
 router.get('/telegram/webhook/:scope/ustaw', async (req, res) => {
-  if (!sekretOk(req)) return res.status(403).json({ ok: false, error: 'zły sekret' });
+  if (!(await sekretOk(req))) return res.status(403).json({ ok: false, error: 'zły sekret' });
   const scope = zakresZ(req.params.scope);
   const { token } = await resolveToken(req.app.locals.prisma, scope);
   if (!token) return res.status(503).json({ ok: false, error: `brak tokenu bota (${scope})` });
   const url = `${bazaUrl(req)}/telegram/webhook/${scope}`;
-  const r = await tgApi(token, 'setWebhook', { url, secret_token: SEKRET(), allowed_updates: ['message', 'callback_query'], drop_pending_updates: false }).catch(e => ({ ok: false, error: e.message }));
+  const r = await tgApi(token, 'setWebhook', { url, secret_token: await sekret(req.app.locals.prisma), allowed_updates: ['message', 'callback_query'], drop_pending_updates: false }).catch(e => ({ ok: false, error: e.message }));
   res.json({ ok: !!(r && r.ok), scope, url, telegram: r });
 });
 router.get('/telegram/webhook/:scope/zdejmij', async (req, res) => {
-  if (!sekretOk(req)) return res.status(403).json({ ok: false, error: 'zły sekret' });
+  if (!(await sekretOk(req))) return res.status(403).json({ ok: false, error: 'zły sekret' });
   const scope = zakresZ(req.params.scope);
   const { token } = await resolveToken(req.app.locals.prisma, scope);
   if (!token) return res.status(503).json({ ok: false, error: `brak tokenu bota (${scope})` });
