@@ -145,9 +145,39 @@ async function findEsContractorRemote(prisma, search) {
 }
 
 // Mapuje klienta Contasimple -> EsContractor i upsertuje po contasimpleId.
+/* TOMBSTONE usuniętych klientów Contasimple (08.10.2026). Guzik „Usuń" na
+ * karcie ES kasuje rekord lokalnie; gdy Contasimple nie pozwoli usunąć u siebie
+ * (klient ma dokumenty), sync-customers odtwarzałby go przy każdym przebiegu.
+ * Trzymamy contasimpleId usuniętych w Config 'es_deleted_contasimple_ids'
+ * (JSON array) i pomijamy je przy KAŻDYM tworzeniu z remote. */
+const ES_TOMBSTONE_KEY = 'es_deleted_contasimple_ids';
+async function esUsunieteIds(prisma) {
+  try {
+    const row = await prisma.config.findUnique({ where: { key: ES_TOMBSTONE_KEY } });
+    const arr = row && row.value ? JSON.parse(row.value) : [];
+    return new Set((Array.isArray(arr) ? arr : []).map(Number));
+  } catch (_) { return new Set(); }
+}
+async function dodajEsUsuniety(prisma, contasimpleId) {
+  if (contasimpleId == null) return;
+  const ids = await esUsunieteIds(prisma);
+  ids.add(Number(contasimpleId));
+  await prisma.config.upsert({
+    where: { key: ES_TOMBSTONE_KEY },
+    update: { value: JSON.stringify([...ids]) },
+    create: { key: ES_TOMBSTONE_KEY, value: JSON.stringify([...ids]) },
+  });
+}
+async function usunEsTombstone(prisma, contasimpleId) {
+  const ids = await esUsunieteIds(prisma);
+  if (!ids.delete(Number(contasimpleId))) return;
+  await prisma.config.update({ where: { key: ES_TOMBSTONE_KEY }, data: { value: JSON.stringify([...ids]) } }).catch(() => null);
+}
+
 // Mirror logiki z routes/contasimple.js POST /sync-customers (pojedynczy wpis).
 async function upsertEsContractorFromRemote(prisma, c) {
   if (!c || !c.id) return null;
+  if ((await esUsunieteIds(prisma)).has(Number(c.id))) return null; // usunięty w CRM — nie odtwarzaj
   const { resolveOwnerFromAddress } = require('./owner-derive');
 
   const data = {
@@ -548,6 +578,9 @@ function buildContasimpleAlbaranPayload({ targetEntityId, lines, deliveryNoteDat
 }
 
 module.exports = {
+  esUsunieteIds,
+  dodajEsUsuniety,
+  usunEsTombstone,
   IGIC_DEFAULT_PCT,
   NIKODEM_DEFAULTS,
   findEsContractor,

@@ -1492,6 +1492,56 @@ router.get('/:id/360', async (req, res) => {
 // Usuniecie pojedynczego kontaktu (ContractorContact) z kafelka Kontakty w UI.
 // Scoped po contractorId -> nie da sie skasowac cudzego kontaktu podajac samo
 // contactId. Idempotentne: brak rekordu => 404 z ok:false (UI i tak odswiezy).
+/* USUŃ KONTRAHENTA PL (08.10.2026). Guzik na karcie. Dwa kroki: bez `force`
+ * zwraca 200 + ok:false + needsForce + liczniki powiązań (front pyta „mimo to?"),
+ * z `?force=1` kasuje. Co z powiązaniami: kontakty/adresy — cascade; maile,
+ * FV, pozycje FV, transakcje, zadania, zamówienia magazynu, aktywność —
+ * ODPINAMY (contractorId=null; FV i tak mają własną migawkę nazwy/NIP);
+ * deale — kasujemy (należą do kontrahenta); przypięcie do agenta — kasujemy.
+ * Komis (Consignment, wymagany FK) BLOKUJE zawsze — najpierw rozliczyć. */
+router.delete('/:id', async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { id } = req.params;
+  const force = req.query.force === '1' || req.query.force === 'true' || (req.body && req.body.force === true);
+  try {
+    const c = await prisma.contractor.findUnique({ where: { id }, select: { id: true, name: true, nip: true, linkedEsContractorId: true } });
+    if (!c) return res.status(404).json({ ok: false, error: 'kontrahent nie istnieje' });
+    const w = { contractorId: id };
+    const [invoices, lineItems, emails, transactions, deals, consignments, tasks, warehouseOrders, activity, agentLinks] = await Promise.all([
+      prisma.invoice.count({ where: w }), prisma.invoiceLineItem.count({ where: w }), prisma.email.count({ where: w }),
+      prisma.transaction.count({ where: w }), prisma.deal.count({ where: w }), prisma.consignment.count({ where: w }),
+      prisma.task.count({ where: w }), prisma.warehouseOrder.count({ where: w }), prisma.activityEvent.count({ where: w }),
+      prisma.salesAgentContractor.count({ where: { system: 'pl', contractorId: id } }),
+    ]);
+    const counts = { invoices, lineItems, emails, transactions, deals, consignments, tasks, warehouseOrders, activity, agentLinks };
+    if (consignments > 0) {
+      return res.json({ ok: false, blocked: true, counts, error: `Kontrahent ma ${consignments} komis(y) — najpierw rozlicz/zamknij komis, potem usuń.` });
+    }
+    const istotne = invoices + emails + transactions + deals + warehouseOrders + tasks + agentLinks;
+    if (!force && istotne > 0) {
+      return res.json({ ok: false, needsForce: true, counts, name: c.name,
+        error: `Kontrahent ma powiązania: FV ${invoices}, maile ${emails}, transakcje ${transactions}, deale ${deals}, zamówienia magazynu ${warehouseOrders}, zadania ${tasks}, agent ${agentLinks}. Jeśli to duplikat — lepiej SCAL. Usunięcie odepnie powiązania (FV/maile zostają bez kontrahenta), deale skasuje.` });
+    }
+    await prisma.$transaction([
+      prisma.email.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.invoice.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.invoiceLineItem.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.transaction.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.task.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.warehouseOrder.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.activityEvent.updateMany({ where: w, data: { contractorId: null } }),
+      prisma.deal.deleteMany({ where: w }),
+      prisma.salesAgentContractor.deleteMany({ where: { system: 'pl', contractorId: id } }),
+      prisma.contractor.delete({ where: { id } }), // kontakty + adresy: onDelete Cascade
+    ]);
+    console.log(`[contractors] USUNIĘTO ${c.name} (${c.nip || 'bez NIP'}) id=${id} force=${force} powiązania=${JSON.stringify(counts)} kto=${(req.crm && req.crm.user) || 'system'}`);
+    res.json({ ok: true, deleted: { id, name: c.name, nip: c.nip }, counts });
+  } catch (e) {
+    console.error('[contractors] delete error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.delete('/:id/contacts/:contactId', async (req, res) => {
   const prisma = req.app.locals.prisma;
   const { id, contactId } = req.params;

@@ -268,6 +268,13 @@ async function updateCustomer(id, data) {
   return await csJson('PUT', `/entities/customers/${encodeURIComponent(id)}`, null, data);
 }
 
+// Usunięcie klienta w Contasimple (guzik „Usuń" na karcie ES). Contasimple
+// odmówi, gdy klient ma dokumenty — wtedy kasujemy tylko lokalnie (+ tombstone,
+// żeby sync-customers go nie odtworzył) i mówimy to userowi.
+async function deleteCustomer(id) {
+  return await csJson('DELETE', `/entities/customers/${encodeURIComponent(id)}`);
+}
+
 // ============ PRODUCTS ============
 //
 // Used by the bulk-import endpoint to populate local EsProduct rows so that
@@ -512,6 +519,7 @@ function isConfigured() {
 }
 
 module.exports = {
+  deleteCustomer,
   isConfigured,
   getAccessToken,
   // me

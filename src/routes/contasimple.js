@@ -517,7 +517,12 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
 
   let created = 0;
   let updated = 0;
+  let pominieteUsuniete = 0;
+  const { esUsunieteIds } = require('../services/contasimple-helpers');
+  const usuniete = await esUsunieteIds(req.app.locals.prisma);
   for (const c of list) {
+    // Usunięty guzikiem w CRM (tombstone) — nie odtwarzaj przy syncu.
+    if (usuniete.has(Number(c.id))) { pominieteUsuniete++; continue; }
     const name =
       c.organization ||
       [c.firstname, c.lastname].filter(Boolean).join(' ').trim() ||
@@ -603,7 +608,7 @@ router.post('/sync-customers', asyncHandler(async (req, res) => {
     }
   }
 
-  res.json({ ok: true, total: list.length, created, updated });
+  res.json({ ok: true, total: list.length, created, updated, pominieteUsuniete });
 }));
 
 router.get('/contractors', asyncHandler(async (req, res) => {
@@ -655,6 +660,51 @@ router.get('/contractors/:id', asyncHandler(async (req, res) => {
 // PATCH edycja kontrahenta Kanary — zapis lokalny + push do Contasimple (gdy ma
 // contasimpleId). Best-effort push: rekord w CRM zapisany nawet gdy CS padnie.
 const ES_EDITABLE_FIELDS = ['organization', 'firstname', 'lastname', 'name', 'nif', 'email', 'phone', 'mobile', 'address', 'city', 'province', 'country', 'countryId', 'postalCode', 'documentCulture', 'notes', 'owner'];
+/* USUŃ KONTRAHENTA KANARY (08.10.2026). Jak PL: bez `force` → 200 + ok:false +
+ * needsForce + liczniki, z `?force=1` kasuje. Lokalnie: FV i pozycje ES
+ * ODPINAMY (mają migawkę nazwy/NIF), przypięcie do agenta kasujemy, rekord
+ * kasujemy. Zdalnie: próbujemy DELETE w Contasimple; gdy odmówi (klient ma
+ * dokumenty) — zostaje tam, a tombstone pilnuje, żeby sync go nie odtworzył. */
+router.delete('/contractors/:id', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const { id } = req.params;
+  const force = req.query.force === '1' || req.query.force === 'true' || (req.body && req.body.force === true);
+  const { dodajEsUsuniety } = require('../services/contasimple-helpers');
+  const c = await prisma.esContractor.findUnique({ where: { id }, select: { id: true, name: true, organization: true, nif: true, contasimpleId: true } });
+  if (!c) return res.status(404).json({ ok: false, error: 'kontrahent ES nie istnieje' });
+  const w = { contractorId: id };
+  const [invoices, lineItems, agentLinks, plLinked] = await Promise.all([
+    prisma.esInvoice.count({ where: w }), prisma.esInvoiceLineItem.count({ where: w }),
+    prisma.salesAgentContractor.count({ where: { system: 'es', contractorId: id } }),
+    prisma.contractor.count({ where: { linkedEsContractorId: id } }),
+  ]);
+  const counts = { invoices, lineItems, agentLinks, plLinked };
+  if (!force && (invoices + agentLinks + plLinked) > 0) {
+    return res.json({ ok: false, needsForce: true, counts, name: c.organization || c.name,
+      error: `Kontrahent ma powiązania: FV ${invoices}, agent ${agentLinks}, połączony kontrahent PL ${plLinked}. Usunięcie odepnie faktury (zostaną bez kontrahenta).` });
+  }
+  // Zdalnie — najpierw, żeby wiedzieć, co powiedzieć userowi. Błąd nie blokuje.
+  let contasimple = { proba: false, usunieto: false, blad: null };
+  if (c.contasimpleId != null && cs.isConfigured()) {
+    contasimple.proba = true;
+    try { await cs.deleteCustomer(c.contasimpleId); contasimple.usunieto = true; }
+    catch (e) { contasimple.blad = String(e.message || e).slice(0, 300); }
+  }
+  await prisma.$transaction([
+    prisma.esInvoice.updateMany({ where: w, data: { contractorId: null } }),
+    prisma.esInvoiceLineItem.updateMany({ where: w, data: { contractorId: null } }),
+    prisma.salesAgentContractor.deleteMany({ where: { system: 'es', contractorId: id } }),
+    prisma.contractor.updateMany({ where: { linkedEsContractorId: id }, data: { linkedEsContractorId: null } }),
+    prisma.esContractor.delete({ where: { id } }),
+  ]);
+  if (c.contasimpleId != null) await dodajEsUsuniety(prisma, c.contasimpleId);
+  console.log(`[contasimple] USUNIĘTO ES ${c.organization || c.name} (${c.nif || 'bez NIF'}) id=${id} cs=${c.contasimpleId} remote=${JSON.stringify(contasimple)} force=${force} kto=${(req.crm && req.crm.user) || 'system'}`);
+  const info = !contasimple.proba ? 'Klient nie miał powiązania z Contasimple.'
+    : contasimple.usunieto ? 'Usunięto także w Contasimple.'
+    : `W Contasimple został (odmowa: ${contasimple.blad}); CRM nie odtworzy go przy syncu.`;
+  res.json({ ok: true, deleted: { id, name: c.organization || c.name, nif: c.nif }, counts, contasimple, info });
+}));
+
 router.patch('/contractors/:id', asyncHandler(async (req, res) => {
   const existing = await prisma.esContractor.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: 'contractor not found' });
@@ -3592,6 +3642,8 @@ router.post('/invoices/backfill-contractor-mapping', asyncHandler(async (req, re
 
     if (!contractor) {
       try {
+        const { esUsunieteIds } = require('../services/contasimple-helpers');
+        if ((await esUsunieteIds(prisma)).has(Number(targetEntityId))) { skipped++; continue; } // usunięty w CRM
         const csCustomer = await cs.getCustomer(targetEntityId);
         const c = (csCustomer && csCustomer.data) || csCustomer;
         if (!c) { skipped++; continue; }
