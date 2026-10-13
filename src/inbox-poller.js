@@ -160,7 +160,9 @@ function isPgfMail(mail) {
 const BLOCKED_SUBJECT_KEYWORDS = [
   'mail delivery', 'undelivered', 'delivery failed', 'failure notice',
   'returned mail', 'undeliverable', 'out of office', 'auto-reply',
-  'autoreply', 'automatische antwort', 'absence du bureau', 'unsubscribe',
+  'autoreply', 'automatische antwort', 'absence du bureau',
+  // 'unsubscribe' USUNIĘTE (13.10.2026): temat „unsubscribe" to zwykle CZŁOWIEK
+  // proszący o wypis z mailingu — taki mail ma dojść, nie zniknąć bez śladu.
   // Email-bounce specific (no courier ambiguity)
   'nicht zustellbar', 'non remis', 'sender rejected',
   'mail delivery failed', 'message not delivered',
@@ -191,9 +193,21 @@ const NEWSLETTER_BODY_KEYWORDS = [
 ];
 
 // Returns reason string if newsletter, null if ok
+/* 13.10.2026: słowa „unsubscribe / wypisz się / abmelden / darse de baja" w
+ * ogonie maila oznaczały newsletter i mail szedł do kosza BEZ ZAPISU. Ale
+ * dokładnie tych słów używa człowiek, który odpisuje na nasz mailing „proszę
+ * mnie wypisać" — i taki mail znikał. Dlatego: (1) prośba o wypis wykryta w
+ * NIEcytowanej części maila nigdy nie jest newsletterem, (2) same słowa
+ * kluczowe liczą się tylko w długich mailach (prawdziwy newsletter ma
+ * tysiące znaków; krótka prośba o wypis idzie do klasyfikacji i na Telegram).
+ * Nagłówek List-Unsubscribe zostaje twardym dowodem masówki. */
+const MIN_DLUGOSC_NEWSLETTERA = 1500;
 function newsletterFilter(mail) {
   if (mail.listUnsubscribe) return 'list-unsubscribe header';
-  const tail = (mail.bodyText || '').toLowerCase().slice(-500);
+  if (wykryjWypis(mail)) return null;
+  const body = (mail.bodyText || '');
+  if (body.length < MIN_DLUGOSC_NEWSLETTERA) return null;
+  const tail = body.toLowerCase().slice(-500);
   const kw = NEWSLETTER_BODY_KEYWORDS.find(k => tail.includes(k));
   if (kw) return 'unsubscribe link';
   return null;
@@ -312,6 +326,50 @@ async function czyOdrzucicTwardo(mail, inbox, powod) {
   if (!czyOmylnaRegula(powod)) return powod;
   if (await czyZnanyNadawca(mail.fromEmail)) return null;
   return powod;
+}
+
+/* PROŚBA O WYPIS Z MAILINGU (13.10.2026).
+ *
+ * Co się działo: odpowiedzi „Bitte abmelden von diesem E-Mail!!" i „Bitte
+ * löscht unseren Kontakt von eurer Liste!" Haiku oceniał jako SPAM (prompt:
+ * „SPAM: commercial, promotional, newsletter"), nadawca nie był „znany"
+ * (mailing wychodzi z n8n, nie z CRM, więc nie ma maila wychodzącego), mail
+ * lądował ukryty z isRead=true — bez Telegrama, bez pusha, bez śladu dla
+ * człowieka. Adres zostawał na liście i dostawał kolejne mailingi.
+ *
+ * Wykrywamy deterministycznie, w NIEcytowanej części maila (bez „>" i bez
+ * tego, co pod „Von:/From:/Am … schrieb/El … escribió/Le … a écrit"),
+ * w językach naszych kampanii. Trafienie = CLIENT_REPLY z tagiem `wypis`,
+ * Telegram z nagłówkiem 🚫 WYPIS Z MAILINGU, push, zadanie w kalendarzu. */
+const WZORCE_WYPISU = [
+  /unsubscrib/i, /\bopt[ -]?out\b/i, /\b(remove|take|delete)\s+(me|us|our\s+\w+)\s+(from|off)\b/i, /\bstop\s+(sending|emailing|contacting)/i, /\bdo\s+not\s+(contact|email)\s+(me|us)/i, /\bno\s+(more|further)\s+(e-?mails|messages)/i,
+  /abmelden|abbestellen|austragen/i, /l(ö|oe)sch(t|en)\b.{0,40}\b(kontakt|adresse|uns)/i, /\b(aus|von)\s+(eurer|ihrer|der|eure|ihre)\s+(liste|verteiler)/i, /keine\s+(weiteren\s+)?(e-?mails|mails|werbung|nachrichten|newsletter)/i, /nicht\s+mehr\s+(kontaktieren|anschreiben|schreiben|zusenden|senden)/i, /\bkein\s+interesse\b/i,
+  /wypisz|wypisa|usu(ń|n)\s+(mnie|nas|nasz)/i, /prosz(ę|e)\s+(nie|o\s+nie)\s+(wysy|pisa)/i,
+  /d(é|e)sabonn|d(é|e)sinscri/i, /ne\s+plus\s+(recevoir|m'envoyer|nous\s+envoyer)/i, /(retirez|supprimez|enlevez)[- ]?(moi|nous|notre)/i,
+  /darse\s+de\s+baja|dar(me|nos|se)\s+de\s+baja|baja\s+de\s+(la\s+)?lista/i, /no\s+(deseo|quiero|queremos|deseamos)\s+recibir/i, /dejen?\s+de\s+(enviar|mandar)/i, /elim(í|i)n(e|en|ar)(me|nos)/i,
+  /rimuov|cancellat(e|emi|eci)|disiscri/i, /non\s+(voglio|vogliamo)\s+(più\s+)?ricevere/i,
+  /uitschrijven|afmelden/i, /geen\s+(e-?mails|mails|berichten)\s+meer/i,
+  /cancelar\s+(a\s+)?(subscri|inscri)|remover?\s+(o\s+)?(meu|nosso)\s+(e-?mail|contacto)/i,
+];
+// Tylko to, co napisał nadawca — bez cytatu naszego maila pod spodem.
+function czescWlasnaMaila(mail) {
+  const body = String(mail.bodyText || '');
+  const cut = body.search(/(^|\n)\s*(>|von:|from:|de:|da:|od:|-{3,}\s*(original|ursprüngliche|urspruengliche|mensaje original|message d'origine|wiadomość oryginalna)|am\s.{3,60}\sschrieb|op\s.{3,60}\sschreef|el\s.{3,80}\sescribi|le\s.{3,80}\sa\s(é|e)crit|on\s.{3,80}\swrote|il\s.{3,80}\sha\sscritto|w\sdniu\s.{3,80}\snapisa)/i);
+  return (cut >= 0 ? body.slice(0, cut) : body).slice(0, 1200);
+}
+function wykryjWypis(mail) {
+  const tekst = `${mail.subject || ''}\n${czescWlasnaMaila(mail)}`;
+  const hit = WZORCE_WYPISU.find(re => re.test(tekst));
+  return hit ? String(hit) : null;
+}
+/* Odpowiedź na NASZ mail (cytuje surfstickbell w treści i jest odpowiedzią)
+ * nie jest spamem, choćby model tak orzekł — np. partner komisowy przysyła
+ * podsumowanie sprzedaży w odpowiedzi na nasz mailing. Nie dotyczy
+ * AUTO_REPLY (autorespondery też cytują). */
+function odpowiedzNaNaszMail(mail) {
+  const subject = String(mail.subject || '');
+  const jestOdpowiedzia = !!mail.inReplyTo || /^\s*(re|aw|odp|sv|antw|ref|r)\s*:/i.test(subject);
+  return jestOdpowiedzia && /surfstickbell\.(com|fr|es|pl)/i.test(String(mail.bodyText || ''));
 }
 
 // ============ HTML STRIP ============
@@ -1439,6 +1497,17 @@ async function processAccount(account) {
          * newsletter z naglowkiem List-Unsubscribe), gdzie nie ma miejsca
          * na pomylke ocenna. */
         let ukryjJakoSpam = false;
+        /* Prośba o wypis z mailingu — ZAWSZE widoczna i ZAWSZE na Telegram,
+         * niezależnie od oceny modelu (patrz wykryjWypis). */
+        const wypis = wykryjWypis(mail);
+        if (wypis && category !== 'CLIENT_REPLY') {
+          console.log(`[inbox-poller] ${inbox}: ${category} ale to PROŚBA O WYPIS (${wypis}) od ${mail.fromEmail} — CLIENT_REPLY`);
+          category = 'CLIENT_REPLY';
+        }
+        if (category === 'SPAM' && odpowiedzNaNaszMail(mail)) {
+          console.log(`[inbox-poller] ${inbox}: SPAM wg modelu, ale to ODPOWIEDŹ NA NASZ MAIL od ${mail.fromEmail} — nie ukrywam`);
+          category = 'CLIENT_REPLY';
+        }
         if (category === 'SPAM' || category === 'AUTO_REPLY') {
           if (await czyZnanyNadawca(mail.fromEmail)) {
             /* Nadawca, do ktorego SAMI kiedys pisalismy albo ktory jest w CRM,
@@ -1543,7 +1612,7 @@ async function processAccount(account) {
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
             tags: [category, effectiveCountry, effectiveLanguage,
-              ukryjJakoSpam ? 'ukryty-filtrem' : null].filter(Boolean),
+              ukryjJakoSpam ? 'ukryty-filtrem' : null, wypis ? 'wypis' : null].filter(Boolean),
             contractorId,
             // Ukryty filtrem = od razu przeczytany: nie zasmieca skrzynki i nie
             // idzie na Telegram (patrz bramka niżej), ale JEST i da się go znaleźć.
@@ -1737,8 +1806,9 @@ async function processAccount(account) {
           let msg = `${prefix} ${inbox}@ / Kraj: ${effectiveCountry} | ${effectiveLanguage}\nOd: ${mail.fromName} &lt;${mail.fromEmail}&gt;\nTemat: ${subject_pl}\n${summaryPlOut}${vatLines}${contractorLine}${attachmentInfo}${ctxLine}`;
           // Czysta wersja dla usera na Telegram — tylko kto / na jaki mail / temat /
           // tresc (+ ew. zalaczniki). Bez Kraj/VAT/hintow/[ctx:], realne < >.
-          const tgPrefix = category === 'COURIER_ALERT' ? '🚨 ALERT' : '📧';
-          const tgMsg = `${tgPrefix} ${inbox}@\nOd: ${mail.fromName || ''} <${mail.fromEmail}>\nTemat: ${subject_pl}\n\n${summaryPlOut}${attachmentInfo}`;
+          const tgPrefix = wypis ? '🚫 WYPIS Z MAILINGU' : category === 'COURIER_ALERT' ? '🚨 ALERT' : '📧';
+          const wypisLine = wypis ? `\n\n→ Usuń ${mail.fromEmail} z listy mailingowej (zadanie w kalendarzu).` : '';
+          const tgMsg = `${tgPrefix} ${inbox}@\nOd: ${mail.fromName || ''} <${mail.fromEmail}>\nTemat: ${subject_pl}\n\n${summaryPlOut}${attachmentInfo}${wypisLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, tgMsg);
@@ -1752,7 +1822,7 @@ async function processAccount(account) {
             try {
               const { sendPushToAll } = require('./routes/push');
               await sendPushToAll(prisma, {
-                title: contractorName || mail.fromName || mail.fromEmail || 'Nowy mail',
+                title: wypis ? `🚫 Wypis z mailingu: ${mail.fromEmail}` : (contractorName || mail.fromName || mail.fromEmail || 'Nowy mail'),
                 body: subject_pl || mail.subject || '',
                 url: `/emails?open=${savedEmail.id}`,
                 tag: `email-${savedEmail.id}`,
@@ -1762,6 +1832,23 @@ async function processAccount(account) {
             }
           } catch (tgErr) {
             console.error(`[inbox-poller] Telegram error:`, tgErr.message);
+          }
+
+          // Wypis: zadanie w kalendarzu (na dziś) + status na liście mailingowej
+          // + ślad w aktywności. Best-effort — nic z tego nie blokuje maila.
+          if (wypis) {
+            try {
+              const dzis = new Date(); dzis.setHours(12, 0, 0, 0);
+              await prisma.task.create({ data: {
+                title: `Wypisać z mailingu: ${mail.fromEmail}`,
+                description: `${mail.fromName || ''} <${mail.fromEmail}> prosi o usunięcie z listy mailingowej (${inbox}@).\n„${czescWlasnaMaila(mail).trim().slice(0, 300)}"`,
+                dueDate: dzis, contractorId, emailId: savedEmail.id, emailAddress: mail.fromEmail, contactName: mail.fromName || null,
+                source: 'ai', extras: { subject: mail.subject || '', regula: wypis },
+              } });
+              await prisma.mailingContact.updateMany({ where: { email: { equals: mail.fromEmail, mode: 'insensitive' } }, data: { status: 'UNSUBSCRIBED' } });
+              const { logActivity } = require('./services/activity-log');
+              logActivity(prisma, { type: 'mailing.unsubscribed', summary: `Prośba o wypis z mailingu: ${mail.fromEmail}`, source: 'imap', contractorId, emailId: savedEmail.id, actorType: 'system', payload: { fromEmail: mail.fromEmail, inbox, regula: wypis }, tags: [`inbox:${inbox}`] });
+            } catch (e) { console.error('[inbox-poller] wypis: zadanie/lista nieudane:', e.message); }
           }
 
           try {
@@ -2666,4 +2753,4 @@ async function rescanSentSince(inbox, daysBack = 30) {
   }
 }
 
-module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats };
+module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter };
