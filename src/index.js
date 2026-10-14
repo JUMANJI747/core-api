@@ -230,6 +230,12 @@ const server = app.listen(PORT, () => {
   // Braki binariów mają krzyczeć w logu deployu, a nie czekać na pierwsze
   // żądanie użytkownika (tak przeszło niezauważone „spawn pdfinfo ENOENT").
   require('./services/bin-check').ostrzezOBrakachPrzyStarcie();
+  // Statusy zamówień magazynu z GlobKurier: pierwszy raz po minucie, potem co 30 min.
+  const statusyMagazynu = () => require('./services/magazyn-statusy').odswiezStatusyMagazynu(prisma, { force: true })
+    .then(r => { if (r && r.zmienione) console.log('[magazyn-statusy] zmienione:', r.zmienione, '/ sprawdzone:', r.sprawdzono); })
+    .catch(e => console.error('[magazyn-statusy]', e.message));
+  setTimeout(statusyMagazynu, 60 * 1000).unref();
+  setInterval(statusyMagazynu, 30 * 60 * 1000).unref();
 });
 
 // ============ GK COUNTRIES SELF-HEAL ============

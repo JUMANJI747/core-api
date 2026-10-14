@@ -333,6 +333,13 @@ model WarehouseOrder {
   updatedAt     DateTime @updatedAt
   gotoweAt      DateTime?
   zatwierdzonoAt DateTime?
+  // Status z GlobKurier (14.10.2026): odświeżany w tle co 30 min, przy wejściu
+  // na listę i na żądanie — KURIER przechodzi w WYSLANE, gdy paczka ruszy.
+  gkStatus          String?   // IN_PROGRESS | IN_TRANSIT | DELIVERED | CANCELED | RETURNED_TO_SENDER…
+  gkStatusAt        DateTime? // kiedy sprawdzono
+  wyslanoAt         DateTime? // pierwsze zdarzenie po odbiorze od nadawcy
+  dostarczonoAt     DateTime?
+  ostatnieZdarzenie String?   // np. „W trakcie dostarczania · 14.10 08:45 · Warszawa"
 
   items         WarehouseOrderItem[]
   dokumenty     WarehouseOrderDoc[] // nasze PDF-y do paczki (WZ, FV) — magazyn drukuje i wkłada

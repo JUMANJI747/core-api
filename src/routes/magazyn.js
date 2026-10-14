@@ -64,6 +64,7 @@ function toPublic(o, rola = 'owner') {
     gkHash: o.gkHash, gkNumber: o.gkNumber, carrier: o.carrier,
     utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto && o.zatwierdzilKto !== 'auto-list' ? 'Surf Stick' : o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
+    gkStatus: o.gkStatus || null, gkStatusAt: o.gkStatusAt || null, wyslanoAt: o.wyslanoAt || null, dostarczonoAt: o.dostarczonoAt || null, ostatnieZdarzenie: o.ostatnieZdarzenie || null,
     items: (o.items || []).map(i => ({
       id: i.id, ean: i.ean, name: i.name, variant: i.variant, symbol: i.symbol || null, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
     })),
@@ -201,15 +202,21 @@ const linieDoStocku = (items) => items.filter(i => !i.packaging);
 router.get('/zamowienia', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const status = String(req.query.status || 'aktywne');
-  let where = status === 'aktywne' ? { status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }
+  // „Aktywne" = do spakowania / spakowane / u kuriera + WYSŁANE z ostatnich 14 dni
+  // (widać „wysłane · 3 dni temu", potem schodzi z listy) — jak zakładka Wysyłki.
+  const dni14 = new Date(Date.now() - 14 * 24 * 3600 * 1000);
+  const aktywne = { OR: [{ status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }, { status: 'WYSLANE', OR: [{ wyslanoAt: { gte: dni14 } }, { wyslanoAt: null, updatedAt: { gte: dni14 } }] }] };
+  let where = status === 'aktywne' ? aktywne
     : status === 'wszystkie' ? {} : { status: status.toUpperCase() };
   // Magazyn: tylko to, co go dotyczy — nigdy anulowane (nie były jego) ani
   // historia starsza niż 60 dni.
   if (rola(req) === 'magazyn') {
     where = status === 'aktywne'
-      ? { status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }
+      ? aktywne
       : { status: { in: ['NOWE', 'GOTOWE', 'KURIER', 'WYSLANE'] }, createdAt: { gte: new Date(Date.now() - 60 * 24 * 3600 * 1000) } };
   }
+  // Status z GlobKurier odświeżamy W TLE (throttle 10 min) — lista nie czeka na GK.
+  setImmediate(() => require('../services/magazyn-statusy').odswiezStatusyMagazynu(prisma).catch(e => console.error('[magazyn-statusy]', e.message)));
   const rows = await prisma.warehouseOrder.findMany({ where, include: ORDER_INCLUDE, orderBy: { numer: 'desc' }, take: 300 });
   res.json({ ok: true, zamowienia: rows.map(x => toPublic(x, rola(req))), rola: rola(req) });
 }));
@@ -290,6 +297,7 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
   if (b.status === 'WYSLANE') {
     if (o.status !== 'KURIER') return res.status(400).json({ ok: false, error: `„wysłane" tylko z „kurier zamówiony" (jest ${o.status})` });
     data.status = 'WYSLANE';
+    if (!o.wyslanoAt) data.wyslanoAt = new Date();
   }
   if (b.status === 'NOWE' && o.status === 'ANULOWANE') {
     Object.assign(data, { status: 'NOWE', kartonNazwa: null, dlugoscCm: null, szerokoscCm: null, wysokoscCm: null, wagaKg: null, uwagiMagazynu: null, kurierBlad: null, gotoweAt: null, gotoweKto: null });
@@ -497,6 +505,14 @@ router.delete('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) 
   if (!r.count) return res.status(404).json({ ok: false, error: 'brak dokumentu' });
   const u = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
+}));
+
+// Właściciel: odśwież statusy z GlobKurier od razu (bez czekania na cykl 30 min).
+router.post('/zamowienia/odswiez-statusy', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const { odswiezStatusyMagazynu } = require('../services/magazyn-statusy');
+  const r = await odswiezStatusyMagazynu(req.app.locals.prisma, { force: true });
+  res.json({ ok: true, ...r });
 }));
 
 // Właściciel cofa „gotowe" (np. magazyn się pomylił) — ruch odwrotny.
