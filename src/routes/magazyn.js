@@ -59,7 +59,12 @@ function toPublic(o) {
     utworzyl: o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
     items: (o.items || []).map(i => ({
-      id: i.id, ean: i.ean, name: i.name, variant: i.variant, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
+      id: i.id, ean: i.ean, name: i.name, variant: i.variant, symbol: i.symbol || null, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
+    })),
+    // 14.10.2026: toPublic gubił `symbol` pozycji i listę dokumentów — panel
+    // pokazywał „brak kodu" przy wszystkim i nie widział wgranej WZ.
+    dokumenty: (o.dokumenty || []).map(d => ({
+      id: d.id, filename: d.filename, contentType: d.contentType, size: d.size, opis: d.opis || null, dodal: d.dodal || null, createdAt: d.createdAt,
     })),
   };
 }
@@ -392,7 +397,7 @@ router.post('/zamowienia/:id/dokumenty', asyncHandler(async (req, res) => {
   if (contentType === 'application/pdf' && buf.slice(0, 5).toString() !== '%PDF-') return res.status(400).json({ ok: false, error: 'to nie jest PDF' });
   await prisma.warehouseOrderDoc.create({ data: { orderId: o.id, filename, contentType, size: buf.length, data: buf, opis: b.opis ? String(b.opis).slice(0, 120) : null, dodal: kto(req) } });
   const u = await prisma.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: u });
+  res.json({ ok: true, zamowienie: toPublic(u) });
 }));
 
 router.get('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) => {
@@ -411,7 +416,7 @@ router.delete('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) 
   const r = await prisma.warehouseOrderDoc.deleteMany({ where: { id: req.params.docId, orderId: req.params.id } });
   if (!r.count) return res.status(404).json({ ok: false, error: 'brak dokumentu' });
   const u = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: u });
+  res.json({ ok: true, zamowienie: toPublic(u) });
 }));
 
 // Właściciel cofa „gotowe" (np. magazyn się pomylił) — ruch odwrotny.
