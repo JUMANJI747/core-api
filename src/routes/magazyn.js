@@ -330,9 +330,23 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
     }
   } else {
     const gkNumber = b.gkNumber ? String(b.gkNumber).trim() : '';
-    const gkHash = b.gkHash ? String(b.gkHash).trim() : '';
+    let gkHash = b.gkHash ? String(b.gkHash).trim() : '';
+    let carrierZnaleziony = null;
     if (!gkNumber && !gkHash) return res.status(400).json({ ok: false, error: 'podaj numer zamówienia GK albo hash' });
-    data = { status: 'KURIER', gkHash: gkHash || null, gkNumber: gkNumber || null, carrier: b.carrier ? String(b.carrier).slice(0, 60) : null, kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
+    /* 14.10.2026: sam numer GK nie dawał magazynowi listu (etykieta idzie po
+     * hashu). Dociągamy hash z ostatnich zamówień GK — jak /send-label. Gdy GK
+     * nie odpowie, podpinamy po numerze jak dotąd, a list wgrywa się jako PDF. */
+    if (gkNumber && !gkHash) {
+      try {
+        const { fetchOrdersPaged, findOrderInList } = require('../glob-client');
+        const found = findOrderInList(await fetchOrdersPaged(3), gkNumber);
+        if (found) {
+          gkHash = String(found.hash || found.orderHash || '').trim();
+          const c = found.carrier; carrierZnaleziony = (c && typeof c === 'object') ? (c.name || null) : (c || null);
+        }
+      } catch (e) { console.warn(`[magazyn] hash po numerze ${gkNumber} nieznaleziony:`, e.message); }
+    }
+    data = { status: 'KURIER', gkHash: gkHash || null, gkNumber: gkNumber || null, carrier: b.carrier ? String(b.carrier).slice(0, 60) : (carrierZnaleziony ? String(carrierZnaleziony).slice(0, 60) : null), kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
   }
   const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data, include: ORDER_INCLUDE });
   res.json({ ok: true, zamowienie: toPublic(u) });
