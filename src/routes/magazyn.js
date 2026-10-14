@@ -36,7 +36,12 @@ function tylkoWlasciciel(req, res) {
   return true;
 }
 
-const ORDER_INCLUDE = { items: { orderBy: { sort: 'asc' } }, contractor: { select: { id: true, name: true } } };
+const ORDER_INCLUDE = {
+  items: { orderBy: { sort: 'asc' } },
+  contractor: { select: { id: true, name: true } },
+  // metadane dokumentów — bez `data`, żeby lista nie ciągnęła PDF-ów
+  dokumenty: { select: { id: true, filename: true, contentType: true, size: true, opis: true, dodal: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+};
 
 function toPublic(o) {
   return {
@@ -346,6 +351,53 @@ router.get('/zamowienia/:id/etykieta', asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="list-${o.numer}.pdf"`);
   res.send(result.body);
+}));
+
+/* DOKUMENTY DO PACZKI (14.10.2026). Super-Pharm (i nie tylko) wymaga WZ/FV
+ * w kartonie, a pakuje magazyn zewnętrzny — więc nasz PDF musi być przy
+ * zamówieniu, a magazyn ma go wydrukować. Upload: tylko właściciel, base64 w
+ * JSON (konwencja repo), PDF albo obraz, do 8 MB. Odczyt: obie role (magazyn
+ * widzi tylko dokumenty przy zamówieniu, które i tak ma na liście). */
+const DOC_MAX_B = 8 * 1024 * 1024;
+const DOC_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
+router.post('/zamowienia/:id/dokumenty', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, select: { id: true, numer: true } });
+  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  const b = req.body || {};
+  const b64 = String(b.dataBase64 || b.data || '').replace(/^data:[^;]+;base64,/, '');
+  if (!b64) return res.status(400).json({ ok: false, error: 'brak pliku (dataBase64)' });
+  let buf;
+  try { buf = Buffer.from(b64, 'base64'); } catch (_) { return res.status(400).json({ ok: false, error: 'zły base64' }); }
+  if (!buf.length) return res.status(400).json({ ok: false, error: 'pusty plik' });
+  if (buf.length > DOC_MAX_B) return res.status(413).json({ ok: false, error: `plik za duży (${Math.round(buf.length / 1024 / 1024)} MB, max 8 MB)` });
+  const filename = String(b.filename || 'dokument.pdf').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
+  let contentType = String(b.contentType || '').toLowerCase();
+  if (!DOC_TYPES.includes(contentType)) contentType = /\.png$/i.test(filename) ? 'image/png' : /\.jpe?g$/i.test(filename) ? 'image/jpeg' : 'application/pdf';
+  if (contentType === 'application/pdf' && buf.slice(0, 5).toString() !== '%PDF-') return res.status(400).json({ ok: false, error: 'to nie jest PDF' });
+  await prisma.warehouseOrderDoc.create({ data: { orderId: o.id, filename, contentType, size: buf.length, data: buf, opis: b.opis ? String(b.opis).slice(0, 120) : null, dodal: kto(req) } });
+  const u = await prisma.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
+  res.json({ ok: true, zamowienie: u });
+}));
+
+router.get('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const d = await prisma.warehouseOrderDoc.findFirst({ where: { id: req.params.docId, orderId: req.params.id } });
+  if (!d) return res.status(404).json({ ok: false, error: 'brak dokumentu' });
+  res.setHeader('Content-Type', d.contentType || 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(d.filename)}"`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.send(Buffer.from(d.data));
+}));
+
+router.delete('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const r = await prisma.warehouseOrderDoc.deleteMany({ where: { id: req.params.docId, orderId: req.params.id } });
+  if (!r.count) return res.status(404).json({ ok: false, error: 'brak dokumentu' });
+  const u = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
+  res.json({ ok: true, zamowienie: u });
 }));
 
 // Właściciel cofa „gotowe" (np. magazyn się pomylił) — ruch odwrotny.

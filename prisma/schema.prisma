@@ -335,10 +335,29 @@ model WarehouseOrder {
   zatwierdzonoAt DateTime?
 
   items         WarehouseOrderItem[]
+  dokumenty     WarehouseOrderDoc[] // nasze PDF-y do paczki (WZ, FV) — magazyn drukuje i wkłada
   ruchy         StockMovement[]
 
   @@index([status])
   @@index([createdAt])
+}
+
+// Dokumenty do paczki (14.10.2026): właściciel wgrywa PDF (WZ/FV wygenerowane
+// u nas), magazyn klika „Drukuj" i wkłada do kartonu — Super-Pharm wymaga WZ
+// i FV w paczce. Plik w bazie (bytea) — jak EmailAttachment; małe PDF-y.
+model WarehouseOrderDoc {
+  id          String         @id @default(uuid())
+  orderId     String
+  order       WarehouseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String         @default("application/pdf")
+  size        Int
+  data        Bytes
+  opis        String? // np. "WZ 12/2026", "FV 251/2026"
+  dodal       String?
+  createdAt   DateTime       @default(now())
+
+  @@index([orderId])
 }
 
 model WarehouseOrderItem {
