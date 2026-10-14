@@ -43,20 +43,26 @@ const ORDER_INCLUDE = {
   dokumenty: { select: { id: true, filename: true, contentType: true, size: true, opis: true, dodal: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
 };
 
-function toPublic(o) {
+/* Kształt zamówienia dla frontu. Rola `magazyn` to OBCA firma (audyt
+ * 14.10.2026): nie dostaje identyfikatorów CRM (kontrahent, mail, FV),
+ * e-maila odbiorcy ani loginów właściciela (utworzyl/zatwierdzilKto/dodal —
+ * zamiast nich „Surf Stick"). Telefon odbiorcy zostaje — jest na liście. */
+function toPublic(o, rola = 'owner') {
+  const obcy = rola === 'magazyn';
+  const odb = o.odbiorca || {};
   return {
     id: o.id, numer: o.numer, status: o.status,
-    contractorId: o.contractorId, contractorName: o.contractor ? o.contractor.name : null,
-    odbiorca: o.odbiorca || {},
+    contractorId: obcy ? null : o.contractorId, contractorName: obcy ? null : (o.contractor ? o.contractor.name : null),
+    odbiorca: obcy ? { ...odb, email: '' } : odb,
     uwagiNasze: o.uwagiNasze, uwagiMagazynu: o.uwagiMagazynu,
-    invoiceNumber: o.invoiceNumber, emailId: o.emailId,
+    invoiceNumber: obcy ? null : o.invoiceNumber, emailId: obcy ? null : o.emailId,
     karton: o.kartonNazwa || o.dlugoscCm ? {
       nazwa: o.kartonNazwa, dlugoscCm: o.dlugoscCm, szerokoscCm: o.szerokoscCm, wysokoscCm: o.wysokoscCm,
       wagaKg: o.wagaKg != null ? Number(o.wagaKg) : null,
     } : null,
     autoList: !!o.autoList, kurierBlad: o.kurierBlad || null,
     gkHash: o.gkHash, gkNumber: o.gkNumber, carrier: o.carrier,
-    utworzyl: o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: o.zatwierdzilKto,
+    utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto && o.zatwierdzilKto !== 'auto-list' ? 'Surf Stick' : o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
     items: (o.items || []).map(i => ({
       id: i.id, ean: i.ean, name: i.name, variant: i.variant, symbol: i.symbol || null, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
@@ -64,7 +70,7 @@ function toPublic(o) {
     // 14.10.2026: toPublic gubił `symbol` pozycji i listę dokumentów — panel
     // pokazywał „brak kodu" przy wszystkim i nie widział wgranej WZ.
     dokumenty: (o.dokumenty || []).map(d => ({
-      id: d.id, filename: d.filename, contentType: d.contentType, size: d.size, opis: d.opis || null, dodal: d.dodal || null, createdAt: d.createdAt,
+      id: d.id, filename: d.filename, contentType: d.contentType, size: d.size, opis: d.opis || null, dodal: obcy && d.dodal ? 'Surf Stick' : (d.dodal || null), createdAt: d.createdAt,
     })),
   };
 }
@@ -81,8 +87,8 @@ function rozbijPozycje(items, catalog) {
   let sort = 0;
   for (const it of items) {
     const ean = String(it.ean || '').trim();
-    const qty = parseInt(it.qty, 10);
-    if (!ean || !(qty > 0)) { bledy.push(`pozycja bez EAN albo ilości: ${JSON.stringify(it)}`); continue; }
+    const qty = Number(String(it.qty ?? '').trim());
+    if (!ean || !Number.isInteger(qty) || qty <= 0 || qty > 100000) { bledy.push(`pozycja bez EAN albo ze złą ilością (całkowita 1–100000): ${JSON.stringify(it)}`); continue; }
     const p = byEan.get(ean);
     if (!p) { bledy.push(`nieznany produkt ${ean}`); continue; }
     if (/-GENERIC$/i.test(ean)) { bledy.push(`„${p.name}" bez koloru — magazyn musi wiedzieć, co pakuje. Wybierz kolory albo box mix.`); continue; }
@@ -138,6 +144,7 @@ function brakiOdbiorcy(od) {
   if (!o.street) braki.push('ulica');
   if (!o.postCode) braki.push('kod');
   if (!o.city) braki.push('miasto');
+  if (!String(o.phone || '').replace(/\D/g, '')) braki.push('telefon');
   return braki;
 }
 
@@ -178,12 +185,12 @@ async function zamowKuriera(o, prisma) {
     weight: Number(o.wagaKg), length: o.dlugoscCm, width: o.szerokoscCm, height: o.wysokoscCm,
     invoiceNumber: o.invoiceNumber || undefined,
   });
-  if (!q.body || !q.body.ok) throw new Error(`wycena: ${(q.body && q.body.error) || `HTTP ${q.status}`}`);
+  if (!q.body || !q.body.ok) throw new Error(`wycena: ${(q.body && (q.body.error || q.body.message)) || `HTTP ${q.status}`}`);
   const oferta = (q.body.offers || [])[0];
   if (!oferta) throw new Error('wycena bez ofert');
   const r = await selfCall('POST', '/api/glob/order', { quoteId: q.body.quoteId, productId: oferta.productId });
-  if (!r.body || !r.body.ok) throw new Error(`zamówienie: ${(r.body && r.body.error) || `HTTP ${r.status}`}`);
-  return { gkHash: r.body.hash || null, gkNumber: r.body.orderNumber || null, carrier: r.body.carrier || oferta.carrier || null, quoteId: String(q.body.quoteId) };
+  if (!r.body || !r.body.ok) throw new Error(`zamówienie: ${(r.body && (r.body.error || r.body.message)) || `HTTP ${r.status}`}`);
+  return { gkHash: r.body.hash || null, gkNumber: r.body.orderNumber || null, carrier: r.body.carrier || oferta.carrier || null, quoteId: String(q.body.quoteId), cena: oferta.price != null ? Number(oferta.price) : null };
 }
 
 /** Linie, które realnie schodzą ze stanu: bez nagłówków boxów. */
@@ -194,17 +201,24 @@ const linieDoStocku = (items) => items.filter(i => !i.packaging);
 router.get('/zamowienia', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const status = String(req.query.status || 'aktywne');
-  const where = status === 'aktywne' ? { status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }
+  let where = status === 'aktywne' ? { status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }
     : status === 'wszystkie' ? {} : { status: status.toUpperCase() };
+  // Magazyn: tylko to, co go dotyczy — nigdy anulowane (nie były jego) ani
+  // historia starsza niż 60 dni.
+  if (rola(req) === 'magazyn') {
+    where = status === 'aktywne'
+      ? { status: { in: ['NOWE', 'GOTOWE', 'KURIER'] } }
+      : { status: { in: ['NOWE', 'GOTOWE', 'KURIER', 'WYSLANE'] }, createdAt: { gte: new Date(Date.now() - 60 * 24 * 3600 * 1000) } };
+  }
   const rows = await prisma.warehouseOrder.findMany({ where, include: ORDER_INCLUDE, orderBy: { numer: 'desc' }, take: 300 });
-  res.json({ ok: true, zamowienia: rows.map(toPublic), rola: rola(req) });
+  res.json({ ok: true, zamowienia: rows.map(x => toPublic(x, rola(req))), rola: rola(req) });
 }));
 
 router.get('/zamowienia/:id', asyncHandler(async (req, res) => {
   const prisma = req.app.locals.prisma;
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
-  res.json({ ok: true, zamowienie: toPublic(o) });
+  res.json({ ok: true, zamowienie: toPublic(o, rola(req)) });
 }));
 
 router.post('/zamowienia', asyncHandler(async (req, res) => {
@@ -248,7 +262,7 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
     },
     include: ORDER_INCLUDE,
   });
-  res.json({ ok: true, zamowienie: toPublic(o) });
+  res.json({ ok: true, zamowienie: toPublic(o, rola(req)) });
 }));
 
 // Właściciel: uwagi, anulowanie. Anulowanie po GOTOWE cofa wydanie ze stanu.
@@ -260,18 +274,43 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
   const data = {};
   if ('uwagiNasze' in b) data.uwagiNasze = b.uwagiNasze ? String(b.uwagiNasze).slice(0, 2000) : null;
+  /* Przejścia statusów (audyt 14.10.2026): ANULOWANE z NOWE/GOTOWE/KURIER
+   * (z GOTOWE i KURIER = COFNIECIE na stan; przy KURIER przesyłkę w GlobKurier
+   * właściciel odwołuje sam, tu czyścimy jej numer), WYSLANE z KURIER,
+   * NOWE z ANULOWANE (z wyzerowaniem kartonu/wagi/błędu kuriera). Zmiana
+   * statusu i ruch stanu w JEDNEJ transakcji z warunkiem na stan wejściowy —
+   * dwa równoległe kliknięcia nie zrobią dwóch ruchów. */
+  let zwrotNaStan = false;
   if (b.status === 'ANULOWANE' && o.status !== 'ANULOWANE') {
-    if (o.status === 'KURIER' || o.status === 'WYSLANE') return res.status(400).json({ ok: false, error: 'kurier już zamówiony — anuluj najpierw przesyłkę' });
+    if (o.status === 'WYSLANE') return res.status(400).json({ ok: false, error: 'paczka już wysłana — nie da się anulować' });
     data.status = 'ANULOWANE';
-    if (o.status === 'GOTOWE') {
-      await prisma.stockMovement.createMany({
-        data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: i.qty, typ: 'COFNIECIE', orderId: o.id, kto: kto(req), uwaga: `anulowano #${o.numer}` })),
-      });
-    }
+    zwrotNaStan = o.status === 'GOTOWE' || o.status === 'KURIER';
+    if (o.status === 'KURIER') Object.assign(data, { gkHash: null, gkNumber: null, carrier: null, quoteId: null, kurierBlad: null });
   }
-  if (b.status === 'NOWE' && o.status === 'ANULOWANE') data.status = 'NOWE';
-  const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u) });
+  if (b.status === 'WYSLANE') {
+    if (o.status !== 'KURIER') return res.status(400).json({ ok: false, error: `„wysłane" tylko z „kurier zamówiony" (jest ${o.status})` });
+    data.status = 'WYSLANE';
+  }
+  if (b.status === 'NOWE' && o.status === 'ANULOWANE') {
+    Object.assign(data, { status: 'NOWE', kartonNazwa: null, dlugoscCm: null, szerokoscCm: null, wysokoscCm: null, wagaKg: null, uwagiMagazynu: null, kurierBlad: null, gotoweAt: null, gotoweKto: null });
+  }
+  if (!Object.keys(data).length) return res.json({ ok: true, zamowienie: toPublic(o, rola(req)) });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const upd = await tx.warehouseOrder.updateMany({ where: { id: o.id, status: o.status }, data });
+      if (upd.count !== 1) throw new Error('STAN_ZMIENIONY');
+      if (zwrotNaStan) {
+        await tx.stockMovement.createMany({
+          data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: i.qty, typ: 'COFNIECIE', orderId: o.id, kto: kto(req), uwaga: `anulowano #${o.numer} (było ${o.status})` })),
+        });
+      }
+    });
+  } catch (e) {
+    if (e.message === 'STAN_ZMIENIONY') return res.status(409).json({ ok: false, error: 'zamówienie w międzyczasie zmieniło stan — odśwież listę' });
+    throw e;
+  }
+  const u = await prisma.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 // Magazyn (i właściciel): paczka gotowa + karton + uwaga. Wydanie ze stanu.
@@ -292,21 +331,43 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
   }
   if (d > 175 || s > 175 || h > 175 || w > 50) return res.status(400).json({ ok: false, error: 'limit kuriera: 175 cm / 50 kg' });
 
-  const u = await prisma.$transaction(async (tx) => {
-    await tx.stockMovement.createMany({
-      data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: -i.qty, typ: 'WYDANIE', orderId: o.id, kto: kto(req), uwaga: `spakowano #${o.numer}` })),
+  // Ostrzeżenie (nie blokada) o brakach wg CRM — magazyn widzi, że księgowy
+  // stan nie zgadza się z półką, zanim paczka pojedzie.
+  const ostrzezenia = [];
+  try {
+    const linie = linieDoStocku(o.items);
+    const grupy = await prisma.stockMovement.groupBy({ by: ['ean'], where: { ean: { in: linie.map(i => i.ean) } }, _sum: { delta: true } });
+    const stan = new Map(grupy.map(g => [g.ean, g._sum.delta || 0]));
+    for (const i of linie) {
+      const ma = stan.get(i.ean) || 0;
+      if (ma < i.qty) ostrzezenia.push(`${i.symbol ? i.symbol + ' ' : ''}${i.name}${i.variant ? ' ' + i.variant : ''}: wg CRM na stanie ${ma}, zamówienie ${i.qty}`);
+    }
+  } catch (e) { console.warn('[magazyn] kontrola stanu nieudana:', e.message); }
+
+  let u;
+  try {
+    u = await prisma.$transaction(async (tx) => {
+      // Najpierw zmiana stanu z WARUNKIEM — drugie kliknięcie (druga karta,
+      // ponowione żądanie po timeout) nie zrobi drugiego WYDANIA.
+      const upd = await tx.warehouseOrder.updateMany({
+        where: { id: o.id, status: 'NOWE' },
+        data: {
+          status: 'GOTOWE', gotoweAt: new Date(), gotoweKto: kto(req),
+          kartonNazwa: b.kartonNazwa ? String(b.kartonNazwa).slice(0, 80) : null,
+          dlugoscCm: d, szerokoscCm: s, wysokoscCm: h, wagaKg: w,
+          uwagiMagazynu: b.uwagiMagazynu ? String(b.uwagiMagazynu).slice(0, 2000) : null,
+        },
+      });
+      if (upd.count !== 1) throw new Error('STAN_ZMIENIONY');
+      await tx.stockMovement.createMany({
+        data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: -i.qty, typ: 'WYDANIE', orderId: o.id, kto: kto(req), uwaga: `spakowano #${o.numer}` })),
+      });
+      return tx.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
     });
-    return tx.warehouseOrder.update({
-      where: { id: o.id },
-      data: {
-        status: 'GOTOWE', gotoweAt: new Date(), gotoweKto: kto(req),
-        kartonNazwa: b.kartonNazwa ? String(b.kartonNazwa).slice(0, 80) : null,
-        dlugoscCm: d, szerokoscCm: s, wysokoscCm: h, wagaKg: w,
-        uwagiMagazynu: b.uwagiMagazynu ? String(b.uwagiMagazynu).slice(0, 2000) : null,
-      },
-      include: ORDER_INCLUDE,
-    });
-  });
+  } catch (e) {
+    if (e.message === 'STAN_ZMIENIONY') return res.status(409).json({ ok: false, error: 'to zamówienie zostało już spakowane (albo zmieniło stan) — odśwież listę' });
+    throw e;
+  }
 
   /* AUTO-LIST. Osobno od transakcji: „gotowe" i zejście ze stanu są faktem
      niezależnie od tego, czy kurier się uda. Błąd kuriera ląduje w kurierBlad
@@ -326,7 +387,7 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
       wynik = await prisma.warehouseOrder.update({ where: { id: u.id }, data: { kurierBlad: String(e.message).slice(0, 500) }, include: ORDER_INCLUDE });
     }
   }
-  res.json({ ok: true, zamowienie: toPublic(wynik) });
+  res.json({ ok: true, zamowienie: toPublic(wynik, rola(req)), ostrzezenia });
 }));
 
 // Właściciel podpina wysyłkę zamówioną RĘCZNIE w Wysyłkach (numer GK albo hash).
@@ -370,7 +431,7 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
     data = { status: 'KURIER', gkHash: gkHash || null, gkNumber: gkNumber || null, carrier: b.carrier ? String(b.carrier).slice(0, 60) : (carrierZnaleziony ? String(carrierZnaleziony).slice(0, 60) : null), kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
   }
   const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u) });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 // Etykieta dla OBU stron — ale tylko przez zamówienie, do którego należy.
@@ -411,9 +472,12 @@ router.post('/zamowienia/:id/dokumenty', asyncHandler(async (req, res) => {
   let contentType = String(b.contentType || '').toLowerCase();
   if (!DOC_TYPES.includes(contentType)) contentType = /\.png$/i.test(filename) ? 'image/png' : /\.jpe?g$/i.test(filename) ? 'image/jpeg' : 'application/pdf';
   if (contentType === 'application/pdf' && buf.slice(0, 5).toString() !== '%PDF-') return res.status(400).json({ ok: false, error: 'to nie jest PDF' });
+  if (contentType === 'image/png' && buf.slice(0, 4).toString('hex') !== '89504e47') return res.status(400).json({ ok: false, error: 'to nie jest PNG' });
+  if (contentType === 'image/jpeg' && buf.slice(0, 3).toString('hex') !== 'ffd8ff') return res.status(400).json({ ok: false, error: 'to nie jest JPEG' });
+  if ((await prisma.warehouseOrderDoc.count({ where: { orderId: o.id } })) >= 10) return res.status(400).json({ ok: false, error: 'max 10 dokumentów przy zamówieniu' });
   await prisma.warehouseOrderDoc.create({ data: { orderId: o.id, filename, contentType, size: buf.length, data: buf, opis: b.opis ? String(b.opis).slice(0, 120) : null, dodal: kto(req) } });
   const u = await prisma.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u) });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 router.get('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) => {
@@ -432,7 +496,7 @@ router.delete('/zamowienia/:id/dokumenty/:docId', asyncHandler(async (req, res) 
   const r = await prisma.warehouseOrderDoc.deleteMany({ where: { id: req.params.docId, orderId: req.params.id } });
   if (!r.count) return res.status(404).json({ ok: false, error: 'brak dokumentu' });
   const u = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u) });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 // Właściciel cofa „gotowe" (np. magazyn się pomylił) — ruch odwrotny.
@@ -442,13 +506,24 @@ router.post('/zamowienia/:id/cofnij-gotowe', asyncHandler(async (req, res) => {
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
   if (o.status !== 'GOTOWE') return res.status(400).json({ ok: false, error: `zamówienie jest w stanie ${o.status}` });
-  const u = await prisma.$transaction(async (tx) => {
-    await tx.stockMovement.createMany({
-      data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: i.qty, typ: 'COFNIECIE', orderId: o.id, kto: kto(req), uwaga: `cofnięto gotowe #${o.numer}` })),
+  let u;
+  try {
+    u = await prisma.$transaction(async (tx) => {
+      const upd = await tx.warehouseOrder.updateMany({
+        where: { id: o.id, status: 'GOTOWE' },
+        data: { status: 'NOWE', gotoweAt: null, gotoweKto: null, kartonNazwa: null, dlugoscCm: null, szerokoscCm: null, wysokoscCm: null, wagaKg: null, uwagiMagazynu: null, kurierBlad: null },
+      });
+      if (upd.count !== 1) throw new Error('STAN_ZMIENIONY');
+      await tx.stockMovement.createMany({
+        data: linieDoStocku(o.items).map(i => ({ ean: i.ean, name: i.name, delta: i.qty, typ: 'COFNIECIE', orderId: o.id, kto: kto(req), uwaga: `cofnięto gotowe #${o.numer}` })),
+      });
+      return tx.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
     });
-    return tx.warehouseOrder.update({ where: { id: o.id }, data: { status: 'NOWE', gotoweAt: null, gotoweKto: null }, include: ORDER_INCLUDE });
-  });
-  res.json({ ok: true, zamowienie: toPublic(u) });
+  } catch (e) {
+    if (e.message === 'STAN_ZMIENIONY') return res.status(409).json({ ok: false, error: 'zamówienie w międzyczasie zmieniło stan — odśwież listę' });
+    throw e;
+  }
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 // ---------- STOCK ----------
@@ -489,8 +564,8 @@ router.post('/stan/ruch', asyncHandler(async (req, res) => {
   const data = [];
   for (const it of items) {
     const ean = String(it.ean || '').trim();
-    const qty = parseInt(it.qty, 10);
-    if (!ean || !Number.isFinite(qty) || qty === 0) continue;
+    const qty = Number(String(it.qty ?? '').trim());
+    if (!ean || !Number.isInteger(qty) || qty === 0 || Math.abs(qty) > 100000) return res.status(400).json({ ok: false, error: `zła ilość przy ${ean || '(brak EAN)'} — liczba całkowita, nie zero` });
     if (typ === 'PRZYJECIE' && qty < 0) return res.status(400).json({ ok: false, error: 'przyjęcie nie może być ujemne — użyj korekty' });
     const p = byEan.get(ean);
     const name = p ? [p.name, p.variant].filter(Boolean).join(' ') : (ean === EKSPOZYTOR.ean ? EKSPOZYTOR.name : null);
@@ -524,6 +599,7 @@ router.post('/kartony', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/kartony/:id', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return; // magazyn może dodawać kartony, usuwać tylko my
   const prisma = req.app.locals.prisma;
   await prisma.warehouseBox.update({ where: { id: req.params.id }, data: { aktywny: false } });
   res.json({ ok: true });

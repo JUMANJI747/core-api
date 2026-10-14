@@ -126,7 +126,8 @@ app.use('/api', (req, res, next) => {
   const user = String(req.headers['x-crm-user'] || '').trim().slice(0, 200);
   const roleRaw = String(req.headers['x-crm-role'] || '').trim();
   const role = roleRaw === 'magazyn' ? 'magazyn' : (user ? 'owner' : null);
-  req.crm = user ? { user, role } : null;
+  // Rola magazyn liczy się także bez nazwy użytkownika (audyt 14.10.2026).
+  req.crm = (user || role === 'magazyn') ? { user: user || null, role } : null;
   if (role === 'magazyn' && !/^\/magazyn(\/|$)/.test(req.path)) {
     console.warn(`[auth] 403 rola=magazyn user=${user} ${req.method} ${req.path}`);
     return res.status(403).json({ error: 'Forbidden for role magazyn' });

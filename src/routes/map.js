@@ -131,7 +131,7 @@ router.get('/map-data', async (req, res) => {
       type: 'FeatureCollection',
       features: [...plFeatures, ...esFeatures],
       mode: authed ? 'private' : 'public',
-      counts: { pl: plFeatures.length, es: esFeatures.length },
+      ...(authed ? { counts: { pl: plFeatures.length, es: esFeatures.length } } : {}), // bez klucza nie zdradzamy wielkości bazy klientów
     });
   } catch (e) {
     console.error('[map-data] error:', e.message);

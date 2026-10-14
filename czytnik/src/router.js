@@ -219,7 +219,7 @@ function router(express, token) {
   });
 
   /* Kogo i z jakim działem wydrukujemy, gdy nie podamy listy w wywołaniu. */
-  r.get('/czytnik/pracownicy', (req, res) => res.json(domyslniPracownicy()));
+  r.get('/czytnik/pracownicy', (req, res) => { if (!auth(req, res)) return; res.json(domyslniPracownicy()); }); // dane osobowe — tylko z tokenem (audyt 14.10.2026)
 
   /* PRÓBA TRZECIEGO GŁOSU: ta sama strona przeczytana przez Google Vision,
      złożona NASZĄ siatką. Osobna trasa, a nie element odczytu — najpierw
