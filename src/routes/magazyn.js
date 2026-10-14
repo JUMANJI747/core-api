@@ -564,7 +564,10 @@ router.get('/stan', asyncHandler(async (req, res) => {
       ilosc: g._sum.delta || 0,
     };
   }).sort((a, b) => (a.name + (a.variant || '')).localeCompare(b.name + (b.variant || ''), 'pl'));
-  res.json({ ok: true, stan, ruchy: ostatnie.map(m => ({ id: m.id, ean: m.ean, name: m.name, delta: m.delta, typ: m.typ, orderId: m.orderId, uwaga: m.uwaga, kto: m.kto, createdAt: m.createdAt })) });
+  // Magazyn widzi stan (po kodach szuka towaru na półce), ale nie historię
+  // ruchów — w niej są loginy i uwagi właściciela (14.10.2026).
+  const ruchy = rola(req) === 'magazyn' ? [] : ostatnie.map(m => ({ id: m.id, ean: m.ean, name: m.name, delta: m.delta, typ: m.typ, orderId: m.orderId, uwaga: m.uwaga, kto: m.kto, createdAt: m.createdAt }));
+  res.json({ ok: true, stan, ruchy });
 }));
 
 // Właściciel: przyjęcie / korekta. items: [{ean, qty}] (qty może być ujemne przy korekcie).
