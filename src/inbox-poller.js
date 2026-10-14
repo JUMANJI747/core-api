@@ -36,6 +36,14 @@ async function sendInboxAlert(text) {
   }
 }
 
+// Alarm o awarii AI — raz na godzinę, żeby przy 30 mailach nie było 30 alarmów.
+let ostatniAlarmAiO = 0;
+async function alarmAiPadlo(inbox, blad) {
+  if (Date.now() - ostatniAlarmAiO < 60 * 60 * 1000) return;
+  ostatniAlarmAiO = Date.now();
+  await sendInboxAlert(`🚨 AI (Anthropic) nie odpowiada przy klasyfikacji poczty (${inbox}@):\n${blad}\n\nMaile SĄ zapisywane i idą na Telegram, ale bez tłumaczenia, klasyfikacji i rozbicia zamówień z PDF (tag bez-ai). Jeśli to saldo/klucz API — uzupełnij w konsoli Anthropic; asystent CRM i boty Telegram też stoją.`);
+}
+
 async function markInboxOk(inbox) {
   const h = inboxHealth.get(inbox);
   if (h && h.alertedAt) {
@@ -357,8 +365,19 @@ function czescWlasnaMaila(mail) {
   const cut = body.search(/(^|\n)\s*(>|von:|from:|de:|da:|od:|-{3,}\s*(original|ursprüngliche|urspruengliche|mensaje original|message d'origine|wiadomość oryginalna)|am\s.{3,60}\sschrieb|op\s.{3,60}\sschreef|el\s.{3,80}\sescribi|le\s.{3,80}\sa\s(é|e)crit|on\s.{3,80}\swrote|il\s.{3,80}\sha\sscritto|w\sdniu\s.{3,80}\snapisa)/i);
   return (cut >= 0 ? body.slice(0, cut) : body).slice(0, 1200);
 }
+/* Tylko to, co może być ludzką prośbą: ODPOWIEDŹ (Re:/AW:/inReplyTo) albo
+ * krótki mail (≤400 zn. własnej treści). Długa ankieta Cegid z „darse de
+ * baja" w stopce to nie wypis (fałszywy alarm 13.10.2026). Masówka
+ * (List-Unsubscribe, noreply@/newsletter@/marketing@) nigdy. */
+const NADAWCA_MASOWKI = /^(no-?reply|noreply|newsletter|news|marketing|mailer|notification|notifications|bounce|alerts?)[@._-]/i;
 function wykryjWypis(mail) {
-  const tekst = `${mail.subject || ''}\n${czescWlasnaMaila(mail)}`;
+  if (mail.listUnsubscribe) return null;
+  if (NADAWCA_MASOWKI.test(String(mail.fromEmail || ''))) return null;
+  const subject = String(mail.subject || '');
+  const wlasna = czescWlasnaMaila(mail);
+  const jestOdpowiedzia = !!mail.inReplyTo || /^\s*(re|aw|odp|sv|antw|ref|r|fwd?|wg)\s*:/i.test(subject);
+  if (!jestOdpowiedzia && wlasna.trim().length > 400) return null;
+  const tekst = `${subject}\n${wlasna}`;
   const hit = WZORCE_WYPISU.find(re => re.test(tekst));
   return hit ? String(hit) : null;
 }
@@ -1427,12 +1446,28 @@ async function processAccount(account) {
         }
 
         // AI classification
+        /* 14.10.2026: gdy Anthropic nie odpowiadał („credit balance is too
+         * low"), każdy mail kończył tu na `continue` — bez zapisu, bez
+         * EmailSkip, bez Telegrama, a UID szedł do przodu. Godzinny rescan
+         * dopisywał go potem bez tagów, załączników i powiadomienia (tak
+         * zginęło zamówienie delart z PDF). AWARIA AI NIE MOŻE GUBIĆ POCZTY:
+         * mail idzie dalej z klasyfikacją zastępczą (CLIENT_REPLY, bez
+         * tłumaczenia, tag `bez-ai`), zapisuje się z załącznikami i trafia
+         * na Telegram z dopiskiem, a o awarii AI alarmujemy raz na godzinę. */
         let classification;
+        let aiPadlo = null;
         try {
           classification = await classifyWithAI(mail);
         } catch (aiErr) {
-          console.error(`[inbox-poller] ${inbox}: AI error uid=${mail.uid}:`, aiErr.message);
-          continue;
+          aiPadlo = String(aiErr && aiErr.message ? aiErr.message : aiErr).replace(/\s+/g, ' ').slice(0, 220);
+          console.error(`[inbox-poller] ${inbox}: AI error uid=${mail.uid}: ${aiPadlo} — klasyfikacja zastępcza, mail NIE ginie`);
+          classification = {
+            category: 'CLIENT_REPLY', country: 'UNKNOWN', language: 'unknown',
+            subject_pl: mail.subject || '(bez tematu)',
+            summary_pl: String(mail.bodyText || '').replace(/\s+/g, ' ').trim().slice(0, 600) || '(pusta treść — sprawdź załączniki)',
+            vat_numbers: [],
+          };
+          await alarmAiPadlo(inbox, aiPadlo);
         }
 
         let { category } = classification;
@@ -1442,7 +1477,7 @@ async function processAccount(account) {
         // Fallback tlumaczenia: czasem Haiku oddaje summary_pl w oryginalnym
         // jezyku (np. krotkie FR "Bonne réception"). Wykryj i przetlumacz na PL.
         let summaryPlOut = summary_pl;
-        if (language && String(language).toLowerCase() !== 'pl' && looksUntranslated(summary_pl, mail.bodyText)) {
+        if (!aiPadlo && language && String(language).toLowerCase() !== 'pl' && looksUntranslated(summary_pl, mail.bodyText)) {
           try {
             const retrans = await translateToPl(mail.bodyText);
             if (retrans && !looksUntranslated(retrans, mail.bodyText)) {
@@ -1612,7 +1647,7 @@ async function processAccount(account) {
             inReplyTo: mail.inReplyTo || null,
             references: mail.references || null,
             tags: [category, effectiveCountry, effectiveLanguage,
-              ukryjJakoSpam ? 'ukryty-filtrem' : null, wypis ? 'wypis' : null].filter(Boolean),
+              ukryjJakoSpam ? 'ukryty-filtrem' : null, wypis ? 'wypis' : null, aiPadlo ? 'bez-ai' : null].filter(Boolean),
             contractorId,
             // Ukryty filtrem = od razu przeczytany: nie zasmieca skrzynki i nie
             // idzie na Telegram (patrz bramka niżej), ale JEST i da się go znaleźć.
@@ -1702,7 +1737,9 @@ async function processAccount(account) {
             }
             if (parsed.text && (parsed.type === 'pdf' || parsed.type === 'txt')) {
               const senderName = contractorName || mail.fromName || mail.fromEmail;
-              let order = await parseOrderWithLLM(parsed.text, senderName);
+              let order = null;
+              try { order = await parseOrderWithLLM(parsed.text, senderName); }
+              catch (e) { console.error(`[inbox-poller] ${inbox}: parseOrderWithLLM padł (${e.message}) — fallback regex`); }
               if (!order || !order.hasItems) {
                 order = detectOrderInText(parsed.text);
               }
@@ -1808,7 +1845,8 @@ async function processAccount(account) {
           // tresc (+ ew. zalaczniki). Bez Kraj/VAT/hintow/[ctx:], realne < >.
           const tgPrefix = wypis ? '🚫 WYPIS Z MAILINGU' : category === 'COURIER_ALERT' ? '🚨 ALERT' : '📧';
           const wypisLine = wypis ? `\n\n→ Usuń ${mail.fromEmail} z listy mailingowej (zadanie w kalendarzu).` : '';
-          const tgMsg = `${tgPrefix} ${inbox}@\nOd: ${mail.fromName || ''} <${mail.fromEmail}>\nTemat: ${subject_pl}\n\n${summaryPlOut}${attachmentInfo}${wypisLine}`;
+          const aiLine = aiPadlo ? `\n\n⚠️ AI niedostępne (${aiPadlo.slice(0, 90)}) — treść bez tłumaczenia i klasyfikacji.` : '';
+          const tgMsg = `${tgPrefix} ${inbox}@\nOd: ${mail.fromName || ''} <${mail.fromEmail}>\nTemat: ${subject_pl}\n\n${summaryPlOut}${attachmentInfo}${wypisLine}${aiLine}`;
 
           try {
             await sendTelegram(tgToken, tgChat, tgMsg);
@@ -2465,9 +2503,20 @@ async function rescanInboxSince(inbox, daysBack = 3) {
     imap = await connectImap(account);
     const mails = await fetchMailsSince(imap, since);
     console.log(`[inbox-rescan] ${inbox}: fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
+    /* WYŚCIG Z ŻYWYM POLLEREM (14.10.2026): rescan po dacie zapisuje mail
+     * „na sucho" (bez klasyfikacji, załączników i Telegrama). Jeśli złapie
+     * ŚWIEŻY mail o UID powyżej lastUid, zanim żywy poller go przeczyta,
+     * ten uzna go za duplikat i powiadomienie przepada. Świeże maile z
+     * UID > lastUid zostawiamy żywemu pollerowi. */
+    const stanUid = await prisma.imapState.findUnique({ where: { inbox }, select: { lastUid: true } }).catch(() => null);
+    const lastUidZywego = stanUid ? stanUid.lastUid : 0;
     let maxUid = 0;
+    let zostawioneZywemu = 0;
     for (const mail of mails) {
       try {
+        // UID > lastUid należy do żywego pollera — NIE podbijamy po nim lastUid,
+        // bo wtedy żywy poller nigdy by go nie pobrał (stracony bez śladu).
+        if (mail.uid > lastUidZywego) { zostawioneZywemu++; continue; }
         if (mail.uid > maxUid) maxUid = mail.uid;
         if (!mail.fromEmail) continue;
         // Ta sama ulga co w pollerze — inaczej rescan nie odzyskałby maili,
