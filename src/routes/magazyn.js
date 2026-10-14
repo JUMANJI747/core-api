@@ -148,12 +148,28 @@ function brakiOdbiorcy(od) {
    (fragment nazwy nadawcy z książki GK) — bez tego jedziemy domyślnym
    nadawcą i mówimy o tym w kurierBlad? Nie: bez skonfigurowanego nadawcy
    NIE zamawiamy — paczka poszłaby z Galin zamiast z magazynu. */
-async function zamowKuriera(o) {
+/* Nadawca zakładki Paczki (14.10.2026): rekord `Sender` magazynu zewnętrznego
+ * (Michał Urbaniak, Hłaski 7, 05-410 Józefów, delivery@) wskazany w Config
+ * `magazyn_sender_id` — ustawiane z Konsoli API, bez zmiennych Railway.
+ * Fallback: env MAGAZYN_SENDER_SEARCH (szukanie po nazwie w książce GK). */
+async function nadawcaMagazynu(prisma) {
+  try {
+    const row = await prisma.config.findUnique({ where: { key: 'magazyn_sender_id' } });
+    if (row && row.value) {
+      const sender = await prisma.sender.findUnique({ where: { id: String(row.value).trim() } });
+      if (sender) return { senderId: sender.id, opis: `${sender.name}, ${sender.city}` };
+    }
+  } catch (_) { /* brak Config — fallback niżej */ }
   const senderSearch = (process.env.MAGAZYN_SENDER_SEARCH || '').trim();
-  if (!senderSearch) throw new Error('brak MAGAZYN_SENDER_SEARCH (nazwa nadawcy-magazynu w książce GK) — kurier nie zamówiony');
+  if (senderSearch) return { senderSearch, opis: senderSearch };
+  throw new Error('brak nadawcy magazynu: ustaw Config magazyn_sender_id (PUT /api/config/magazyn_sender_id) albo env MAGAZYN_SENDER_SEARCH — kurier nie zamówiony');
+}
+
+async function zamowKuriera(o, prisma) {
+  const nadawca = await nadawcaMagazynu(prisma);
   const od = o.odbiorca || {};
   const q = await selfCall('POST', '/api/glob/quote', {
-    senderSearch,
+    ...(nadawca.senderId ? { senderId: nadawca.senderId } : { senderSearch: nadawca.senderSearch }),
     receiverSearch: od.name,
     deliveryAddress: {
       street: od.street, houseNumber: od.houseNumber || null, apartmentNumber: od.apartmentNumber || null,
@@ -299,7 +315,7 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
   let wynik = u;
   if (u.autoList) {
     try {
-      const k = await zamowKuriera(u);
+      const k = await zamowKuriera(u, prisma);
       wynik = await prisma.warehouseOrder.update({
         where: { id: u.id },
         data: { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierBlad: null, zatwierdzilKto: 'auto-list', zatwierdzonoAt: new Date() },
@@ -327,7 +343,7 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
     const braki = brakiOdbiorcy(o.odbiorca);
     if (braki.length) return res.status(400).json({ ok: false, error: `brak danych odbiorcy: ${braki.join(', ')}` });
     try {
-      const k = await zamowKuriera(o);
+      const k = await zamowKuriera(o, prisma);
       data = { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
     } catch (e) {
       await prisma.warehouseOrder.update({ where: { id: o.id }, data: { kurierBlad: String(e.message).slice(0, 500) } });
