@@ -592,6 +592,36 @@ model EmailSkip {
   createdAt DateTime @default(now())
 }
 
+// ============ BELL OUTREACH (20.10.2026) ============
+// Kolejka do systemu zimnego mailingu Bell Outreach (POST /api/surf_stick/odpowiedzi):
+// odpowiedzi, odbicia i autorespondery ze skrzynek Surf Stick. Wiersz powstaje
+// w pollerze (zapisany mail albo mail odrzucony filtrem), wysyłka paczkami
+// (≤200) po każdym cyklu — services/bell-outreach.js. Treści maila nie trzymamy.
+model BellOutreachMsg {
+  id          String    @id @default(uuid())
+  messageId   String    @unique  // klucz dedup (Bell rozpoznaje po skrzynce + Message-ID)
+  skrzynka    String              // nasz adres, na który przyszła wiadomość
+  od          String              // From
+  inReplyTo   String?
+  references  String?
+  temat       String?
+  data        DateTime
+  rodzaj      String              // nie_zainteresowany | wypisz | zainteresowany | odpowiedz | autoresponder | odbicie
+  adresOdbity String?             // tylko odbicie: adres, który nie przyjął maila
+  regula      String?             // dlaczego taki rodzaj (do audytu)
+  emailId     String?             // Email.id, gdy mail jest zapisany w CRM
+  zrodlo      String              // email | filtr | rescan | backfill
+  status      String    @default("nowy") // nowy | wyslany | pominiety | blad
+  powod       String?             // powód z `pominiete` Bell Outreach albo treść błędu
+  proby       Int       @default(0)
+  wyslanoAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
 // ============ PRODUKTY ============
 
 model Product {

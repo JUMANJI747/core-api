@@ -6,6 +6,7 @@ const https = require('https');
 const crypto = require('crypto');
 const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
+const bellOutreach = require('./services/bell-outreach');
 const { parseOrderWithLLM } = require('./order-llm-parser');
 const { fetchWithTimeout } = require('./http');
 const { verifyVat } = require('./vies');
@@ -650,6 +651,18 @@ async function czyZnanyNadawca(fromEmail) {
 // trudno (rescan i tak przefiltruje newslettery heurystyką).
 // UWAGA: od 3.09.2026 NIE używamy tego dla decyzji MODELU (SPAM/AUTO_REPLY) —
 // ocena modelu może ukryć maila, ale nie może go skasować.
+/* BELL OUTREACH (20.10.2026): odpowiedź / odbicie / autoresponder idzie do
+ * kolejki BellOutreachMsg (wysyłka paczką po cyklu — services/bell-outreach.js).
+ * Nigdy nie blokuje przetwarzania maila. Wzorce wypisu i cięcie cytatu
+ * wstrzykujemy stąd, bo bell-outreach nie może wymagać tego modułu. */
+async function kolejkujDoBell(mail, account, o = {}) {
+  try {
+    await bellOutreach.kolejkujZMaila(prisma, { ...mail, bodyText: mail.bodyText != null ? mail.bodyText : mail.body }, {
+      inbox: account && account.inbox, kontoAdres: account && account.user, wykryjWypis, czescWlasnaMaila, ...o,
+    });
+  } catch (e) { console.error('[bell-outreach] kolejkowanie:', e.message); }
+}
+
 async function recordSkip(messageId, inbox, fromEmail, reason) {
   if (!messageId) return;
   try {
@@ -1418,6 +1431,7 @@ async function processAccount(account) {
           // maile sa wyrzucane. Diagnostyka bez sladu klamie, a slad z ogolnym
           // powodem klamie o przyczynie — dlatego idzie KONKRETNA regula.
           await recordSkip(mail.messageId, inbox, mail.fromEmail, powodHard);
+          await kolejkujDoBell(mail, account, { zrodlo: 'filtr', tylko: ['odbicie', 'autoresponder'] });
           continue;
         }
 
@@ -1425,6 +1439,7 @@ async function processAccount(account) {
         if (bounceFilter(mail)) {
           console.log(`[inbox-poller] filtered (bounce) uid=${mail.uid} subject=${mail.subject}`);
           await recordSkip(mail.messageId, inbox, mail.fromEmail, 'bounce:zwrot-lub-DSN');
+          await kolejkujDoBell(mail, account, { zrodlo: 'filtr', tylko: ['odbicie', 'autoresponder'] });
           continue;
         }
 
@@ -1654,6 +1669,9 @@ async function processAccount(account) {
             isRead: ukryjJakoSpam ? true : undefined,
           },
         });
+
+        // Bell Outreach: odpowiedź/odbicie/autoresponder do kolejki (wysyłka po cyklu).
+        await kolejkujDoBell(mail, account, { emailId: savedEmail.id, category, wypis, zrodlo: 'email' });
 
         // CRM v2 Etap 4.4 — mail.received activity event.
         try {
@@ -2454,6 +2472,11 @@ async function pollAll() {
   }
   try { await sprawdzKanarki(); }
   catch (e) { console.error('[kanarek] sprawdzanie nieudane:', e.message); }
+  // Bell Outreach: paczka odpowiedzi/odbić po każdym cyklu (ponowienia wewnątrz).
+  try {
+    const r = await bellOutreach.wyslijKolejke(prisma);
+    if (r && (r.wyslano || r.pominiete)) console.log(`[bell-outreach] po cyklu: wysłano=${r.wyslano || 0} pominięte=${r.pominiete || 0}`);
+  } catch (e) { console.error('[bell-outreach] wysyłka po cyklu nieudana:', e.message); }
   } finally {
     pollInFlight = false;
     pollStartedAt = null;
@@ -2521,8 +2544,8 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         if (!mail.fromEmail) continue;
         // Ta sama ulga co w pollerze — inaczej rescan nie odzyskałby maili,
         // które twardy filtr wyrzucił omylnie (po to się go uruchamia).
-        if (await czyOdrzucicTwardo(mail, inbox, powodOdrzucenia(mail, inbox))) { filteredOut++; continue; }
-        if (bounceFilter(mail)) { filteredOut++; continue; }
+        if (await czyOdrzucicTwardo(mail, inbox, powodOdrzucenia(mail, inbox))) { await kolejkujDoBell(mail, account, { zrodlo: 'rescan-filtr', tylko: ['odbicie', 'autoresponder'] }); filteredOut++; continue; }
+        if (bounceFilter(mail)) { await kolejkujDoBell(mail, account, { zrodlo: 'rescan-filtr', tylko: ['odbicie', 'autoresponder'] }); filteredOut++; continue; }
         // Te same filtry co główny poller — wcześniej rescan pomijał
         // newsletterFilter i decyzje AI (SPAM/AUTO_REPLY nie są w Email,
         // więc dedup ich nie łapał) → odfiltrowany spam wracał co godzinę.
@@ -2584,7 +2607,7 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         }).catch(() => null);
         if (contractor) contractorId = contractor.id;
 
-        await prisma.email.create({
+        const zapisanyRescan = await prisma.email.create({
           data: {
             direction: 'INBOUND',
             inbox,
@@ -2605,6 +2628,7 @@ async function rescanInboxSince(inbox, daysBack = 3) {
           },
         });
         added++;
+        await kolejkujDoBell(mail, account, { emailId: zapisanyRescan.id, zrodlo: 'rescan' });
       } catch (mailErr) {
         console.error(`[inbox-rescan] ${inbox}: mail error uid=${mail.uid}:`, mailErr.message);
       }
@@ -2802,4 +2826,4 @@ async function rescanSentSince(inbox, daysBack = 30) {
   }
 }
 
-module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter };
+module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter, czescWlasnaMaila };

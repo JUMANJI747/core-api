@@ -211,6 +211,7 @@ app.use('/api', require('./routes/activity'));
 app.use('/api', require('./routes/cron'));
 app.use('/api', require('./routes/transactions'));
 app.use('/api', require('./routes/push'));
+app.use('/api', require('./routes/bell-outreach')); // most do systemu mailingowego Bell Outreach
 app.use('/api/contasimple', require('./routes/contasimple'));
 app.use('/api', require('./routes/mk'));
 app.use('/api', require('./routes/sales-agents'));
