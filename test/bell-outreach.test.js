@@ -110,12 +110,13 @@ function atrapaPrisma(rows) {
     if (where.messageId && typeof where.messageId === 'string') return r.messageId === where.messageId;
     if (where.messageId && Array.isArray(where.messageId.in)) return where.messageId.in.includes(r.messageId);
     if (where.status) return r.status === where.status;
+    if (where.data && where.data.gte) return new Date(r.data).getTime() >= new Date(where.data.gte).getTime();
     return true;
   };
   return {
     rows,
     bellOutreachMsg: {
-      findMany: async ({ where, take }) => rows.filter(r => pasuje(r, where || {})).slice(0, take || 200),
+      findMany: async ({ where, take }) => rows.filter(r => pasuje(r, where || {})).slice(0, take || rows.length),
       updateMany: async ({ where, data }) => {
         let n = 0;
         for (const r of rows) if (pasuje(r, where)) { n++; for (const [k, v] of Object.entries(data)) r[k] = (v && typeof v === 'object' && 'increment' in v) ? (r[k] || 0) + v.increment : v; }
@@ -213,4 +214,39 @@ test('adresSkrzynki: konto IMAP → To z własnej domeny → nazwa skrzynki', ()
   assert.equal(bo.adresSkrzynki({ kontoAdres: 'Info@SurfStickBell.com', toEmail: 'alias@surfstickbell.com', inbox: 'info' }), 'info@surfstickbell.com');
   assert.equal(bo.adresSkrzynki({ toEmail: 'info@surfstickbell.fr', inbox: 'info_fr' }), 'info@surfstickbell.fr');
   assert.equal(bo.adresSkrzynki({ toEmail: 'ktos@obcy.de', inbox: 'niko' }), 'niko@surfstickbell.com');
+});
+
+test('wyslijPonownie: od daty, także już wysłane, paczki ≤200, zbiorczy wynik', async () => {
+  const rows = Array.from({ length: 450 }, (_, i) => ({
+    messageId: `<p${i}@kunde.de>`, skrzynka: 'info@surfstickbell.com', od: `p${i}@kunde.de`, rodzaj: i % 50 === 0 ? 'nie_zainteresowany' : 'odpowiedz',
+    data: new Date(Date.UTC(2026, 9, i < 30 ? 19 : 20, 12)), status: i % 3 === 0 ? 'wyslany' : 'nowy', proby: 0, createdAt: new Date(),
+  }));
+  const p = atrapaPrisma(rows);
+  let nr = 0;
+  const f = async (url, opts) => { nr++; const ile = JSON.parse(opts.body).wiadomosci.length; return { status: 200, json: async () => ({ ok: true, przyjete: ile - 1, juz_byly: 1, dopasowane: 2, czarna_lista: { adresy: 1, domeny: 1 }, pominiete: [{ nr: 1, message_id: JSON.parse(opts.body).wiadomosci[0].message_id, powod: 'skrzynka spoza tej kampanii' }] }) }; };
+  const w = await bo.wyslijPonownie(p, { od: '2026-10-20T00:00:00Z', fetchImpl: f });
+  assert.equal(w.wierszy, 420);          // 30 z 19.10 pominięte
+  assert.equal(w.paczek, 3);             // 200 + 200 + 20
+  assert.equal(nr, 3);
+  assert.equal(w.przyjete, 199 + 199 + 19);
+  assert.equal(w.juz_byly, 3);
+  assert.equal(w.dopasowane, 6);
+  assert.deepEqual(w.czarna_lista, { adresy: 3, domeny: 3 });
+  assert.equal(w.pominiete.length, 3);
+  assert.equal(w.pominiete[0].powod, 'skrzynka spoza tej kampanii');
+  assert.ok(rows.filter(r => r.data.getUTCDate() === 20).every(r => r.status === 'wyslany' || r.status === 'pominiety'));
+  assert.ok(rows.filter(r => r.data.getUTCDate() === 19).every(r => r.status !== 'pominiety'));
+});
+
+test('wyslijPonownie: błąd 503 przerywa bez ponowień w tle', async () => {
+  const p = atrapaPrisma(wiersze().map(r => ({ ...r, data: new Date('2026-10-21T08:00:00Z') })));
+  const zaplanowane = [];
+  bo.ustawPlanowanie((fn, ms) => { zaplanowane.push(ms); return null; });
+  const w = await bo.wyslijPonownie(p, { od: '2026-10-20T00:00:00Z', fetchImpl: atrapaFetch(503, {}) });
+  assert.equal(w.paczek, 1);
+  assert.equal(w.bledy.length, 1);
+  assert.equal(w.bledy[0].blad, 503);
+  assert.deepEqual(zaplanowane, []);
+  assert.equal(bo._stan.nastepnaProbaO, 0);
+  assert.ok(p.rows.every(x => x.status === 'nowy'));
 });

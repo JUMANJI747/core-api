@@ -260,13 +260,44 @@ function zaplanujPonowienie(prisma, powod, teraz) {
 async function wyslijKolejke(prisma, o = {}) {
   const teraz = typeof o.now === 'function' ? o.now() : Date.now();
   if (!o.force && teraz < stan.nastepnaProbaO) return { pominieto: 'czekam na ponowienie', za_s: Math.round((stan.nastepnaProbaO - teraz) / 1000) };
-  const cfg = konfiguracja();
-  const dry = o.dryRun != null ? !!o.dryRun : cfg.dryRun;
   const poza = await skrzynkiPozaKampania(prisma);
   const rows = await prisma.bellOutreachMsg.findMany({
     where: { status: 'nowy', ...(poza.length ? { skrzynka: { notIn: poza } } : {}) },
     orderBy: { createdAt: 'asc' }, take: MAX_W_PACZCE,
   });
+  return wyslijWiersze(prisma, rows, o);
+}
+
+/* JEDNORAZOWA PONOWNA WYSYŁKA (21.10.2026): wszystkie rozpoznane wiadomości
+ * od daty `od` (data maila), TAKŻE te już wysłane — Bell Outreach pomija
+ * duplikaty po skrzynce + Message-ID. Paczki po ≤200, po kolei; przy błędzie
+ * przerywa (bez ponowień w tle) i oddaje, co zebrał. */
+async function wyslijPonownie(prisma, o = {}) {
+  const odData = new Date(o.od || '2026-10-20T00:00:00Z');
+  if (isNaN(odData.getTime())) throw new Error('zła data `od`');
+  const rows = await prisma.bellOutreachMsg.findMany({ where: { data: { gte: odData } }, orderBy: { data: 'asc' } });
+  const wynik = { od: odData.toISOString(), wierszy: rows.length, paczek: 0, przyjete: 0, juz_byly: 0, dopasowane: 0, czarna_lista: { adresy: 0, domeny: 0 }, pominiete: [], bledy: [] };
+  for (let i = 0; i < rows.length; i += MAX_W_PACZCE) {
+    const r = await wyslijWiersze(prisma, rows.slice(i, i + MAX_W_PACZCE), { force: true, fetchImpl: o.fetchImpl, dryRun: o.dryRun, now: o.now, bezPonowien: true });
+    wynik.paczek++;
+    if (r.dryRun) { wynik.paczkiProbne = (wynik.paczkiProbne || []).concat([r.paczka]); continue; }
+    const b = r.odpowiedz;
+    if (!b) { wynik.bledy.push({ paczka: wynik.paczek, ...r }); break; }
+    wynik.przyjete += Number(b.przyjete) || 0; wynik.juz_byly += Number(b.juz_byly) || 0; wynik.dopasowane += Number(b.dopasowane) || 0;
+    wynik.czarna_lista.adresy += Number(b.czarna_lista && b.czarna_lista.adresy) || 0; wynik.czarna_lista.domeny += Number(b.czarna_lista && b.czarna_lista.domeny) || 0;
+    for (const p of (Array.isArray(b.pominiete) ? b.pominiete : [])) wynik.pominiete.push({ message_id: p.message_id, nr: p.nr, powod: p.powod });
+  }
+  console.log(`[bell-outreach] ponowna wysyłka od ${wynik.od}: wierszy=${wynik.wierszy} paczek=${wynik.paczek} przyjete=${wynik.przyjete} juz_byly=${wynik.juz_byly} dopasowane=${wynik.dopasowane} pominiete=${wynik.pominiete.length} bledy=${wynik.bledy.length}`);
+  return wynik;
+}
+
+/* Wysyłka KONKRETNYCH wierszy jedną paczką (≤200) i zapis statusów wg
+ * odpowiedzi. opcje: dryRun, fetchImpl, now, bezPonowien (błąd sieci/5xx
+ * nie planuje ponowienia w tle — do ręcznej ponownej wysyłki). */
+async function wyslijWiersze(prisma, rows, o = {}) {
+  const teraz = typeof o.now === 'function' ? o.now() : Date.now();
+  const cfg = konfiguracja();
+  const dry = o.dryRun != null ? !!o.dryRun : cfg.dryRun;
   if (!rows.length) return { wyslano: 0 };
   const paczka = budujPaczke(rows);
   if (dry) {
@@ -291,7 +322,8 @@ async function wyslijKolejke(prisma, o = {}) {
       body: JSON.stringify(paczka),
     }, TIMEOUT_MS);
   } catch (e) {
-    return zaplanujPonowienie(prisma, `sieć: ${String(e && e.message || e).slice(0, 120)}`, teraz);
+    const powod = `sieć: ${String(e && e.message || e).slice(0, 120)}`;
+    return o.bezPonowien ? { blad: 'siec', powod } : zaplanujPonowienie(prisma, powod, teraz);
   }
   const status = res.status;
   let body = null;
@@ -333,7 +365,7 @@ async function wyslijKolejke(prisma, o = {}) {
     await alarm(prisma, status === 401 ? 'zły token (401) — sprawdź BELL_OUTREACH_TOKEN; kolejka czeka' : 'zła ścieżka (404) — sprawdź BELL_OUTREACH_URL; kolejka czeka');
     return { blad: status, czeka: rows.length };
   }
-  return zaplanujPonowienie(prisma, `HTTP ${status}`, teraz);
+  return o.bezPonowien ? { blad: status, powod: `HTTP ${status}: ${JSON.stringify(body || '').slice(0, 200)}` } : zaplanujPonowienie(prisma, `HTTP ${status}`, teraz);
 }
 
 /* Jednorazowe objęcie historii: maile INBOUND z ostatnich `dni` (Email) oraz
@@ -396,8 +428,14 @@ async function statusKolejki(prisma) {
   const wg = {};
   for (const g of grupy) { wg[g.status] = wg[g.status] || {}; wg[g.status][g.rodzaj] = g._count._all; }
   const cfg = konfiguracja();
+  // Diagnostyka konfiguracji BEZ wartości: nazwy zmiennych ze słowem bell
+  // (znaki spoza ASCII pokazane jako ¿ — tak wykrywa się ukryty znak w nazwie,
+  // jak kiedyś przy TELEGRAM_WEBHOOK_SECRET) i skąd jest token.
+  const envNazwy = Object.keys(process.env).filter(k => /bell/i.test(k)).map(k => ({ nazwa: k.replace(/[^\x20-\x7E]/g, '¿'), dlugoscWartosci: String(process.env[k] || '').trim().length }));
+  const tokenEnv = String(process.env.BELL_OUTREACH_TOKEN || '').trim();
+  const token = await pobierzToken(prisma);
   return {
-    url: cfg.url + SCIEZKA, tokenUstawiony: !!(await pobierzToken(prisma)), dryRun: cfg.dryRun,
+    url: cfg.url + SCIEZKA, tokenUstawiony: !!token, tokenZrodlo: tokenEnv ? 'env' : (token ? 'config' : null), tokenDlugosc: token ? token.length : 0, envNazwy, dryRun: cfg.dryRun,
     skrzynkiPozaKampania: await skrzynkiPozaKampania(prisma),
     ponowienia: { nieudane: stan.nieudane, nastepnaProbaO: stan.nastepnaProbaO ? new Date(stan.nastepnaProbaO).toISOString() : null },
     ostatniaWysylka: stan.ostatni, kolejka: wg,
@@ -406,6 +444,6 @@ async function statusKolejki(prisma) {
 
 module.exports = {
   RODZAJE, rodzajBellOutreach, wyciagnijAdresOdbity, adresSkrzynki, kolejkujZMaila, budujPaczke,
-  wyslijKolejke, backfill, statusKolejki, konfiguracja, pobierzToken, ustawPlanowanie, zerujStan,
+  wyslijKolejke, wyslijWiersze, wyslijPonownie, backfill, statusKolejki, konfiguracja, pobierzToken, ustawPlanowanie, zerujStan,
   _stan: stan, KLUCZ_TOKENU, KLUCZ_SKRZYNEK_POZA, SCIEZKA,
 };

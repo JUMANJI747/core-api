@@ -7,6 +7,7 @@
  *   GET  /api/bell-outreach/kolejka          — wiersze (?status=nowy&rodzaj=&limit=)
  *   POST /api/bell-outreach/backfill {dni}   — jednorazowo zakolejkuj historię (nie wysyła)
  *   POST /api/bell-outreach/wyslij {dry}     — wyślij paczkę teraz (dry: pokaż, nie wysyłaj)
+ *   POST /api/bell-outreach/wyslij-ponownie {od, dry} — jednorazowo wyślij wszystko od daty, także już wysłane
  *   POST /api/bell-outreach/rodzaj {messageId, rodzaj} — ręczna poprawka rodzaju przed wysyłką
  *   POST /api/bell-outreach/pomin {messageId} — nie wysyłać tego maila
  *   POST /api/bell-outreach/skrzynki-poza {lista} — które skrzynki Bell uznał za spoza kampanii
@@ -55,6 +56,13 @@ router.post('/bell-outreach/backfill', asyncHandler(async (req, res) => {
 router.post('/bell-outreach/wyslij', asyncHandler(async (req, res) => {
   const b = req.body || {};
   const wynik = await bo.wyslijKolejke(req.app.locals.prisma, { force: true, dryRun: b.dry === true || b.dry === 1 || b.dry === '1' ? true : (b.dry === false ? false : undefined) });
+  res.json({ ok: true, ...wynik });
+}));
+
+// Jednorazowa ponowna wysyłka od daty (także już wysłane; Bell pomija duplikaty).
+router.post('/bell-outreach/wyslij-ponownie', asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const wynik = await bo.wyslijPonownie(req.app.locals.prisma, { od: b.od || '2026-10-20T00:00:00Z', dryRun: b.dry === true ? true : (b.dry === false ? false : undefined) });
   res.json({ ok: true, ...wynik });
 }));
 
