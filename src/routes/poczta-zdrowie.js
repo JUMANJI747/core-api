@@ -295,6 +295,21 @@ function router(express, token) {
   });
 
   /**
+   * GET /poczta/poller — stan pollera NA ŻYWO, bez łączenia z serwerem poczty
+   * (odpowiada natychmiast także wtedy, gdy serwer poczty się dławi): numer
+   * i etap cyklu, czas trwania, ostatni błąd każdej skrzynki, liczniki
+   * rozgrzewania. 22.10.2026: bez tego nie było widać, gdzie wisi cykl.
+   */
+  r.get('/poczta/poller', (req, res) => {
+    try {
+      const { stanPollera } = require('../inbox-poller');
+      res.json({ ok: true, teraz: new Date().toISOString(), ...stanPollera(), rozgrzewanie: rozgrzewanie.stanRozgrzewania() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  /**
    * GET /poczta/zdrowie[?inbox=michal][&progCiszyMin=1440]
    * Stan WSZYSTKICH skrzynek: baza + serwer IMAP + zaleglosc + werdykt.
    */

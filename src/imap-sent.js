@@ -22,6 +22,10 @@ function connect(account) {
       tlsOptions: { rejectUnauthorized: false },
       connTimeout: 30000,
       authTimeout: 15000,
+      // Jednorazowe połączenie do APPEND — bez podtrzymywania sesji (NOOP/IDLE
+      // trzymały osierocone połączenia na serwerze bez końca) i z limitem ciszy.
+      keepalive: false,
+      socketTimeout: 60000,
     });
     imap.once('ready', () => resolve(imap));
     imap.once('error', reject);
@@ -83,8 +87,26 @@ async function appendToSent(account, rawMessage) {
     return { ok: false, reason: 'account incomplete' };
   }
   let imap;
+  // Twardy limit CAŁEJ kopii (22.10.2026): przy wolnym serwerze APPEND potrafił
+  // wisieć bez końca, a każda wysyłka (np. 11 kanarków) zostawiała takie wiszące
+  // połączenie. Po limicie niszczymy gniazdo — mail i tak już wyszedł SMTP.
+  let budzik;
+  let porzucone = false;
+  const limit = new Promise((_, reject) => { budzik = setTimeout(() => { porzucone = true; reject(new Error('kopia do Wysłanych: przekroczono 90 s')); }, 90000); });
   try {
+    return await Promise.race([kopiuj(), limit]);
+  } catch (e) {
+    console.error(`[imap-sent] APPEND failed for ${account && account.user}:`, e.message);
+    try { if (imap) imap.destroy(); } catch (_) {}
+    return { ok: false, reason: e.message };
+  } finally {
+    clearTimeout(budzik);
+  }
+
+  async function kopiuj() {
     imap = await connect(account);
+    // Połączenie doszło już po limicie — nie kopiujemy, zamykamy od razu.
+    if (porzucone) { try { imap.destroy(); } catch (_) {} return { ok: false, reason: 'po limicie' }; }
     const folder = await findSentFolder(imap);
     if (!folder) {
       console.warn(`[imap-sent] no Sent folder for ${account.user}; skipping APPEND`);
@@ -95,10 +117,6 @@ async function appendToSent(account, rawMessage) {
     console.log(`[imap-sent] appended to ${folder} for ${account.user}`);
     try { imap.end(); } catch (_) {}
     return { ok: true, folder };
-  } catch (e) {
-    console.error(`[imap-sent] APPEND failed for ${account && account.user}:`, e.message);
-    try { if (imap) imap.end(); } catch (_) {}
-    return { ok: false, reason: e.message };
   }
 }
 

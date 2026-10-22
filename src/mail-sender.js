@@ -120,6 +120,13 @@ async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo,
       user: account.user,
       pass: account.pass,
     },
+    // Limity czasu (22.10.2026): domyślnie nodemailer czeka na połączenie
+    // 2 min, a na ciszy w gnieździe aż 10 min — przy wolnym serwerze poczty
+    // jedna wysyłka trzymała cykl pollera (kanarki) i każdego, kto czekał
+    // na maila z fakturą. socketTimeout liczy CISZĘ, nie całą wysyłkę.
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 60000,
   });
 
   // Jeden wspolny Message-ID dla OBU transportow (raw->Sent i realny SMTP).

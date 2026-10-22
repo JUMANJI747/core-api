@@ -501,7 +501,7 @@ const czekajAz = async (warunek, opis, ile = 2000) => {
   throw new Error(`nie doczekałem się: ${opis}`);
 };
 
-test('zawieszony cykl: porzucony kończy się na granicy skrzynki i nie zwalnia blokady nowego cyklu', async (t) => {
+test('zawieszony cykl: porzucony kończy się na granicy skrzynki i nie zwalnia blokady nowego cyklu', { timeout: 20000 }, async (t) => {
   const kontaPrzed = process.env.IMAP_ACCOUNTS;
   const INFO = 'info@surfstickbell.com';
   const NIKO = 'niko@surfstickbell.com';
@@ -530,6 +530,7 @@ test('zawieszony cykl: porzucony kończy się na granicy skrzynki i nie zwalnia 
   FakeImap.trzymaj.add(NIKO);
   const cyklB = poller.pollAll();
   await czekajAz(() => FakeImap.wstrzymane.length === 2, 'B czeka na niko@');
+  FakeImap.trzymaj.delete(NIKO); // dalsze połączenia B (Wysłane niko@) idą normalnie
   const alert = Z.telegram.find(m => m.includes('porzucony'));
   assert.ok(alert && alert.includes('utknął na: info: INBOX'), 'alert mówi, gdzie cykl utknął');
   assert.ok(!alert.includes('z żadnej skrzynki'), 'alert nie twierdzi, że nie pobierano z żadnej skrzynki');
@@ -553,7 +554,7 @@ test('zawieszony cykl: porzucony kończy się na granicy skrzynki i nie zwalnia 
   assert.equal(polaczeniaDla(NIKO), 2, 'B: INBOX + Wysłane niko@');
 });
 
-test('połączenie, które nawiąże się po limicie czasu, jest od razu zamykane (bez osieroconych sesji)', async (t) => {
+test('połączenie, które nawiąże się po limicie czasu, jest od razu zamykane (bez osieroconych sesji)', { timeout: 20000 }, async (t) => {
   wyczysc();
   FakeImap.instancje.length = 0; FakeImap.wstrzymane.length = 0; FakeImap.trzymaj.clear();
   t.after(() => FakeImap.trzymaj.clear());
@@ -571,3 +572,76 @@ test('połączenie, które nawiąże się po limicie czasu, jest od razu zamykan
   assert.ok(sesja.zniszczone);
 });
 
+
+// ── 8. wolny serwer poczty: bezpiecznik, kanarki obok cyklu, kopia do Wysłanych ──
+
+test('bezpiecznik: po 3 skrzynkach bez połączenia reszta czeka do następnego cyklu, cykl się kończy', { timeout: 20000 }, async (t) => {
+  const kontaPrzed = process.env.IMAP_ACCOUNTS;
+  const konta = ['a1', 'a2', 'a3', 'a4'].map(n => ({ inbox: n, user: `${n}@surfstickbell.com`, pass: 'x', host: 'imap.test', port: 993 }));
+  process.env.IMAP_ACCOUNTS = JSON.stringify(konta);
+  t.after(() => { process.env.IMAP_ACCOUNTS = kontaPrzed; FakeImap.trzymaj.clear(); });
+  wyczysc();
+  for (const k of konta) baza.imapState.set(k.inbox, { inbox: k.inbox, lastUid: 5, uidValidity: 7 });
+  skrzynka.INBOX = []; skrzynka.Sent = [];
+  FakeImap.instancje.length = 0; FakeImap.wstrzymane.length = 0; FakeImap.trzymaj.clear();
+  for (const k of konta) FakeImap.trzymaj.add(k.user);
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+
+  const cykl = poller.pollAll();
+  for (let i = 1; i <= 3; i++) {
+    await czekajAz(() => FakeImap.wstrzymane.length === i, `połączenie ${i} wisi`);
+    t.mock.timers.tick(60 * 1000);
+  }
+  await cykl;
+  assert.equal(FakeImap.instancje.filter(x => x.opts.user === 'a4@surfstickbell.com').length, 0, 'czwarta skrzynka nie próbowała się łączyć');
+  assert.equal(FakeImap.instancje.length, 3, 'żadnych prób Wysłanych przy niedziałającym serwerze');
+  assert.ok(Z.log.some(l => l.includes('nie odpowiada') && l.includes('pominięte: a4')));
+  assert.ok(Z.telegram.some(m => m.includes('Serwer poczty imap.test nie odpowiada')), 'jeden alert o serwerze');
+  assert.equal(poller._test.stanCyklu().pollInFlight, false, 'cykl zakończony, nie porzucony');
+});
+
+test('kanarki idą obok cyklu: zawieszone SMTP nie trzyma odbioru poczty', { timeout: 20000 }, async (t) => {
+  const kontaPrzed = process.env.IMAP_ACCOUNTS;
+  process.env.IMAP_ACCOUNTS = JSON.stringify([
+    { inbox: 'info', user: 'info@surfstickbell.com', pass: 'x', host: 'imap.test', port: 993 },
+    { inbox: 'niko', user: 'niko@surfstickbell.com', pass: 'x', host: 'imap.test', port: 993 },
+  ]);
+  const plikPollera = require.resolve(path.join(SRC, 'inbox-poller'));
+  const plikMailSender = zSrc('mail-sender');
+  const mailSenderPrzed = require.cache[plikMailSender];
+  t.after(() => { process.env.IMAP_ACCOUNTS = kontaPrzed; require.cache[plikMailSender] = mailSenderPrzed; });
+  wyczysc();
+  baza.imapState.set('info', { inbox: 'info', lastUid: 5, uidValidity: 7 });
+  baza.imapState.set('niko', { inbox: 'niko', lastUid: 5, uidValidity: 7 });
+  skrzynka.INBOX = []; skrzynka.Sent = [];
+  FakeImap.trzymaj.clear();
+  let wysylek = 0;
+  wstrzyknij(plikMailSender, { sendMail: () => { wysylek++; return new Promise(() => {}); }, getAccounts: () => JSON.parse(process.env.IMAP_ACCOUNTS) });
+  // Świeży moduł pollera = cykl nr 1, w którym idą kanarki.
+  delete require.cache[plikPollera];
+  const swiezy = require(plikPollera);
+  swiezy.stopPolling();
+  await swiezy.pollAll();
+  assert.equal(swiezy._test.stanCyklu().pollInFlight, false, 'cykl skończył się, choć SMTP wisi');
+  await czekajAz(() => wysylek === 1, 'kanarek wystartował w tle');
+  assert.ok(Z.prisma.some(z => z.model === 'kanarekPoczty' && z.metoda === 'create'));
+});
+
+test('kopia do Wysłanych: limit 90 s, spóźnione połączenie zamknięte bez kopiowania', { timeout: 20000 }, async (t) => {
+  const { appendToSent } = require(path.join(SRC, 'imap-sent'));
+  wyczysc();
+  FakeImap.instancje.length = 0; FakeImap.wstrzymane.length = 0; FakeImap.trzymaj.clear();
+  t.after(() => FakeImap.trzymaj.clear());
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  FakeImap.trzymaj.add(KONTO.user);
+  const kopia = appendToSent(KONTO, 'From: a@b\r\nSubject: x\r\n\r\ny');
+  await czekajAz(() => FakeImap.wstrzymane.length === 1, 'połączenie wisi');
+  t.mock.timers.tick(90 * 1000);
+  const wynik = await kopia;
+  assert.equal(wynik.ok, false);
+  assert.match(wynik.reason, /przekroczono 90 s/);
+  const sesja = FakeImap.wstrzymane[0];
+  sesja.zwolnij();
+  await czekajAz(() => sesja.zniszczone, 'spóźnione połączenie zamknięte');
+  assert.ok(!Z.imap.some(x => x.op === 'append'), 'nic nie skopiowano po limicie');
+});

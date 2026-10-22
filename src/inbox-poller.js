@@ -104,6 +104,8 @@ async function healAfterGap(inbox) {
 async function markInboxFail(inbox, errMsg) {
   const h = inboxHealth.get(inbox) || { fails: 0, alertedAt: null };
   h.fails += 1;
+  h.ostatniBlad = String(errMsg || '').slice(0, 200);
+  h.ostatniBladO = new Date().toISOString();
   const now = Date.now();
   const due = !h.alertedAt || (now - h.alertedAt) > INBOX_ALERT_THROTTLE_MS;
   if (h.fails >= INBOX_FAIL_ALERT_THRESHOLD && due) {
@@ -1351,7 +1353,7 @@ async function processAccount(account) {
         console.error(`[inbox-poller] ${inbox}: catch-up rescan po UIDVALIDITY nieudany:`, e.message);
       }
       await markInboxOk(inbox);
-      return;
+      return { ok: true };
     }
     // Pierwsze poznanie uidValidity — zapisz (bez resetu).
     if (boxMeta.uidValidity != null && storedValidity == null) {
@@ -1365,7 +1367,7 @@ async function processAccount(account) {
     if (mails.length === 0) {
       console.log(`[inbox-poller] ${inbox}: no new mails`);
       await markInboxOk(inbox); // połączenie OK, choć brak nowych
-      return;
+      return { ok: true };
     }
 
     console.log(`[inbox-poller] ${inbox}: ${mails.length} new mail(s)`);
@@ -1994,13 +1996,28 @@ async function processAccount(account) {
     if (pominieteRozgrzewanie) await rozgrzewanie.zapiszSlad(prisma, inbox);
 
     await markInboxOk(inbox); // cykl zakończony bez błędu połączenia
+    return { ok: true };
 
   } catch (err) {
     console.error(`[inbox-poller] Error for ${inbox}:`, err.message);
     await markInboxFail(inbox, err.message);
     // Po przekroczonym czasie sesja wisi — niszczymy gniazdo, nie czekamy na LOGOUT.
     zamknijImap(imap, /przekroczono/.test(err.message));
+    return { ok: false, blad: err.message };
   }
+}
+
+/* BEZPIECZNIK SERWERA POCZTY (22.10.2026). Wszystkie skrzynki siedzą na tym
+ * samym serwerze. Gdy nie odpowiada (połączenie > 60 s, pobieranie > 4 min),
+ * każda kolejna skrzynka zjada swój pełny limit, cykl przekracza 15 min i jest
+ * porzucany, a my dokładamy połączeń serwerowi, który już się dławi. Po
+ * BEZPIECZNIK_PROG kolejnych awariach tego typu na jednym hoście reszta jego
+ * skrzynek czeka do następnego cyklu (nic nie ginie — UID zostaje na miejscu).
+ * Błędy logowania (złe hasło jednej skrzynki) się nie liczą. */
+const BEZPIECZNIK_PROG = 3;
+const _ostatniAlertBezpiecznika = new Map(); // host -> timestamp
+function awariaSerwera(blad) {
+  return /przekroczono|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|socket|zamkni[eę]te przed gotowo|zakończone przed gotowo/i.test(String(blad || ''));
 }
 
 // ============ SENT FOLDER POLLING ============
@@ -2241,6 +2258,24 @@ async function processSentItems(account) {
   }
 }
 
+/* STAN POLLERA NA ŻYWO (22.10.2026) — do GET /poczta/poller. Bez logów
+ * Railway nie dało się zobaczyć, GDZIE wisi cykl ani czym kończą się próby
+ * połączeń. Same metadane: numery, etap, czasy, treść błędu (bez maili). */
+function stanPollera() {
+  const bledySkrzynek = {};
+  for (const [inbox, h] of inboxHealth.entries()) {
+    bledySkrzynek[inbox] = { kolejnychBledow: h.fails, ostatniBlad: h.ostatniBlad || null, kiedy: h.ostatniBladO || null };
+  }
+  return {
+    cykl: pollCycleCount,
+    wTrakcie: pollInFlight,
+    etap: etapCyklu,
+    trwaS: pollStartedAt ? Math.round((Date.now() - pollStartedAt) / 1000) : null,
+    kanarkiWToku,
+    bledySkrzynek,
+  };
+}
+
 /* Zamknięcie połączenia IMAP. Po przekroczonym czasie end() (LOGOUT) potrafi
  * czekać na serwer, który nie odpowiada — wtedy niszczymy gniazdo od razu. */
 function zamknijImap(imap, twardo = false) {
@@ -2356,6 +2391,7 @@ async function czuwajNadCisza(accounts) {
  */
 const MARKER_KANARKA = '[CRM-KANAREK]';
 const KANAREK_CO_N_CYKLI = 72;                 // 72 × 5 min = 6 h
+let kanarkiWToku = false;                       // wysyłka kanarków biegnie obok cyklu — jedna naraz
 const KANAREK_LIMIT_MS = 30 * 60 * 1000;       // po tylu minutach uznajemy, że nie doleciał
 
 function tokenKanarka(inbox) {
@@ -2507,11 +2543,21 @@ async function pollAll() {
   rozgrzewanie.zacznijCykl(pollCycleCount);
   const shouldRescan = pollCycleCount % RESCAN_EVERY_N_CYCLES === 0;
 
+  const awarieHosta = new Map();          // host -> kolejne awarie serwera w tym cyklu
+  const pominieteBezpiecznikiem = [];
   for (const account of accounts) {
     if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę przed ${account.inbox}`); return; }
+    const host = account.host || '?';
+    if ((awarieHosta.get(host) || 0) >= BEZPIECZNIK_PROG) { pominieteBezpiecznikiem.push(account.inbox); continue; }
     etapCyklu = `${account.inbox}: INBOX`;
-    await processAccount(account);
+    const wynikSkrzynki = await processAccount(account);
     if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę po ${account.inbox}`); return; }
+    if (wynikSkrzynki && !wynikSkrzynki.ok && awariaSerwera(wynikSkrzynki.blad)) {
+      // Serwer nie odpowiada — Wysłane i rescan tej skrzynki też by nie przeszły.
+      awarieHosta.set(host, (awarieHosta.get(host) || 0) + 1);
+      continue;
+    }
+    awarieHosta.set(host, 0);
     etapCyklu = `${account.inbox}: Wysłane`;
     try {
       await processSentItems(account);
@@ -2532,6 +2578,17 @@ async function pollAll() {
     }
   }
   if (porzucony()) { console.warn('[inbox-poller] cykl porzucony — kończę po skrzynkach'); return; }
+  if (pominieteBezpiecznikiem.length) {
+    const hosty = [...awarieHosta.entries()].filter(([, n]) => n >= BEZPIECZNIK_PROG).map(([h]) => h);
+    console.warn(`[inbox-poller] serwer poczty ${hosty.join(', ')} nie odpowiada (${BEZPIECZNIK_PROG} skrzynki z rzędu) — w tym cyklu pominięte: ${pominieteBezpiecznikiem.join(', ')}`);
+    for (const h of hosty) {
+      const ostatni = _ostatniAlertBezpiecznika.get(h) || 0;
+      if (Date.now() - ostatni > 60 * 60 * 1000) {
+        _ostatniAlertBezpiecznika.set(h, Date.now());
+        await sendInboxAlert(`⚠️ Serwer poczty ${h} nie odpowiada — ${BEZPIECZNIK_PROG} skrzynki z rzędu bez połączenia. W tym cyklu pominięto: ${pominieteBezpiecznikiem.join(', ')}.\nPoller próbuje co 5 min; poczta nie ginie, dociągnie się po powrocie serwera. Sprawdź: GET /poczta/zdrowie`);
+      }
+    }
+  }
   etapCyklu = 'po skrzynkach (kanarek, Bell Outreach)';
   if (shouldRescan) {
     console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
@@ -2541,9 +2598,14 @@ async function pollAll() {
     catch (e) { console.error('[inbox-poller] czuwanie nad ciszą nieudane:', e.message); }
   }
   // Kanarek: wysylka co 6 h, sprawdzanie w KAZDYM cyklu (limit to 30 min).
-  if (pollCycleCount % KANAREK_CO_N_CYKLI === 1) {
-    try { await wyslijKanarki(accounts); }
-    catch (e) { console.error('[kanarek] wysyłka nieudana:', e.message); }
+  /* Kanarki idą OBOK cyklu (22.10.2026): 11 wysyłek SMTP jedna po drugiej
+     przy wolnym serwerze trwało dłużej niż 15 min i cykl był porzucany
+     („utknął na: po skrzynkach"). Odbiór poczty nie czeka na wysyłkę testów. */
+  if (pollCycleCount % KANAREK_CO_N_CYKLI === 1 && !kanarkiWToku) {
+    kanarkiWToku = true;
+    wyslijKanarki(accounts)
+      .catch(e => console.error('[kanarek] wysyłka nieudana:', e.message))
+      .finally(() => { kanarkiWToku = false; });
   }
   try { await sprawdzKanarki(); }
   catch (e) { console.error('[kanarek] sprawdzanie nieudane:', e.message); }
@@ -2927,5 +2989,6 @@ async function rescanSentSince(inbox, daysBack = 30) {
 }
 
 module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter, czescWlasnaMaila,
+  stanPollera,
   // Tylko do testów (test/rozgrzewanie.test.js) — ścieżki czytania poczty.
   _test: { processAccount, processSentItems, stanCyklu: () => ({ pollInFlight, cyklWlasciciel, etapCyklu }) } };
