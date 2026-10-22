@@ -436,6 +436,21 @@ function zTimeoutem(promise, ms, opis) {
 
 const IMAP_LIMIT_CYKLU_MS = 4 * 60 * 1000;   // krocej niz interwal pollera (5 min)
 
+/* Połączenie z limitem czasu, które SPRZĄTA po sobie (22.10.2026). Gdy limit
+ * minie, a serwer połączy się później, sesja zostawała otwarta NA ZAWSZE:
+ * node-imap domyślnie podtrzymuje ją (NOOP/IDLE), więc nawet socketTimeout jej
+ * nie zamyka. Przy wolnym serwerze takie sieroty mnożyły połączenia i
+ * dociążały go jeszcze bardziej. Spóźnione połączenie zamykamy od razu. */
+async function polaczZLimitem(account, ms, opis) {
+  const proba = connectImap(account);
+  try {
+    return await zTimeoutem(proba, ms, opis);
+  } catch (e) {
+    proba.then(spoznione => { try { spoznione.destroy(); } catch (_) {} }).catch(() => {});
+    throw e;
+  }
+}
+
 function connectImap(account) {
   return new Promise((resolve, reject) => {
     const imap = new Imap({
@@ -687,7 +702,7 @@ async function recordSkip(messageId, inbox, fromEmail, reason) {
 // Fetch po dacie (SINCE) zamiast UID — przydatne gdy lastUid w bazie jest
 // rozjechany z faktycznym stanem skrzynki (UIDValidity reset, reorg).
 // Używane przez /inbox-rescan żeby ratować pominięte maile.
-function fetchMailsSince(imap, sinceDate, folderName = 'INBOX') {
+function fetchMailsSince(imap, sinceDate, folderName = 'INBOX', dodatkoweKryteria = []) {
   return new Promise((resolve, reject) => {
     imap.openBox(folderName, true, (err, box) => {
       if (err) return reject(err);
@@ -697,7 +712,7 @@ function fetchMailsSince(imap, sinceDate, folderName = 'INBOX') {
       const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const imapDate = `${String(sinceDate.getDate()).padStart(2,'0')}-${months[sinceDate.getMonth()]}-${sinceDate.getFullYear()}`;
       console.log(`[inbox-poller] SINCE search ${folderName} since=${imapDate}`);
-      imap.search([['SINCE', imapDate]], (searchErr, uids) => {
+      imap.search([['SINCE', imapDate], ...dodatkoweKryteria], (searchErr, uids) => {
         if (searchErr) return reject(searchErr);
         if (!uids || uids.length === 0) return resolve([]);
         console.log(`[inbox-poller] SINCE found ${uids.length} mail(s)`);
@@ -1309,7 +1324,7 @@ async function processAccount(account) {
 
     // Connect and fetch — POD LIMITEM CZASU. Zawieszony serwer nie moze
     // zatrzymac calego pollingu (patrz komentarz przy zTimeoutem).
-    imap = await zTimeoutem(connectImap(account), 60000, `${inbox}: polaczenie IMAP`);
+    imap = await polaczZLimitem(account, 60000, `${inbox}: polaczenie IMAP`);
     const boxMeta = {};
     const mails = await zTimeoutem(
       fetchMailsFromUid(imap, lastUid, 'INBOX', boxMeta),
@@ -1983,9 +1998,8 @@ async function processAccount(account) {
   } catch (err) {
     console.error(`[inbox-poller] Error for ${inbox}:`, err.message);
     await markInboxFail(inbox, err.message);
-    if (imap) {
-      try { imap.end(); } catch (_) {}
-    }
+    // Po przekroczonym czasie sesja wisi — niszczymy gniazdo, nie czekamy na LOGOUT.
+    zamknijImap(imap, /przekroczono/.test(err.message));
   }
 }
 
@@ -2194,10 +2208,13 @@ async function processSentItems(account) {
   console.log(`[inbox-poller] Checking SENT for ${inbox} (${user})`);
 
   let imap;
+  let zawieszone = false;
   try {
-    imap = await connectImap(account);
+    // Limity czasu jak w processAccount: wolny serwer poczty nie może trzymać
+    // całego cyklu (22.10.2026 cykl utknął > 15 min).
+    imap = await polaczZLimitem(account, 60000, `${inbox}: połączenie IMAP (Wysłane)`);
 
-    const folders = await findSentFolders(imap);
+    const folders = await zTimeoutem(findSentFolders(imap), 60000, `${inbox}: lista folderów`);
     if (!folders.length) {
       console.log(`[inbox-poller] ${inbox}: no SENT folder found`);
       try { imap.end(); } catch (_) {}
@@ -2210,18 +2227,28 @@ async function processSentItems(account) {
       // dostają klucz per-folder.
       const sentKey = folderName === folders[0] ? `${inbox}:sent` : `${inbox}:sent:${folderName}`;
       try {
-        await processSentFolderOnce(imap, inbox, folderName, sentKey);
+        await zTimeoutem(processSentFolderOnce(imap, inbox, folderName, sentKey), IMAP_LIMIT_CYKLU_MS, `${inbox}: Wysłane „${folderName}"`);
       } catch (e) {
         console.error(`[inbox-poller] SENT folder "${folderName}" error for ${inbox}:`, e.message);
+        // Po przekroczonym czasie to połączenie nie nadaje się do dalszej pracy.
+        if (/przekroczono/.test(e.message)) { zawieszone = true; break; }
       }
     }
-    try { imap.end(); } catch (_) {}
+    zamknijImap(imap, zawieszone);
   } catch (err) {
     console.error(`[inbox-poller] SENT error for ${inbox}:`, err.message);
-    if (imap) {
-      try { imap.end(); } catch (_) {}
-    }
+    zamknijImap(imap, /przekroczono/.test(err.message));
   }
+}
+
+/* Zamknięcie połączenia IMAP. Po przekroczonym czasie end() (LOGOUT) potrafi
+ * czekać na serwer, który nie odpowiada — wtedy niszczymy gniazdo od razu. */
+function zamknijImap(imap, twardo = false) {
+  if (!imap) return;
+  try {
+    if (twardo && typeof imap.destroy === 'function') imap.destroy();
+    else imap.end();
+  } catch (_) {}
 }
 
 // ============ MAIN LOOP ============
@@ -2236,6 +2263,15 @@ let pollCycleCount = 0;
 const RESCAN_EVERY_N_CYCLES = 12;
 
 let pollInFlight = false;
+/* WŁASNOŚĆ CYKLU (22.10.2026). Porzucony (zawieszony) cykl nie da się
+ * przerwać — po odwieszeniu szedł dalej przez WSZYSTKIE skrzynki równolegle
+ * z nowym, a w `finally` zerował pollInFlight NOWEGO cyklu, więc kolejny tick
+ * startował trzeci. Przy wolnym serwerze poczty to mnożyło połączenia i
+ * pogłębiało zawieszenia. Teraz pollInFlight należy do cyklu o numerze
+ * `cyklWlasciciel`: porzucony cykl kończy pracę na najbliższej granicy
+ * skrzynki i niczego nie zeruje. `etapCyklu` mówi, gdzie cykl utknął. */
+let cyklWlasciciel = 0;
+let etapCyklu = null;
 /* CZUWANIE NAD FILTREM (dawniej „nad ciszą").
  *
  * Historia tego alarmu to historia dwóch fałszywych tropów:
@@ -2450,11 +2486,15 @@ async function pollAll() {
       console.warn(`[inbox-poller] poprzedni cykl wciąż trwa (${Math.round(trwa / 1000)} s) — pomijam ten tick`);
       return;
     }
-    console.error(`[inbox-poller] poprzedni cykl wisi ${Math.round(trwa / 60000)} min — porzucam go i startuję nowy`);
+    const gdzie = etapCyklu || 'nieznany etap';
+    console.error(`[inbox-poller] poprzedni cykl wisi ${Math.round(trwa / 60000)} min (utknął na: ${gdzie}) — porzucam go i startuję nowy`);
     await sendInboxAlert(
-      `⚠️ Poller poczty zawiesił się na ${Math.round(trwa / 60000)} min i został porzucony.\n`
-      + 'Przez ten czas NIE pobierano maili z żadnej skrzynki. Sprawdź: GET /poczta/zdrowie');
+      `⚠️ Cykl pollera poczty trwał ${Math.round(trwa / 60000)} min i został porzucony (utknął na: ${gdzie}).\n`
+      + 'Skrzynki dalej w kolejce czekały. Stary cykl kończy się na najbliższej skrzynce, nowy rusza od początku. '
+      + 'Najczęstsza przyczyna: serwer poczty odpowiada bardzo wolno. Sprawdź: GET /poczta/zdrowie');
   }
+  const mojCykl = ++cyklWlasciciel;
+  const porzucony = () => mojCykl !== cyklWlasciciel;
   pollInFlight = true;
   pollStartedAt = Date.now();
   try {
@@ -2468,13 +2508,19 @@ async function pollAll() {
   const shouldRescan = pollCycleCount % RESCAN_EVERY_N_CYCLES === 0;
 
   for (const account of accounts) {
+    if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę przed ${account.inbox}`); return; }
+    etapCyklu = `${account.inbox}: INBOX`;
     await processAccount(account);
+    if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę po ${account.inbox}`); return; }
+    etapCyklu = `${account.inbox}: Wysłane`;
     try {
       await processSentItems(account);
     } catch (e) {
       console.error(`[inbox-poller] processSentItems failed for ${account.inbox}:`, e.message);
     }
     if (shouldRescan) {
+      if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę przed rescanem ${account.inbox}`); return; }
+      etapCyklu = `${account.inbox}: rescan`;
       try {
         const r = await rescanInboxSince(account.inbox, 2);
         if (r.added > 0) {
@@ -2485,6 +2531,8 @@ async function pollAll() {
       }
     }
   }
+  if (porzucony()) { console.warn('[inbox-poller] cykl porzucony — kończę po skrzynkach'); return; }
+  etapCyklu = 'po skrzynkach (kanarek, Bell Outreach)';
   if (shouldRescan) {
     console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
   }
@@ -2505,10 +2553,14 @@ async function pollAll() {
     if (r && (r.wyslano || r.pominiete)) console.log(`[bell-outreach] po cyklu: wysłano=${r.wyslano || 0} pominięte=${r.pominiete || 0}`);
   } catch (e) { console.error('[bell-outreach] wysyłka po cyklu nieudana:', e.message); }
   } finally {
-    // Jedna linia na cykl: ile maili rozgrzewających pominięto (same liczby).
-    if (rozgrzewanie.cyklTrwa()) rozgrzewanie.zakonczCykl();
-    pollInFlight = false;
-    pollStartedAt = null;
+    // Porzucony cykl NIE rusza flagi ani liczników — należą do nowego cyklu.
+    if (!porzucony()) {
+      // Jedna linia na cykl: ile maili rozgrzewających pominięto (same liczby).
+      if (rozgrzewanie.cyklTrwa()) rozgrzewanie.zakonczCykl();
+      pollInFlight = false;
+      pollStartedAt = null;
+      etapCyklu = null;
+    }
   }
 }
 
@@ -2552,8 +2604,12 @@ async function rescanInboxSince(inbox, daysBack = 3) {
   let dateUpdated = 0;
   let filteredOut = 0;
   try {
-    imap = await connectImap(account);
-    const mails = await fetchMailsSince(imap, since);
+    // Limity czasu jak w processAccount (rescan godzinny idzie W cyklu pollera).
+    imap = await polaczZLimitem(account, 60000, `${inbox}: połączenie IMAP (rescan)`);
+    // Rozgrzewanie (Instantly) odcinamy już w SEARCH po temacie — rescan co
+    // godzinę nie ściąga ich treści; te ze znacznikiem tylko w treści i tak
+    // odpadną niżej po fladze.
+    const mails = await zTimeoutem(fetchMailsSince(imap, since, 'INBOX', rozgrzewanie.kryteriaBezRozgrzewania()), IMAP_LIMIT_CYKLU_MS, `${inbox}: rescan INBOX`);
     console.log(`[inbox-rescan] ${inbox}: fetched ${mails.length} mails since ${since.toISOString().slice(0,10)}`);
     /* WYŚCIG Z ŻYWYM POLLEREM (14.10.2026): rescan po dacie zapisuje mail
      * „na sucho" (bez klasyfikacji, załączników i Telegrama). Jeśli złapie
@@ -2682,6 +2738,10 @@ async function rescanInboxSince(inbox, daysBack = 3) {
     // w cyklu — do zbiorczej linii [rozgrzewanie]. Same liczby.
     if (pominieteRozgrzewanie && !rozgrzewanie.cyklTrwa()) console.log(`[rozgrzewanie] rescan ${inbox}: pominięto ${pominieteRozgrzewanie}`);
     return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, dateUpdated, filteredOut, rozgrzewanie: pominieteRozgrzewanie };
+  } catch (e) {
+    zamknijImap(imap, /przekroczono/.test(e.message));
+    imap = null;
+    throw e;
   } finally {
     if (imap) try { imap.end(); } catch (_) {}
   }
@@ -2868,4 +2928,4 @@ async function rescanSentSince(inbox, daysBack = 30) {
 
 module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter, czescWlasnaMaila,
   // Tylko do testów (test/rozgrzewanie.test.js) — ścieżki czytania poczty.
-  _test: { processAccount, processSentItems } };
+  _test: { processAccount, processSentItems, stanCyklu: () => ({ pollInFlight, cyklWlasciciel, etapCyklu }) } };

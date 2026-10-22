@@ -75,9 +75,12 @@ function dataNajnowszej(imap, box) {
   });
 }
 
-function statusSkrzynki(imap, nazwa = 'INBOX') {
+function statusSkrzynki(imap, nazwa = 'INBOX', limitMs = 20000) {
   return new Promise(resolve => {
+    // Bez limitu wolny serwer trzymał tu całą diagnostykę (22.10.2026: >3 min).
+    const strazak = setTimeout(() => resolve({ blad: `serwer nie otworzył ${nazwa} w ${Math.round(limitMs / 1000)} s` }), limitMs);
     imap.openBox(nazwa, true, (err, box) => {
+      clearTimeout(strazak);
       if (err) return resolve({ blad: err.message });
       resolve({
         wiadomosci: box.messages.total,
@@ -318,10 +321,18 @@ function router(express, token) {
       });
     }
 
-    const skrzynki = [];
-    for (const konto of wybrane) {
-      skrzynki.push(await zbadajSkrzynke(Imap, konto, { progCiszyMin: req.query.progCiszyMin }));
-    }
+    /* Po trzy skrzynki naraz (kolejność wyniku jak w IMAP_ACCOUNTS). Jedna
+       po drugiej przy wolnym serwerze poczty dawały kilka minut i diagnostyka
+       nie odpowiadała akurat wtedy, gdy alert o zawieszeniu do niej odsyła. */
+    const skrzynki = new Array(wybrane.length);
+    let nastepna = 0;
+    const pracownik = async () => {
+      while (nastepna < wybrane.length) {
+        const i = nastepna++;
+        skrzynki[i] = await zbadajSkrzynke(Imap, wybrane[i], { progCiszyMin: req.query.progCiszyMin });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, wybrane.length) }, pracownik));
     /* ZDROWIE KANALU POWIADOMIEN. Uzytkownik zglosil brak powiadomien jako
      * OSOBNY objaw obok braku maili — i slusznie, bo to niezalezna awaria:
      * mail moze byc w CRM, a Telegram moze go nie dostarczyc. Zablokowany bot

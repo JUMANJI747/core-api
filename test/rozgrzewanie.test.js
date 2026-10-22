@@ -103,10 +103,18 @@ const fakePrisma = new Proxy(modele, {
 const skrzynka = { INBOX: [], Sent: [] };
 const OPERACJE_ZAPISU = ['addFlags', 'setFlags', 'delFlags', 'addKeywords', 'setKeywords', 'delKeywords', 'move', 'copy', 'expunge', 'append', 'delBox', 'renameBox'];
 class FakeImap extends EventEmitter {
-  constructor(opts) { super(); this.opts = opts; this.otwarta = null; }
-  connect() { setImmediate(() => this.emit('ready')); }
+  constructor(opts) { super(); this.opts = opts; this.otwarta = null; this.zniszczone = false; FakeImap.instancje.push(this); }
+  connect() {
+    // Wolny serwer: połączenie dla wskazanego konta „wisi", dopóki test go nie zwolni.
+    if (FakeImap.trzymaj.has(this.opts && this.opts.user)) {
+      FakeImap.wstrzymane.push(this);
+      this.zwolnij = () => this.emit('ready');
+      return;
+    }
+    setImmediate(() => this.emit('ready'));
+  }
   end() { Z.imap.push({ op: 'end' }); }
-  destroy() {}
+  destroy() { this.zniszczone = true; Z.imap.push({ op: 'destroy' }); }
   getBoxes(cb) {
     cb(null, {
       INBOX: { attribs: [], delimiter: '/', children: null },
@@ -150,6 +158,9 @@ class FakeImap extends EventEmitter {
     return f;
   }
 }
+FakeImap.instancje = [];
+FakeImap.trzymaj = new Set();
+FakeImap.wstrzymane = [];
 for (const op of OPERACJE_ZAPISU) {
   FakeImap.prototype[op] = function (...a) { Z.imap.push({ op }); const cb = a[a.length - 1]; if (typeof cb === 'function') cb(null); };
 }
@@ -387,6 +398,8 @@ test('rescan (godzinny / po przerwie): rozgrzewanie nie jest dopisywane do CRM',
   assert.equal(Z.telegram.length, 0, 'rescan nigdy nie powiadamia');
   assert.ok(Z.log.some(l => l === '[rozgrzewanie] rescan info: pominięto 1'));
   assert.deepEqual(OPERACJE_ZAPISU_WYKONANE(), []);
+  const szukanie = Z.imap.find(x => x.op === 'search');
+  assert.deepEqual(szukanie.kryteria.slice(1), [['!SUBJECT', '4ASVTZE']], 'rescan odcina rozgrzewanie już w SEARCH');
 });
 
 // ── 4. Bell Outreach ────────────────────────────────────────────────────────
@@ -480,3 +493,81 @@ test('/poczta/zdrowie: najnowsza na serwerze jest rozgrzewająca — ślad zapob
   const liczniki = Z.prisma.filter(z => z.model === 'email' && (z.metoda === 'count' || z.metoda === 'findFirst'));
   assert.ok(liczniki.length >= 3 && liczniki.every(z => JSON.stringify(z.args.where).includes('rozgrzewanie')), 'liczniki maili bez tagu rozgrzewanie');
 });
+
+// ── 7. zawieszony cykl pollera (22.10.2026) ─────────────────────────────────
+
+const czekajAz = async (warunek, opis, ile = 2000) => {
+  for (let i = 0; i < ile; i++) { if (warunek()) return; await new Promise(r => setImmediate(r)); }
+  throw new Error(`nie doczekałem się: ${opis}`);
+};
+
+test('zawieszony cykl: porzucony kończy się na granicy skrzynki i nie zwalnia blokady nowego cyklu', async (t) => {
+  const kontaPrzed = process.env.IMAP_ACCOUNTS;
+  const INFO = 'info@surfstickbell.com';
+  const NIKO = 'niko@surfstickbell.com';
+  process.env.IMAP_ACCOUNTS = JSON.stringify([
+    { inbox: 'info', user: INFO, pass: 'x', host: 'imap.test', port: 993 },
+    { inbox: 'niko', user: NIKO, pass: 'x', host: 'imap.test', port: 993 },
+  ]);
+  t.after(() => { process.env.IMAP_ACCOUNTS = kontaPrzed; FakeImap.trzymaj.clear(); });
+  wyczysc();
+  baza.imapState.set('info', { inbox: 'info', lastUid: 10, uidValidity: 7 });
+  baza.imapState.set('niko', { inbox: 'niko', lastUid: 20, uidValidity: 7 });
+  skrzynka.INBOX = []; skrzynka.Sent = [];
+  FakeImap.instancje.length = 0; FakeImap.wstrzymane.length = 0; FakeImap.trzymaj.clear();
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const polaczeniaDla = user => FakeImap.instancje.filter(i => i.opts.user === user).length;
+
+  // Cykl A utyka na połączeniu z info@ (wolny serwer poczty).
+  FakeImap.trzymaj.add(INFO);
+  const cyklA = poller.pollAll();
+  await czekajAz(() => FakeImap.wstrzymane.length === 1, 'A czeka na info@');
+  assert.equal(poller._test.stanCyklu().etapCyklu, 'info: INBOX');
+
+  // 16 minut później tick startuje cykl B; ten utknie na niko@.
+  t.mock.timers.tick(16 * 60 * 1000);
+  FakeImap.trzymaj.delete(INFO);
+  FakeImap.trzymaj.add(NIKO);
+  const cyklB = poller.pollAll();
+  await czekajAz(() => FakeImap.wstrzymane.length === 2, 'B czeka na niko@');
+  const alert = Z.telegram.find(m => m.includes('porzucony'));
+  assert.ok(alert && alert.includes('utknął na: info: INBOX'), 'alert mówi, gdzie cykl utknął');
+  assert.ok(!alert.includes('z żadnej skrzynki'), 'alert nie twierdzi, że nie pobierano z żadnej skrzynki');
+
+  // A się odwiesza: kończy info@ i wychodzi — nie idzie do niko@ i nie rusza blokady B.
+  FakeImap.wstrzymane[0].zwolnij();
+  await cyklA;
+  assert.equal(polaczeniaDla(NIKO), 1, 'porzucony cykl A nie otworzył niko@ (to jedno połączenie jest B)');
+  assert.equal(poller._test.stanCyklu().pollInFlight, true, 'blokada należy nadal do B');
+
+  // Kolejny tick, gdy B trwa: pominięty, żaden trzeci cykl nie rusza.
+  const instancjiPrzed = FakeImap.instancje.length;
+  await poller.pollAll();
+  assert.equal(FakeImap.instancje.length, instancjiPrzed, 'trzeci cykl nie wystartował');
+  assert.ok(Z.log.some(l => l.includes('poprzedni cykl wciąż trwa')));
+
+  // B kończy normalnie i dopiero on zwalnia blokadę.
+  FakeImap.wstrzymane[1].zwolnij();
+  await cyklB;
+  assert.equal(poller._test.stanCyklu().pollInFlight, false);
+  assert.equal(polaczeniaDla(NIKO), 2, 'B: INBOX + Wysłane niko@');
+});
+
+test('połączenie, które nawiąże się po limicie czasu, jest od razu zamykane (bez osieroconych sesji)', async (t) => {
+  wyczysc();
+  FakeImap.instancje.length = 0; FakeImap.wstrzymane.length = 0; FakeImap.trzymaj.clear();
+  t.after(() => FakeImap.trzymaj.clear());
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  FakeImap.trzymaj.add(KONTO.user);
+  const przebieg = poller._test.processSentItems(KONTO);
+  await czekajAz(() => FakeImap.wstrzymane.length === 1, 'połączenie wisi');
+  t.mock.timers.tick(60 * 1000);
+  await przebieg;
+  assert.ok(Z.log.some(l => l.includes('połączenie IMAP (Wysłane): przekroczono 60 s')), 'limit czasu zadziałał');
+  const sesja = FakeImap.wstrzymane[0];
+  assert.equal(sesja.zniszczone, false);
+  sesja.zwolnij();
+  await czekajAz(() => sesja.zniszczone, 'spóźnione połączenie zamknięte');
+  assert.ok(sesja.zniszczone);
+});
+
