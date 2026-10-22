@@ -202,7 +202,7 @@ router.get('/emails', async (req, res) => {
   } else if (!folder || folder === 'inbox') {
     // domyslnie ukrywamy archived, trash ORAZ pgf (zalew od dostawcy —
     // dostepny tylko w osobnym folderze 'pgf', nie zasmieca glownego widoku).
-    where.NOT = { tags: { hasSome: ['archived', 'trash', 'pgf'] } };
+    where.NOT = { tags: { hasSome: ['archived', 'trash', 'pgf', 'rozgrzewanie'] } };
     // important=1 -> WAZNE: maile ktore wywolaly powiadomienie (tag 'tg_notified')
     // LUB ktore w temacie/tresci maja "zamowienie" w dowolnym jezyku. Drugi
     // warunek lapie zamowienia B2B nawet jak poller ich nie znotyfikowal
@@ -502,7 +502,7 @@ async function runOpenDealScan(prisma, { days = 120, apply = true } = {}) {
       where: {
         direction: 'INBOUND',
         createdAt: { gte: since },
-        NOT: { tags: { hasSome: ['archived', 'trash', 'pgf', 'deal-open'] } },
+        NOT: { tags: { hasSome: ['archived', 'trash', 'pgf', 'deal-open', 'rozgrzewanie'] } },
       },
       orderBy: { createdAt: 'asc' },
       select: {
@@ -1569,21 +1569,23 @@ router.get('/inbox-coverage', async (req, res) => {
 router.get('/inbox-stats', async (req, res) => {
   const prisma = req.app.locals.prisma;
   try {
+    // Maile rozgrzewające (tag `rozgrzewanie`, Instantly) nie liczą się nigdzie.
+    const bezRozgrzewania = { NOT: { tags: { has: 'rozgrzewanie' } } };
     const rows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND' },
+      where: { direction: 'INBOUND', ...bezRozgrzewania },
       _count: { _all: true },
     });
     const unreadRows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND', isRead: false },
+      where: { direction: 'INBOUND', isRead: false, ...bezRozgrzewania },
       _count: { _all: true },
     });
     const unreadMap = Object.fromEntries(unreadRows.map(r => [r.inbox, r._count._all]));
     // Important unread: CLIENT_REPLY or COURIER_ALERT, unread — te same co idą na Telegram.
     const importantRows = await prisma.email.groupBy({
       by: ['inbox'],
-      where: { direction: 'INBOUND', isRead: false, tags: { has: 'tg_notified' } },
+      where: { direction: 'INBOUND', isRead: false, tags: { has: 'tg_notified' }, ...bezRozgrzewania },
       _count: { _all: true },
     });
     const importantMap = Object.fromEntries(importantRows.map(r => [r.inbox, r._count._all]));

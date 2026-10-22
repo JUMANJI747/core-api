@@ -23,6 +23,11 @@
 
 const prisma = require('../db');
 const { getAccounts } = require('../mail-sender');
+const rozgrzewanie = require('../services/rozgrzewanie');
+
+// Maile rozgrzewające (Instantly, tag `rozgrzewanie`) nie są pocztą CRM —
+// nie wchodzą do liczników ani do „ostatniego maila".
+const BEZ_ROZGRZEWANIA = { NOT: { tags: { has: 'rozgrzewanie' } } };
 
 const MINUTA = 60 * 1000;
 
@@ -108,6 +113,7 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
     wynik.uidValidity = st ? st.uidValidity : null;
     wynik.ostatniUdanyCykl = st && st.lastOkAt ? st.lastOkAt.toISOString() : null;
     wynik.ostatniUdanyCyklMinTemu = st ? minutTemu(st.lastOkAt) : null;
+    wynik.ostatnieRozgrzewanieMinTemu = st && st.rozgrzewanieO ? minutTemu(st.rozgrzewanieO) : null;
   } catch (e) {
     wynik.powody.push(`odczyt ImapState nieudany: ${e.message}`);
   }
@@ -118,12 +124,12 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
     const tydzien = new Date(Date.now() - 7 * 24 * 60 * MINUTA);
     const [ostatni, wDobie, wTygodniu] = await Promise.all([
       prisma.email.findFirst({
-        where: { inbox, direction: 'INBOUND' },
+        where: { inbox, direction: 'INBOUND', ...BEZ_ROZGRZEWANIA },
         orderBy: { createdAt: 'desc' },
         select: { createdAt: true },
       }),
-      prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: doba } } }),
-      prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: tydzien } } }),
+      prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: doba }, ...BEZ_ROZGRZEWANIA } }),
+      prisma.email.count({ where: { inbox, direction: 'INBOUND', createdAt: { gte: tydzien }, ...BEZ_ROZGRZEWANIA } }),
     ]);
     wynik.ostatniMail = ostatni ? ostatni.createdAt.toISOString() : null;
     wynik.ostatniMailMinTemu = ostatni ? minutTemu(ostatni.createdAt) : null;
@@ -166,7 +172,10 @@ async function zbadajSkrzynke(Imap, account, opcje = {}) {
       wynik.ostatnieOdrzucenie = ostatniSkip.createdAt.toISOString();
       wynik.ostatnieOdrzuceniePowod = ostatniSkip.reason;
     }
-    const sladyMin = [wynik.ostatniMailMinTemu, ostatniSkip ? minutTemu(ostatniSkip.createdAt) : null]
+    /* Pominięty mail rozgrzewający (Instantly) to też przetworzenie: wiemy
+       o nim, tylko nie chcemy go w CRM. Bez tego najnowsza wiadomość na
+       serwerze (często rozgrzewająca) robiła fałszywe „gubimy". */
+    const sladyMin = [wynik.ostatniMailMinTemu, ostatniSkip ? minutTemu(ostatniSkip.createdAt) : null, wynik.ostatnieRozgrzewanieMinTemu]
       .filter(v => v != null);
     wynik.ostatniSladMinTemu = sladyMin.length ? Math.min(...sladyMin) : null;
   } catch (e) {
@@ -337,6 +346,8 @@ function router(express, token) {
       ok: zle.length === 0 && !(powiadomienia && powiadomienia.bledy > 0),
       sprawdzono: new Date().toISOString(),
       powiadomienia,
+      // Maile rozgrzewające pominięte przez poller — same liczby na cykl.
+      rozgrzewanie: rozgrzewanie.stanRozgrzewania(),
       podsumowanie: {
         skrzynek: skrzynki.length,
         ok: skrzynki.filter(s => s.stan === 'ok').length,

@@ -237,6 +237,10 @@ const server = app.listen(PORT, () => {
     .catch(e => console.error('[magazyn-statusy]', e.message));
   setTimeout(statusyMagazynu, 60 * 1000).unref();
   setInterval(statusyMagazynu, 30 * 60 * 1000).unref();
+  // Maile rozgrzewające (Instantly), które trafiły do CRM przed filtrem albo
+  // przed zmianą WARMUP_TAGS — oznacz i schowaj (serwera poczty nie dotyka).
+  setTimeout(() => require('./services/rozgrzewanie').oznaczIstniejace(prisma)
+    .catch(e => console.error('[rozgrzewanie] oznaczanie istniejących nieudane:', e.message)), 90 * 1000).unref();
 });
 
 // ============ GK COUNTRIES SELF-HEAL ============

@@ -320,6 +320,31 @@ router.post('/admin/backfill/es-invoices-from-contasimple', async (req, res) => 
   }
 });
 
+// ── ROZGRZEWANIE SKRZYNEK (Instantly, 22.10.2026) ──
+// GET  /api/admin/rozgrzewanie — liczniki pominiętych maili rozgrzewających
+//      (pierwszy i ostatni cykl pollera, same liczby) + ile maili w CRM ma tag.
+// POST /api/admin/rozgrzewanie/oznacz {dry} — oznacz i schowaj maile
+//      rozgrzewające, które już są w CRM (serwera poczty nie dotyka).
+router.get('/admin/rozgrzewanie', async (req, res) => {
+  try {
+    const r = require('../services/rozgrzewanie');
+    const oznaczonychWCrm = await req.app.locals.prisma.email.count({ where: { tags: { has: r.TAG_ROZGRZEWANIE } } });
+    res.json({ ok: true, ...r.stanRozgrzewania(), oznaczonychWCrm });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/admin/rozgrzewanie/oznacz', async (req, res) => {
+  try {
+    const r = require('../services/rozgrzewanie');
+    const wynik = await r.oznaczIstniejace(req.app.locals.prisma, { dry: !!(req.body && req.body.dry) });
+    res.json({ ok: true, ...wynik });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic — wywoluje iFirma fetchInvoiceDetails(fakturaId, rodzaj) i
 // zwraca raw response. Sluzy do sprawdzenia ksztaltu Pozycje[] przed
 // napisaniem backfillu ktory zaciagnie pozycje historycznych FV (te z

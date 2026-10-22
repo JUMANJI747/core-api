@@ -576,6 +576,9 @@ model ImapState {
   // Czas ostatniego UDANEGO cyklu pobierania — po przerwie (timeout serwera,
   // restart, crash) następny udany cykl robi rescan na głębokość przerwy.
   lastOkAt  DateTime?
+  // Kiedy poller ostatnio POMINĄŁ mail rozgrzewający (Instantly, 22.10.2026).
+  // Ślad przetworzenia dla /poczta/zdrowie — sam czas, bez adresów i liczników.
+  rozgrzewanieO DateTime?
   updatedAt DateTime @updatedAt
 }
 

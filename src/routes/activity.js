@@ -43,6 +43,11 @@ router.get('/activity', async (req, res) => {
     const tagsAny = parseList(req.query.tagsAny);
     if (tagsAny.length) where.tags = { ...(where.tags || {}), hasSome: tagsAny.map(t => t.toLowerCase()) };
 
+    // Wpisy z maili rozgrzewających (Instantly) — schowane, chyba że ktoś
+    // pyta o nie wprost (tags/tagsAny=rozgrzewanie).
+    const pytaORozgrzewanie = [...tagsAnd, ...tagsAny].some(t => String(t).toLowerCase() === 'rozgrzewanie');
+    if (!pytaORozgrzewanie) where.NOT = { tags: { has: 'rozgrzewanie' } };
+
     if (req.query.source) where.source = String(req.query.source);
     if (req.query.actorType) where.actorType = String(req.query.actorType);
     if (req.query.actorId) where.actorId = String(req.query.actorId);

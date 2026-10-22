@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const prisma = require('./db');
 const { sendTelegram, sendTelegramPhoto } = require('./telegram-utils');
 const bellOutreach = require('./services/bell-outreach');
+const rozgrzewanie = require('./services/rozgrzewanie');
 const { parseOrderWithLLM } = require('./order-llm-parser');
 const { fetchWithTimeout } = require('./http');
 const { verifyVat } = require('./vies');
@@ -563,8 +564,15 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX', meta = null) {
                   ? (parsed.headers.get('list-unsubscribe') || '')
                   : '';
 
+                /* Rozgrzewanie (Instantly): znacznik w temacie, tekście albo
+                 * surowym HTML. Taki mail jedzie dalej tylko po to, żeby jego
+                 * UID poszedł do przodu — wywołujący pomija go przed czymkolwiek
+                 * innym. Załączników nie trzymamy w pamięci. */
+                const znacznikRozgrzewania = rozgrzewanie.jestRozgrzewaniem({ subject: parsed.subject, text: parsed.text, html: parsed.html, bodyText });
+
                 mails.push({
                   uid,
+                  rozgrzewanie: znacznikRozgrzewania || null,
                   fromEmail,
                   fromName,
                   toEmail,
@@ -574,7 +582,7 @@ function fetchMailsFromUid(imap, sinceUid, folderName = 'INBOX', meta = null) {
                   messageId: parsed.messageId || null,
                   inReplyTo: parsed.inReplyTo || null,
                   references: Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || null),
-                  attachments,
+                  attachments: znacznikRozgrzewania ? [] : attachments,
                   autoSubmitted,
                   listUnsubscribe,
                   date: parsed.date || null,
@@ -721,6 +729,7 @@ function fetchMailsSince(imap, sinceDate, folderName = 'INBOX') {
                   body: parsed.text || (parsed.html ? stripHtml(parsed.html) : ''),
                   bodyText: parsed.text || (parsed.html ? stripHtml(parsed.html) : ''),
                   attachments: parsed.attachments || [],
+                  rozgrzewanie: rozgrzewanie.jestRozgrzewaniem({ subject: parsed.subject, text: parsed.text, html: parsed.html }) || null,
                 });
               } catch (e) {
                 console.error('[inbox-poller] SINCE parse error:', e.message);
@@ -1349,6 +1358,7 @@ async function processAccount(account) {
     // Sort by UID ascending
     mails.sort((a, b) => a.uid - b.uid);
     let maxUid = lastUid;
+    let pominieteRozgrzewanie = 0;
 
     // Get Telegram config once (admin global — fallback Config OK)
     const { resolveTelegram } = require('./services/telegram-helper');
@@ -1359,6 +1369,17 @@ async function processAccount(account) {
     for (const mail of mails) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
+
+        /* ROZGRZEWANIE (Instantly, 22.10.2026) — pomijamy PRZED wszystkim:
+         * przed PGF, kanarkiem i filtrami (EmailSkip liczy się w statystykach
+         * /poczta/zdrowie), klasyfikacją, zapisem, kolejką Bell Outreach,
+         * zadaniami i powiadomieniami. UID poszedł do przodu wyżej, na
+         * serwerze nic się nie zmienia (skrzynka otwarta tylko do odczytu). */
+        if (mail.rozgrzewanie) {
+          rozgrzewanie.policzPominiety('inbox');
+          pominieteRozgrzewanie++;
+          continue;
+        }
 
         // (Wcześniej: filtr „skip older than 30 min" — usuwał maile które
         // przyszły zanim poller zdążył je przeczytać. UID mechanism już
@@ -1953,6 +1974,9 @@ async function processAccount(account) {
       });
       console.log(`[inbox-poller] ${inbox}: updated lastUid=${maxUid}`);
     }
+    // Ślad dla /poczta/zdrowie: najnowsza wiadomość na serwerze bywa teraz
+    // rozgrzewająca — bez śladu werdykt „gubimy" byłby fałszywy.
+    if (pominieteRozgrzewanie) await rozgrzewanie.zapiszSlad(prisma, inbox);
 
     await markInboxOk(inbox); // cykl zakończony bez błędu połączenia
 
@@ -2091,6 +2115,8 @@ async function processSentFolderOnce(imap, inbox, folderName, sentKey) {
     for (const mail of mails) {
       try {
         if (mail.uid > maxUid) maxUid = mail.uid;
+        // Rozgrzewanie (Instantly) wysłane z naszej skrzynki — to nie korespondencja.
+        if (mail.rozgrzewanie) { rozgrzewanie.policzPominiety('wyslane'); continue; }
         if (!mail.toEmail || !mail.fromEmail) continue;
         // Kanarek nie jest korespondencja — jego kopia w Wyslanych tez nie.
         if (String(mail.subject || '').includes(MARKER_KANARKA)) continue;
@@ -2438,6 +2464,7 @@ async function pollAll() {
     return;
   }
   pollCycleCount++;
+  rozgrzewanie.zacznijCykl(pollCycleCount);
   const shouldRescan = pollCycleCount % RESCAN_EVERY_N_CYCLES === 0;
 
   for (const account of accounts) {
@@ -2478,6 +2505,8 @@ async function pollAll() {
     if (r && (r.wyslano || r.pominiete)) console.log(`[bell-outreach] po cyklu: wysłano=${r.wyslano || 0} pominięte=${r.pominiete || 0}`);
   } catch (e) { console.error('[bell-outreach] wysyłka po cyklu nieudana:', e.message); }
   } finally {
+    // Jedna linia na cykl: ile maili rozgrzewających pominięto (same liczby).
+    if (rozgrzewanie.cyklTrwa()) rozgrzewanie.zakonczCykl();
     pollInFlight = false;
     pollStartedAt = null;
   }
@@ -2535,12 +2564,16 @@ async function rescanInboxSince(inbox, daysBack = 3) {
     const lastUidZywego = stanUid ? stanUid.lastUid : 0;
     let maxUid = 0;
     let zostawioneZywemu = 0;
+    let pominieteRozgrzewanie = 0;
     for (const mail of mails) {
       try {
         // UID > lastUid należy do żywego pollera — NIE podbijamy po nim lastUid,
         // bo wtedy żywy poller nigdy by go nie pobrał (stracony bez śladu).
         if (mail.uid > lastUidZywego) { zostawioneZywemu++; continue; }
         if (mail.uid > maxUid) maxUid = mail.uid;
+        // Rozgrzewanie (Instantly) — nigdy nie trafia do CRM, także rescanem
+        // (inaczej godzinny rescan dopisywałby je „na sucho" co godzinę).
+        if (mail.rozgrzewanie) { rozgrzewanie.policzPominiety('rescan'); pominieteRozgrzewanie++; continue; }
         if (!mail.fromEmail) continue;
         // Ta sama ulga co w pollerze — inaczej rescan nie odzyskałby maili,
         // które twardy filtr wyrzucił omylnie (po to się go uruchamia).
@@ -2645,7 +2678,10 @@ async function rescanInboxSince(inbox, daysBack = 3) {
         console.log(`[inbox-rescan] ${inbox}: bumped lastUid → ${maxUid}`);
       }
     }
-    return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, dateUpdated, filteredOut };
+    // Poza cyklem pollera (rescan ręczny / samoleczenie) liczba idzie tu,
+    // w cyklu — do zbiorczej linii [rozgrzewanie]. Same liczby.
+    if (pominieteRozgrzewanie && !rozgrzewanie.cyklTrwa()) console.log(`[rozgrzewanie] rescan ${inbox}: pominięto ${pominieteRozgrzewanie}`);
+    return { ok: true, inbox, sinceDate: since.toISOString(), totalFetched: mails.length, added, dedupedExisting, dateUpdated, filteredOut, rozgrzewanie: pominieteRozgrzewanie };
   } finally {
     if (imap) try { imap.end(); } catch (_) {}
   }
@@ -2668,14 +2704,15 @@ async function getCoverageStats(daysBack = 30) {
         const imapDate = `${String(since.getDate()).padStart(2,'0')}-${months[since.getMonth()]}-${since.getFullYear()}`;
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
-          imap.search([['SINCE', imapDate]], (sErr, uids) => {
+          // Bez maili rozgrzewających (po temacie) — to nie poczta CRM.
+          imap.search([['SINCE', imapDate], ...rozgrzewanie.kryteriaBezRozgrzewania()], (sErr, uids) => {
             if (sErr) return reject(sErr);
             resolve((uids || []).length);
           });
         });
       });
       const dbCount = await prisma.email.count({
-        where: { inbox, direction: 'INBOUND', createdAt: { gte: since } },
+        where: { inbox, direction: 'INBOUND', createdAt: { gte: since }, NOT: { tags: { has: rozgrzewanie.TAG_ROZGRZEWANIE } } },
       });
       const state = await prisma.imapState.findUnique({ where: { inbox } });
       stats.push({
@@ -2717,6 +2754,7 @@ async function rescanSentSince(inbox, daysBack = 30) {
   let updatedBody = 0;
   let skippedDup = 0;
   let skippedNoData = 0;
+  let pominieteRozgrzewanie = 0;
   try {
     imap = await connectImap(account);
     // WSZYSTKIE foldery wysłanych (Sent / Sent Messages / Wysłane…) — kopie
@@ -2737,6 +2775,7 @@ async function rescanSentSince(inbox, daysBack = 30) {
     fetchedTotal += mails.length;
     for (const mail of mails) {
       try {
+        if (mail.rozgrzewanie) { rozgrzewanie.policzPominiety('rescan'); pominieteRozgrzewanie++; continue; }
         if (!mail.fromEmail || !mail.toEmail) { skippedNoData++; continue; }
         // Dedup z normalized messageId (3 warianty)
         let existing = null;
@@ -2818,7 +2857,8 @@ async function rescanSentSince(inbox, daysBack = 30) {
     }
     }
     try { imap.end(); } catch (_) {}
-    return { ok: true, inbox, folders, perFolder, since: since.toISOString().slice(0,10), fetched: fetchedTotal, added, updatedBody, skippedDup, skippedNoData };
+    if (pominieteRozgrzewanie && !rozgrzewanie.cyklTrwa()) console.log(`[rozgrzewanie] sent-rescan ${inbox}: pominięto ${pominieteRozgrzewanie}`);
+    return { ok: true, inbox, folders, perFolder, since: since.toISOString().slice(0,10), fetched: fetchedTotal, added, updatedBody, skippedDup, skippedNoData, rozgrzewanie: pominieteRozgrzewanie };
   } catch (e) {
     console.error(`[sent-rescan] ${inbox} error:`, e.message);
     try { if (imap) imap.end(); } catch (_) {}
@@ -2826,4 +2866,6 @@ async function rescanSentSince(inbox, daysBack = 30) {
   }
 }
 
-module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter, czescWlasnaMaila };
+module.exports = { pollAll, stopPolling, rescanInboxSince, rescanSentSince, getCoverageStats, wykryjWypis, odpowiedzNaNaszMail, newsletterFilter, czescWlasnaMaila,
+  // Tylko do testów (test/rozgrzewanie.test.js) — ścieżki czytania poczty.
+  _test: { processAccount, processSentItems } };

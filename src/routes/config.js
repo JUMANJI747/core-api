@@ -140,7 +140,7 @@ router.get('/stats', async (req, res) => {
     prisma.contractor.count(),
     prisma.deal.count({ where: { status: { notIn: ['PAID', 'CLIENT', 'LOST'] } } }),
     prisma.consignment.count({ where: { status: 'OPEN' } }),
-    prisma.email.count({ where: { isRead: false, direction: 'INBOUND' } }),
+    prisma.email.count({ where: { isRead: false, direction: 'INBOUND', NOT: { tags: { has: 'rozgrzewanie' } } } }),
     prisma.mailingContact.count({ where: { status: 'PENDING' } }),
   ]);
   res.json({ contractors, openDeals, openConsignments, unreadEmails, pendingMailing });

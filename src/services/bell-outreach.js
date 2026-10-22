@@ -29,6 +29,7 @@
  * odbicie. */
 
 const { fetchWithTimeout } = require('../http');
+const { jestRozgrzewaniem } = require('./rozgrzewanie');
 
 const RODZAJE = ['nie_zainteresowany', 'wypisz', 'zainteresowany', 'odpowiedz', 'autoresponder', 'odbicie'];
 const URL_DOMYSLNY = 'https://bell-mailing-system-production.up.railway.app';
@@ -144,6 +145,8 @@ function dataMaila(d) {
  * odrzuconych filtrem tylko odbicie/autoresponder), wykryjWypis, czescWlasnaMaila. */
 async function kolejkujZMaila(prisma, mail, o = {}) {
   if (!mail || !mail.messageId) return null;
+  // Rozgrzewanie (Instantly) to nie odpowiedź — nigdy do Bell Outreach.
+  if (jestRozgrzewaniem({ subject: mail.subject, bodyText: mail.bodyText, body: mail.body, html: mail.bodyHtml })) return null;
   const wynik = rodzajBellOutreach({ direction: 'INBOUND', ...mail, category: o.category, wypis: o.wypis }, { wykryjWypis: o.wykryjWypis, czescWlasnaMaila: o.czescWlasnaMaila });
   if (!wynik) return null;
   if (Array.isArray(o.tylko) && !o.tylko.includes(wynik.rodzaj)) return null;
@@ -298,7 +301,14 @@ async function wyslijWiersze(prisma, rows, o = {}) {
   const teraz = typeof o.now === 'function' ? o.now() : Date.now();
   const cfg = konfiguracja();
   const dry = o.dryRun != null ? !!o.dryRun : cfg.dryRun;
-  if (!rows.length) return { wyslano: 0 };
+  // Wiersze z rozgrzewania (zakolejkowane przed filtrem albo po zmianie
+  // WARMUP_TAGS) — nie wysyłamy, oznaczamy jako pominięte.
+  const zRozgrzewania = rows.filter(r => jestRozgrzewaniem({ subject: r.temat }));
+  if (zRozgrzewania.length) {
+    if (!dry) await prisma.bellOutreachMsg.updateMany({ where: { messageId: { in: zRozgrzewania.map(r => r.messageId) } }, data: { status: 'pominiety', powod: 'rozgrzewanie' } });
+    rows = rows.filter(r => !zRozgrzewania.includes(r));
+  }
+  if (!rows.length) return { wyslano: 0, pominietoRozgrzewanie: zRozgrzewania.length };
   const paczka = budujPaczke(rows);
   if (dry) {
     console.log(`[bell-outreach] TRYB PRÓBNY — paczka ${rows.length} wiad. do ${cfg.url}${SCIEZKA} (nie wysyłam):\n${JSON.stringify(paczka, null, 1)}`);
