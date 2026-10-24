@@ -100,15 +100,51 @@ test('przegląd adresów: nowy adres — alert raz, w następnej godzinie już n
   const proba = await st.przegladGodzinny(db, { dry: true, wyslij: z.wyslij });
   assert.deepEqual(proba.adresy.nowe, ['203.0.113.7']);
   assert.equal(db._config.has('straznik_znane_adresy'), false, 'próbny przegląd nie zapamiętuje adresu');
+  assert.equal(db._config.has('straznik_start'), false, 'próbny przegląd nie ustawia startu');
   z.alerty.length = 0;
   await st.przegladGodzinny(db, { wyslij: z.wyslij });
   assert.equal(z.alerty.filter(a => a.includes('NOWY adres')).length, 1);
-  assert.match(z.alerty[0], /203\.0\.113\.7 — 1 wywołań/);
+  assert.match(z.alerty[0], /203\.0\.113\.7 \(sieć 203\.0\.113\.0\/24\) — 1 wywołań/);
   assert.match(z.alerty[0], /\/api\/admin\/query/);
   z.alerty.length = 0;
   st.zarejestruj(zad('/api/admin/query', { metoda: 'POST' }), { statusCode: 200 });
   await st.przegladGodzinny(db, { wyslij: z.wyslij });
   assert.equal(z.alerty.filter(a => a.includes('NOWY adres')).length, 0, 'znany adres bez alertu');
+});
+
+test('przegląd adresów: inny adres z tej samej sieci /24 nie jest nowy; tryb próbny pokazuje treść alertu', async () => {
+  const db = baza();
+  const z = zbieracz();
+  st.zarejestruj(zad('/api/admin/query', { metoda: 'POST', ip: '160.79.106.138' }), { statusCode: 200 });
+  const proba = await st.przegladGodzinny(db, { dry: true, wyslij: z.wyslij });
+  assert.deepEqual(proba.adresy.noweSieci, ['160.79.106.0/24']);
+  assert.ok(z.alerty.some(a => a.includes('NOWY adres') && a.includes('160.79.106.138')), 'próbny przegląd zwraca treść alertu');
+  z.alerty.length = 0;
+  await st.przegladGodzinny(db, { wyslij: z.wyslij });
+  assert.equal(z.alerty.filter(a => a.includes('NOWY adres')).length, 1);
+  z.alerty.length = 0;
+  st.zarejestruj(zad('/api/admin/query', { metoda: 'POST', ip: '160.79.106.25' }), { statusCode: 200 });
+  st.zarejestruj(zad('/api/admin/query', { metoda: 'POST', ip: '198.51.100.77' }), { statusCode: 200 });
+  const w = await st.przegladGodzinny(db, { wyslij: z.wyslij });
+  assert.deepEqual(w.adresy.noweSieci, ['198.51.100.0/24'], 'tylko obca sieć jest nowa');
+  assert.ok(z.alerty.some(a => a.includes('198.51.100.77')) && !z.alerty.some(a => a.includes('160.79.106.25')));
+  assert.equal(T.siecAdresu('2001:db8:abcd:12:1::5'), '2001:db8:abcd:12::/64');
+});
+
+test('przegląd adresów: wpisy starej wersji (pojedyncze adresy) scalone w sieci; kilka adresów nowej sieci — wszystkie w alercie', async () => {
+  const db = baza();
+  const z = zbieracz();
+  db._config.set('straznik_znane_adresy', JSON.stringify({ '160.79.106.138': { od: '2026-10-24T09:02:00.000Z', ostatnio: '2026-10-24T09:02:00.000Z', n: 3, ua: 'curl/8.5.0' } }));
+  st.zarejestruj(zad('/api/admin/query', { metoda: 'POST', ip: '160.79.106.21' }), { statusCode: 200 });
+  st.zarejestruj(zad('/czytnik/zdrowie', { ip: '192.0.2.10' }), { statusCode: 200 });
+  st.zarejestruj(zad('/czytnik/zdrowie', { ip: '192.0.2.11' }), { statusCode: 200 });
+  const w = await st.przegladGodzinny(db, { wyslij: z.wyslij });
+  assert.deepEqual(w.adresy.noweSieci, ['192.0.2.0/24'], 'sieć ze starego wpisu jest znana');
+  assert.deepEqual(w.adresy.nowe.sort(), ['192.0.2.10', '192.0.2.11']);
+  const zapis = JSON.parse(db._config.get('straznik_znane_adresy'));
+  assert.deepEqual(Object.keys(zapis).sort(), ['160.79.106.0/24', '192.0.2.0/24']);
+  assert.deepEqual(zapis['160.79.106.0/24'].adresy.sort(), ['160.79.106.138', '160.79.106.21']);
+  assert.equal(zapis['160.79.106.0/24'].n, 4);
 });
 
 test('przegląd adresów: ponad próg wywołań z jednego adresu — alert', async () => {
@@ -173,6 +209,18 @@ test('baza: obcy adres zgłaszany dopiero przy drugim przeglądzie z rzędu (nak
   assert.ok(z.alerty[0].includes('OBCE połączenie z bazą') && z.alerty[0].includes('psql'));
   const w3 = await st.przegladCzesty(db, deps);
   assert.deepEqual(w3.baza.zgloszone, []);
+});
+
+test('baza: przegląd próbny nie zalicza pierwszego zobaczenia', async () => {
+  const z = zbieracz();
+  const obcy = [{ ip: '203.0.113.99', usename: 'postgres', application_name: 'psql' }];
+  const db = baza({ bazaKolejne: [obcy, obcy, obcy] });
+  const deps = { wyslij: z.wyslij, webhookInfo: async () => null };
+  await st.przegladCzesty(db, { ...deps, dry: true });
+  const w = await st.przegladCzesty(db, deps);
+  assert.deepEqual(w.baza.zgloszone, [], 'po próbie to wciąż pierwsze prawdziwe zobaczenie');
+  const w2 = await st.przegladCzesty(db, deps);
+  assert.deepEqual(w2.baza.zgloszone, ['203.0.113.99']);
 });
 
 test('webhooki bota: zdjęty albo na obcym adresie — alert; poprawny — ok', async (t) => {

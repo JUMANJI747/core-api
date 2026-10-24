@@ -64,6 +64,39 @@ function sciezkaOgolna(p) {
     .slice(0, 120);
 }
 
+/* Sieć adresu: IPv4 → /24, IPv6 → /64. Znane są SIECI, nie pojedyncze adresy —
+ * wołający z puli adresów (bramka Claude, n8n w chmurze) zmienia adres w
+ * obrębie jednej sieci i bez tego każdy nowy adres z puli dawałby alert. */
+function siecAdresu(ip) {
+  const s = String(ip || '');
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(s)) return s.split('.').slice(0, 3).join('.') + '.0/24';
+  if (s.includes(':')) {
+    const czesci = s.split('::')[0].split(':').filter(Boolean);
+    return czesci.slice(0, 4).join(':') + '::/64';
+  }
+  return s || '?';
+}
+
+/* Znane sieci z Config. Wpisy pierwszej wersji strażnika (24.10, klucz =
+ * pojedynczy adres) scalamy w sieci, żeby po wdrożeniu nie wróciły alerty
+ * o adresach już zgłoszonych. */
+async function czytajZnane(prisma) {
+  const znane = await czytajJson(prisma, KLUCZ_ZNANE, {});
+  for (const k of Object.keys(znane)) {
+    if (k.includes('/')) continue;
+    const siec = siecAdresu(k);
+    const z = znane[k];
+    delete znane[k];
+    const cel = znane[siec] || { od: z.od, ostatnio: z.ostatnio, n: 0, ua: z.ua, sciezki: z.sciezki, adresy: [] };
+    cel.n = (cel.n || 0) + (z.n || 0);
+    if (String(z.ostatnio || '') > String(cel.ostatnio || '')) cel.ostatnio = z.ostatnio;
+    if (String(z.od || '') < String(cel.od || '')) cel.od = z.od;
+    cel.adresy = [...new Set([...(cel.adresy || []), k])].slice(-10);
+    znane[siec] = cel;
+  }
+  return znane;
+}
+
 const lokalnieWarszawa = (d) => new Intl.DateTimeFormat('sv-SE', {
   timeZone: 'Europe/Warsaw', year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
@@ -162,28 +195,34 @@ async function wyslijAlert(tekst, klucz) {
 // ── przegląd godzinny: adresy, GlobKurier, faktury, skrzynki ────────────────
 async function przegladAdresow(prisma, deps) {
   const wyslij = deps.wyslij || wyslijAlert;
-  const znane = await czytajJson(prisma, KLUCZ_ZNANE, {});
+  const znane = await czytajZnane(prisma);
+  // Stan sprzed tej godziny: kilka adresów jednej nowej sieci to wszystkie „nowe".
+  const znaneWczesniej = new Set(Object.keys(znane));
   const teraz = new Date().toISOString();
   const nowe = [];
   const duzo = [];
+  const noweSieci = new Set();
   for (const [ip, w] of okno.adresy.entries()) {
+    const siec = siecAdresu(ip);
     const sciezki = [...w.sciezki.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s, n]) => `${s} ×${n}`);
-    if (!znane[ip]) nowe.push({ ip, n: w.n, ua: [...w.ua].slice(0, 2).join(' | '), sciezki });
+    if (!znaneWczesniej.has(siec)) { nowe.push({ ip, siec, n: w.n, ua: [...w.ua].slice(0, 2).join(' | '), sciezki }); noweSieci.add(siec); }
     if (w.n > PROG_WYWOLAN) duzo.push({ ip, n: w.n, sciezki });
-    const stary = znane[ip] || { od: teraz, n: 0 };
-    znane[ip] = { od: stary.od, ostatnio: teraz, n: (stary.n || 0) + w.n, ua: [...w.ua][0] || stary.ua || '-', sciezki: sciezki.slice(0, 3) };
+    const stary = znane[siec] || { od: teraz, n: 0, adresy: [] };
+    znane[siec] = { od: stary.od, ostatnio: teraz, n: (stary.n || 0) + w.n, ua: [...w.ua][0] || stary.ua || '-', sciezki: sciezki.slice(0, 3), adresy: [...new Set([...(stary.adresy || []), ip])].slice(-10) };
   }
-  // Adresy nieużywane od 90 dni zapominamy — wrócą jako „nowe".
+  // Sieci nieużywane od 90 dni zapominamy — wrócą jako „nowe".
   const granica = Date.now() - 90 * 24 * 3600 * 1000;
-  for (const ip of Object.keys(znane)) if (new Date(znane[ip].ostatnio || znane[ip].od).getTime() < granica) delete znane[ip];
-  if (!deps.dry) await zapiszJson(prisma, KLUCZ_ZNANE, znane);
-  const wynik = { nowe: nowe.map(x => x.ip), duzo: duzo.map(x => x.ip), panel: okno.panel };
-  // Tryb próbny (ręczny podgląd): nic nie zapisujemy i nie zerujemy okna,
-  // inaczej podgląd „zaliczyłby" nowy adres jako znany bez alertu.
-  if (deps.dry) return wynik;
-  okno.adresy = new Map(); okno.panel = 0; okno.od = Date.now();
+  for (const k of Object.keys(znane)) if (new Date(znane[k].ostatnio || znane[k].od).getTime() < granica) delete znane[k];
+  const wynik = { nowe: nowe.map(x => x.ip), noweSieci: [...noweSieci], duzo: duzo.map(x => x.ip), panel: okno.panel };
+  // Tryb próbny (ręczny podgląd): niczego nie zapisujemy i nie zerujemy okna —
+  // inaczej podgląd „zaliczyłby" nowy adres jako znany bez alertu. Treść
+  // alertów i tak idzie do wywołującego (deps.wyslij zbiera).
+  if (!deps.dry) {
+    await zapiszJson(prisma, KLUCZ_ZNANE, znane);
+    okno.adresy = new Map(); okno.panel = 0; okno.od = Date.now();
+  }
   if (nowe.length) {
-    const linie = nowe.map(x => `• ${x.ip} — ${x.n} wywołań, ${x.ua}\n   ${x.sciezki.join(', ')}`).join('\n');
+    const linie = nowe.map(x => `• ${x.ip} (sieć ${x.siec}) — ${x.n} wywołań, ${x.ua}\n   ${x.sciezki.join(', ')}`).join('\n');
     await wyslij(`🛡️ Strażnik: NOWY adres korzysta z API CRM albo z tras z tokenem (poza panelem):\n${linie}\n\nJeśli to nie Ty, nie n8n i nie praca z Claude w tej godzinie — wymień klucz API CRM i PREPROCESS_TOKEN.`, null);
   }
   for (const x of duzo) {
@@ -271,7 +310,7 @@ async function przegladSkrzynek(prisma, deps) {
 async function przegladGodzinny(prisma, deps = {}) {
   _prisma = prisma;
   let start = await czytajJson(prisma, KLUCZ_START, null);
-  if (!start) { start = new Date().toISOString(); await zapiszJson(prisma, KLUCZ_START, start); }
+  if (!start) { start = new Date().toISOString(); if (!deps.dry) await zapiszJson(prisma, KLUCZ_START, start); }
   const wynik = { kiedy: new Date().toISOString() };
   for (const [nazwa, fn] of [['adresy', () => przegladAdresow(prisma, deps)], ['gk', () => przegladGK(prisma, deps, start)], ['faktury', () => przegladFaktur(prisma, deps, start)], ['skrzynki', () => przegladSkrzynek(prisma, deps)]]) {
     try { wynik[nazwa] = await fn(); } catch (e) { wynik[nazwa] = { blad: e.message }; console.error(`[straznik] ${nazwa}:`, e.message); }
@@ -291,7 +330,7 @@ async function przegladBazy(prisma, deps) {
     `SELECT DISTINCT host(client_addr) AS ip, usename, application_name FROM pg_stat_activity WHERE client_addr IS NOT NULL AND client_addr <> inet_client_addr()`);
   const teraz = new Set(rows.map(r => r.ip));
   const potwierdzone = rows.filter(r => _podejrzaneBaza.has(r.ip));
-  _podejrzaneBaza = teraz;
+  if (!deps.dry) _podejrzaneBaza = teraz;
   for (const r of potwierdzone) {
     await wyslij(`🛡️ Strażnik: OBCE połączenie z bazą danych CRM.\nAdres: ${r.ip}, użytkownik: ${r.usename}${r.application_name ? `, aplikacja: ${r.application_name}` : ''}\nJeśli to nie Twoja usługa — wyłącz publiczny dostęp do bazy w Railway i wymień hasło bazy.`, `baza:${r.ip}:${new Date().toISOString().slice(0, 10)}`);
   }
@@ -355,12 +394,12 @@ function uruchom(prisma) {
 }
 
 async function stan(prisma) {
-  const znane = await czytajJson(prisma, KLUCZ_ZNANE, {});
+  const znane = await czytajZnane(prisma);
   return {
     oknoOd: new Date(okno.od).toISOString(),
     wywolaniaZPanelu: okno.panel,
-    adresyWTejGodzinie: [...okno.adresy.entries()].map(([ip, w]) => ({ ip, n: w.n, nowy: !znane[ip], rodzaje: [...w.rodzaje], ua: [...w.ua].slice(0, 2), sciezki: [...w.sciezki.entries()].slice(0, 5) })),
-    znaneAdresy: Object.entries(znane).map(([ip, z]) => ({ ip, ...z })),
+    adresyWTejGodzinie: [...okno.adresy.entries()].map(([ip, w]) => ({ ip, siec: siecAdresu(ip), n: w.n, nowy: !znane[siecAdresu(ip)], rodzaje: [...w.rodzaje], ua: [...w.ua].slice(0, 2), sciezki: [...w.sciezki.entries()].slice(0, 5) })),
+    znaneSieci: Object.entries(znane).map(([siec, z]) => ({ siec, ...z })),
     start: await czytajJson(prisma, KLUCZ_START, null),
     ostatnieWyniki,
   };
@@ -368,6 +407,6 @@ async function stan(prisma) {
 
 module.exports = {
   middleware, zarejestruj, przegladGodzinny, przegladCzesty, uruchom, stan,
-  _test: { okno, adresKlienta, ipv4WZakresie, zTelegrama, sciezkaOgolna, rodzajTrasy, lokalnieWarszawa, reset: () => { okno.adresy = new Map(); okno.panel = 0; _podejrzaneBaza = new Set(); } },
+  _test: { okno, adresKlienta, siecAdresu, ipv4WZakresie, zTelegrama, sciezkaOgolna, rodzajTrasy, lokalnieWarszawa, reset: () => { okno.adresy = new Map(); okno.panel = 0; _podejrzaneBaza = new Set(); } },
   PROG_WYWOLAN, PROG_WYSYLEK, PROG_ZWROTOW,
 };
