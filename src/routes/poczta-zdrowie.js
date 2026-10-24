@@ -288,7 +288,7 @@ function router(express, token) {
   const r = express.Router();
 
   r.use('/poczta', (req, res, next) => {
-    if (!token) return next();
+    if (!token) return res.status(503).json({ error: 'Zablokowane: brak PREPROCESS_TOKEN na serwerze' });
     const podany = String(req.headers['x-token'] || '').trim();
     if (podany !== token) return res.status(401).json({ error: 'Unauthorized' });
     next();

@@ -5,7 +5,7 @@ const router = require('express').Router();
 const API_KEY = (process.env.API_KEY || '').trim();
 
 function isAuthed(req) {
-  if (!API_KEY) return true;
+  if (!API_KEY) return false; // brak klucza = tylko widok anonimowy
   const k = String(req.query.key || '').trim();
   return k === API_KEY;
 }

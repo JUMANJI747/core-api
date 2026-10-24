@@ -733,7 +733,7 @@ async function odczytajTeczke(pdf, opcje = {}) {
 function router(express, token) {
   const r = express.Router();
   r.post('/karty-pracy/odczytaj', express.json({ limit: '40mb' }), async (req, res) => {
-    if (token && req.get('x-token') !== String(token).trim()) return res.status(401).json({ blad: 'zly token' });
+    if (!token || req.get('x-token') !== String(token).trim()) return res.status(401).json({ blad: 'zly token' });
     try {
       const { data, rownolegle, model, dpi, strony, rok, miesiac, nazwiska } = req.body || {};
       if (!data) return res.status(400).json({ blad: 'brak pola data' });

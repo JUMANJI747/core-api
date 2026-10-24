@@ -67,7 +67,7 @@ try {
   // Odczyt teczki kart modelem (dwa niezależne odczyty + kontrola arytmetyki).
   // Ten sam montaż i ta sama ochrona: moduł ciągnie sharp przez karta-pracy.js.
   app.use('/', require('./karty-pracy-odczyt').router(express, kartaToken));
-  if (!kartaToken) console.warn('[startup] /karta-pracy/* BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+  if (!kartaToken) console.warn('[startup] brak PREPROCESS_TOKEN — /karta-pracy/* i /karty-pracy/* ZABLOKOWANE (401)');
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[startup] brak ANTHROPIC_API_KEY — /karty-pracy/odczytaj zwróci błąd przy pierwszym żądaniu');
 } catch (e) {
   console.error('[startup] trasy karta-pracy wyłączone (sharp?):', e.message);
@@ -95,7 +95,7 @@ try {
 try {
   const pocztaToken = (process.env.PREPROCESS_TOKEN || '').trim() || undefined;
   app.use('/', require('./routes/poczta-zdrowie').router(express, pocztaToken));
-  if (!pocztaToken) console.warn('[startup] /poczta/zdrowie BEZ autoryzacji — ustaw PREPROCESS_TOKEN');
+  if (!pocztaToken) console.warn('[startup] brak PREPROCESS_TOKEN — /poczta/* ZABLOKOWANE (503)');
 } catch (e) {
   console.error('[startup] trasa /poczta/zdrowie wyłączona:', e.message);
 }
@@ -112,8 +112,12 @@ const PORT = process.env.PORT || 3000;
 const API_KEY = (process.env.API_KEY || '').trim();
 
 // ============ AUTH MIDDLEWARE ============
+// Brak API_KEY = API ZAMKNIĘTE (24.10.2026). Wcześniej brak zmiennej otwierał
+// całe /api bez klucza — usunięcie klucza w Railway „żeby zablokować" robiło
+// dokładnie odwrotnie. To samo dla PREPROCESS_TOKEN na trasach z x-token.
+if (!API_KEY) console.warn('[startup] brak API_KEY — całe /api ZABLOKOWANE (503)');
 function auth(req, res, next) {
-  if (!API_KEY) return next();
+  if (!API_KEY) return res.status(503).json({ error: 'API zablokowane: brak API_KEY na serwerze' });
   const key = req.headers['x-api-key'] || '';
   if (key.trim() !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
   next();

@@ -298,7 +298,7 @@ async function przygotujKarty(pdf, pages, tylkoInfo) {
 function router(express, token) {
   const r = express.Router();
   r.post('/karta-pracy/crop', express.json({ limit: '40mb' }), async (req, res) => {
-    if (token && req.get('x-token') !== token) return res.status(401).json({ blad: 'zly token' });
+    if (!token || req.get('x-token') !== token) return res.status(401).json({ blad: 'zly token' });
     try {
       const { data, pages, tylkoInfo } = req.body || {};
       if (!data) return res.status(400).json({ blad: 'brak pola data' });

@@ -44,7 +44,7 @@ function wyciagnijOpcje(body) {
 function router(express, token) {
   const r = express.Router();
   const auth = (req, res) => {
-    if (token && req.get('x-token') !== String(token).trim()) {
+    if (!token || req.get('x-token') !== String(token).trim()) {
       res.status(401).json({ blad: 'zly token' });
       return false;
     }
@@ -163,7 +163,7 @@ function router(express, token) {
     };
   };
   const autoQuery = (req, res) => {
-    if (token && req.get('x-token') !== String(token).trim() && req.query.token !== String(token).trim()) {
+    if (!token || (req.get('x-token') !== String(token).trim() && req.query.token !== String(token).trim())) {
       res.status(401).json({ blad: 'zly token' });
       return false;
     }

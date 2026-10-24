@@ -80,7 +80,7 @@ function run(cmd, args, { timeout = 30000 } = {}) {
 
 function authOk(req) {
   const expected = (process.env.PREPROCESS_TOKEN || '').trim();
-  if (!expected) return true; // brak env = bez autoryzacji (świadomie)
+  if (!expected) return false; // brak env = trasa zamknięta (24.10.2026)
   return String(req.headers['x-token'] || '').trim() === expected;
 }
 

@@ -15,14 +15,14 @@ const { odczytajTeczke } = require('./czytnik');
 
 const app = express();
 const token = (process.env.CZYTNIK_TOKEN || process.env.PREPROCESS_TOKEN || '').trim() || undefined;
-if (!token) console.warn('[start] BRAK CZYTNIK_TOKEN/PREPROCESS_TOKEN - endpointy bez autoryzacji');
+if (!token) console.warn('[start] BRAK CZYTNIK_TOKEN/PREPROCESS_TOKEN - endpointy ZABLOKOWANE (401)');
 if (!process.env.ANTHROPIC_API_KEY) console.warn('[start] BRAK ANTHROPIC_API_KEY - odczyt nie zadziala');
 
 app.use('/', router(express, token));
 
 // Alias zgodny z dzisiejszym kontraktem core-api: przełączenie n8n = zmiana URL-a.
 app.post('/karty-pracy/odczytaj', express.json({ limit: '48mb' }), async (req, res) => {
-  if (token && req.get('x-token') !== token) return res.status(401).json({ blad: 'zly token' });
+  if (!token || req.get('x-token') !== token) return res.status(401).json({ blad: 'zly token' });
   try {
     const { data, strony, rok, miesiac, nazwiska, rownolegle, model, dpi } = req.body || {};
     if (!data) return res.status(400).json({ blad: 'brak pola data' });
