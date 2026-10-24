@@ -8,9 +8,12 @@
  * zostały i trzeba WIEDZIEĆ, gdyby ktoś ich użył. Strażnik pilnuje śladów,
  * których obcy nie uniknie:
  *
- *  1. Wywołania API i tras z tokenem spoza panelu: NOWY adres IP → alert;
- *     > PROG_WYWOLAN na godzinę z jednego adresu → alert. Panel CRM wysyła
- *     x-crm-user (z sesji), webhook bota przychodzi z adresów Telegrama.
+ *  1. Wywołania tras z sekretem (klucz API, PREPROCESS_TOKEN, sekret webhooka
+ *     bota) spoza panelu: NOWA sieć → alert z nazwą użytego sekretu (i z
+ *     oznaczeniem podglądu linku, gdy wołał robot podglądów — np. iPhone
+ *     z linkiem w notatce); > PROG_WYWOLAN na godzinę z jednego adresu →
+ *     alert. Panel CRM wysyła x-crm-user (z sesji), webhook bota przychodzi
+ *     z adresów Telegrama.
  *  2. Webhook bota wywołany POPRAWNYM sekretem spoza adresów Telegrama =
  *     ktoś podrabia wiadomości do bota (bot ma moce CRM i AI) → alert od razu.
  *  3. Połączenie z bazą z adresu innego niż nasz backend (dwa przeglądy
@@ -26,7 +29,7 @@
  * Alerty: Telegram (bot PL), każdy temat raz (pamięć w Config). Bez treści
  * maili i bez sekretów; adresy IP i ścieżki tak — po to jest ten moduł. */
 
-const KLUCZ_ZNANE = 'straznik_znane_adresy';   // { ip: { od, ostatnio, ua, n, sciezki } }
+const KLUCZ_ZNANE = 'straznik_znane_adresy';   // { siec: { od, ostatnio, ua, n, sciezki, adresy } }
 const KLUCZ_ZGLOSZONE = 'straznik_zgloszone';  // { klucz: ISO } — temat już zgłoszony
 const KLUCZ_START = 'straznik_start';          // ISO — od kiedy strażnik patrzy (GK, faktury)
 
@@ -117,17 +120,38 @@ async function zapiszJson(prisma, klucz, wartosc) {
 const okno = { od: Date.now(), adresy: new Map(), panel: 0 };
 const ostatnieWyniki = { czesty: null, godzinny: null };
 
-/* Która trasa jest chroniona sekretem. 'api' = klucz API (po auth),
- * 'token' = PREPROCESS_TOKEN / sekret webhooka, 'tg' = webhook bota. */
+/* Która trasa jest chroniona sekretem i którym. 'api' = klucz API (po auth,
+ * także mapa z ?key=), 'token' = PREPROCESS_TOKEN, 'sekret-bota' = sekret
+ * webhooka w linku (?secret=, diagnostyka i przełączanie bota z przeglądarki),
+ * 'tg' = webhook bota (POST od Telegrama). Trasy publiczne → null. */
+const SEKRETY = {
+  api: 'klucz API CRM (Railway API_KEY + Vercel CORE_API_KEY)',
+  token: 'PREPROCESS_TOKEN (Railway + n8n)',
+  'sekret-bota': 'sekret webhooka bota (napisz do Claude — wymieni go)',
+};
+const TRASY_PUBLICZNE = /^\/czytnik\/(zdrowie|norma)$/;
 function rodzajTrasy(req) {
   // originalUrl, nie path: wewnątrz podroutera Express skraca req.url/path.
   const p = String(req.originalUrl || req.url || '').split('?')[0];
   if (p.startsWith('/api/')) return 'api';
   if (req.method === 'POST' && /^\/telegram\/webhook\/[^/]+$/.test(p)) return 'tg';
+  if (/^\/telegram\/webhook\/[^/]+(\/ustaw|\/zdejmij)?$/.test(p)) return 'sekret-bota';
+  if (p === '/telegram/diag') return 'token';
+  if (TRASY_PUBLICZNE.test(p)) return null;
   if (/^\/(czytnik|karty-pracy|karta-pracy|poczta)(\/|$)/.test(p)) return 'token';
   if (/^\/preprocess-scan(\/|$)/.test(p)) return 'token';
-  if (/^\/telegram\/(diag|webhook\/[^/]+(\/ustaw|\/zdejmij)?)$/.test(p)) return 'token';
-  if (p === '/map-data' && /[?&]key=/.test(String(req.originalUrl || ''))) return 'token';
+  if (p === '/map-data' && /[?&]key=/.test(String(req.originalUrl || ''))) return 'api';
+  return null;
+}
+
+/* Roboty podglądu linków: link z sekretem wklejony do Wiadomości, Notatek,
+ * komunikatora albo udostępniony — urządzenie samo go otwiera, żeby zrobić
+ * miniaturę. Apple podpisuje się na KAŻDYM urządzeniu (także iPhonie) jako
+ * stary Safari na Macu „10_11_1" i dokleja facebookexternalhit/Twitterbot. */
+function podgladLinku(ua) {
+  const s = String(ua || '');
+  if (/Mac OS X 10_11_1\) AppleWebKit\/601\.2\.4/.test(s)) return 'podgląd linku z urządzenia Apple (iPhone/iPad/Mac)';
+  if (/facebookexternalhit|Facebot|Twitterbot|WhatsApp|TelegramBot|Slackbot|Discordbot|LinkedInBot|SkypeUriPreview|Viber/i.test(s)) return 'podgląd linku w komunikatorze';
   return null;
 }
 
@@ -152,7 +176,7 @@ function zarejestruj(req, res, deps = {}) {
     if (zPanelu) { okno.panel++; return; }
     const wpis = okno.adresy.get(ip) || { n: 0, ua: new Set(), sciezki: new Map(), rodzaje: new Set() };
     wpis.n++;
-    wpis.ua.add(String((req.headers && req.headers['user-agent']) || '-').slice(0, 80));
+    wpis.ua.add(String((req.headers && req.headers['user-agent']) || '-').slice(0, 200));
     const s = sciezkaOgolna(req.originalUrl || req.path);
     wpis.sciezki.set(s, (wpis.sciezki.get(s) || 0) + 1);
     wpis.rodzaje.add(rodzaj);
@@ -205,7 +229,7 @@ async function przegladAdresow(prisma, deps) {
   for (const [ip, w] of okno.adresy.entries()) {
     const siec = siecAdresu(ip);
     const sciezki = [...w.sciezki.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s, n]) => `${s} ×${n}`);
-    if (!znaneWczesniej.has(siec)) { nowe.push({ ip, siec, n: w.n, ua: [...w.ua].slice(0, 2).join(' | '), sciezki }); noweSieci.add(siec); }
+    if (!znaneWczesniej.has(siec)) { nowe.push({ ip, siec, n: w.n, ua: [...w.ua].slice(0, 2), rodzaje: [...(w.rodzaje || [])], sciezki }); noweSieci.add(siec); }
     if (w.n > PROG_WYWOLAN) duzo.push({ ip, n: w.n, sciezki });
     const stary = znane[siec] || { od: teraz, n: 0, adresy: [] };
     znane[siec] = { od: stary.od, ostatnio: teraz, n: (stary.n || 0) + w.n, ua: [...w.ua][0] || stary.ua || '-', sciezki: sciezki.slice(0, 3), adresy: [...new Set([...(stary.adresy || []), ip])].slice(-10) };
@@ -222,8 +246,16 @@ async function przegladAdresow(prisma, deps) {
     okno.adresy = new Map(); okno.panel = 0; okno.od = Date.now();
   }
   if (nowe.length) {
-    const linie = nowe.map(x => `• ${x.ip} (sieć ${x.siec}) — ${x.n} wywołań, ${x.ua}\n   ${x.sciezki.join(', ')}`).join('\n');
-    await wyslij(`🛡️ Strażnik: NOWY adres korzysta z API CRM albo z tras z tokenem (poza panelem):\n${linie}\n\nJeśli to nie Ty, nie n8n i nie praca z Claude w tej godzinie — wymień klucz API CRM i PREPROCESS_TOKEN.`, null);
+    const uzyte = new Set();
+    const linie = nowe.map(x => {
+      x.rodzaje.forEach(r => uzyte.add(r));
+      const podglad = x.ua.map(podgladLinku).find(Boolean);
+      const ua = x.ua.map(u => u.length > 70 ? `${u.slice(0, 70)}…` : u).join(' | ');
+      return `• ${x.ip} (sieć ${x.siec}) — ${x.n} wywołań, ${ua}\n   ${x.sciezki.join(', ')}\n   użyty sekret: ${x.rodzaje.map(r => (SEKRETY[r] || r).split(' (')[0]).join(', ')}` +
+        (podglad ? `\n   ↳ ${podglad}: ktoś otworzył, wkleił albo udostępnił link z sekretem — sprawdź, czy nie Ty albo ktoś z zespołu` : '');
+    }).join('\n');
+    const doWymiany = [...uzyte].map(r => SEKRETY[r]).filter(Boolean);
+    await wyslij(`🛡️ Strażnik: NOWY adres używa sekretu CRM (poza panelem):\n${linie}\n\nJeśli to nie Ty, nie n8n i nie praca z Claude w tej godzinie — wymień: ${doWymiany.join('; ') || 'klucz API CRM'}.`, null);
   }
   for (const x of duzo) {
     await wyslij(`🛡️ Strażnik: ${x.n} wywołań w godzinę z adresu ${x.ip} (próg ${PROG_WYWOLAN}).\nNajczęściej: ${x.sciezki.join(', ')}\nTo może być zużywanie naszego AI albo wyciąganie danych.`, `duzo:${x.ip}:${teraz.slice(0, 10)}`);
@@ -407,6 +439,6 @@ async function stan(prisma) {
 
 module.exports = {
   middleware, zarejestruj, przegladGodzinny, przegladCzesty, uruchom, stan,
-  _test: { okno, adresKlienta, siecAdresu, ipv4WZakresie, zTelegrama, sciezkaOgolna, rodzajTrasy, lokalnieWarszawa, reset: () => { okno.adresy = new Map(); okno.panel = 0; _podejrzaneBaza = new Set(); } },
+  _test: { okno, adresKlienta, siecAdresu, podgladLinku, ipv4WZakresie, zTelegrama, sciezkaOgolna, rodzajTrasy, lokalnieWarszawa, reset: () => { okno.adresy = new Map(); okno.panel = 0; _podejrzaneBaza = new Set(); } },
   PROG_WYWOLAN, PROG_WYSYLEK, PROG_ZWROTOW,
 };

@@ -54,10 +54,15 @@ test('adres klienta: X-Real-IP, potem OSTATNI wpis X-Forwarded-For (pierwszy da 
 test('rodzaje tras: API, webhook bota, trasy z tokenem; publiczne pomijane', () => {
   assert.equal(T.rodzajTrasy(zad('/api/admin/query', { metoda: 'POST' })), 'api');
   assert.equal(T.rodzajTrasy(zad('/telegram/webhook/pl', { metoda: 'POST' })), 'tg');
-  assert.equal(T.rodzajTrasy(zad('/telegram/webhook/pl/ustaw?secret=x')), 'token');
+  assert.equal(T.rodzajTrasy(zad('/telegram/webhook/pl/ustaw?secret=x')), 'sekret-bota');
+  assert.equal(T.rodzajTrasy(zad('/telegram/webhook/kanary?secret=x')), 'sekret-bota');
+  assert.equal(T.rodzajTrasy(zad('/telegram/diag?token=x')), 'token');
+  assert.equal(T.rodzajTrasy(zad('/czytnik/zdrowie')), null, 'publiczne — bez tokenu');
+  assert.equal(T.rodzajTrasy(zad('/czytnik/norma?rok=2026&miesiac=8')), null);
+  assert.equal(T.rodzajTrasy(zad('/czytnik/pracownicy')), 'token');
   assert.equal(T.rodzajTrasy(zad('/czytnik/odczytaj', { metoda: 'POST' })), 'token');
   assert.equal(T.rodzajTrasy(zad('/karty-pracy/odczytaj', { metoda: 'POST' })), 'token');
-  assert.equal(T.rodzajTrasy(zad('/map-data?key=abc')), 'token');
+  assert.equal(T.rodzajTrasy(zad('/map-data?key=abc')), 'api');
   assert.equal(T.rodzajTrasy(zad('/map-data')), null);
   assert.equal(T.rodzajTrasy(zad('/health')), null);
   assert.equal(T.rodzajTrasy(zad('/img/logo.png')), null);
@@ -136,8 +141,8 @@ test('przegląd adresów: wpisy starej wersji (pojedyncze adresy) scalone w siec
   const z = zbieracz();
   db._config.set('straznik_znane_adresy', JSON.stringify({ '160.79.106.138': { od: '2026-10-24T09:02:00.000Z', ostatnio: '2026-10-24T09:02:00.000Z', n: 3, ua: 'curl/8.5.0' } }));
   st.zarejestruj(zad('/api/admin/query', { metoda: 'POST', ip: '160.79.106.21' }), { statusCode: 200 });
-  st.zarejestruj(zad('/czytnik/zdrowie', { ip: '192.0.2.10' }), { statusCode: 200 });
-  st.zarejestruj(zad('/czytnik/zdrowie', { ip: '192.0.2.11' }), { statusCode: 200 });
+  st.zarejestruj(zad('/poczta/zdrowie', { ip: '192.0.2.10' }), { statusCode: 200 });
+  st.zarejestruj(zad('/poczta/zdrowie', { ip: '192.0.2.11' }), { statusCode: 200 });
   const w = await st.przegladGodzinny(db, { wyslij: z.wyslij });
   assert.deepEqual(w.adresy.noweSieci, ['192.0.2.0/24'], 'sieć ze starego wpisu jest znana');
   assert.deepEqual(w.adresy.nowe.sort(), ['192.0.2.10', '192.0.2.11']);
@@ -145,6 +150,26 @@ test('przegląd adresów: wpisy starej wersji (pojedyncze adresy) scalone w siec
   assert.deepEqual(Object.keys(zapis).sort(), ['160.79.106.0/24', '192.0.2.0/24']);
   assert.deepEqual(zapis['160.79.106.0/24'].adresy.sort(), ['160.79.106.138', '160.79.106.21']);
   assert.equal(zapis['160.79.106.0/24'].n, 4);
+});
+
+test('alert nazywa użyty sekret i oznacza podgląd linku z urządzenia Apple (24.10: iPhone właściciela, link z instrukcji)', async () => {
+  const db = baza();
+  const z = zbieracz();
+  const apple = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_1) AppleWebKit/601.2.4 (KHTML, like Gecko) Version/9.0.1 Safari/601.2.4 facebookexternalhit/1.1 Facebot Twitterbot/1.0';
+  st.zarejestruj(zad('/telegram/webhook/pl/ustaw?secret=x', { ip: '172.226.148.43', naglowki: { 'user-agent': apple } }), { statusCode: 200 });
+  st.zarejestruj(zad('/api/contractors', { ip: '198.51.100.5' }), { statusCode: 200 });
+  await st.przegladGodzinny(db, { wyslij: z.wyslij });
+  const a = z.alerty.find(t => t.includes('NOWY adres'));
+  assert.ok(a, 'jest alert');
+  const [bot, api] = a.split('• ').slice(1);
+  assert.match(bot, /użyty sekret: sekret webhooka bota/);
+  assert.match(bot, /podgląd linku z urządzenia Apple/);
+  assert.match(api, /użyty sekret: klucz API CRM/);
+  assert.doesNotMatch(api, /podgląd linku/);
+  assert.match(a, /wymień: sekret webhooka bota .*; klucz API CRM|wymień: klucz API CRM .*; sekret webhooka bota/);
+  assert.doesNotMatch(a, /PREPROCESS_TOKEN/, 'tokenu nikt nie użył — nie każemy go wymieniać');
+  assert.equal(T.podgladLinku('curl/8.5.0'), null);
+  assert.equal(T.podgladLinku('TelegramBot (like TwitterBot)'), 'podgląd linku w komunikatorze');
 });
 
 test('przegląd adresów: ponad próg wywołań z jednego adresu — alert', async () => {
