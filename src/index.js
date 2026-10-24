@@ -15,6 +15,12 @@ const prisma = require('./db');
 
 const app = express();
 
+// STRAŻNIK (24.10.2026, po incydencie Railway): rejestruje wywołania API i tras
+// z tokenem spoza panelu (adres, ścieżka) — nowe adresy i podróbki webhooka
+// bota idą alertem na Telegram. Na samej górze, żeby widział każdą trasę.
+const straznik = require('./services/straznik');
+app.use(straznik.middleware());
+
 // ============ STATYCZNE OBRAZKI STOPKI MAILOWEJ ============
 // /img/* -> public/img/*. Te pliki pobierają KLIENCI POCZTOWI (Gmail, Outlook)
 // przy otwieraniu maila: anonimowo, bez żadnych nagłówków. Dlatego trasa musi
@@ -237,6 +243,7 @@ const server = app.listen(PORT, () => {
     .catch(e => console.error('[magazyn-statusy]', e.message));
   setTimeout(statusyMagazynu, 60 * 1000).unref();
   setInterval(statusyMagazynu, 30 * 60 * 1000).unref();
+  straznik.uruchom(prisma);
   // Maile rozgrzewające (Instantly), które trafiły do CRM przed filtrem albo
   // przed zmianą WARMUP_TAGS — oznacz i schowaj (serwera poczty nie dotyka).
   setTimeout(() => require('./services/rozgrzewanie').oznaczIstniejace(prisma)

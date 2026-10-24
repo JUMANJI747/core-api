@@ -320,6 +320,34 @@ router.post('/admin/backfill/es-invoices-from-contasimple', async (req, res) => 
   }
 });
 
+// ── STRAŻNIK (24.10.2026, po incydencie Railway) ──
+// GET  /api/admin/straznik — adresy wołające API w tej godzinie (nowe / znane),
+//      znane adresy, wyniki ostatnich przeglądów.
+// POST /api/admin/straznik/przeglad {alerty} — przegląd teraz; bez alerty:true
+//      tryb próbny (nic nie wysyła i nie zapisuje), zwraca, co BY zgłosił.
+router.get('/admin/straznik', async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await require('../services/straznik').stan(req.app.locals.prisma)) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/admin/straznik/przeglad', async (req, res) => {
+  try {
+    const st = require('../services/straznik');
+    const prisma = req.app.locals.prisma;
+    const naprawde = !!(req.body && req.body.alerty === true);
+    const zgloszenia = [];
+    const deps = naprawde ? {} : { dry: true, wyslij: async (tekst) => { zgloszenia.push(tekst); return true; } };
+    const czesty = await st.przegladCzesty(prisma, deps);
+    const godzinny = await st.przegladGodzinny(prisma, deps);
+    res.json({ ok: true, tryb: naprawde ? 'alerty' : 'próbny', czesty, godzinny, zgloszenia });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── ROZGRZEWANIE SKRZYNEK (Instantly, 22.10.2026) ──
 // GET  /api/admin/rozgrzewanie — liczniki pominiętych maili rozgrzewających
 //      (pierwszy i ostatni cykl pollera, same liczby) + ile maili w CRM ma tag.
