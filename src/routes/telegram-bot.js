@@ -31,6 +31,7 @@ const { resolveToken } = require('../services/telegram-helper');
 const { sendTelegram, tgApi } = require('../telegram-utils');
 const { selfCall } = require('../services/agent-runtime');
 const { processSudoQuery } = require('../services/sudo-agent');
+const { czatDozwolony } = require('../services/czaty-bota');
 
 /* Sekret webhooka: env TELEGRAM_WEBHOOK_SECRET, a gdy go nie ma — Config
  * 'telegram_webhook_secret' (PUT /api/config/telegram_webhook_secret z Konsoli
@@ -148,6 +149,17 @@ async function obsluzWiadomosc(prisma, scope, msg) {
   if (!chatId) return;
   const { token } = await resolveToken(prisma, scope);
   if (!token) { console.error(`[telegram-bot] brak tokenu bota dla scope=${scope}`); return; }
+  // Obcy czat: żadnego asystenta, sudo ani pobierania plików (24.10.2026 —
+  // bot odpowiadał każdemu, kto go znalazł). Właściciel dostaje alert.
+  if (!(await czatDozwolony(prisma, chatId))) {
+    const nazwa = [msg.from && msg.from.first_name, msg.from && msg.from.last_name].filter(Boolean).join(' ') || '?';
+    const login = msg.from && msg.from.username ? `@${msg.from.username}` : 'bez loginu';
+    const tresc = String(msg.text || msg.caption || (msg.voice ? '[głosówka]' : msg.photo ? '[zdjęcie]' : msg.document ? '[plik]' : '')).slice(0, 100);
+    console.warn(`[telegram-bot] odrzucony czat ${chatId} scope=${scope}`);
+    await sendTelegram(token, chatId, 'Ten bot jest prywatny. Jeśli pracujesz w Surf Stick Bell, poproś właściciela o dostęp.').catch(() => {});
+    require('../services/straznik').alert(`🛡️ Strażnik: do bota ${scope.toUpperCase()} napisał NIEZNANY czat ${chatId} (${nazwa}, ${login}): „${tresc}".\nBot niczego nie wykonał. Jeśli to ktoś z zespołu — napisz do Claude, doda go do listy.`, `czat-bota:${chatId}`).catch(() => {});
+    return;
+  }
   const kto = (msg.from && (msg.from.first_name || msg.from.username)) || 'User';
 
   try {
@@ -224,7 +236,10 @@ router.post('/telegram/webhook/:scope', async (req, res) => {
   if (juzBylo(upd.update_id)) return;
   const prisma = req.app.locals.prisma;
   if (upd.callback_query) {
-    selfCall('POST', '/api/telegram/callback', { callback_query: upd.callback_query })
+    const cq = upd.callback_query;
+    const czat = (cq.message && cq.message.chat && cq.message.chat.id) || (cq.from && cq.from.id);
+    if (!(await czatDozwolony(prisma, czat))) { console.warn(`[telegram-bot] odrzucony przycisk z czatu ${czat}`); return; }
+    selfCall('POST', '/api/telegram/callback', { callback_query: cq })
       .catch(e => console.error('[telegram-bot] callback:', e.message));
     return;
   }

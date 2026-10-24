@@ -439,6 +439,7 @@ async function stan(prisma) {
 
 module.exports = {
   middleware, zarejestruj, przegladGodzinny, przegladCzesty, uruchom, stan,
+  alert: (tekst, klucz) => wyslijAlert(tekst, klucz),
   _test: { okno, adresKlienta, siecAdresu, podgladLinku, ipv4WZakresie, zTelegrama, sciezkaOgolna, rodzajTrasy, lokalnieWarszawa, reset: () => { okno.adresy = new Map(); okno.panel = 0; _podejrzaneBaza = new Set(); } },
   PROG_WYWOLAN, PROG_WYSYLEK, PROG_ZWROTOW,
 };
