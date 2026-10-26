@@ -57,6 +57,7 @@ test('rodzaje tras: API, webhook bota, trasy z tokenem; publiczne pomijane', () 
   assert.equal(T.rodzajTrasy(zad('/telegram/webhook/pl/ustaw?secret=x')), 'sekret-bota');
   assert.equal(T.rodzajTrasy(zad('/telegram/webhook/kanary?secret=x')), 'sekret-bota');
   assert.equal(T.rodzajTrasy(zad('/telegram/diag?token=x')), 'token');
+  assert.equal(T.rodzajTrasy(zad('/zewn/faktury', { metoda: 'POST' })), 'faktury', 'token faktur systemu mailingowego');
   assert.equal(T.rodzajTrasy(zad('/czytnik/zdrowie')), null, 'publiczne — bez tokenu');
   assert.equal(T.rodzajTrasy(zad('/czytnik/norma?rok=2026&miesiac=8')), null);
   assert.equal(T.rodzajTrasy(zad('/czytnik/pracownicy')), 'token');

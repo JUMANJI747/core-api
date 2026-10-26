@@ -154,6 +154,10 @@ app.use('/', require('./routes/map'));
 // Zastępuje mastery z n8n; ten sam silnik asystenta co panel CRM.
 app.use('/', require('./routes/telegram-bot'));
 
+// ============ FAKTURY NA ZAMÓWIENIE Z ZEWNĄTRZ (system mailingowy) ============
+// Poza /api — własny token tylko do faktur (services/faktury-zewn.js).
+app.use('/', require('./routes/faktury-zewn'));
+
 // ============ HEALTH ============
 app.get('/health', async (req, res) => {
   try {

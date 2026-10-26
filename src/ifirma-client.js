@@ -471,6 +471,27 @@ async function fetchInvoices({ dataOd, dataDo, status, nipKontrahenta } = {}) {
 
 // ============ CREATE INVOICE ============
 
+/* Pozycja faktury w formacie iFirmy. Produkty z katalogu: nazwa + wariant +
+ * EAN, „szt.", GTU_12; dostawa: „usł.", GTU_13. Usługi spoza katalogu
+ * (26.10.2026, faktury na zamówienie systemu mailingowego) podają własne
+ * `nazwaPelna` (bez dopisków), `jednostka` i `gtu` (np. 'BRAK'). */
+function pozycjaIfirmy(p, { isNetto, isWdt }) {
+  const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
+    ? ` - ${p.wariant}` : '';
+  const isRealEan = p.ean && /^\d/.test(p.ean);
+  const NazwaPelna = p.nazwaPelna || `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
+  const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
+  console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)', p.isDelivery ? '(delivery)' : '');
+  const isDelivery = !!p.isDelivery;
+  const gtuCode = p.gtu || (isDelivery ? 'GTU_13' : 'GTU_12');
+  const Jednostka = p.jednostka || (isDelivery ? 'usł.' : 'szt.');
+  const base = { GTU: gtuCode, Ilosc: p.ilosc, CenaJednostkowa, NazwaPelna, Jednostka };
+  if (isWdt) {
+    return { TypStawkiVat: 'NP', ...base };
+  }
+  return { StawkaVat: 0.23, TypStawkiVat: 'PRC', ...base };
+}
+
 async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, paymentDays = 7, uwagi }) {
   if (!login || !keyHex) throw new Error('IFIRMA_USER or IFIRMA_API_KEY not set');
 
@@ -506,22 +527,7 @@ async function createInvoice({ kontrahent, pozycje, rodzaj, waluta, priceMode, p
   const isNetto = priceMode === 'netto';
   console.log('[ifirma] Price mode:', priceMode || 'brutto (default)');
 
-  const Pozycje = pozycje.map(p => {
-    const wariantSuffix = p.wariant && !p.nazwa.toLowerCase().includes(p.wariant.toLowerCase())
-      ? ` - ${p.wariant}` : '';
-    const isRealEan = p.ean && /^\d/.test(p.ean);
-    const NazwaPelna = `${p.nazwa}${wariantSuffix}${isRealEan ? ` EAN ${p.ean}` : ''}`;
-    const CenaJednostkowa = isNetto ? (p.cenaNetto || p.cena) : (p.cena || p.cenaNetto);
-    console.log('[ifirma] position price:', CenaJednostkowa, isNetto ? '(netto)' : '(brutto)', p.isDelivery ? '(delivery)' : '');
-    const isDelivery = !!p.isDelivery;
-    const gtuCode = isDelivery ? 'GTU_13' : 'GTU_12';
-    const Jednostka = isDelivery ? 'usł.' : 'szt.';
-    const base = { GTU: gtuCode, Ilosc: p.ilosc, CenaJednostkowa, NazwaPelna, Jednostka };
-    if (isWdt) {
-      return { TypStawkiVat: 'NP', ...base };
-    }
-    return { StawkaVat: 0.23, TypStawkiVat: 'PRC', ...base };
-  });
+  const Pozycje = pozycje.map(p => pozycjaIfirmy(p, { isNetto, isWdt }));
 
   // Kraj na fakturze KRAJOWEJ: domyślnie 'Polska', ALE dla ZAGRANICZNEGO
   // kontrahenta (np. duński klient „Nordsøen ApS" fakturowany w PLN z VAT 23%)
@@ -927,7 +933,7 @@ async function sendInvoiceToKsef({ ifirmaId, rodzaj, waluta }) {
 
 module.exports = {
   generateAuth, fetchInvoices, fetchNbpRate, searchContractor, findContractorInList, upsertContractor,
-  createInvoice, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
+  createInvoice, pozycjaIfirmy, fetchInvoicePdf, fetchInvoiceDetails, deleteInvoice,
   registerPayment, setAccountingMonth,
   getAccountingMonth, trySetAccountingMonth,
   sendInvoiceToKsef,

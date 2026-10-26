@@ -128,6 +128,7 @@ const SEKRETY = {
   api: 'klucz API CRM (Railway API_KEY + Vercel CORE_API_KEY)',
   token: 'PREPROCESS_TOKEN (Railway + n8n)',
   'sekret-bota': 'sekret webhooka bota (napisz do Claude — wymieni go)',
+  faktury: 'token faktur systemu mailingowego (napisz do Claude — wymieni go)',
 };
 const TRASY_PUBLICZNE = /^\/czytnik\/(zdrowie|norma)$/;
 function rodzajTrasy(req) {
@@ -137,6 +138,7 @@ function rodzajTrasy(req) {
   if (req.method === 'POST' && /^\/telegram\/webhook\/[^/]+$/.test(p)) return 'tg';
   if (/^\/telegram\/webhook\/[^/]+(\/ustaw|\/zdejmij)?$/.test(p)) return 'sekret-bota';
   if (p === '/telegram/diag') return 'token';
+  if (/^\/zewn\/faktury(\/|$)/.test(p)) return 'faktury';
   if (TRASY_PUBLICZNE.test(p)) return null;
   if (/^\/(czytnik|karty-pracy|karta-pracy|poczta)(\/|$)/.test(p)) return 'token';
   if (/^\/preprocess-scan(\/|$)/.test(p)) return 'token';
