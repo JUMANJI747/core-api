@@ -340,6 +340,11 @@ model WarehouseOrder {
   wyslanoAt         DateTime? // pierwsze zdarzenie po odbiorze od nadawcy
   dostarczonoAt     DateTime?
   ostatnieZdarzenie String?   // np. „W trakcie dostarczania · 14.10 08:45 · Warszawa"
+  // „Powiadom magazyn" (26.10.2026): mail z delivery@ z PDF zamówienia i
+  // dokumentami — kiedy, kto kliknął, na jaki adres. Ponowna wysyłka świadomie.
+  powiadomionoAt    DateTime?
+  powiadomilKto     String?
+  powiadomionoDo    String?
 
   items         WarehouseOrderItem[]
   dokumenty     WarehouseOrderDoc[] // nasze PDF-y do paczki (WZ, FV) — magazyn drukuje i wkłada

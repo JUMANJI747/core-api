@@ -25,6 +25,7 @@ const { getActiveCatalog } = require('../services/product-catalog');
 const { selfCall } = require('../services/agent-runtime');
 const { getOrderLabels } = require('../glob-client');
 const { PRODUCT_WEIGHTS } = require('./glob-helpers');
+const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
 
 const EKSPOZYTOR = { ean: 'EKSPOZYTOR', name: 'Ekspozytor (pusty)' };
 const STATUSY = ['NOWE', 'GOTOWE', 'KURIER', 'WYSLANE', 'ANULOWANE'];
@@ -65,6 +66,7 @@ function toPublic(o, rola = 'owner') {
     utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto && o.zatwierdzilKto !== 'auto-list' ? 'Surf Stick' : o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
     gkStatus: o.gkStatus || null, gkStatusAt: o.gkStatusAt || null, wyslanoAt: o.wyslanoAt || null, dostarczonoAt: o.dostarczonoAt || null, ostatnieZdarzenie: o.ostatnieZdarzenie || null,
+    powiadomionoAt: o.powiadomionoAt || null, powiadomilKto: obcy ? null : (o.powiadomilKto || null), powiadomionoDo: obcy ? null : (o.powiadomionoDo || null),
     items: (o.items || []).map(i => ({
       id: i.id, ean: i.ean, name: i.name, variant: i.variant, symbol: i.symbol || null, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
     })),
@@ -455,6 +457,60 @@ router.get('/zamowienia/:id/etykieta', asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="list-${o.numer}.pdf"`);
   res.send(result.body);
+}));
+
+/* DRUK ZAMÓWIENIA (26.10.2026): PDF z tabelą pozycji do odhaczania — guzik
+ * „Drukuj zamówienie" na zwiniętym zamówieniu, obie role. Treść jak w panelu
+ * magazynu (toPublic 'magazyn'), więc i właściciel drukuje to, co widzi
+ * magazyn. */
+router.get('/zamowienia/:id/pdf', asyncHandler(async (req, res) => {
+  const prisma = req.app.locals.prisma;
+  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
+  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  const pdf = await pdfZamowienia(toPublic(o, 'magazyn'));
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="zamowienie-${o.numer}.pdf"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(pdf);
+}));
+
+/* POWIADOM MAGAZYN (26.10.2026): mail z naszej skrzynki delivery@ do magazynu
+ * (domyślnie m.urbaniak@bell.com.pl) — „nowe zamówienie", treść zamówienia,
+ * w załączniku PDF zamówienia do wydruku i dokumenty do paczki. Tylko
+ * właściciel. Drugi raz tylko świadomie ({ponownie:true}) — inaczej 409 z datą
+ * pierwszej wysyłki. {podglad:true} = temat, treść i załączniki BEZ wysyłki. */
+const MAGAZYN_MAIL_OD = () => (process.env.MAGAZYN_MAIL_OD || 'delivery@surfstickbell.com').trim();
+const MAGAZYN_MAIL_DO = () => (process.env.MAGAZYN_MAIL_DO || 'm.urbaniak@bell.com.pl').trim();
+router.post('/zamowienia/:id/powiadom', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const b = req.body || {};
+  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
+  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  if (o.status === 'ANULOWANE') return res.status(400).json({ ok: false, error: `zamówienie #${o.numer} jest anulowane — nie powiadamiam magazynu` });
+  const doKogo = b.do ? String(b.do).trim() : MAGAZYN_MAIL_DO();
+  if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(doKogo)) return res.status(400).json({ ok: false, error: `zły adres e-mail: ${doKogo}` });
+  if (o.powiadomionoAt && !b.ponownie && !b.podglad) {
+    const kiedy = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', dateStyle: 'short', timeStyle: 'short' }).format(o.powiadomionoAt);
+    return res.status(409).json({ ok: false, juzPowiadomiono: true, powiadomionoAt: o.powiadomionoAt, error: `Magazyn powiadomiony już ${kiedy} (${o.powiadomionoDo || 'magazyn'}). Wyślij ponownie tylko, jeśli trzeba.` });
+  }
+  const z = toPublic(o, 'magazyn');
+  const { subject, text, html } = trescMaila(z);
+  const zalaczniki = [{ filename: `zamowienie-${o.numer}.pdf`, content: await pdfZamowienia(z), contentType: 'application/pdf' }];
+  const docs = await prisma.warehouseOrderDoc.findMany({ where: { orderId: o.id }, orderBy: { createdAt: 'asc' }, select: { filename: true, contentType: true, data: true } });
+  for (const d of docs) zalaczniki.push({ filename: d.filename, content: Buffer.from(d.data), contentType: d.contentType || 'application/pdf' });
+  const opisZal = zalaczniki.map(a => ({ filename: a.filename, size: a.content.length }));
+  const od = MAGAZYN_MAIL_OD();
+  if (b.podglad) return res.json({ ok: true, podglad: true, od, do: doKogo, temat: subject, tresc: text, zalaczniki: opisZal });
+  try {
+    await require('../mail-sender').sendMail({ from: od, to: doKogo, subject, body: text, html, attachments: zalaczniki });
+  } catch (e) {
+    console.error(`[magazyn] powiadomienie #${o.numer} nieudane:`, e.message);
+    return res.status(502).json({ ok: false, error: `Mail do magazynu nie wyszedł: ${e.message}` });
+  }
+  const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomionoAt: new Date(), powiadomilKto: kto(req), powiadomionoDo: doKogo }, include: ORDER_INCLUDE });
+  console.log(`[magazyn] powiadomiono magazyn o #${o.numer} (${zalaczniki.length} zał.)`);
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)), wyslano: { od, do: doKogo, zalaczniki: opisZal } });
 }));
 
 /* DOKUMENTY DO PACZKI (14.10.2026). Super-Pharm (i nie tylko) wymaga WZ/FV
