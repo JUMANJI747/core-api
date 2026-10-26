@@ -3,8 +3,9 @@
 /* RAPORTY KASOWE (26.10.2026, przeniesione z n8n) — podgląd i sterowanie.
  * Pod /api (klucz API CRM). Logika: services/raporty-kasowe*.js.
  *
- *   GET  /api/raporty-kasowe/stan       — włączone?, konto Google, dostęp do
- *                                          arkusza, stan skrzynki, ostatnie raporty i kopie
+ *   GET  /api/raporty-kasowe/stan[?test=1] — włączone?, konto Google, dostęp do
+ *                                          arkusza, stan skrzynki, ostatnie raporty i kopie;
+ *                                          test=1: próba logowania IMAP i SMTP (bez czytania/wysyłki)
  *   POST /api/raporty-kasowe/sprawdz    — cykl skrzynki teraz
  *   POST /api/raporty-kasowe/od {od}    — przerób maile od daty RRRR-MM-DD
  *                                          (zaległe; duplikaty w arkuszu pomijane)
@@ -19,7 +20,7 @@ const opakuj = (fn) => async (req, res) => {
 };
 
 router.get('/raporty-kasowe/stan', opakuj(async (req, res) => {
-  res.json({ ok: true, ...(await cyk.stan()) });
+  res.json({ ok: true, ...(await cyk.stan({ testPolaczenia: req.query.test === '1' })) });
 }));
 
 router.post('/raporty-kasowe/sprawdz', opakuj(async (req, res) => {

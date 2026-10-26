@@ -26,12 +26,22 @@ function hostPort(wartosc, domyslnyHost, domyslnyPort) {
   const [h, p] = String(wartosc || '').trim().split(':');
   return { host: h || domyslnyHost, port: Number(p) || domyslnyPort };
 }
+function kontoZ({ login, haslo, imap, smtp } = {}) {
+  const l = String(login || '').trim();
+  const h = String(haslo || '');
+  if (!l || !h) return null;
+  const domena = l.split('@')[1] || '';
+  return { login: l, haslo: h, imap: hostPort(imap, `imap.${domena}`, 993), smtp: hostPort(smtp, `smtp.${domena}`, 465) };
+}
+// Skrzynka z env (Railway)…
 function konto() {
-  const login = String(process.env.RAPORTY_POCZTA_LOGIN || '').trim();
-  const haslo = String(process.env.RAPORTY_POCZTA_HASLO || '');
-  if (!login || !haslo) return null;
-  const domena = login.split('@')[1] || '';
-  return { login, haslo, imap: hostPort(process.env.RAPORTY_POCZTA_IMAP, `imap.${domena}`, 993), smtp: hostPort(process.env.RAPORTY_POCZTA_SMTP, `smtp.${domena}`, 465) };
+  return kontoZ({ login: process.env.RAPORTY_POCZTA_LOGIN, haslo: process.env.RAPORTY_POCZTA_HASLO, imap: process.env.RAPORTY_POCZTA_IMAP, smtp: process.env.RAPORTY_POCZTA_SMTP });
+}
+// …a gdy jej tam nie ma — z Config `raporty_kasowe_poczta` {login, haslo,
+// imap, smtp} (jak tokeny botów: ustawiane przez API, bez zmian w Railway).
+const KLUCZ_POCZTA = 'raporty_kasowe_poczta';
+async function kontoAktywne() {
+  return konto() || kontoZ((await czytaj(KLUCZ_POCZTA, null)) || {});
 }
 async function czytaj(klucz, domyslnie) {
   try { const r = await db().config.findUnique({ where: { key: klucz } }); return r && r.value ? JSON.parse(r.value) : domyslnie; } catch { return domyslnie; }
@@ -162,10 +172,15 @@ function doOdczytu(a) {
 let wToku = false;
 let bledyZRzedu = 0;
 const ostatnie = { cykl: null, kopia: null };
+// Próby załączników, które wywaliły się w trakcie (arkusz, Claude, sieć).
+// Do 3 prób załącznik NIE jest zapisywany jako przerobiony, a stan skrzynki
+// nie przesuwa się za jego mail — następny cykl spróbuje ponownie.
+const MAX_PROB = 3;
+const proby = new Map();
 
 async function cykl(deps = {}) {
-  const k = deps.konto || konto();
-  if (!k) return { ok: false, powod: 'brak RAPORTY_POCZTA_LOGIN / RAPORTY_POCZTA_HASLO' };
+  const k = deps.konto || await kontoAktywne();
+  if (!k) return { ok: false, powod: 'brak danych skrzynki bota (Config raporty_kasowe_poczta albo env RAPORTY_POCZTA_*)' };
   if (wToku) return { ok: false, powod: 'poprzedni cykl jeszcze trwa' };
   wToku = true;
   const wynik = { kiedy: new Date().toISOString(), maili: 0, zalacznikow: 0, statusy: {} };
@@ -179,6 +194,10 @@ async function cykl(deps = {}) {
       claude: deps.claude || claude, popraw: deps.popraw || popraw, arkusz: deps.arkusz || arkusz(ust.arkuszId),
       wyslij: deps.wyslij || nadawca(k), ustawienia: ust,
     };
+    // Arkusz niedostępny (np. nieudostępniony kontu serwisowemu) → błąd cyklu
+    // PRZED dotknięciem maili: nic nie oznaczamy, nic nie przepada.
+    if (r.maile.length && typeof z.arkusz.zakladki === 'function') await z.arkusz.zakladki();
+    let przerwij = null;
     for (const mail of r.maile) {
       if (ust.nadawcy.length && !ust.nadawcy.some(a => mail.from.includes(a))) { await zapisz(rk.KLUCZ_STAN, { uidValidity: r.uidValidity, lastUid: mail.uid }); continue; }
       wynik.maili++;
@@ -189,15 +208,23 @@ async function cykl(deps = {}) {
         if (await db().raportKasowy.findUnique({ where: { klucz } })) continue; // już przerobiony (restart)
         wynik.zalacznikow++;
         let w;
-        try { w = await rk.przetworzZalacznik(a, z); } catch (e) { w = { status: 'blad', szczegoly: String(e.message).slice(0, 500) }; console.error(`[raporty-kasowe] ${a.filename}:`, e.message); }
+        try { w = await rk.przetworzZalacznik(a, z); proby.delete(klucz); } catch (e) {
+          const proba = (proby.get(klucz) || 0) + 1;
+          proby.set(klucz, proba);
+          console.error(`[raporty-kasowe] ${a.filename} (próba ${proba}/${MAX_PROB}):`, e.message);
+          if (proba < MAX_PROB) { przerwij = `${a.filename}: ${String(e.message).slice(0, 200)} — ponowię w następnym cyklu (${proba}/${MAX_PROB})`; break; }
+          proby.delete(klucz);
+          w = { status: 'blad', szczegoly: String(e.message).slice(0, 500) };
+        }
         if (w.awariaPoprawy) awarie.push(w.awariaPoprawy);
         wynik.statusy[w.status] = (wynik.statusy[w.status] || 0) + 1;
         await db().raportKasowy.create({ data: {
           klucz, uid: mail.uid, messageId: mail.messageId, nadawca: mail.from, plik: a.filename || null, typ: w.typ || null, data: w.data || null,
           zakladka: w.sheet || null, wiersz: w.row || null, wartosci: w.values || undefined, etap: w.etap || null, status: w.status, szczegoly: w.szczegoly ? String(w.szczegoly).slice(0, 2000) : null,
         } });
-        if (w.status === 'blad') await z.wyslij({ do: ust.alerty, temat: `❌ Raport kasowy — błąd przetwarzania (${a.filename || 'załącznik'})`, tekst: `Nie udało się przetworzyć załącznika ${a.filename || ''} z maila „${mail.subject}" (${mail.from}).\n\nBłąd: ${w.szczegoly}\n\nNic nie zostało wpisane. Spróbuję ponownie dopiero po ręcznym zleceniu (POST /api/raporty-kasowe/od).` }).catch(() => {});
+        if (w.status === 'blad') await z.wyslij({ do: ust.alerty, temat: `❌ Raport kasowy — błąd przetwarzania (${a.filename || 'załącznik'})`, tekst: `Nie udało się przetworzyć załącznika ${a.filename || ''} z maila „${mail.subject}" (${mail.from}) — ${MAX_PROB} próby, co 3 minuty.\n\nBłąd: ${w.szczegoly}\n\nNic nie zostało wpisane. Wpisz wartości ręcznie albo poproś Claude o ponowne przetworzenie od daty tego maila.` }).catch(() => {});
       }
+      if (przerwij) break; // ten mail jeszcze raz w następnym cyklu
       if (awarie.length) {
         await z.wyslij({ do: ust.alerty, temat: '🔧 Poprawianie jakości skanów nie działa — raporty czytane w gorszej jakości', tekst: `Usługa poprawy skanów (/preprocess-scan) nie odpowiedziała, więc raport poszedł do odczytu jako oryginał.\n\nTo NIE zatrzymało przetwarzania — kwoty zostały odczytane normalnie, ale bez prostowania skanu odczyt jest mniej pewny i częściej trafia do arbitrażu.\n\nSzczegóły:\n${awarie.map(a => '  • ' + a).join('\n')}` }).catch(() => {});
       }
@@ -206,6 +233,7 @@ async function cykl(deps = {}) {
       await zapisz(rk.KLUCZ_STAN, { uidValidity: r.uidValidity, lastUid: mail.uid });
     }
     if (!r.maile.length) await zapisz(rk.KLUCZ_STAN, { uidValidity: r.uidValidity, lastUid: r.gora });
+    if (przerwij) wynik.ponowienie = przerwij;
     wynik.ok = true;
   } catch (e) {
     bledyZRzedu++;
@@ -231,7 +259,7 @@ async function przetworzOd(od) {
 
 // ── 4:00: kopia XLSX do bazy + zakładka nowego miesiąca ─────────────────────
 async function kopiaIZakladka(deps = {}) {
-  const k = deps.konto || konto();
+  const k = deps.konto || await kontoAktywne();
   const ust = await ustawienia();
   const ark = deps.arkusz || arkusz(ust.arkuszId);
   const wyslij = deps.wyslij || (k ? nadawca(k) : async () => {});
@@ -274,7 +302,8 @@ async function kopiaIZakladka(deps = {}) {
 // ── harmonogram ────────────────────────────────────────────────────────────
 function uruchom(prisma) {
   _prisma = prisma;
-  if (!konto()) { console.log('[raporty-kasowe] wyłączone — brak RAPORTY_POCZTA_LOGIN / RAPORTY_POCZTA_HASLO'); return; }
+  // Timery chodzą zawsze; bez danych skrzynki cykl kończy się od razu (dane
+  // mogą dojść w Config bez restartu).
   const jedenCykl = () => cykl().catch(e => console.error('[raporty-kasowe]', e.message));
   setTimeout(jedenCykl, 60 * 1000).unref();
   setInterval(jedenCykl, 3 * 60 * 1000).unref();
@@ -286,16 +315,33 @@ function uruchom(prisma) {
       const d = rk.dataWarszawa(new Date());
       const dzis = `${d.rok}-${String(d.miesiac).padStart(2, '0')}-${String(d.dzien).padStart(2, '0')}`;
       if (godz < 4 || (await czytaj(rk.KLUCZ_DZIEN, null)) === dzis) return;
+      if (!(await ustawienia()).arkuszId || !(await kontoAktywne())) return; // moduł nieskonfigurowany
       await zapisz(rk.KLUCZ_DZIEN, dzis);
       await kopiaIZakladka();
     } catch (e) { console.error('[raporty-kasowe] kopia:', e.message); }
   }, 10 * 60 * 1000).unref();
-  console.log('[raporty-kasowe] uruchomione: skrzynka co 3 min, kopia i nowy miesiąc po 4:00');
+  console.log('[raporty-kasowe] timery: skrzynka co 3 min (gdy są dane skrzynki), kopia i nowy miesiąc po 4:00');
+}
+
+/* Próba połączenia bez czytania i wysyłania: logowanie IMAP + otwarcie
+ * skrzynki tylko do odczytu, SMTP — samo powitanie i logowanie (verify). */
+async function testPolaczen(k) {
+  const wynik = {};
+  try {
+    const imap = await polacz(k);
+    try { const b = await new Promise((res, rej) => imap.openBox('INBOX', true, (e, x) => (e ? rej(e) : res(x)))); wynik.imap = { ok: true, wiadomosci: b.messages && b.messages.total }; } finally { zamknij(imap); }
+  } catch (e) { wynik.imap = { ok: false, blad: String(e.message).slice(0, 200) }; }
+  try {
+    const nodemailer = require('nodemailer');
+    await nodemailer.createTransport({ host: k.smtp.host, port: k.smtp.port, secure: k.smtp.port === 465, auth: { user: k.login, pass: k.haslo }, connectionTimeout: 20000, greetingTimeout: 20000, socketTimeout: 30000 }).verify();
+    wynik.smtp = { ok: true };
+  } catch (e) { wynik.smtp = { ok: false, blad: String(e.message).slice(0, 200) }; }
+  return wynik;
 }
 
 // Stan dla /api/raporty-kasowe/stan (bez sekretów).
-async function stan() {
-  const k = konto();
+async function stan({ testPolaczenia = false } = {}) {
+  const k = await kontoAktywne();
   const ust = await ustawienia();
   let dostepArkusza = null;
   let kontoGoogle = null;
@@ -306,11 +352,12 @@ async function stan() {
   const ostatnieRaporty = await db().raportKasowy.findMany({ orderBy: { createdAt: 'desc' }, take: 20, select: { createdAt: true, plik: true, typ: true, data: true, status: true, etap: true, zakladka: true, wiersz: true, szczegoly: true } });
   const kopie = await db().kopiaArkusza.findMany({ orderBy: { createdAt: 'desc' }, take: 5, select: { id: true, nazwa: true, rozmiar: true, createdAt: true } });
   return {
-    wlaczone: !!k, skrzynka: k ? { login: k.login, imap: `${k.imap.host}:${k.imap.port}`, smtp: `${k.smtp.host}:${k.smtp.port}` } : null,
+    wlaczone: !!k, skrzynka: k ? { login: k.login, imap: `${k.imap.host}:${k.imap.port}`, smtp: `${k.smtp.host}:${k.smtp.port}`, zrodlo: konto() ? 'env' : 'config' } : null,
+    polaczenia: k && testPolaczenia ? await testPolaczen(k) : undefined,
     ustawienia: { arkuszId: ust.arkuszId, potwierdzenia: ust.potwierdzenia, alerty: ust.alerty, nadawcy: ust.nadawcy },
     modele: rk.MODELE(), kontoGoogle, dostepArkusza, stanSkrzynki: await czytaj(rk.KLUCZ_STAN, null),
     ostatniCykl: ostatnie.cykl, ostatniaKopia: ostatnie.kopia, ostatnieRaporty, kopie,
   };
 }
 
-module.exports = { uruchom, cykl, kopiaIZakladka, przetworzOd, stan, konto, doOdczytu, _test: { hostPort, pobierzMaile, ustawPrisma: (p) => { _prisma = p; } } };
+module.exports = { uruchom, cykl, kopiaIZakladka, przetworzOd, stan, konto, kontoAktywne, doOdczytu, KLUCZ_POCZTA, _test: { hostPort, pobierzMaile, ustawPrisma: (p) => { _prisma = p; }, reset: () => { wToku = false; bledyZRzedu = 0; proby.clear(); } } };

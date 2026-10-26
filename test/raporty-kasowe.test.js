@@ -231,3 +231,64 @@ test('kopia o 4:00: XLSX do bazy; 31.10 nowa zakładka LISTOPAD z kopii PAŹDZIE
   assert.match(maile2[0].temat, /❌ Backup arkusza raportów kasowych nie wykonał się/);
   assert.match(maile2[0].tekst, /403 brak dostępu/);
 });
+
+test('dane skrzynki: z env, a bez env z Config (ustawiane przez API, bez zmian w Railway)', async () => {
+  const db = baza(); cyk._test.ustawPrisma(db);
+  const przed = { ...process.env };
+  delete process.env.RAPORTY_POCZTA_LOGIN; delete process.env.RAPORTY_POCZTA_HASLO;
+  try {
+    assert.equal(await cyk.kontoAktywne(), null);
+    db._config.set(cyk.KLUCZ_POCZTA, JSON.stringify({ login: 'bot@bell.example', haslo: 'h', imap: 'bell1.example:993', smtp: 'bell1.example:465' }));
+    const k = await cyk.kontoAktywne();
+    assert.deepEqual(k.imap, { host: 'bell1.example', port: 993 });
+    assert.deepEqual(k.smtp, { host: 'bell1.example', port: 465 });
+    process.env.RAPORTY_POCZTA_LOGIN = 'env@bell.example'; process.env.RAPORTY_POCZTA_HASLO = 'e';
+    assert.equal((await cyk.kontoAktywne()).login, 'env@bell.example', 'env ma pierwszeństwo');
+    assert.deepEqual((await cyk.kontoAktywne()).imap, { host: 'imap.bell.example', port: 993 }, 'domyślny host z domeny');
+  } finally {
+    for (const k of ['RAPORTY_POCZTA_LOGIN', 'RAPORTY_POCZTA_HASLO']) { if (przed[k] === undefined) delete process.env[k]; else process.env[k] = przed[k]; }
+  }
+});
+
+test('chwilowa awaria (Claude/arkusz) — raport w kolejce: 2 ponowienia bez śladu i bez przesuwania skrzynki, za 3. razem błąd i mail', async () => {
+  const db = baza(); cyk._test.ustawPrisma(db); cyk._test.reset();
+  db._config.set(rk.KLUCZ_STAN, JSON.stringify({ uidValidity: 7, lastUid: 100 }));
+  const s = srodowisko();
+  let awaria = true;
+  const claude = async (p) => { if (awaria) throw new Error('529 overloaded'); return s.deps.claude(p); };
+  const mail = { uid: 101, messageId: '<m@x>', from: 'bar@hotel.pl', subject: 'raport', attachments: [pdf] };
+  const deps = { konto: KONTO, claude, popraw: s.deps.popraw, arkusz: s.deps.arkusz, wyslij: s.deps.wyslij, pobierzMaile: async () => ({ uidValidity: 7, gora: 101, maile: [mail] }) };
+  for (let i = 1; i <= 2; i++) {
+    const w = await cyk.cykl(deps);
+    assert.match(w.ponowienie, new RegExp(`529 overloaded — ponowię w następnym cyklu \\(${i}/3\\)`));
+    assert.equal(db._raporty.size, 0, 'bez śladu — spróbujemy znowu');
+    assert.equal(stanSkrzynki(db).lastUid, 100, 'skrzynka nie przesunięta za ten mail');
+  }
+  awaria = false;
+  const ok = await cyk.cykl(deps);
+  assert.deepEqual(ok.statusy, { wpisany: 1 }, 'trzecia próba się udała');
+  assert.equal(stanSkrzynki(db).lastUid, 101);
+  // Trwała awaria: 3 próby → błąd, mail do właściciela, kolejka idzie dalej.
+  cyk._test.reset();
+  const db2 = baza(); cyk._test.ustawPrisma(db2);
+  db2._config.set(rk.KLUCZ_STAN, JSON.stringify({ uidValidity: 7, lastUid: 100 }));
+  awaria = true; s.maile.length = 0;
+  for (let i = 0; i < 3; i++) await cyk.cykl(deps);
+  assert.equal([...db2._raporty.values()][0].status, 'blad');
+  assert.equal(stanSkrzynki(db2).lastUid, 101);
+  assert.ok(s.maile.some(m => /❌ Raport kasowy — błąd przetwarzania/.test(m.temat) && /3 próby/.test(m.tekst)));
+});
+
+test('arkusz niedostępny (nieudostępniony) → błąd cyklu przed dotknięciem maili; pusta skrzynka nie sprawdza arkusza', async () => {
+  const db = baza(); cyk._test.ustawPrisma(db); cyk._test.reset();
+  db._config.set(rk.KLUCZ_STAN, JSON.stringify({ uidValidity: 7, lastUid: 100 }));
+  const s = srodowisko();
+  let sprawdzen = 0;
+  const ark = { ...s.deps.arkusz, zakladki: async () => { sprawdzen++; throw new Error('The caller does not have permission'); } };
+  const deps = { konto: KONTO, claude: s.deps.claude, popraw: s.deps.popraw, arkusz: ark, wyslij: s.deps.wyslij };
+  const w = await cyk.cykl({ ...deps, pobierzMaile: async () => ({ uidValidity: 7, gora: 101, maile: [{ uid: 101, from: 'bar@hotel.pl', subject: 'r', attachments: [pdf] }] }) });
+  assert.equal(w.ok, false); assert.match(w.blad, /does not have permission/);
+  assert.equal(stanSkrzynki(db).lastUid, 100); assert.equal(db._raporty.size, 0); assert.equal(s.wolania.length, 0);
+  await cyk.cykl({ ...deps, pobierzMaile: async () => ({ uidValidity: 7, gora: 101, maile: [] }) });
+  assert.equal(sprawdzen, 1, 'bez maili nie pytamy arkusza');
+});
