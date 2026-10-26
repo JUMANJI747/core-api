@@ -215,6 +215,7 @@ app.use('/api', require('./routes/parse-document'));
 app.use('/api', require('./routes/analytics'));
 app.use('/api', require('./routes/glob'));
 app.use('/api', require('./routes/agent'));
+app.use('/api', require('./routes/raporty-kasowe'));
 app.use('/api', require('./routes/upload'));
 app.use('/api', require('./routes/telegram-callback'));
 app.use('/api', require('./routes/ksef'));
@@ -252,6 +253,8 @@ const server = app.listen(PORT, () => {
   setTimeout(statusyMagazynu, 60 * 1000).unref();
   setInterval(statusyMagazynu, 30 * 60 * 1000).unref();
   straznik.uruchom(prisma);
+  // Raporty kasowe (przeniesione z n8n): śpi, dopóki nie ma RAPORTY_POCZTA_*.
+  require('./services/raporty-kasowe-cykl').uruchom(prisma);
   // Maile rozgrzewające (Instantly), które trafiły do CRM przed filtrem albo
   // przed zmianą WARMUP_TAGS — oznacz i schowaj (serwera poczty nie dotyka).
   setTimeout(() => require('./services/rozgrzewanie').oznaczIstniejace(prisma)

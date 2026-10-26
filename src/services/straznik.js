@@ -167,6 +167,12 @@ function zarejestruj(req, res, deps = {}) {
     const status = res && res.statusCode;
     if (!(status < 400)) return;
     const ip = adresKlienta(req);
+    // Wywołania z tego samego procesu (raporty kasowe → /preprocess-scan,
+    // agent → /api) to nie obcy ruch. Rozpoznajemy je po BRAKU nagłówków
+    // proxy — ruch z internetu przechodzi przez proxy Railway, które zawsze
+    // je dokleja, więc podanie „127.0.0.1" w nagłówku niczego nie ukryje.
+    const h = req.headers || {};
+    if (!h['x-forwarded-for'] && !h['x-real-ip'] && /^(127\.|::1$)/.test(ip)) return;
     if (rodzaj === 'tg') {
       if (ip && !zTelegrama(ip)) {
         const tekst = `🛡️ Strażnik: webhook bota wywołany POPRAWNYM sekretem spoza adresów Telegrama.\nAdres: ${ip}\nŚcieżka: ${String(req.originalUrl || '').split('?')[0]}\nKtoś może podszywać się pod Twoje wiadomości do bota (bot ma dostęp do CRM i AI). Wymień sekret webhooka i tokeny botów.`;

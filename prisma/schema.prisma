@@ -1169,3 +1169,38 @@ model KanarekPoczty {
   @@index([inbox])
   @@index([potwierdzonoO])
 }
+
+// ============ RAPORTY KASOWE (26.10.2026, przeniesione z n8n) ============
+// Jeden wiersz = jeden załącznik z maila do skrzynki bota (bar/recepcja Pałacu
+// Galiny). `klucz` = uidValidity:uid:indeks:plik — po restarcie nie przerabiamy
+// drugi raz. Ślad: co odczytano, gdzie wpisano, który etap rozstrzygnął.
+model RaportKasowy {
+  id        String   @id @default(uuid())
+  klucz     String   @unique
+  uid       Int?
+  messageId String?
+  nadawca   String?
+  plik      String?
+  typ       String? // bar | recepcja
+  data      String? // DD/MM/RRRR z raportu
+  zakladka  String?
+  wiersz    Int?
+  wartosci  Json?
+  etap      String? // odczyt | weryfikacja | arbitraz
+  status    String // wpisany | duplikat | duplikat_inne_kwoty | pominiety | wstrzymany | blad
+  szczegoly String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Codzienna kopia arkusza raportów kasowych (XLSX z Drive), 60 dni.
+model KopiaArkusza {
+  id        String   @id @default(uuid())
+  nazwa     String
+  rozmiar   Int
+  dane      Bytes
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

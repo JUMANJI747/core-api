@@ -78,6 +78,14 @@ test('zakresy Telegrama i uogólnianie ścieżek', () => {
   assert.equal(T.sciezkaOgolna('/api/invoices/253/pdf'), '/api/invoices/:n/pdf');
 });
 
+test('rejestr: wywołanie z tego samego procesu (bez nagłówków proxy) pomijane; „127.0.0.1" w nagłówku nie ukrywa', () => {
+  const wewn = { method: 'POST', originalUrl: '/preprocess-scan', url: '/preprocess-scan', headers: {}, socket: { remoteAddress: '::ffff:127.0.0.1' } };
+  st.zarejestruj(wewn, { statusCode: 200 });
+  assert.equal(T.okno.adresy.size, 0);
+  st.zarejestruj(zad('/preprocess-scan', { metoda: 'POST', ip: '127.0.0.1' }), { statusCode: 200 });
+  assert.equal(T.okno.adresy.size, 1, 'z nagłówkiem proxy liczymy jak każde wywołanie');
+});
+
 test('rejestr: panel liczony osobno, nieudane wywołania pominięte, adresy spoza panelu zapamiętane', () => {
   st.zarejestruj(zad('/api/contractors', { naglowki: { 'x-crm-user': 'michal' } }), { statusCode: 200 });
   st.zarejestruj(zad('/api/admin/query', { metoda: 'POST' }), { statusCode: 200 });
