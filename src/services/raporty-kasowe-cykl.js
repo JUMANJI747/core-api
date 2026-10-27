@@ -79,7 +79,30 @@ function arkusz(arkuszId) {
     duplikuj: async (sourceSheetId, newSheetName) => { await sheets.spreadsheets.batchUpdate({ spreadsheetId: arkuszId, requestBody: { requests: [{ duplicateSheet: { sourceSheetId, newSheetName } }] } }); },
     wyczysc: async (nazwa) => { await sheets.spreadsheets.values.batchClear({ spreadsheetId: arkuszId, requestBody: { ranges: [`'${nazwa}'!B4:M34`] } }); },
     xlsx: async () => Buffer.from((await google().drive.files.export({ fileId: arkuszId, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, { responseType: 'arraybuffer' })).data),
+    // Zapas, gdy Drive API jest wyłączone w projekcie Google: dane i formuły
+    // wszystkich zakładek przez Sheets API (bez formatowania).
+    xlsxZArkuszy: async () => {
+      const meta = (await sheets.spreadsheets.get({ spreadsheetId: arkuszId, fields: 'sheets.properties.title' })).data;
+      const tytuly = (meta.sheets || []).map(x => x.properties.title);
+      const r = await sheets.spreadsheets.values.batchGet({ spreadsheetId: arkuszId, ranges: tytuly.map(t => `'${t.replace(/'/g, "''")}'`), valueRenderOption: 'FORMULA' });
+      return zbudujXlsx(tytuly, r.data.valueRanges || []);
+    },
   };
+}
+
+/* XLSX z wartości zakładek: tekst „=…" → formuła, reszta → wartość. Nazwy
+ * zakładek przycięte do zasad Excela (31 znaków, bez []:*?/\). */
+async function zbudujXlsx(tytuly, zakresy) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  tytuly.forEach((t, i) => {
+    const ws = wb.addWorksheet(String(t).replace(/[[\]:*?/\\]/g, '_').slice(0, 31) || `Arkusz${i + 1}`);
+    ((zakresy[i] && zakresy[i].values) || []).forEach((wiersz, ri) => wiersz.forEach((v, ci) => {
+      if (v === '' || v == null) return;
+      ws.getCell(ri + 1, ci + 1).value = (typeof v === 'string' && v.startsWith('=')) ? { formula: v.slice(1) } : v;
+    }));
+  });
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 // ── Claude, poprawa skanu, mail ─────────────────────────────────────────────
@@ -266,12 +289,20 @@ async function kopiaIZakladka(deps = {}) {
   const teraz = deps.teraz || new Date();
   const wynik = { kiedy: teraz.toISOString() };
   try {
-    const plik = await ark.xlsx();
+    // Najpierw wierna kopia z Drive (z formatowaniem); gdy Drive API jest
+    // wyłączone w projekcie Google — dane i formuły przez Sheets API.
+    let plik; let metoda = 'drive';
+    let bladDrive = null;
+    try { plik = await ark.xlsx(); } catch (e) {
+      bladDrive = e.message;
+      if (typeof ark.xlsxZArkuszy !== 'function') throw e;
+      plik = await ark.xlsxZArkuszy(); metoda = 'sheets';
+    }
     const d = rk.dataWarszawa(teraz);
-    const nazwa = `BACKUP_RAPORTY_KASOWE_${d.rok}-${String(d.miesiac).padStart(2, '0')}-${String(d.dzien).padStart(2, '0')}.xlsx`;
+    const nazwa = `BACKUP_RAPORTY_KASOWE_${d.rok}-${String(d.miesiac).padStart(2, '0')}-${String(d.dzien).padStart(2, '0')}${metoda === 'sheets' ? '_dane' : ''}.xlsx`;
     await db().kopiaArkusza.create({ data: { nazwa, rozmiar: plik.length, dane: plik } });
     await db().kopiaArkusza.deleteMany({ where: { createdAt: { lt: new Date(teraz.getTime() - 60 * 24 * 3600 * 1000) } } });
-    wynik.kopia = { nazwa, rozmiar: plik.length };
+    wynik.kopia = { nazwa, rozmiar: plik.length, metoda, ...(bladDrive ? { uwaga: `Drive niedostępne (${bladDrive.slice(0, 120)}) — kopia danych i formuł bez formatowania` } : {}) };
   } catch (e) {
     wynik.kopia = { blad: e.message };
     await wyslij({ do: ust.alerty, temat: '❌ Backup arkusza raportów kasowych nie wykonał się', tekst: `Codzienna kopia arkusza raportów kasowych nie powiodła się (${teraz.toISOString().slice(0, 16).replace('T', ' ')} UTC).\n\nBłąd: ${e.message}` }).catch(() => {});
@@ -360,4 +391,4 @@ async function stan({ testPolaczenia = false } = {}) {
   };
 }
 
-module.exports = { uruchom, cykl, kopiaIZakladka, przetworzOd, stan, konto, kontoAktywne, doOdczytu, KLUCZ_POCZTA, _test: { hostPort, pobierzMaile, ustawPrisma: (p) => { _prisma = p; }, reset: () => { wToku = false; bledyZRzedu = 0; proby.clear(); } } };
+module.exports = { uruchom, cykl, kopiaIZakladka, przetworzOd, stan, konto, kontoAktywne, doOdczytu, KLUCZ_POCZTA, _test: { hostPort, pobierzMaile, zbudujXlsx, ustawPrisma: (p) => { _prisma = p; }, reset: () => { wToku = false; bledyZRzedu = 0; proby.clear(); } } };

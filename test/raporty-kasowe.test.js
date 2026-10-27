@@ -292,3 +292,33 @@ test('arkusz niedostępny (nieudostępniony) → błąd cyklu przed dotknięciem
   await cyk.cykl({ ...deps, pobierzMaile: async () => ({ uidValidity: 7, gora: 101, maile: [] }) });
   assert.equal(sprawdzen, 1, 'bez maili nie pytamy arkusza');
 });
+
+test('kopia zapasowa bez Drive: XLSX z danych i formuł wszystkich zakładek (nazwy wg zasad Excela)', async () => {
+  const buf = await cyk._test.zbudujXlsx(['PAŹDZIERNIK 2026', 'Zła/nazwa: [x]'], [
+    { values: [['', 'Dzień', 'Gotówka'], ['', 1, 395], ['', 'Suma', '=SUM(C2:C2)']] },
+    { values: [['a']] },
+  ]);
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  assert.deepEqual(wb.worksheets.map(w => w.name), ['PAŹDZIERNIK 2026', 'Zła_nazwa_ _x_']);
+  const ws = wb.getWorksheet('PAŹDZIERNIK 2026');
+  assert.equal(ws.getCell('C2').value, 395);
+  assert.deepEqual(ws.getCell('C3').value, { formula: 'SUM(C2:C2)' });
+  assert.equal(ws.getCell('A1').value, null, 'puste komórki zostają puste');
+});
+
+test('kopia: Drive wyłączone w projekcie Google → kopia danych przez Sheets API bez alarmu; obie drogi padają → alert', async () => {
+  const db = baza(); cyk._test.ustawPrisma(db);
+  const maile = [];
+  const ark = { xlsx: async () => { throw new Error('Google Drive API has not been used in project 1 before or it is disabled'); }, xlsxZArkuszy: async () => Buffer.from('PK dane'), zakladki: async () => ({ sheets: [] }) };
+  const w = await cyk.kopiaIZakladka({ konto: KONTO, arkusz: ark, wyslij: async (m) => maile.push(m), teraz: new Date('2026-10-27T05:00:00Z') });
+  assert.equal(w.kopia.metoda, 'sheets');
+  assert.match(w.kopia.uwaga, /Drive niedostępne/);
+  assert.equal(db._kopie[0].nazwa, 'BACKUP_RAPORTY_KASOWE_2026-10-27_dane.xlsx');
+  assert.equal(maile.length, 0);
+  const zle = { ...ark, xlsxZArkuszy: async () => { throw new Error('Sheets 500'); } };
+  await cyk.kopiaIZakladka({ konto: KONTO, arkusz: zle, wyslij: async (m) => maile.push(m), teraz: new Date('2026-10-27T05:00:00Z') });
+  assert.match(maile[0].temat, /❌ Backup arkusza raportów kasowych nie wykonał się/);
+  assert.match(maile[0].tekst, /Sheets 500/);
+});
