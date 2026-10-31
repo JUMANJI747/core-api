@@ -1,5 +1,10 @@
 # Wskazówki dla pracy nad core-api
 
+## Zadania operacyjne — najpierw `OBSLUGA.md`
+Faktura, kurier, zamówienie do magazynu, mail, raporty kasowe, podgląd bazy:
+gotowe wywołania API są w `OBSLUGA.md`. Kodu nie czytaj, dopóki coś nie działa.
+Gdy zmieniasz sposób obsługi (nowy endpoint, inne pola) — popraw też `OBSLUGA.md`.
+
 ## Mapa aplikacji — utrzymuj ją na bieżąco
 `MAPA.md` to drogowskaz całego backendu (co i gdzie jest). **Przed** zmianą zajrzyj
 do niej, żeby trafić w odpowiednie miejsce. **Po** zmianie — w TYM SAMYM commicie

@@ -9,6 +9,8 @@
 
 ---
 
+> Zadania operacyjne (faktura, kurier, magazyn, maile, raporty) bez czytania kodu: **`OBSLUGA.md`**.
+
 ## 1. Czym jest aplikacja
 
 CRM + automatyzacja księgowo-logistyczna dla **Surf Stick Bell** (kosmetyki/surf
