@@ -5,6 +5,7 @@ const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPickupSlots, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { findBestContractors } = require('../services/contractor-match');
+const { KIERUNKOWE, normalizujTelefon, telefonZTekstu } = require('../services/telefon');
 const {
   upsertContact: upsertCrmContact,
   upsertAddress: upsertCrmAddress,
@@ -1402,35 +1403,14 @@ router.post('/glob/order', async (req, res) => {
     // Mapowanie ISO-2 → numeryczny kod telefoniczny (subset E.164). Używamy
     // do normalizacji telefonu odbiorcy gdy zaczyna się wiodącym '0' a kraj
     // jest non-PL — GK odrzuca lokalne formaty, wymaga E.164.
-    const PHONE_DIAL_CODES = {
-      PL: '48', DE: '49', FR: '33', IT: '39', ES: '34', NL: '31', BE: '32',
-      AT: '43', CZ: '420', SK: '421', HU: '36', SE: '46', DK: '45', FI: '358',
-      NO: '47', GB: '44', IE: '353', PT: '351', RO: '40', BG: '359', HR: '385',
-      SI: '386', LT: '370', LV: '371', EE: '372', GR: '30', CY: '357', MT: '356',
-      LU: '352', CH: '41', AE: '971',
-    };
+    const PHONE_DIAL_CODES = KIERUNKOWE;
     // Normalizuje numer do E.164 względem kraju odbiorcy. GK wymaga pełnego
     // formatu międzynarodowego (+49..., +33...) — lokalny '0...' albo sam
     // numer krajowy bez kierunkowego jest odrzucany dla DE/FR/IT itd.
-    function normalizePhoneE164(phone, countryIso) {
-      if (!phone) return null;
-      // usuń wszystko poza cyframi/plusem, zostaw tylko wiodący '+'
-      let cleaned = String(phone).replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
-      if (!cleaned) return null;
-      const dial = countryIso ? PHONE_DIAL_CODES[countryIso] : null;
-      if (cleaned.startsWith('00')) {
-        cleaned = '+' + cleaned.slice(2);
-      } else if (cleaned.startsWith('0')) {
-        // lokalny numer krajowy — podmień trunk '0' na +kierunkowy
-        if (dial) cleaned = '+' + dial + cleaned.replace(/^0+/, '');
-      } else if (!cleaned.startsWith('+')) {
-        // sam numer krajowy bez '+': dołóż kierunkowy (chyba że już go zawiera)
-        if (dial && cleaned.startsWith(dial)) cleaned = '+' + cleaned;
-        else if (dial) cleaned = '+' + dial + cleaned;
-        else cleaned = '+' + cleaned;
-      }
-      return cleaned.startsWith('+') ? cleaned : null;
-    }
+    // Od 1.11.2026 wspólne z parserem adresu (services/telefon.js): zdejmuje
+    // też zero krajowe po kierunkowym („+49 0157…", „+49 (0)157…"), z którym
+    // GK odrzucał numer, a we Włoszech zostawia zero stacjonarnych (+39 02…).
+    const normalizePhoneE164 = (phone, countryIso) => normalizujTelefon(phone, countryIso);
     // Czy numer jest wiarygodny dla kraju odbiorcy: E.164, właściwy kierunkowy,
     // sensowna długość. Odrzuca śmieci typu '+688734123' (688 nie jest
     // kierunkowym DE/FR/IT) → dzięki temu przechodzimy do kolejnego kandydata.
@@ -2365,7 +2345,7 @@ Zasady:
   "Kwiatowa 34 m. 3" -> houseNumber:"34", apartmentNumber:"3",
   "Calle Mayor 12, planta 3" -> houseNumber:"12", apartmentNumber:"planta 3".
   W houseNumber zostaw SAM numer budynku (cyfry i litery), bez przecinkow, kropek i slow.
-- phone: cyfry + ewentualny + na poczatku.
+- phone: przepisz numer telefonu ODBIORCY dokladnie tak, jak stoi w tekscie (z +, spacjami, nawiasami). Nie poprawiaj cyfr i nie dopisuj kierunkowego — serwer sam go znormalizuje.
 - email: tylko jak jest jawnie podany.
 
 Tekst:
@@ -2437,6 +2417,13 @@ ${text}
     if (v != null && String(v).trim()) cleaned[k] = String(v).trim();
     else cleaned[k] = null;
   }
+  if (cleaned.country) cleaned.country = cleaned.country.toUpperCase();
+
+  /* Telefon WPROST z tekstu (1.11.2026). Model przekręcał długie numery
+     (zgubione/dopisane cyfry, zero po +49) i GK odrzucał paczkę do DE —
+     odpowiedź modelu mówi tylko, KTÓRY numer z tekstu jest telefonem.
+     Szczegóły: services/telefon.js. */
+  cleaned.phone = telefonZTekstu(text, cleaned.phone, cleaned.country) || cleaned.phone;
 
   res.json({ ok: true, parsed: cleaned });
 });
