@@ -279,6 +279,18 @@ test('trasy: GET /glob/labels z kopii i z GK, 404 z opisem; anulowanie zostawia 
     const kolejnosc = gkTras.wywolania.filter(w => w[1] === HASH3).map(w => w[0]);
     assert.deepEqual(kolejnosc, ['etykieta', 'anuluj']);
 
+    // Nazwa pliku = numer GK (iOS zapisywał wszystko jako „Unknown").
+    const nazwa = async (u) => (await fetch(`${url}${u}`)).headers.get('content-disposition');
+    assert.equal(await nazwa(`/glob/labels/${HASH}/GK261023416637.pdf`), 'inline; filename="GK261023416637.pdf"');
+    assert.equal(await nazwa(`/glob/labels/${HASH}?nazwa=GK261023416637`), 'inline; filename="GK261023416637.pdf"');
+    assert.equal(await nazwa(`/glob/labels/${HASH}`), `inline; filename="CMR-${HASH.slice(0, 12)}.pdf"`);
+    assert.equal(await nazwa(`/glob/labels/${HASH}/${encodeURIComponent('GK1"; x=..\\a b.pdf')}`), 'inline; filename="GK1x..ab.pdf"');
+    const HASH4 = '4'.repeat(64);
+    gkTras.etykiety[HASH4] = { status: 200, body: pdf('nowy list') };
+    await nazwa(`/glob/labels/${HASH4}?nazwa=GK261102000009.pdf`);
+    assert.equal(bazaTras.wiersze.get(`${HASH4}|A4`).orderNumber, 'GK261102000009'); // numer zostaje przy kopii…
+    assert.equal(await nazwa(`/glob/labels/${HASH4}`), 'inline; filename="GK261102000009.pdf"'); // …i nazywa ją później
+
     gl._nieudane.clear();
     gkTras.zamowienia.push({ hash: HASH3, number: 'GK9', status: 'CANCELED', creationDate: dataGk(1) });
     const z = await fetch(`${url}/glob/labels/zabezpiecz`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dni: 30 }) });

@@ -275,11 +275,22 @@ router.get('/glob/tracking/:hash', async (req, res) => {
 // Najpierw kopia z bazy (services/glob-labels.js) — działa też, gdy GK już
 // listu nie oddaje (np. po anulowaniu). ?odswiez=1 = najpierw GK, kopia
 // tylko przy jego błędzie. Nagłówek X-Etykieta-Zrodlo mówi, skąd PDF.
+//
+// NAZWA PLIKU = NUMER GK (2.11.2026): na iPhonie każdy list zapisywał się
+// jako „Unknown" i kolejne nadpisywały się w Plikach. Nazwa z ostatniego
+// segmentu (`/glob/labels/<hash>/GK….pdf` — iOS bierze ją z URL-a, jak przy
+// fakturach) albo z ?nazwa=, inaczej numer GK z kopii, na końcu CMR-<hash>.
+const nazwaListu = (s) => {
+  const n = String(s || '').trim().replace(/\.pdf$/i, '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 60);
+  return n ? `${n}.pdf` : null;
+};
 
-router.get('/glob/labels/:hash', async (req, res) => {
+router.get(['/glob/labels/:hash', '/glob/labels/:hash/:fn'], async (req, res) => {
   try {
     const format = req.query.format || 'A4';
-    const result = await getOrderLabels(req.params.hash, format, { odswiez: req.query.odswiez === '1' });
+    const nazwa = nazwaListu(req.params.fn) || nazwaListu(req.query.nazwa);
+    const numerGk = nazwa && /^GK\d{6,}\.pdf$/i.test(nazwa) ? nazwa.slice(0, -4).toUpperCase() : undefined;
+    const result = await getOrderLabels(req.params.hash, format, { odswiez: req.query.odswiez === '1', orderNumber: numerGk });
     if (result.status !== 200) {
       return res.status(result.status).json({
         error: 'Label fetch failed',
@@ -291,7 +302,8 @@ router.get('/glob/labels/:hash', async (req, res) => {
     // inline (nie attachment) — iOS Safari pokazuje wtedy PDF w wbudowanym
     // viewerze z share buttonem (AirDrop, mail, Files, druk). Attachment
     // wymusza download w tle bez UI.
-    res.setHeader('Content-Disposition', `inline; filename="CMR-${req.params.hash.slice(0, 12)}.pdf"`);
+    const plik = nazwa || nazwaListu(result.orderNumber) || `CMR-${req.params.hash.slice(0, 12)}.pdf`;
+    res.setHeader('Content-Disposition', `inline; filename="${plik}"`);
     res.send(result.body);
   } catch (err) {
     console.error('[glob/labels]', err.message);

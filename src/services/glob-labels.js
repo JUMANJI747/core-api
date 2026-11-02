@@ -55,7 +55,7 @@ async function zapiszKopie(prisma, { hash, format, body, orderNumber, zrodlo }) 
   }
 }
 
-const zKopii = (k) => ({ status: 200, body: Buffer.from(k.data), zBazy: true });
+const zKopii = (k) => ({ status: 200, body: Buffer.from(k.data), zBazy: true, orderNumber: k.orderNumber || null });
 
 /* opts: odswiez (najpierw GK, kopia tylko gdy GK zawiedzie), orderNumber
  * i zrodlo (opis kopii), prisma i gk (podstawiane w testach). */
@@ -81,7 +81,7 @@ async function getOrderLabels(hash, format = 'A4', opts = {}) {
 
   if (h && wynik && wynik.status === 200 && czyPdf(wynik.body)) {
     await zapiszKopie(prisma, { hash: h, format: fmt, body: wynik.body, orderNumber: opts.orderNumber, zrodlo: opts.zrodlo });
-    return { ...wynik, zBazy: false };
+    return { ...wynik, zBazy: false, orderNumber: opts.orderNumber || null };
   }
   if (h && opts.odswiez) {
     const kopia = await znajdzKopie(prisma, h, fmt);
