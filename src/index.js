@@ -259,6 +259,16 @@ const server = app.listen(PORT, () => {
   // przed zmianą WARMUP_TAGS — oznacz i schowaj (serwera poczty nie dotyka).
   setTimeout(() => require('./services/rozgrzewanie').oznaczIstniejace(prisma)
     .catch(e => console.error('[rozgrzewanie] oznaczanie istniejących nieudane:', e.message)), 90 * 1000).unref();
+  // Kopie listów przewozowych GK (2.11.2026): zamówienia z ostatnich 14 dni
+  // bez kopii w bazie — po 3 min od startu, potem co 6 h. Zamówienia z CRM
+  // mają kopię od razu (glob-quote); ten przegląd łapie resztę.
+  if (process.env.GLOBKURIER_EMAIL && process.env.GLOBKURIER_PASSWORD) {
+    const kopieListow = () => require('./services/glob-labels').zabezpieczZalegle({ prisma, dni: 14 })
+      .then(r => { if (r && r.ok && (r.zapisane || r.nieudane.length)) console.log(`[glob-labels] przegląd: zapisane ${r.zapisane}, nieudane ${r.nieudane.length}, z kopią ${r.maKopie}/${r.zamowien}`); })
+      .catch(e => console.error('[glob-labels] przegląd:', e.message));
+    setTimeout(kopieListow, 3 * 60 * 1000).unref();
+    setInterval(kopieListow, 6 * 60 * 60 * 1000).unref();
+  }
 });
 
 // ============ GK COUNTRIES SELF-HEAL ============

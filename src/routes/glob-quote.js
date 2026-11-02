@@ -2,7 +2,8 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPickupSlots, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
+const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPickupSlots, getAddons, createOrder, getOrders, getCountries } = require('../glob-client');
+const { getOrderLabels, zabezpieczPoZamowieniu } = require('../services/glob-labels');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { findBestContractors } = require('../services/contractor-match');
 const { KIERUNKOWE, normalizujTelefon, telefonZTekstu } = require('../services/telefon');
@@ -1667,6 +1668,10 @@ router.post('/glob/order', async (req, res) => {
     delete quoteStore[quoteId];
     // Quote consumed on confirmed success — drop the durable copy too.
     try { await prisma.quote.delete({ where: { id: String(quoteId) } }); } catch (_) {}
+
+    // Kopia listu przewozowego w bazie — w tle, z ponowieniami (GK wystawia
+    // list z opóźnieniem, a po anulowaniu już go nie oddaje). glob-labels.js.
+    if (orderHash) zabezpieczPoZamowieniu(orderHash, { orderNumber });
 
     // Wstrzyknij nowy list do cache zamowien GK strony Faktur — żeby faktura
     // pokazała STATUS WYSYŁKI od razu po odświeżeniu (zamiast guzika "Kurier").

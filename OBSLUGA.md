@@ -48,7 +48,7 @@ Reguły: klient z PL → krajowa, PLN brutto, VAT 23%; klient z UE z aktywnym VI
    → `quoteId`, `offers` (od najtańszej), `pickupDate` (dziś, gdy przed 14:00; inaczej następny dzień roboczy). Kraj jako kod ISO (`DE`, `IT`…).
    **Telefon odbiorcy przepisz z maila/wiadomości cyfra po cyfrze** — nie licz cyfr z pamięci. Serwer sam robi z niego +<kierunkowy><numer> i zdejmuje zero krajowe (`0157…`, `+49 (0)157…`, `+49 0157…` → `+49157…`; we Włoszech zero zostaje: `+39 02…`). Gdy GK odrzuci telefon („nie jest prawidłowy numer dla kraju…"), porównaj go z oryginałem — zwykle to zgubiona albo dopisana cyfra. Wklejony blok adresu rozkłada `POST /api/glob/parse-address {"text": "…"}` (telefon bierze wprost z tekstu).
 3. **Zamówienie:** `POST /api/glob/order {"quoteId": "…", "productId": …, "source": "frontend"}` → `orderNumber` (GK…), `hash`, cena. Bierz najtańszą ofertę od drzwi do drzwi, chyba że właściciel powie inaczej.
-4. **List przewozowy:** `GET /api/glob/labels/<hash>` (PDF) → wyślij właścicielowi. Szukanie zamówień: `GET /api/glob/orders?search=GK…&limit=100&offset=0` (starsze — kolejne `offset`).
+4. **List przewozowy:** `GET /api/glob/labels/<hash>` (PDF) → wyślij właścicielowi. CRM trzyma kopię każdego listu (`GlobLabel`, od 2.11.2026), więc działa też po anulowaniu w GK; nagłówek `X-Etykieta-Zrodlo` mówi, skąd PDF. Brak kopii starszego zamówienia → `POST /api/glob/labels/zabezpiecz {"dni": 60}` zapisze, co GK jeszcze oddaje. Szukanie zamówień: `GET /api/glob/orders?search=GK…&limit=100&offset=0` (starsze — kolejne `offset`).
 
 ## 5. Magazyn zewnętrzny (Bell, Józefów)
 

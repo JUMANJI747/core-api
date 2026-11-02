@@ -690,6 +690,25 @@ model Quote {
   @@index([createdAt])
 }
 
+// Kopia listu przewozowego GlobKurier (PDF) — 2.11.2026. GK przestaje oddawać
+// etykietę np. po anulowaniu przesyłki (HTTP 404), a list jest dowodem wysyłki
+// (WDT, paczka JPK). Każdy PDF pobrany z GK zostaje tutaj i od tej pory jest
+// serwowany z bazy — services/glob-labels.js.
+model GlobLabel {
+  id          String   @id @default(uuid())
+  hash        String
+  format      String   @default("A4")
+  orderNumber String?
+  data        Bytes
+  size        Int
+  zrodlo      String? // zamowienie | pobranie | anulowanie | przeglad
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([hash, format])
+  @@index([orderNumber])
+}
+
 // ============ SENDERS (GlobKurier) ============
 
 model Sender {

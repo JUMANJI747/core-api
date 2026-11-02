@@ -2,7 +2,9 @@
 
 const router = require('express').Router();
 const https = require('https');
-const { getOrders, getOrderTracking, getOrderLabels, getReceivers, deleteOrder } = require('../glob-client');
+const { getOrders, getOrderTracking, getReceivers, deleteOrder } = require('../glob-client');
+// Listy przez kopię w bazie (GlobLabel) — GK tylko, gdy kopii nie ma.
+const { getOrderLabels, zabezpieczZalegle } = require('../services/glob-labels');
 const { buildTrackingUrl } = require('../services/tracking-urls');
 const { normalizeText } = require('./glob-helpers');
 
@@ -270,13 +272,22 @@ router.get('/glob/tracking/:hash', async (req, res) => {
 });
 
 // ============ LABELS (CMR PDF) ============
+// Najpierw kopia z bazy (services/glob-labels.js) — działa też, gdy GK już
+// listu nie oddaje (np. po anulowaniu). ?odswiez=1 = najpierw GK, kopia
+// tylko przy jego błędzie. Nagłówek X-Etykieta-Zrodlo mówi, skąd PDF.
 
 router.get('/glob/labels/:hash', async (req, res) => {
   try {
     const format = req.query.format || 'A4';
-    const result = await getOrderLabels(req.params.hash, format);
-    if (result.status !== 200) return res.status(result.status).json({ error: 'Label fetch failed' });
+    const result = await getOrderLabels(req.params.hash, format, { odswiez: req.query.odswiez === '1' });
+    if (result.status !== 200) {
+      return res.status(result.status).json({
+        error: 'Label fetch failed',
+        szczegoly: `GlobKurier nie oddał listu (HTTP ${result.status}), a w CRM nie ma jego kopii.`,
+      });
+    }
     res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('X-Etykieta-Zrodlo', result.zBazy ? 'kopia-crm' : 'globkurier');
     // inline (nie attachment) — iOS Safari pokazuje wtedy PDF w wbudowanym
     // viewerze z share buttonem (AirDrop, mail, Files, druk). Attachment
     // wymusza download w tle bez UI.
@@ -284,6 +295,22 @@ router.get('/glob/labels/:hash', async (req, res) => {
     res.send(result.body);
   } catch (err) {
     console.error('[glob/labels]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Przegląd zaległych kopii listów na żądanie (to samo co co 6 h z index.js):
+// {dni=14, limit=60} → zamowien / maKopie / zapisane / nieudane (GK nie oddał,
+// np. anulowane) / pozostalo (nie zmieściło się w czasie — wywołaj ponownie).
+router.post('/glob/labels/zabezpiecz', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const dni = Math.min(Math.max(parseInt(b.dni, 10) || 14, 1), 366);
+    const limit = Math.min(Math.max(parseInt(b.limit, 10) || 60, 1), 300);
+    const r = await zabezpieczZalegle({ dni, limit, budzetMs: 45 * 1000 });
+    res.status(r.ok ? 200 : 409).json(r);
+  } catch (err) {
+    console.error('[glob/labels/zabezpiecz]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -429,6 +456,13 @@ router.post('/glob/delete-order', async (req, res) => {
         return res.status(404).json({ ok: false, error: `Nie znaleziono zamówienia ${hashOrNumber} w historii GK (sprawdzono ostatnich ${list.length}).` });
       }
     }
+
+    // Kopia listu ZANIM GK go skasuje — po anulowaniu oddaje już tylko 404.
+    // Zwykle kopia już jest (zapis przy zamówieniu); błąd nie blokuje anulacji,
+    // a wiszący GK najwyżej 8 s (pobranie dokończy się w tle).
+    const kopia = getOrderLabels(hash, 'A4', { zrodlo: 'anulowanie', orderNumber: resolvedFrom || undefined })
+      .catch(e => console.warn('[glob/delete-order] kopia listu przed anulacją nieudana:', e.message));
+    await Promise.race([kopia, new Promise(r => { const t = setTimeout(r, 8000); if (t.unref) t.unref(); })]);
 
     const result = await deleteOrder(hash);
     const success = result.status === 200 || result.status === 204;

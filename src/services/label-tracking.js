@@ -6,7 +6,7 @@
 // number assigned yet", a etykieta istnieje, bierzemy numer z niej.
 // Ta sama heurystyka co dotąd w glob-quote (post-order): najdłuższy token
 // A-Z0-9 10-30 znaków z cyframi, z pominięciem numerów GK (GK...) i dat.
-const { getOrderLabels } = require('../glob-client');
+const { getOrderLabels } = require('./glob-labels'); // przy okazji zapisuje kopię listu
 
 async function extractTrackingFromLabel(orderHash) {
   if (!orderHash) return null;

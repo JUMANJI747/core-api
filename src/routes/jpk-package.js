@@ -5,7 +5,8 @@ const https = require('https');
 const { fetchInvoicePdf } = require('../ifirma-client');
 const { sendMail } = require('../mail-sender');
 const { sendTelegram } = require('../telegram-utils');
-const { getOrderLabels } = require('../glob-client');
+// Kopia z bazy ma pierwszeństwo — list anulowanej/starej przesyłki GK już nie oddaje.
+const { getOrderLabels } = require('../services/glob-labels');
 const { performWdtMatching } = require('./jpk');
 
 // ============ HELPERS ============

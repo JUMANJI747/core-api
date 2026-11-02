@@ -23,7 +23,7 @@ const router = require('express').Router();
 const asyncHandler = require('../asyncHandler');
 const { getActiveCatalog } = require('../services/product-catalog');
 const { selfCall } = require('../services/agent-runtime');
-const { getOrderLabels } = require('../glob-client');
+const { getOrderLabels } = require('../services/glob-labels'); // kopia w bazie, GK gdy jej brak
 const { PRODUCT_WEIGHTS } = require('./glob-helpers');
 const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
 
@@ -452,7 +452,7 @@ router.get('/zamowienia/:id/etykieta', asyncHandler(async (req, res) => {
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id } });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
   if (!o.gkHash) return res.status(404).json({ ok: false, error: 'to zamówienie nie ma jeszcze listu przewozowego' });
-  const result = await getOrderLabels(o.gkHash, 'A4');
+  const result = await getOrderLabels(o.gkHash, 'A4', { orderNumber: o.gkNumber });
   if (result.status !== 200) return res.status(502).json({ ok: false, error: `GK nie oddał etykiety (HTTP ${result.status})` });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="list-${o.numer}.pdf"`);
