@@ -108,7 +108,20 @@ async function rozmiarSkrzynki(account, { limitMs = 150000 } = {}) {
         const suma = (uidy) => uidy.reduce((s, u) => s + (rozmiar.get(u) || 0), 0);
         const duze = wszystkie.filter(m => m.size > MB);
         folder.mb = mb(wszystkie.reduce((s, m) => s + m.size, 0));
-        folder.duzeNad1MB = { n: duze.length, mb: mb(duze.reduce((s, m) => s + m.size, 0)) };
+        folder.duzeNad1MB = { n: duze.length, mb: mb(duze.reduce((s, m) => s + m.size, 0)), latami: {}, czesteRozmiary: [] };
+        // Z którego roku są duże maile (data serwera) — co można zarchiwizować.
+        for (const m of duze) {
+          const rok = m.date ? String(new Date(m.date).getFullYear()) : '?';
+          const r = folder.duzeNad1MB.latami[rok] || (folder.duzeNad1MB.latami[rok] = { n: 0, mb: 0 });
+          r.n += 1;
+          r.mb = Math.round((r.mb + m.size / MB) * 10) / 10;
+        }
+        // Wiele maili tej samej wielkości = ten sam załącznik wysyłany w kółko
+        // (np. katalog). Rozmiar zaokrąglony do 0,5 MB, tylko grupy ≥ 5.
+        const grupy = new Map();
+        for (const m of duze) { const k = Math.round((m.size / MB) * 2) / 2; grupy.set(k, (grupy.get(k) || 0) + 1); }
+        folder.duzeNad1MB.czesteRozmiary = [...grupy.entries()].filter(([, n]) => n >= 5)
+          .sort((a, b) => b[1] * b[0] - a[1] * a[0]).slice(0, 3).map(([okMB, n]) => ({ okMB, n }));
         const kanarki = await p(cb => imap.search([['SUBJECT', MARKER_KANARKA]], cb)).catch(() => []);
         folder.kanarki = { n: kanarki.length, kb: Math.round(suma(kanarki) / 1024) };
         try {

@@ -97,7 +97,10 @@ test('rozmiar: limit serwera, foldery od największego, duże maile, kanarki, ro
   assert.deepEqual(r.foldery.map(f => f.nazwa), ['INBOX', 'INBOX.Sent', 'INBOX.Trash']);
   const inbox = r.foldery[0];
   assert.equal(inbox.wiadomosci, 6);
-  assert.deepEqual(inbox.duzeNad1MB, { n: 1, mb: 3 });
+  assert.equal(inbox.duzeNad1MB.n, 1);
+  assert.equal(inbox.duzeNad1MB.mb, 3);
+  assert.equal(Object.values(inbox.duzeNad1MB.latami)[0].n, 1);
+  assert.deepEqual(inbox.duzeNad1MB.czesteRozmiary, [], 'jeden duży mail to nie „ten sam załącznik w kółko"');
   assert.deepEqual(inbox.kanarki, { n: 2, kb: 4 });
   assert.deepEqual(inbox.rozgrzewanie, { n: 1, mb: 0 });
   assert.equal(r.foldery[1].kanarki.n, 4, 'serwer szuka bez wielkości liter — liczba to tylko „kandydaci"');
