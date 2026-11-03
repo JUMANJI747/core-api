@@ -2403,6 +2403,9 @@ async function wyslijKanarki(accounts) {
         to: konto.user,
         subject: `${MARKER_KANARKA} ${token}`,
         body: 'Automatyczny test drożności skrzynki. Ta wiadomość kasuje się sama.',
+        // Bez kopii w Wysłanych nadawcy (3.11.2026): odebrany kanarek kasujemy,
+        // a kopia zostawała — u info@ ~40 testowych maili na dobę od 7.09.
+        kopiaDoWyslanych: false,
       });
       /* sendMail zapisuje kazdy wyslany mail jako OUTBOUND. Kanarek to nie
          korespondencja, tylko sonda — kasujemy jego slad, zeby nie zasmiecal

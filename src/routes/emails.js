@@ -1829,6 +1829,42 @@ router.get('/mail-accounts', (req, res) => {
   }
 });
 
+/* CO ZAJMUJE MIEJSCE W SKRZYNCE (3.11.2026, „skrzynka Nikodema prawie pełna").
+ * Body: { inbox?: string } — puste = wszystkie skrzynki po kolei.
+ * Limit serwera (QUOTA), foldery (liczba, MB), maile > 1 MB, rozgrzewanie,
+ * kanarki. Same liczby, skrzynki tylko do odczytu. services/skrzynka-rozmiar.js */
+router.post('/emails/imap-rozmiar', async (req, res) => {
+  const { rozmiarSkrzynki } = require('../services/skrzynka-rozmiar');
+  const target = (req.body && req.body.inbox) || null;
+  const picked = getAccounts().filter(a => !target || a.inbox === target);
+  if (!picked.length) return res.status(400).json({ ok: false, error: `nie ma skrzynki ${target}` });
+  const skrzynki = [];
+  for (const account of picked) {
+    try { skrzynki.push(await rozmiarSkrzynki(account)); }
+    catch (e) { skrzynki.push({ skrzynka: account.inbox, blad: e.message }); }
+  }
+  res.json({ ok: true, skrzynki });
+});
+
+/* SPRZĄTANIE KANARKÓW (3.11.2026): testowe maile CRM ([CRM-KANAREK] w temacie)
+ * z INBOX i Wysłanych. Body: { inbox?: string, proba?: boolean } — domyślnie
+ * PRÓBA (tylko liczy); kasuje dopiero `"proba": false`, i nie dla roli magazyn. */
+router.post('/emails/kanarki-sprzatanie', async (req, res) => {
+  const { usunKanarki } = require('../services/skrzynka-rozmiar');
+  const proba = !(req.body && req.body.proba === false);
+  if (!proba && req.crm && req.crm.role === 'magazyn') return res.status(403).json({ ok: false, error: 'tylko właściciel' });
+  const target = (req.body && req.body.inbox) || null;
+  const picked = getAccounts().filter(a => !target || a.inbox === target);
+  if (!picked.length) return res.status(400).json({ ok: false, error: `nie ma skrzynki ${target}` });
+  const skrzynki = [];
+  for (const account of picked) {
+    try { skrzynki.push(await usunKanarki(account, { proba })); }
+    catch (e) { skrzynki.push({ skrzynka: account.inbox, blad: e.message }); }
+  }
+  console.log(`[kanarki-sprzatanie] ${proba ? 'próba' : 'KASOWANIE'}: ${skrzynki.map(s => `${s.skrzynka}=${s.blad ? 'błąd' : s.razem}`).join(' ')}`);
+  res.json({ ok: true, proba, skrzynki });
+});
+
 // Body: { inbox?: string }  // empty = run for every IMAP_ACCOUNTS entry
 router.post('/emails/imap-diag', async (req, res) => {
   const Imap = require('imap');

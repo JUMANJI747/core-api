@@ -88,6 +88,8 @@ System mailingowy woła `POST /zewn/faktury` z własnym tokenem (Bearer); CRM wy
 - **Bot Telegram** odpowiada tylko czatom z Config `telegram_dozwolone_czaty` (dopisanie osoby = dopisanie jej chat id); sekret webhooka: Config `telegram_webhook_secret`.
 - **Wersja na produkcji:** `GET /czytnik/zdrowie` (publiczne, pole `commit`) albo `GET /api/_version`.
 - **Poczta:** `GET /poczta/zdrowie`, `GET /poczta/poller` — nagłówek `x-token` = `PREPROCESS_TOKEN` (jeśli jest w środowisku sesji).
+- **Rozmiar skrzynki** („skrzynka prawie pełna”): `POST /api/emails/imap-rozmiar {"inbox": "niko"}` — limit serwera (`limit.procent`), foldery od największego (liczba, MB), maile > 1 MB, rozgrzewanie Instantly, kanarki. Same liczby, tylko odczyt; serwer bywa wolny — przy „Timed out” ponów za kilka minut.
+- **Testowe maile CRM (kanarki) w skrzynkach:** `POST /api/emails/kanarki-sprzatanie {"inbox"?: "…"}` = próba (tylko liczy). Kasuje dopiero `"proba": false` — i tylko na wyraźne polecenie właściciela (usuwa wyłącznie maile z `[CRM-KANAREK]` w temacie; w INBOX starsze niż 2 h).
 
 ## 10. Zmiany w kodzie
 

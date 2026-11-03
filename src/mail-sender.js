@@ -73,7 +73,9 @@ function extractInbox(email) {
 
 // ============ SEND MAIL ============
 
-async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo, references, attachments }) {
+// `kopiaDoWyslanych: false` — bez kopii w Wysłanych (kanarek: test drożności
+// co 6 h zostawiał tam ~40 testowych maili dziennie, 3.11.2026).
+async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo, references, attachments, kopiaDoWyslanych = true }) {
   // Diag: pokaz co dokladnie wchodzi do sendMail. Pomoglo zdiagnozowac bug
   // "wyslany mail pusty" — body byl pusty z frontu mimo ze user widzial tekst
   // w composer textarea. Body znika gdzies w przesylce frontend->backend.
@@ -279,7 +281,7 @@ async function sendMail({ from, to, cc, subject, body, html, replyTo, inReplyTo,
   // that messages were never actually deleted, just hidden by Thunderbird's
   // local cache state. Default-on now; set DISABLE_APPEND_TO_SENT=1 to
   // turn off if needed.
-  if (rawMessage && process.env.DISABLE_APPEND_TO_SENT !== '1') {
+  if (rawMessage && kopiaDoWyslanych && process.env.DISABLE_APPEND_TO_SENT !== '1') {
     setImmediate(() => { appendToSent(account, rawMessage); });
   }
 
