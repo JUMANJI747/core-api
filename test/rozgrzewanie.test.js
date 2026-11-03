@@ -596,7 +596,9 @@ test('bezpiecznik: po 3 skrzynkach bez połączenia reszta czeka do następnego 
   assert.equal(FakeImap.instancje.filter(x => x.opts.user === 'a4@surfstickbell.com').length, 0, 'czwarta skrzynka nie próbowała się łączyć');
   assert.equal(FakeImap.instancje.length, 3, 'żadnych prób Wysłanych przy niedziałającym serwerze');
   assert.ok(Z.log.some(l => l.includes('nie odpowiada') && l.includes('pominięte: a4')));
-  assert.ok(Z.telegram.some(m => m.includes('Serwer poczty imap.test nie odpowiada')), 'jeden alert o serwerze');
+  // Od 3.11.2026 pierwszy nieudany cykl nikogo nie budzi: o serwerze, który
+  // nie odpowiada, mówi jedna wiadomość po 30 min (services/alarmy-poczty.js).
+  assert.ok(!Z.telegram.some(m => /nie odpowiada|NIE pobiera/.test(m)), 'bez alertu po pierwszym nieudanym cyklu');
   assert.equal(poller._test.stanCyklu().pollInFlight, false, 'cykl zakończony, nie porzucony');
 });
 

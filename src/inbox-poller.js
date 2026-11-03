@@ -12,6 +12,8 @@ const { parseOrderWithLLM } = require('./order-llm-parser');
 const { fetchWithTimeout } = require('./http');
 const { verifyVat } = require('./vies');
 const { findBestContractors, sameContractorName } = require('./services/contractor-match');
+const alarmyPoczty = require('./services/alarmy-poczty');
+const { awariaSerwera } = alarmyPoczty;
 
 // ============ CONFIG ============
 
@@ -20,13 +22,14 @@ const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 // ============ HEALTH / ALERTING ============
 // Gdy skrzynka przestaje odpowiadac (np. zmienione haslo IMAP, blad polaczenia)
 // proces leci dalej i tylko loguje blad do Railply — czyli po cichu, przez wiele
-// dni nikt nie wie ze np. michal@ nie pobiera maili. Trzymamy w pamieci licznik
-// nieudanych cykli per skrzynka i alarmujemy na Telegram (z throttlingiem), oraz
-// dajemy znac gdy skrzynka wroci do zycia. In-memory (reset po redeployu) — bez
-// migracji DB; wystarczy zeby czlowiek dostal sygnal w ciagu kilku minut.
-const inboxHealth = new Map(); // inbox -> { fails: number, alertedAt: number|null }
-const INBOX_FAIL_ALERT_THRESHOLD = 2;            // alert po 2 nieudanych cyklach z rzedu (~10 min)
-const INBOX_ALERT_THROTTLE_MS = 60 * 60 * 1000;  // ponawiaj alert max raz/godzine
+// dni nikt nie wie ze np. michal@ nie pobiera maili. Licznik nieudanych cykli
+// per skrzynka (inboxHealth) zostaje dla GET /poczta/poller, a O ALARMIE
+// decyduje od 3.11.2026 services/alarmy-poczty.js — raz na pełny cykl, dla
+// wszystkich skrzynek naraz (pollAll → alarmyPoczty.poCyklu). Wcześniej każda
+// skrzynka alarmowała osobno po 10 min, a jedno udane połączenie kasowało
+// pamięć alarmu: mrugający serwer dawał po 3 wiadomości „NIE pobiera" /
+// „znów pobiera" co kilkanaście minut.
+const inboxHealth = new Map(); // inbox -> { fails, ostatniBlad, ostatniBladO }
 
 async function sendInboxAlert(text) {
   try {
@@ -47,10 +50,6 @@ async function alarmAiPadlo(inbox, blad) {
 }
 
 async function markInboxOk(inbox) {
-  const h = inboxHealth.get(inbox);
-  if (h && h.alertedAt) {
-    await sendInboxAlert(`✅ Skrzynka ${inbox}@ znów pobiera maile — połączenie wróciło.`);
-  }
   inboxHealth.delete(inbox);
   await healAfterGap(inbox);
 }
@@ -102,20 +101,10 @@ async function healAfterGap(inbox) {
 }
 
 async function markInboxFail(inbox, errMsg) {
-  const h = inboxHealth.get(inbox) || { fails: 0, alertedAt: null };
+  const h = inboxHealth.get(inbox) || { fails: 0 };
   h.fails += 1;
   h.ostatniBlad = String(errMsg || '').slice(0, 200);
   h.ostatniBladO = new Date().toISOString();
-  const now = Date.now();
-  const due = !h.alertedAt || (now - h.alertedAt) > INBOX_ALERT_THROTTLE_MS;
-  if (h.fails >= INBOX_FAIL_ALERT_THRESHOLD && due) {
-    h.alertedAt = now;
-    await sendInboxAlert(
-      `⚠️ Skrzynka ${inbox}@ NIE pobiera maili — ${h.fails} nieudane cykle z rzędu.\n` +
-      `Błąd: ${errMsg}\n` +
-      `Sprawdź hasło IMAP tej skrzynki w IMAP_ACCOUNTS (Railway → Variables) lub połączenie z serwerem poczty.`
-    );
-  }
   inboxHealth.set(inbox, h);
 }
 
@@ -2013,12 +2002,10 @@ async function processAccount(account) {
  * porzucany, a my dokładamy połączeń serwerowi, który już się dławi. Po
  * BEZPIECZNIK_PROG kolejnych awariach tego typu na jednym hoście reszta jego
  * skrzynek czeka do następnego cyklu (nic nie ginie — UID zostaje na miejscu).
- * Błędy logowania (złe hasło jednej skrzynki) się nie liczą. */
+ * Błędy logowania (złe hasło jednej skrzynki) się nie liczą. `awariaSerwera`
+ * mieszka w services/alarmy-poczty.js; osobnego alarmu bezpiecznik już nie
+ * wysyła (3.11.2026) — pominięte skrzynki wchodzą do incydentu serwera. */
 const BEZPIECZNIK_PROG = 3;
-const _ostatniAlertBezpiecznika = new Map(); // host -> timestamp
-function awariaSerwera(blad) {
-  return /przekroczono|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|socket|zamkni[eę]te przed gotowo|zakończone przed gotowo/i.test(String(blad || ''));
-}
 
 // ============ SENT FOLDER POLLING ============
 //
@@ -2273,6 +2260,7 @@ function stanPollera() {
     trwaS: pollStartedAt ? Math.round((Date.now() - pollStartedAt) / 1000) : null,
     kanarkiWToku,
     bledySkrzynek,
+    alarmy: alarmyPoczty.podglad(), // otwarte incydenty (serwery / pojedyncze skrzynki)
   };
 }
 
@@ -2401,6 +2389,7 @@ function tokenKanarka(inbox) {
 async function wyslijKanarki(accounts) {
   if (accounts.length < 2) return;             // potrzebujemy nadawcy INNEGO niż odbiorca
   const { sendMail } = require('./mail-sender');
+  const nieudane = []; // jedna wiadomość na całą rundę, nie po jednej na skrzynkę
   for (const konto of accounts) {
     const nadawca = accounts.find(a => a.inbox !== konto.inbox);
     if (!nadawca) continue;
@@ -2430,10 +2419,16 @@ async function wyslijKanarki(accounts) {
       }).catch(() => {});
       /* Nie da się nawet WYSŁAĆ — to też awaria poczty, tyle że po stronie
          SMTP. Zgłaszamy od razu, nie czekając na limit czasu. */
-      await sendInboxAlert(
-        `⚠️ Nie udało się wysłać testowego maila na ${konto.inbox}@ (z ${nadawca.inbox}@).\n`
-        + `Błąd: ${e.message}\nWysyłka poczty nie działa — sprawdź konfigurację SMTP.`);
+      nieudane.push({ inbox: konto.inbox, nadawca: nadawca.inbox, blad: e.message });
     }
+  }
+  if (nieudane.length) {
+    const gdzie = nieudane.length === 1
+      ? `na ${nieudane[0].inbox}@ (z ${nieudane[0].nadawca}@)`
+      : `na skrzynki: ${nieudane.map(n => `${n.inbox}@`).join(', ')}`;
+    await sendInboxAlert(
+      `⚠️ Nie udało się wysłać testowego maila ${gdzie}.\n`
+      + `Błąd: ${nieudane[0].blad}\nWysyłka poczty nie działa — sprawdź konfigurację SMTP.`);
   }
 }
 
@@ -2448,12 +2443,28 @@ async function sprawdzKanarki() {
     console.error('[kanarek] odczyt nieudany:', e.message);
     return;
   }
-  for (const k of spoznione) {
-    const minut = Math.round((Date.now() - new Date(k.wyslanoO).getTime()) / 60000);
+  /* Skrzynka, która w ostatnich 30 min nie mogła się połączyć, nie miała jak
+     odebrać kanarka: leży on na serwerze i dojdzie po powrocie połączenia,
+     a o samej awarii serwera mówi services/alarmy-poczty. Czekamy więc, aż
+     skrzynka popracuje KANAREK_LIMIT_MS bez błędu — dopiero wtedy brak
+     kanarka jest dowodem. Kilka spóźnionych = jedna wiadomość (3.11.2026:
+     awaria serwera w porze kanarków dawała po „🛑" na każdą skrzynkę). */
+  const teraz = Date.now();
+  const doAlarmu = spoznione.filter(k => teraz - alarmyPoczty.ostatniBladSkrzynki(k.inbox) >= KANAREK_LIMIT_MS);
+  const minut = k => Math.round((teraz - new Date(k.wyslanoO).getTime()) / 60000);
+  if (doAlarmu.length === 1) {
+    const k = doAlarmu[0];
     await sendInboxAlert(
-      `🛑 Skrzynka ${k.inbox}@ NIE ODEBRAŁA testowego maila wysłanego ${minut} min temu z ${k.nadawca}@.\n`
+      `🛑 Skrzynka ${k.inbox}@ NIE ODEBRAŁA testowego maila wysłanego ${minut(k)} min temu z ${k.nadawca}@.\n`
       + 'To nie jest cisza — to znaczy, że poczta na tej skrzynce faktycznie nie dochodzi.\n'
       + `Sprawdź: GET /poczta/zdrowie?inbox=${k.inbox}`);
+  } else if (doAlarmu.length > 1) {
+    await sendInboxAlert(
+      `🛑 Testowe maile NIE DOSZŁY do skrzynek: ${doAlarmu.map(k => `${k.inbox}@ (${minut(k)} min)`).join(', ')}.\n`
+      + 'To nie jest cisza — poczta na tych skrzynkach faktycznie nie dochodzi.\n'
+      + 'Sprawdź: GET /poczta/zdrowie');
+  }
+  for (const k of doAlarmu) {
     await prisma.kanarekPoczty.update({
       where: { id: k.id }, data: { zaalarmowanoO: new Date() },
     }).catch(() => {});
@@ -2506,6 +2517,7 @@ async function usunKanarkaZSerwera(account, uid, token) {
 
 const LIMIT_ZAWIESZONEGO_CYKLU_MS = 15 * 60 * 1000;   // 3 pominiete ticki
 let pollStartedAt = null;
+let _ostatniAlertPorzucenia = 0;
 
 async function pollAll() {
   // Anty-nakładanie: cykl potrafi przekroczyć interwał (LLM + VIES + załączniki).
@@ -2524,10 +2536,14 @@ async function pollAll() {
     }
     const gdzie = etapCyklu || 'nieznany etap';
     console.error(`[inbox-poller] poprzedni cykl wisi ${Math.round(trwa / 60000)} min (utknął na: ${gdzie}) — porzucam go i startuję nowy`);
-    await sendInboxAlert(
-      `⚠️ Cykl pollera poczty trwał ${Math.round(trwa / 60000)} min i został porzucony (utknął na: ${gdzie}).\n`
-      + 'Skrzynki dalej w kolejce czekały. Stary cykl kończy się na najbliższej skrzynce, nowy rusza od początku. '
-      + 'Najczęstsza przyczyna: serwer poczty odpowiada bardzo wolno. Sprawdź: GET /poczta/zdrowie');
+    // Raz na 6 h: przy wolnym serwerze porzucenia idą seriami, a to ta sama awaria.
+    if (Date.now() - _ostatniAlertPorzucenia > 6 * 60 * 60 * 1000) {
+      _ostatniAlertPorzucenia = Date.now();
+      await sendInboxAlert(
+        `⚠️ Cykl pollera poczty trwał ${Math.round(trwa / 60000)} min i został porzucony (utknął na: ${gdzie}).\n`
+        + 'Skrzynki dalej w kolejce czekały. Stary cykl kończy się na najbliższej skrzynce, nowy rusza od początku. '
+        + 'Najczęstsza przyczyna: serwer poczty odpowiada bardzo wolno. Kolejne porzucenia w ciągu 6 h bez wiadomości. Sprawdź: GET /poczta/zdrowie');
+    }
   }
   const mojCykl = ++cyklWlasciciel;
   const porzucony = () => mojCykl !== cyklWlasciciel;
@@ -2545,12 +2561,18 @@ async function pollAll() {
 
   const awarieHosta = new Map();          // host -> kolejne awarie serwera w tym cyklu
   const pominieteBezpiecznikiem = [];
+  const obserwacje = [];                  // {inbox, host, ok, blad, pominieta} — dla alarmyPoczty
   for (const account of accounts) {
     if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę przed ${account.inbox}`); return; }
     const host = account.host || '?';
-    if ((awarieHosta.get(host) || 0) >= BEZPIECZNIK_PROG) { pominieteBezpiecznikiem.push(account.inbox); continue; }
+    if ((awarieHosta.get(host) || 0) >= BEZPIECZNIK_PROG) {
+      pominieteBezpiecznikiem.push(account.inbox);
+      obserwacje.push({ inbox: account.inbox, host, ok: false, pominieta: true });
+      continue;
+    }
     etapCyklu = `${account.inbox}: INBOX`;
     const wynikSkrzynki = await processAccount(account);
+    obserwacje.push({ inbox: account.inbox, host, ok: !!(wynikSkrzynki && wynikSkrzynki.ok), blad: wynikSkrzynki && wynikSkrzynki.blad });
     if (porzucony()) { console.warn(`[inbox-poller] cykl porzucony — kończę po ${account.inbox}`); return; }
     if (wynikSkrzynki && !wynikSkrzynki.ok && awariaSerwera(wynikSkrzynki.blad)) {
       // Serwer nie odpowiada — Wysłane i rescan tej skrzynki też by nie przeszły.
@@ -2581,14 +2603,10 @@ async function pollAll() {
   if (pominieteBezpiecznikiem.length) {
     const hosty = [...awarieHosta.entries()].filter(([, n]) => n >= BEZPIECZNIK_PROG).map(([h]) => h);
     console.warn(`[inbox-poller] serwer poczty ${hosty.join(', ')} nie odpowiada (${BEZPIECZNIK_PROG} skrzynki z rzędu) — w tym cyklu pominięte: ${pominieteBezpiecznikiem.join(', ')}`);
-    for (const h of hosty) {
-      const ostatni = _ostatniAlertBezpiecznika.get(h) || 0;
-      if (Date.now() - ostatni > 60 * 60 * 1000) {
-        _ostatniAlertBezpiecznika.set(h, Date.now());
-        await sendInboxAlert(`⚠️ Serwer poczty ${h} nie odpowiada — ${BEZPIECZNIK_PROG} skrzynki z rzędu bez połączenia. W tym cyklu pominięto: ${pominieteBezpiecznikiem.join(', ')}.\nPoller próbuje co 5 min; poczta nie ginie, dociągnie się po powrocie serwera. Sprawdź: GET /poczta/zdrowie`);
-      }
-    }
   }
+  // Alarmy o połączeniach: jedna ocena na pełny cykl (services/alarmy-poczty.js).
+  try { await alarmyPoczty.poCyklu(prisma, obserwacje, sendInboxAlert); }
+  catch (e) { console.error('[inbox-poller] ocena alarmów poczty nieudana:', e.message); }
   etapCyklu = 'po skrzynkach (kanarek, Bell Outreach)';
   if (shouldRescan) {
     console.log(`[inbox-poller] AUTO-RESCAN cycle ${pollCycleCount} done — wszystkie skrzynki sprawdzone (SINCE 12h)`);
