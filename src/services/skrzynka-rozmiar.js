@@ -187,4 +187,4 @@ async function usunKanarki(account, { proba = true, mlodszeNizMs = 2 * 60 * 60 *
   }
 }
 
-module.exports = { rozmiarSkrzynki, usunKanarki, MARKER_KANARKA };
+module.exports = { rozmiarSkrzynki, usunKanarki, MARKER_KANARKA, polacz, splaszcz, dostepne };

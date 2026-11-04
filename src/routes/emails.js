@@ -1865,6 +1865,34 @@ router.post('/emails/kanarki-sprzatanie', async (req, res) => {
   res.json({ ok: true, proba, skrzynki });
 });
 
+/* MAILING BEZ ODPOWIEDZI (4.11.2026) — sprzątanie Wysłanych, gdy skrzynka
+ * jest pełna. Body: { inbox (wymagane), od?: 'RRRR-MM-DD' (2024-01-01),
+ * do?: (2026-01-01, bez tego dnia), minOdbiorcow?: 5, proba?: true,
+ * oczekiwane?: N }. Kasuje tylko `"proba": false` z `oczekiwane` = liczba
+ * z próby (inaczej nic) i nie dla roli magazyn. services/sprzatanie-mailingu.js */
+router.post('/emails/mailing-sprzatanie', async (req, res) => {
+  const { sprzatnijMailing } = require('../services/sprzatanie-mailingu');
+  const b = req.body || {};
+  const proba = b.proba !== false;
+  if (!proba && req.crm && req.crm.role === 'magazyn') return res.status(403).json({ ok: false, error: 'tylko właściciel' });
+  const account = getAccounts().find(a => a.inbox === b.inbox);
+  if (!account) return res.status(400).json({ ok: false, error: 'podaj inbox, np. "niko"' });
+  const data = (s, domyslna) => (/^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? s : domyslna);
+  try {
+    const wynik = await sprzatnijMailing(req.app.locals.prisma, account, {
+      od: data(b.od, '2024-01-01'),
+      do: data(b.do, '2026-01-01'),
+      minOdbiorcow: Number.isInteger(b.minOdbiorcow) && b.minOdbiorcow >= 2 ? b.minOdbiorcow : 5,
+      proba,
+      oczekiwane: Number.isInteger(b.oczekiwane) ? b.oczekiwane : null,
+    });
+    console.log(`[mailing-sprzatanie] ${account.inbox} ${proba ? 'próba' : 'KASOWANIE'}: do usunięcia ${wynik.doUsuniecia.n} (${wynik.doUsuniecia.mb} MB), usunięto ${wynik.usunieto}${wynik.blad ? ` — ${wynik.blad}` : ''}`);
+    res.json({ ok: !wynik.blad, ...wynik });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Body: { inbox?: string }  // empty = run for every IMAP_ACCOUNTS entry
 router.post('/emails/imap-diag', async (req, res) => {
   const Imap = require('imap');
