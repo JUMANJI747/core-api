@@ -108,6 +108,26 @@ test('nierozpoznany błąd jednej skrzynki: dopiero po 30 min i bez rady o haśl
   assert.doesNotMatch(wiad[0].w, /IMAP_ACCOUNTS/);
 });
 
+test('4.11: mieszane błędy serwera (timeout / zakonczone / socket) przez godzinę — jedna wiadomość', () => {
+  assert.equal(A.rodzajBledu('polaczenie IMAP zakonczone przed gotowoscia'), 'serwer');
+  assert.equal(A.rodzajBledu('This socket has been ended by the other party'), 'serwer');
+  const bledy = ['Timed out while authenticating with server', 'polaczenie IMAP zakonczone przed gotowoscia', 'This socket has been ended by the other party', 'Nieznany błąd serwera XYZ'];
+  const stan = nowyStan();
+  const wiad = przebieg(stan, 0, 60, m => SKRZYNKI.map((inbox, i) => ({ inbox, host: HOST, ok: false, blad: bledy[(i + m / 5) % bledy.length] })));
+  assert.equal(wiad.length, 1, wiad.map(x => x.w).join('\n---\n'));
+  assert.match(wiad[0].w, /^⚠️ Poczta nie dochodzi do CRM od 30 min — serwer poczty/);
+});
+
+test('incydenty skrzynek z błędem serwera zapisane przed poprawką znikają po cichu', () => {
+  const stan = nowyStan({ skrzynkiAlarmy: {
+    niko: { rodzaj: 'inny', host: HOST, od: T0, alarmO: T0, blad: 'polaczenie IMAP zakonczone przed gotowoscia' },
+    sales: { rodzaj: 'inny', host: HOST, od: T0, alarmO: T0, blad: 'Mailbox does not exist' },
+    michal: { rodzaj: 'logowanie', host: HOST, od: T0, alarmO: T0, blad: 'LOGIN failed.' },
+  } });
+  assert.deepEqual(Object.keys(stan.skrzynkiAlarmy).sort(), ['michal', 'sales']);
+  assert.equal(stan.zmiana, true);
+});
+
 test('redeploy w trakcie awarii: stan z Config — bez drugiego ⚠️, „✅” dochodzi', async () => {
   const baza = {};
   const prisma = { config: {

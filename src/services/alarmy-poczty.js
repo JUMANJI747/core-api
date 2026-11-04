@@ -41,7 +41,10 @@ const KLUCZ = 'poczta_alarmy';
  * authenticating" (serwer nie odpisał na LOGIN w 15 s — to wolny serwer, nie
  * złe hasło) i „Temporary authentication failure" (backend logowania leży). */
 function awariaSerwera(blad) {
-  return /przekroczono|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ENOTFOUND|socket|zamkni[eę]te przed gotowo|zakończone przed gotowo|\bUNAVAILABLE\b|temporar/i.test(String(blad || ''));
+  // Nasze własne komunikaty bywają bez polskich znaków („polaczenie IMAP
+  // zakonczone przed gotowoscia") — 4.11.2026 przez brak `[nń]` szły jako
+  // „inny" błąd i obok alarmu o serwerze leciały alarmy o pojedynczych skrzynkach.
+  return /przekroczono|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ENOTFOUND|socket|zamkni[eę]te przed gotowo|zako[nń]czone przed gotowo|\bUNAVAILABLE\b|temporar/i.test(String(blad || ''));
 }
 const ZLE_LOGOWANIE = /AUTHENTICATIONFAILED|AUTHORIZATIONFAILED|authentication failed|invalid credentials|bad credentials|login failed|LOGIN (failed|denied|incorrect)|incorrect (password|username)|nieprawid[łl]owe (has[łl]o|dane logowania)/i;
 
@@ -54,13 +57,20 @@ function rodzajBledu(blad) {
 
 function nowyStan(zapisany) {
   const z = zapisany && typeof zapisany === 'object' ? zapisany : {};
-  return {
+  const stan = {
     skrzynki: {},                           // tylko w pamięci: inbox → bieżąca seria błędów
     serwery: z.serwery || {},               // host → otwarty incydent serwera
     skrzynkiAlarmy: z.skrzynkiAlarmy || {}, // inbox → otwarty incydent jednej skrzynki
     ostatnie: z.ostatnie || {},             // 'serwer:<host>' / 'skrzynka:<inbox>' → czas ostatniego alarmu
     zmiana: false,
   };
+  // Incydent skrzynki otwarty przez błąd, który dziś rozpoznajemy jako awarię
+  // serwera (np. sprzed poprawki `zako[nń]czone`), należy do incydentu
+  // serwera — zamykamy go po cichu, żeby nie dał osobnego „✅".
+  for (const [inbox, inc] of Object.entries(stan.skrzynkiAlarmy)) {
+    if (inc && inc.rodzaj !== 'logowanie' && awariaSerwera(inc.blad)) { delete stan.skrzynkiAlarmy[inbox]; stan.zmiana = true; }
+  }
+  return stan;
 }
 const doZapisu = (s) => JSON.stringify({ serwery: s.serwery, skrzynkiAlarmy: s.skrzynkiAlarmy, ostatnie: s.ostatnie });
 
@@ -200,6 +210,10 @@ function ocenCykl(stan, obserwacje, teraz) {
       continue;
     }
     if (o.ok || s.rodzaj === 'serwer') continue;
+    // Gdy serwer tej skrzynki właśnie leży (otwarty incydent albo awaria
+    // serwera w tym cyklu), nieznany błąd to najpewniej ta sama awaria
+    // w innym przebraniu — mówi o niej jedna wiadomość o serwerze.
+    if (s.rodzaj === 'inny' && (stan.serwery[o.host] || obserwacje.some(x => x.host === o.host && !x.ok && stan.skrzynki[x.inbox].rodzaj === 'serwer'))) continue;
     const pora = s.rodzaj === 'logowanie' ? s.seria >= PROG_LOGOWANIA : teraz - s.bladOd >= PROG_MS;
     if (!pora) continue;
     if (teraz - (stan.ostatnie[`skrzynka:${o.inbox}`] || 0) < ODSTEP_MS) continue;
