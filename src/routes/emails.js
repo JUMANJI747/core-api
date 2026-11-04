@@ -1866,9 +1866,11 @@ router.post('/emails/kanarki-sprzatanie', async (req, res) => {
 });
 
 /* MAILING BEZ ODPOWIEDZI (4.11.2026) — sprzątanie Wysłanych, gdy skrzynka
- * jest pełna. Body: { inbox (wymagane), od?: 'RRRR-MM-DD' (2024-01-01),
- * do?: (2026-01-01, bez tego dnia), minOdbiorcow?: 5, proba?: true,
- * oczekiwane?: N }. Kasuje tylko `"proba": false` z `oczekiwane` = liczba
+ * jest pełna. Body: { inbox (wymagane), tryb?: 'mailing' | 'duze',
+ * od?: 'RRRR-MM-DD' (2024-01-01), do?: (2026-01-01, bez tego dnia),
+ * minOdbiorcow?: 5 (mailing), minMB?: 1 (duze), proba?: true, oczekiwane?: N }.
+ * „duze" = duże maile, po których odbiorca już nigdy nie napisał (także
+ * odpowiedzi w wątkach; kontrahenci z CRM zostają). Kasuje tylko `"proba": false` z `oczekiwane` = liczba
  * z próby (inaczej nic) i nie dla roli magazyn. services/sprzatanie-mailingu.js */
 router.post('/emails/mailing-sprzatanie', async (req, res) => {
   const { sprzatnijMailing } = require('../services/sprzatanie-mailingu');
@@ -1880,6 +1882,8 @@ router.post('/emails/mailing-sprzatanie', async (req, res) => {
   const data = (s, domyslna) => (/^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? s : domyslna);
   try {
     const wynik = await sprzatnijMailing(req.app.locals.prisma, account, {
+      tryb: b.tryb === 'duze' ? 'duze' : 'mailing',
+      minMB: Number(b.minMB) > 0 ? Number(b.minMB) : 1,
       od: data(b.od, '2024-01-01'),
       do: data(b.do, '2026-01-01'),
       minOdbiorcow: Number.isInteger(b.minOdbiorcow) && b.minOdbiorcow >= 2 ? b.minOdbiorcow : 5,

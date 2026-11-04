@@ -135,6 +135,47 @@ test('bez UID EXPUNGE nic nie kasuje', async () => {
   assert.equal(FakeImap.skrzynka.Sent.length, 12);
 });
 
+// ── tryb „duze": duże maile, po których odbiorca już nie napisał ──
+function nowySerwerDuze() {
+  nowySerwer();
+  const m = (uid, to, mbow, data, extra = {}) => ({ uid, size: mbow * MB, date: d(data), h: { to, subject: `Temat ${uid}`, ...extra } });
+  FakeImap.skrzynka.Sent = [
+    m(1, 'x@cold.de', 7, '2025-03-01'),                       // pisał PRZED naszym mailem → do usunięcia
+    m(2, 'y@warm.fr', 7, '2025-03-01'),                       // odpisał po → zostaje
+    m(3, 'z@klient.pl', 14, '2025-04-01'),                    // kontrahent w CRM → zostaje
+    m(4, 'q@gmail.com', 5, '2024-06-01'),                     // w CRM pisał przed → do usunięcia
+    m(5, 'small@x.com', 0.5, '2025-01-10'),                   // mały → zostaje
+    m(6, 'w@colleague.de', 5, '2025-05-01'),                  // po nim napisał ktoś z tej firmy → zostaje
+    m(7, 'info@surfstickbell.com', 5, '2025-05-01'),          // wewnętrzny → zostaje
+    m(8, 'x2@cold2.de', 6, '2025-07-01', { subject: 'Re: katalog', 'in-reply-to': '<a@b>' }), // odpowiedź bez dalszej reakcji → do usunięcia
+  ];
+  FakeImap.skrzynka.INBOX = [
+    { uid: 1, size: 1000, date: d('2025-02-20'), h: { from: 'x@cold.de' } },
+    { uid: 2, size: 1000, date: d('2025-03-10'), h: { from: 'Y <y@warm.fr>' } },
+  ];
+  FakeImap.skrzynka.Trash = [];
+}
+const prismaDuze = { $queryRawUnsafe: async (sql) => (sql.includes('"Email"')
+  ? [{ a: 'q@gmail.com', t: new Date('2024-05-01') }, { a: 'other@colleague.de', t: new Date('2025-06-01') }]
+  : [{ a: 'z@klient.pl' }]) };
+
+test('tryb duze — próba: tylko duże maile bez dalszej odpowiedzi; reszta zostaje z powodem', async () => {
+  nowySerwerDuze();
+  const r = await sprzatnijMailing(prismaDuze, KONTO, { tryb: 'duze', minMB: 1 });
+  assert.equal(r.doUsuniecia.n, 3, JSON.stringify(r));
+  assert.equal(r.doUsuniecia.mb, 18);
+  assert.deepEqual(r.zostaja, { male: 1, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, odpisalPozniej: 2, bezDaty: 0 });
+  assert.deepEqual(r.przyklady.map(x => x.do), ['cold.de', 'cold2.de', 'gmail.com']);
+  assert.equal(FakeImap.oflagowane.length, 0);
+});
+
+test('tryb duze — kasowanie usuwa dokładnie te 3 maile', async () => {
+  nowySerwerDuze();
+  const r = await sprzatnijMailing(prismaDuze, KONTO, { tryb: 'duze', proba: false, oczekiwane: 3 });
+  assert.equal(r.usunieto, 3);
+  assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [2, 3, 5, 6, 7]);
+});
+
 test('wybierz: temat do mniej niż minOdbiorcow adresów to nie mailing', () => {
   const wyslane = ['a@x1.com', 'b@x2.com', 'c@x3.com'].map((to, i) => ({ uid: i, size: 1, h: { to, subject: 'Mała akcja' } }));
   const pisali = { adresy: new Set(), domeny: new Set() };

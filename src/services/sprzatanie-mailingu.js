@@ -85,25 +85,65 @@ const jestSzkic = (f) => f.atrybuty.includes('\\Drafts') || /draft|szkic|robocze
 
 /** Kto kiedykolwiek do nas napisał: adresy i domeny firmowe. */
 async function ktoPisal(prisma, imap, foldery) {
-  const adresySet = new Set();
-  const domenySet = new Set();
-  const dodaj = (a) => { adresySet.add(a); const d = domenaFirmowa(a); if (d) domenySet.add(d); };
+  const adresySet = new Map();
+  const domenySet = new Map();
+  // adres / domena firmowa → czas OSTATNIEGO maila od nich (ms; brak daty = +∞,
+  // czyli „pisał też po naszym" — przy wątpliwości mail zostaje).
+  const ostatni = (mapa, k, t) => { if (k && !((mapa.get(k) || -Infinity) >= t)) mapa.set(k, t); };
+  const dodaj = (a, t) => { ostatni(adresySet, a, t); ostatni(domenySet, domenaFirmowa(a), t); };
+  const czas = (d) => { const t = d ? new Date(d).getTime() : NaN; return Number.isFinite(t) ? t : Infinity; };
   for (const f of foldery) {
     if (jestWyslane(f) || jestSzkic(f)) continue;
     const box = await p(cb => imap.openBox(f.nazwa, true, cb));
     if (!box.messages.total) continue;
     for (const m of await naglowki(imap, '1:*', { pola: 'FROM REPLY-TO SENDER' })) {
-      for (const a of adresy(`${m.h.from || ''} ${m.h['reply-to'] || ''} ${m.h.sender || ''}`)) dodaj(a);
+      for (const a of adresy(`${m.h.from || ''} ${m.h['reply-to'] || ''} ${m.h.sender || ''}`)) dodaj(a, czas(m.date));
     }
   }
   const zBazy = await prisma.$queryRawUnsafe(
-    `SELECT lower("fromEmail") AS a FROM "Email" WHERE direction = 'INBOUND'
-     UNION SELECT lower("fromEmail") FROM "EmailSkip" WHERE "fromEmail" IS NOT NULL
-     UNION SELECT lower(value) FROM "ContractorContact" WHERE type = 'email'
+    `SELECT lower("fromEmail") AS a, max("createdAt") AS t FROM "Email" WHERE direction = 'INBOUND' GROUP BY 1
+     UNION ALL SELECT lower("fromEmail"), max("createdAt") FROM "EmailSkip" WHERE "fromEmail" IS NOT NULL GROUP BY 1`);
+  for (const r of zBazy) for (const a of adresy(r.a)) dodaj(a, czas(r.t));
+  // Kontrahenci z CRM: mail do nich zostaje zawsze (to klienci i znane kontakty).
+  const kontrahenci = { adresy: new Set(), domeny: new Set() };
+  const zKontrahentow = await prisma.$queryRawUnsafe(
+    `SELECT lower(value) AS a FROM "ContractorContact" WHERE type = 'email'
      UNION SELECT lower(email) FROM "Contractor" WHERE email IS NOT NULL
      UNION SELECT lower("primaryEmail") FROM "Contractor" WHERE "primaryEmail" IS NOT NULL`);
-  for (const r of zBazy) for (const a of adresy(r.a)) dodaj(a);
-  return { adresy: adresySet, domeny: domenySet };
+  for (const r of zKontrahentow) {
+    for (const a of adresy(r.a)) {
+      kontrahenci.adresy.add(a);
+      const d = domenaFirmowa(a);
+      if (d) kontrahenci.domeny.add(d);
+    }
+  }
+  return { adresy: adresySet, domeny: domenySet, kontrahenci };
+}
+
+const doKontrahenta = (k, pisali) => Boolean(pisali.kontrahenci) && k.odbiorcy.some(a => pisali.kontrahenci.adresy.has(a) || (domenaFirmowa(a) && pisali.kontrahenci.domeny.has(domenaFirmowa(a))));
+
+/** Tryb „duze": duże maile, po których ŻADEN odbiorca już do nas nie napisał
+ *  (np. katalog wysłany na prośbę, potem cisza). Nie ma znaczenia, czy to
+ *  odpowiedź w wątku. Zostają: małe, do kontrahentów z CRM, wewnętrzne
+ *  i takie, po których ktoś z odbiorców (albo z jego firmy) napisał. */
+function wybierzDuze(wyslane, pisali, { minBajtow = MB } = {}) {
+  const zostaja = { male: 0, wewnetrzne: 0, bezOdbiorcy: 0, kontrahenci: 0, odpisalPozniej: 0, bezDaty: 0 };
+  const zostajaMB = { kontrahenci: 0, odpisalPozniej: 0 };
+  const doUsuniecia = [];
+  for (const k of wyslane) {
+    if (k.size < minBajtow) { zostaja.male++; continue; }
+    const wszyscy = adresy(`${k.h.to || ''} ${k.h.cc || ''} ${k.h.bcc || ''}`);
+    k.odbiorcy = wszyscy.filter(a => !NASZE_DOMENY.test(domena(a)));
+    if (wszyscy.length && !k.odbiorcy.length) { zostaja.wewnetrzne++; continue; }
+    if (!k.odbiorcy.length) { zostaja.bezOdbiorcy++; continue; }
+    const t = k.date ? new Date(k.date).getTime() : NaN;
+    if (!Number.isFinite(t)) { zostaja.bezDaty++; continue; }
+    if (doKontrahenta(k, pisali)) { zostaja.kontrahenci++; zostajaMB.kontrahenci += k.size; continue; }
+    const pozniej = k.odbiorcy.some(a => (pisali.adresy.get(a) || -Infinity) > t || (domenaFirmowa(a) && (pisali.domeny.get(domenaFirmowa(a)) || -Infinity) > t));
+    if (pozniej) { zostaja.odpisalPozniej++; zostajaMB.odpisalPozniej += k.size; continue; }
+    doUsuniecia.push(k);
+  }
+  return { doUsuniecia, zostaja, zostajaMB: { kontrahenci: mb(zostajaMB.kontrahenci), odpisalPozniej: mb(zostajaMB.odpisalPozniej) } };
 }
 
 /** Wybór maili do skasowania (czysta funkcja — testowana osobno). */
@@ -131,7 +171,7 @@ function wybierz(wyslane, pisali, { minOdbiorcow = 5 } = {}) {
     if (!kampanie.has(k.temat)) kampanie.set(k.temat, { temat: dekoduj(k.h.subject).trim().slice(0, 90), wyslano: 0, odpisalo: 0, doUsuniecia: 0, bajty: 0 });
     const c = kampanie.get(k.temat);
     c.wyslano++;
-    const odpisal = k.odbiorcy.some(a => pisali.adresy.has(a) || (domenaFirmowa(a) && pisali.domeny.has(domenaFirmowa(a))));
+    const odpisal = doKontrahenta(k, pisali) || k.odbiorcy.some(a => pisali.adresy.has(a) || (domenaFirmowa(a) && pisali.domeny.has(domenaFirmowa(a))));
     if (odpisal) { zostaja.ktosOdpisal++; c.odpisalo++; continue; }
     c.doUsuniecia++;
     c.bajty += k.size;
@@ -141,7 +181,8 @@ function wybierz(wyslane, pisali, { minOdbiorcow = 5 } = {}) {
 }
 
 /** Próba albo kasowanie mailingu bez odpowiedzi w Wysłanych jednej skrzynki. */
-async function sprzatnijMailing(prisma, account, { od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, proba = true, oczekiwane = null } = {}) {
+async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, minMB = 1, proba = true, oczekiwane = null } = {}) {
+  if (!['mailing', 'duze'].includes(tryb)) throw new Error('tryb: "mailing" albo "duze"');
   if (!proba && !Number.isInteger(oczekiwane)) throw new Error('kasowanie wymaga `oczekiwane` = liczby maili z próby');
   const imap = await polacz(account);
   try {
@@ -159,7 +200,9 @@ async function sprzatnijMailing(prisma, account, { od = '2024-01-01', do: doDnia
       for (const m of await naglowki(imap, uidy, { poUid: true, pola: 'TO CC BCC SUBJECT IN-REPLY-TO' })) wyslane.push({ folder: f.nazwa, ...m });
     }
 
-    const { doUsuniecia, zostaja, kampanie } = wybierz(wyslane, pisali, { minOdbiorcow });
+    const duze = tryb === 'duze';
+    const wybor = duze ? wybierzDuze(wyslane, pisali, { minBajtow: minMB * MB }) : wybierz(wyslane, pisali, { minOdbiorcow });
+    const { doUsuniecia } = wybor;
     const latami = {};
     for (const k of doUsuniecia) {
       const rok = k.date ? String(new Date(k.date).getUTCFullYear()) : '?';
@@ -168,11 +211,22 @@ async function sprzatnijMailing(prisma, account, { od = '2024-01-01', do: doDnia
       r.mb = Math.round((r.mb + k.size / MB) * 10) / 10;
     }
     const wynik = {
-      skrzynka: account.inbox, proba, okres: { od, do: doDnia }, minOdbiorcow,
+      skrzynka: account.inbox, proba, tryb, okres: { od, do: doDnia }, ...(duze ? { minMB } : { minOdbiorcow }),
       wyslanychWOkresie: wyslane.length,
       doUsuniecia: { n: doUsuniecia.length, mb: mb(doUsuniecia.reduce((s, k) => s + k.size, 0)), latami },
-      zostaja,
-      kampanie: kampanie.sort((a, b) => b.bajty - a.bajty).slice(0, 25).map(c => ({ temat: c.temat, wyslano: c.wyslano, odpisalo: c.odpisalo, doUsuniecia: c.doUsuniecia, mb: mb(c.bajty) })),
+      zostaja: wybor.zostaja,
+      ...(duze ? {
+        zostajaMB: wybor.zostajaMB,
+        // Kilka największych do wglądu właściciela: data, firma odbiorcy, MB, temat.
+        przyklady: [...doUsuniecia].sort((a, b) => b.size - a.size).slice(0, 8).map(k => ({
+          data: k.date ? new Date(k.date).toISOString().slice(0, 10) : null,
+          do: [...new Set(k.odbiorcy.map(domena))].join(', ').slice(0, 60),
+          mb: mb(k.size),
+          temat: dekoduj(k.h.subject).trim().slice(0, 70),
+        })),
+      } : {
+        kampanie: wybor.kampanie.sort((a, b) => b.bajty - a.bajty).slice(0, 25).map(c => ({ temat: c.temat, wyslano: c.wyslano, odpisalo: c.odpisalo, doUsuniecia: c.doUsuniecia, mb: mb(c.bajty) })),
+      }),
       usunieto: 0,
     };
     if (proba) return wynik;
@@ -206,4 +260,4 @@ async function sprzatnijMailing(prisma, account, { od = '2024-01-01', do: doDnia
   }
 }
 
-module.exports = { sprzatnijMailing, _test: { wybierz, parsujNaglowki, domenaFirmowa, normalizujTemat } };
+module.exports = { sprzatnijMailing, _test: { wybierz, wybierzDuze, parsujNaglowki, domenaFirmowa, normalizujTemat } };
