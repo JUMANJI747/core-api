@@ -154,32 +154,52 @@ function wybierzDuze(wyslane, pisali, { minBajtow = MB } = {}) {
  *  Zostają: nasze odpowiedzi i przekazania w wątkach, cała poczta
  *  przychodząca, maile wewnętrzne i (domyślnie) do kontrahentów z CRM —
  *  to bywają faktury i dokumenty; `zKontrahentami: true` je dołącza. */
-function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = false } = {}) {
-  const zostaja = { male: 0, odpowiedzi: 0, wewnetrzne: 0, bezOdbiorcy: 0, kontrahenci: 0 };
-  const zostajaMB = { odpowiedzi: 0, kontrahenci: 0 };
-  const doUsuniecia = [];
-  const tematy = new Map();
-  let zOdpowiedzia = 0;
+function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = false, minPowtorzen = 1 } = {}) {
+  const zostaja = { male: 0, odpowiedzi: 0, wewnetrzne: 0, bezOdbiorcy: 0, kontrahenci: 0, jednorazowe: 0 };
+  const zostajaMB = { odpowiedzi: 0, kontrahenci: 0, jednorazowe: 0 };
+  const kandydaci = [];
   for (const k of wyslane) {
     if (k.size < minBajtow) { zostaja.male++; continue; }
-    const temat = dekoduj(k.h.subject).trim();
-    if (k.h['in-reply-to'] || k.h.references || ODPOWIEDZ.test(temat)) { zostaja.odpowiedzi++; zostajaMB.odpowiedzi += k.size; continue; }
+    k.tematPelny = dekoduj(k.h.subject).trim();
+    if (k.h['in-reply-to'] || k.h.references || ODPOWIEDZ.test(k.tematPelny)) { zostaja.odpowiedzi++; zostajaMB.odpowiedzi += k.size; continue; }
     const wszyscy = adresy(`${k.h.to || ''} ${k.h.cc || ''} ${k.h.bcc || ''}`);
     k.odbiorcy = wszyscy.filter(a => !NASZE_DOMENY.test(domena(a)));
     if (wszyscy.length && !k.odbiorcy.length) { zostaja.wewnetrzne++; continue; }
     if (!k.odbiorcy.length) { zostaja.bezOdbiorcy++; continue; }
     if (!zKontrahentami && doKontrahenta(k, pisali)) { zostaja.kontrahenci++; zostajaMB.kontrahenci += k.size; continue; }
+    k.klucz = normalizujTemat(k.tematPelny);
+    kandydaci.push(k);
+  }
+  /* Mailing ma ten sam temat (zmienia się najwyżej kraj/język), więc każdy
+     wariant tematu powtarza się wiele razy. Temat użyty 1–2 razy to raczej
+     pojedyncza korespondencja (umowa, zdjęcia dla jednego klienta):
+     raportujemy ją osobno, a `minPowtorzen` ≥ 3 zostawia ją w skrzynce. */
+  const ileRazy = new Map();
+  for (const k of kandydaci) ileRazy.set(k.klucz, (ileRazy.get(k.klucz) || 0) + 1);
+  const powtarzalne = { n: 0, bajty: 0, tematow: new Set() };
+  const jednorazowe = { n: 0, bajty: 0 };
+  const tematy = new Map();
+  const doUsuniecia = [];
+  let zOdpowiedzia = 0;
+  for (const k of kandydaci) {
+    const razy = ileRazy.get(k.klucz);
+    if (razy >= 3) { powtarzalne.n++; powtarzalne.bajty += k.size; powtarzalne.tematow.add(k.klucz); } else { jednorazowe.n++; jednorazowe.bajty += k.size; }
+    if (razy < minPowtorzen) { zostaja.jednorazowe++; zostajaMB.jednorazowe += k.size; continue; }
     if (k.odbiorcy.some(a => pisali.adresy.has(a) || (domenaFirmowa(a) && pisali.domeny.has(domenaFirmowa(a))))) zOdpowiedzia++;
-    const klucz = normalizujTemat(temat);
-    if (!tematy.has(klucz)) tematy.set(klucz, { temat: temat.slice(0, 80), n: 0, bajty: 0 });
-    const t = tematy.get(klucz);
+    if (!tematy.has(k.klucz)) tematy.set(k.klucz, { temat: k.tematPelny.slice(0, 80), n: 0, bajty: 0 });
+    const t = tematy.get(k.klucz);
     t.n++;
     t.bajty += k.size;
     doUsuniecia.push(k);
   }
   return {
     doUsuniecia, zostaja, zOdpowiedzia,
-    zostajaMB: { odpowiedzi: mb(zostajaMB.odpowiedzi), kontrahenci: mb(zostajaMB.kontrahenci) },
+    zostajaMB: { odpowiedzi: mb(zostajaMB.odpowiedzi), kontrahenci: mb(zostajaMB.kontrahenci), jednorazowe: mb(zostajaMB.jednorazowe) },
+    // Podział wszystkich kandydatów (niezależnie od minPowtorzen): mailing vs pojedyncze.
+    podzial: {
+      powtarzalne: { n: powtarzalne.n, mb: mb(powtarzalne.bajty), tematow: powtarzalne.tematow.size },
+      jednorazowe: { n: jednorazowe.n, mb: mb(jednorazowe.bajty) },
+    },
     tematy: [...tematy.values()].sort((a, b) => b.bajty - a.bajty).slice(0, 15).map(t => ({ temat: t.temat, n: t.n, mb: mb(t.bajty) })),
   };
 }
@@ -219,7 +239,7 @@ function wybierz(wyslane, pisali, { minOdbiorcow = 5 } = {}) {
 }
 
 /** Próba albo kasowanie mailingu bez odpowiedzi w Wysłanych jednej skrzynki. */
-async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, minMB = 1, zKontrahentami = false, proba = true, oczekiwane = null } = {}) {
+async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, minMB = 1, zKontrahentami = false, minPowtorzen = 1, proba = true, oczekiwane = null } = {}) {
   if (!['mailing', 'duze', 'pierwsze'].includes(tryb)) throw new Error('tryb: "mailing", "duze" albo "pierwsze"');
   if (!proba && !Number.isInteger(oczekiwane)) throw new Error('kasowanie wymaga `oczekiwane` = liczby maili z próby');
   const imap = await polacz(account);
@@ -239,7 +259,7 @@ async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-
     }
 
     const duze = tryb !== 'mailing';
-    const wybor = tryb === 'pierwsze' ? wybierzPierwsze(wyslane, pisali, { minBajtow: minMB * MB, zKontrahentami })
+    const wybor = tryb === 'pierwsze' ? wybierzPierwsze(wyslane, pisali, { minBajtow: minMB * MB, zKontrahentami, minPowtorzen })
       : tryb === 'duze' ? wybierzDuze(wyslane, pisali, { minBajtow: minMB * MB })
         : wybierz(wyslane, pisali, { minOdbiorcow });
     const { doUsuniecia } = wybor;
@@ -252,11 +272,11 @@ async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-
     }
     const wynik = {
       skrzynka: account.inbox, proba, tryb, okres: { od, do: doDnia }, ...(duze ? { minMB } : { minOdbiorcow }),
-      ...(tryb === 'pierwsze' ? { zKontrahentami } : {}),
+      ...(tryb === 'pierwsze' ? { zKontrahentami, minPowtorzen } : {}),
       wyslanychWOkresie: wyslane.length,
       doUsuniecia: { n: doUsuniecia.length, mb: mb(doUsuniecia.reduce((s, k) => s + k.size, 0)), latami },
       zostaja: wybor.zostaja,
-      ...(tryb === 'pierwsze' ? { wsrodUsuwanychZOdpowiedzia: wybor.zOdpowiedzia, tematy: wybor.tematy } : {}),
+      ...(tryb === 'pierwsze' ? { wsrodUsuwanychZOdpowiedzia: wybor.zOdpowiedzia, podzial: wybor.podzial, tematy: wybor.tematy } : {}),
       ...(duze ? {
         zostajaMB: wybor.zostajaMB,
         // Kilka największych do wglądu właściciela: data, firma odbiorcy, MB, temat.

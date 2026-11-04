@@ -193,8 +193,8 @@ test('tryb pierwsze: kasuje pierwszy mail z załącznikiem także przy odpowiedz
   assert.equal(r.doUsuniecia.n, 2, JSON.stringify(r));
   assert.equal(r.doUsuniecia.mb, 14);
   assert.equal(r.wsrodUsuwanychZOdpowiedzia, 1);
-  assert.deepEqual(r.zostaja, { male: 1, odpowiedzi: 3, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1 });
-  assert.deepEqual(r.zostajaMB, { odpowiedzi: 16, kontrahenci: 9 });
+  assert.deepEqual(r.zostaja, { male: 1, odpowiedzi: 3, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, jednorazowe: 0 });
+  assert.deepEqual(r.zostajaMB, { odpowiedzi: 16, kontrahenci: 9, jednorazowe: 0 });
   assert.deepEqual(r.tematy.map(t => t.n), [1, 1]);
 
   const z = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', zKontrahentami: true });
@@ -204,6 +204,26 @@ test('tryb pierwsze: kasuje pierwszy mail z załącznikiem także przy odpowiedz
   assert.equal(k.usunieto, 2);
   assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [3, 4, 5, 6, 7, 8]);
   assert.equal(FakeImap.skrzynka.INBOX.length, 1, 'odpowiedź klienta zostaje');
+});
+
+test('tryb pierwsze: mailing = temat powtarzany (zmienia się tylko kraj); pojedyncze zostają przy minPowtorzen 3', async () => {
+  nowySerwer();
+  const m = (uid, to, temat, mbow) => ({ uid, size: mbow * MB, date: d('2025-02-01'), h: { to, subject: temat } });
+  FakeImap.skrzynka.Sent = [
+    m(1, 'a@de1.de', 'Surf Stick Bell — Deutschland', 7), m(2, 'b@de2.de', 'Surf Stick Bell — Deutschland', 7),
+    m(3, 'c@de3.de', 'Surf Stick Bell — Deutschland', 7), m(4, 'd@de4.de', 'Surf Stick Bell — Deutschland', 7),
+    m(5, 'a@fr1.fr', 'Surf Stick Bell — France', 5), m(6, 'b@fr2.fr', 'Surf Stick Bell — France', 5), m(7, 'c@fr3.fr', 'Surf Stick Bell — France', 5),
+    m(8, 'partner@jeden.es', 'Umowa dystrybucyjna', 9),
+  ];
+  const wszystkie = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
+  assert.equal(wszystkie.doUsuniecia.n, 8);
+  assert.deepEqual(wszystkie.podzial, { powtarzalne: { n: 7, mb: 43, tematow: 2 }, jednorazowe: { n: 1, mb: 9 } });
+
+  const mailing = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 3 });
+  assert.equal(mailing.doUsuniecia.n, 7);
+  assert.equal(mailing.zostaja.jednorazowe, 1);
+  assert.equal(mailing.zostajaMB.jednorazowe, 9);
+  assert.deepEqual(mailing.tematy.map(t => [t.temat, t.n]), [['Surf Stick Bell — Deutschland', 4], ['Surf Stick Bell — France', 3]]);
 });
 
 test('wybierz: temat do mniej niż minOdbiorcow adresów to nie mailing', () => {
