@@ -192,7 +192,9 @@ test('tryb pierwsze: kasuje pierwszy duży mail w wątku (też Re:/Fwd:), kolejn
   const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1 });
   assert.equal(r.doUsuniecia.n, 4, JSON.stringify(r));
   assert.equal(r.doUsuniecia.mb, 24);
-  assert.equal(r.wsrodUsuwanychZOdpowiedzia, 1);
+  // W tym trybie „kto odpisał” tylko z CRM (bez przeglądania skrzynki) — shop@ pisał tylko do INBOX.
+  assert.equal(r.wsrodUsuwanychZOdpowiedzia, 0);
+  assert.ok(!FakeImap.otwarcia.some(o => o.nazwa === 'INBOX'), 'nie otwiera Odebranych');
   assert.deepEqual(r.rodzajeUsuwanych, { nowe: 2, odpowiedzi: 1, przekazane: 1 });
   assert.deepEqual(r.zostaja, { male: 1, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, kolejneWWatku: 1, jednorazowe: 0, pozaListaTematow: 0 });
   assert.deepEqual(r.zostajaMB, { kontrahenci: 9, kolejneWWatku: 6, jednorazowe: 0, pozaListaTematow: 0 });

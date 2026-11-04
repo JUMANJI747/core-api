@@ -286,7 +286,12 @@ async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-
   const imap = await polacz(account);
   try {
     const foldery = dostepne(splaszcz(await p(cb => imap.getBoxes(cb))));
-    const pisali = await ktoPisal(prisma, imap, foldery);
+    /* W trybie „pierwsze" odpowiedzi nie decydują o kasowaniu (liczba
+       `wsrodUsuwanychZOdpowiedzia` jest tylko informacją), więc nie
+       przeglądamy nagłówków całej skrzynki odbiorczej — info@ ma ich tysiące,
+       a wolny serwer poczty dławił się już przy próbach (4.11.2026). Wtedy
+       „kto pisał" bierzemy z poczty przychodzącej w CRM. */
+    const pisali = await ktoPisal(prisma, imap, tryb === 'pierwsze' ? [] : foldery);
 
     const wyslane = [];
     const validity = {};
