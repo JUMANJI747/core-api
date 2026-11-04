@@ -194,8 +194,8 @@ test('tryb pierwsze: kasuje pierwszy duży mail w wątku (też Re:/Fwd:), kolejn
   assert.equal(r.doUsuniecia.mb, 24);
   assert.equal(r.wsrodUsuwanychZOdpowiedzia, 1);
   assert.deepEqual(r.rodzajeUsuwanych, { nowe: 2, odpowiedzi: 1, przekazane: 1 });
-  assert.deepEqual(r.zostaja, { male: 1, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, kolejneWWatku: 1, jednorazowe: 0 });
-  assert.deepEqual(r.zostajaMB, { kontrahenci: 9, kolejneWWatku: 6, jednorazowe: 0 });
+  assert.deepEqual(r.zostaja, { male: 1, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, kolejneWWatku: 1, jednorazowe: 0, pozaListaTematow: 0 });
+  assert.deepEqual(r.zostajaMB, { kontrahenci: 9, kolejneWWatku: 6, jednorazowe: 0, pozaListaTematow: 0 });
 
   const z = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1, zKontrahentami: true });
   assert.equal(z.doUsuniecia.n, 5, 'z kontrahentami dochodzi faktura');
@@ -230,6 +230,29 @@ test('tryb pierwsze: mailing = temat do ≥ 3 osób (też jako Fwd:), pojedyncze
   assert.deepEqual(r.rodzajeUsuwanych, { nowe: 6, odpowiedzi: 0, przekazane: 1 });
   const wszystkie = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1 });
   assert.equal(wszystkie.doUsuniecia.n, 8);
+
+  // Lista zatwierdzona przez właściciela: tylko DE; France zostaje „poza listą".
+  const lista = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', tylkoTematy: ['surf stick bell — deutschland'] });
+  assert.equal(lista.doUsuniecia.n, 4);
+  assert.equal(lista.zostaja.pozaListaTematow, 3);
+  assert.equal(lista.zostajaMB.pozaListaTematow, 15);
+  const k = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', tylkoTematy: ['Surf Stick Bell — Deutschland'], proba: false, oczekiwane: 4 });
+  assert.equal(k.usunieto, 4);
+  assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [5, 6, 7, 8, 9]);
+});
+
+test('lista tematów: krótki temat tylko dokładnie, ucięty (≥ 79 znaków) jako początek', async () => {
+  nowySerwer();
+  const dlugi = '¡Entrega rápida y GRATUITA de tu pedido Protector solar Surf Stick Bell SPF 50+ en 24 horas';
+  const m = (uid, to, temat) => ({ uid, size: 5 * MB, date: d('2025-02-01'), h: { to, subject: temat } });
+  FakeImap.skrzynka.Sent = [
+    m(1, 'a@x1.es', dlugi), m(2, 'b@x2.es', dlugi), m(3, 'c@x3.es', dlugi),
+    m(4, 'a@y1.de', 'Surf Stick Bell'), m(5, 'b@y2.de', 'Surf Stick Bell'), m(6, 'c@y3.de', 'Surf Stick Bell'),
+    m(7, 'a@z1.fr', 'Surf Stick Bell SPF 50+'), m(8, 'b@z2.fr', 'Surf Stick Bell SPF 50+'), m(9, 'c@z3.fr', 'Surf Stick Bell SPF 50+'),
+  ];
+  const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', tylkoTematy: [dlugi.slice(0, 80), 'Surf Stick Bell'] });
+  assert.equal(r.doUsuniecia.n, 6, '„Surf Stick Bell" nie łapie „Surf Stick Bell SPF 50+"');
+  assert.equal(r.zostaja.pozaListaTematow, 3);
 });
 
 test('wybierz: temat do mniej niż minOdbiorcow adresów to nie mailing', () => {

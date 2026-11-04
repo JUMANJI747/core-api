@@ -170,9 +170,19 @@ function rodzajMaila(k) {
   if (PRZEDROSTKI.test(k.tematPelny) || k.h['in-reply-to'] || k.h.references) return 'odpowiedzi';
   return 'nowe';
 }
-function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = false, minPowtorzen = 3 } = {}) {
-  const zostaja = { male: 0, wewnetrzne: 0, bezOdbiorcy: 0, kontrahenci: 0, kolejneWWatku: 0, jednorazowe: 0 };
-  const zostajaMB = { kontrahenci: 0, kolejneWWatku: 0, jednorazowe: 0 };
+/* `tylkoTematy` — lista tematów zatwierdzona przez właściciela po próbie
+ * (4.11.2026: mailing tak, zamówienia i spedycja nie). Temat porównywany po
+ * normalizacji i bez Re:/Fwd:; dokładnie, a gdy podany tekst miał ≥ 79 znaków
+ * (raport ucina tematy do 80) — jako początek tematu. */
+function pasujeDoListy(klucz, lista) {
+  return lista.some(({ w, poczatek }) => klucz === w || (poczatek && klucz.startsWith(w)));
+}
+function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = false, minPowtorzen = 3, tylkoTematy = null } = {}) {
+  const lista = Array.isArray(tylkoTematy) && tylkoTematy.length
+    ? tylkoTematy.map(x => ({ w: normalizujTemat(String(x).replace(PRZEDROSTKI, '')), poczatek: String(x).length >= 79 })).filter(x => x.w)
+    : null;
+  const zostaja = { male: 0, wewnetrzne: 0, bezOdbiorcy: 0, kontrahenci: 0, kolejneWWatku: 0, jednorazowe: 0, pozaListaTematow: 0 };
+  const zostajaMB = { kontrahenci: 0, kolejneWWatku: 0, jednorazowe: 0, pozaListaTematow: 0 };
   const duze = [];
   for (const k of wyslane) {
     if (k.size < minBajtow) { zostaja.male++; continue; }
@@ -214,6 +224,7 @@ function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = fal
     const ilu = odbiorcyTematu.get(k.klucz).size;
     if (ilu >= 3) { powtarzalne.n++; powtarzalne.bajty += k.size; powtarzalne.tematow.add(k.klucz); } else { jednorazowe.n++; jednorazowe.bajty += k.size; }
     if (ilu < minPowtorzen) { zostaja.jednorazowe++; zostajaMB.jednorazowe += k.size; continue; }
+    if (lista && !pasujeDoListy(k.klucz, lista)) { zostaja.pozaListaTematow++; zostajaMB.pozaListaTematow += k.size; continue; }
     rodzaje[rodzajMaila(k)]++;
     if (k.odbiorcy.some(a => pisali.adresy.has(a) || (domenaFirmowa(a) && pisali.domeny.has(domenaFirmowa(a))))) zOdpowiedzia++;
     if (!tematy.has(k.klucz)) tematy.set(k.klucz, { temat: k.tematPelny.replace(PRZEDROSTKI, '').slice(0, 80), n: 0, bajty: 0 });
@@ -224,7 +235,7 @@ function wybierzPierwsze(wyslane, pisali, { minBajtow = MB, zKontrahentami = fal
   }
   return {
     doUsuniecia, zostaja, zOdpowiedzia, rodzaje,
-    zostajaMB: { kontrahenci: mb(zostajaMB.kontrahenci), kolejneWWatku: mb(zostajaMB.kolejneWWatku), jednorazowe: mb(zostajaMB.jednorazowe) },
+    zostajaMB: { kontrahenci: mb(zostajaMB.kontrahenci), kolejneWWatku: mb(zostajaMB.kolejneWWatku), jednorazowe: mb(zostajaMB.jednorazowe), pozaListaTematow: mb(zostajaMB.pozaListaTematow) },
     // Podział pierwszych dużych maili (niezależnie od minPowtorzen): mailing vs pojedyncze.
     podzial: {
       powtarzalne: { n: powtarzalne.n, mb: mb(powtarzalne.bajty), tematow: powtarzalne.tematow.size },
@@ -269,7 +280,7 @@ function wybierz(wyslane, pisali, { minOdbiorcow = 5 } = {}) {
 }
 
 /** Próba albo kasowanie mailingu bez odpowiedzi w Wysłanych jednej skrzynki. */
-async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, minMB = 1, zKontrahentami = false, minPowtorzen = 3, proba = true, oczekiwane = null } = {}) {
+async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-01-01', do: doDnia = '2026-01-01', minOdbiorcow = 5, minMB = 1, zKontrahentami = false, minPowtorzen = 3, tylkoTematy = null, proba = true, oczekiwane = null } = {}) {
   if (!['mailing', 'duze', 'pierwsze'].includes(tryb)) throw new Error('tryb: "mailing", "duze" albo "pierwsze"');
   if (!proba && !Number.isInteger(oczekiwane)) throw new Error('kasowanie wymaga `oczekiwane` = liczby maili z próby');
   const imap = await polacz(account);
@@ -289,7 +300,7 @@ async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-
     }
 
     const duze = tryb !== 'mailing';
-    const wybor = tryb === 'pierwsze' ? wybierzPierwsze(wyslane, pisali, { minBajtow: minMB * MB, zKontrahentami, minPowtorzen })
+    const wybor = tryb === 'pierwsze' ? wybierzPierwsze(wyslane, pisali, { minBajtow: minMB * MB, zKontrahentami, minPowtorzen, tylkoTematy })
       : tryb === 'duze' ? wybierzDuze(wyslane, pisali, { minBajtow: minMB * MB })
         : wybierz(wyslane, pisali, { minOdbiorcow });
     const { doUsuniecia } = wybor;
@@ -302,7 +313,7 @@ async function sprzatnijMailing(prisma, account, { tryb = 'mailing', od = '2024-
     }
     const wynik = {
       skrzynka: account.inbox, proba, tryb, okres: { od, do: doDnia }, ...(duze ? { minMB } : { minOdbiorcow }),
-      ...(tryb === 'pierwsze' ? { zKontrahentami, minPowtorzen } : {}),
+      ...(tryb === 'pierwsze' ? { zKontrahentami, minPowtorzen, tylkoTematy: Array.isArray(tylkoTematy) && tylkoTematy.length ? tylkoTematy.length : null } : {}),
       wyslanychWOkresie: wyslane.length,
       doUsuniecia: { n: doUsuniecia.length, mb: mb(doUsuniecia.reduce((s, k) => s + k.size, 0)), latami },
       zostaja: wybor.zostaja,
