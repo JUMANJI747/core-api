@@ -1887,7 +1887,7 @@ router.post('/emails/mailing-sprzatanie', async (req, res) => {
       tryb: ['duze', 'pierwsze'].includes(b.tryb) ? b.tryb : 'mailing',
       minMB: Number(b.minMB) > 0 ? Number(b.minMB) : 1,
       zKontrahentami: b.zKontrahentami === true,
-      minPowtorzen: Number.isInteger(b.minPowtorzen) && b.minPowtorzen >= 1 ? b.minPowtorzen : 1,
+      minPowtorzen: Number.isInteger(b.minPowtorzen) && b.minPowtorzen >= 1 ? b.minPowtorzen : 3,
       od: data(b.od, '2024-01-01'),
       do: data(b.do, '2026-01-01'),
       minOdbiorcow: Number.isInteger(b.minOdbiorcow) && b.minOdbiorcow >= 2 ? b.minOdbiorcow : 5,

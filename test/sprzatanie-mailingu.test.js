@@ -176,54 +176,60 @@ test('tryb duze — kasowanie usuwa dokładnie te 3 maile', async () => {
   assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [2, 3, 5, 6, 7]);
 });
 
-// ── tryb „pierwsze": nasz mail otwierający wątek z dużym załącznikiem ──
-test('tryb pierwsze: kasuje pierwszy mail z załącznikiem także przy odpowiedzi, wątek zostaje', async () => {
+// ── tryb „pierwsze": pierwszy duży mail od nas w wątku ──
+test('tryb pierwsze: kasuje pierwszy duży mail w wątku (też Re:/Fwd:), kolejne w wątku zostają', async () => {
   nowySerwer();
   FakeImap.skrzynka.Sent = [
     { uid: 1, size: 7 * MB, date: d('2025-03-01'), h: { to: 'shop@surfshop.de', subject: KAMPANIA } },                       // odpisał — i tak do usunięcia
-    { uid: 2, size: 7 * MB, date: d('2025-03-02'), h: { to: 'contact@nobody1.es', subject: 'Catalogue for you' } },          // do usunięcia
-    { uid: 3, size: 6 * MB, date: d('2025-03-05'), h: { to: 'shop@surfshop.de', subject: 'Re: ' + KAMPANIA, 'in-reply-to': '<a@b>' } }, // nasza odpowiedź w wątku — zostaje
-    { uid: 4, size: 5 * MB, date: d('2025-03-06'), h: { to: 'x@y.com', subject: 'Fwd: zdjęcia' } },                          // przekazanie — zostaje
-    { uid: 5, size: 5 * MB, date: d('2025-03-07'), h: { to: 'a@b.com', subject: 'Oferta', references: '<q@w>' } },           // w wątku (References) — zostaje
+    { uid: 2, size: 7 * MB, date: d('2025-03-02'), h: { to: 'contact@nobody1.es', subject: 'Catalogue for you' } },
+    { uid: 3, size: 6 * MB, date: d('2025-03-05'), h: { to: 'shop@surfshop.de', subject: 'Re: ' + KAMPANIA, 'in-reply-to': '<a@b>' } }, // kolejny w wątku — zostaje
+    { uid: 4, size: 5 * MB, date: d('2025-03-06'), h: { to: 'x@y.com', subject: 'Fwd: zdjęcia' } },
+    { uid: 5, size: 5 * MB, date: d('2025-03-07'), h: { to: 'a@b.com', subject: 'Oferta', references: '<q@w>' } },
     { uid: 6, size: 9 * MB, date: d('2025-04-01'), h: { to: 'office@kontrahent.pl', subject: 'Faktura 12/2025' } },          // kontrahent — zostaje domyślnie
-    { uid: 7, size: 0.2 * MB, date: d('2025-04-02'), h: { to: 'q@q.com', subject: 'Krótki mail' } },                         // mały — zostaje
-    { uid: 8, size: 4 * MB, date: d('2025-04-03'), h: { to: 'info@surfstickbell.com', subject: 'Do nas' } },                 // wewnętrzny — zostaje
+    { uid: 7, size: 0.2 * MB, date: d('2025-04-02'), h: { to: 'q@q.com', subject: 'Krótki mail' } },                         // mały
+    { uid: 8, size: 4 * MB, date: d('2025-04-03'), h: { to: 'info@surfstickbell.com', subject: 'Do nas' } },                 // wewnętrzny
   ];
-  const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
-  assert.equal(r.doUsuniecia.n, 2, JSON.stringify(r));
-  assert.equal(r.doUsuniecia.mb, 14);
+  const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1 });
+  assert.equal(r.doUsuniecia.n, 4, JSON.stringify(r));
+  assert.equal(r.doUsuniecia.mb, 24);
   assert.equal(r.wsrodUsuwanychZOdpowiedzia, 1);
-  assert.deepEqual(r.zostaja, { male: 1, odpowiedzi: 3, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, jednorazowe: 0 });
-  assert.deepEqual(r.zostajaMB, { odpowiedzi: 16, kontrahenci: 9, jednorazowe: 0 });
-  assert.deepEqual(r.tematy.map(t => t.n), [1, 1]);
+  assert.deepEqual(r.rodzajeUsuwanych, { nowe: 2, odpowiedzi: 1, przekazane: 1 });
+  assert.deepEqual(r.zostaja, { male: 1, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1, kolejneWWatku: 1, jednorazowe: 0 });
+  assert.deepEqual(r.zostajaMB, { kontrahenci: 9, kolejneWWatku: 6, jednorazowe: 0 });
 
-  const z = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', zKontrahentami: true });
-  assert.equal(z.doUsuniecia.n, 3, 'z kontrahentami dochodzi faktura');
+  const z = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1, zKontrahentami: true });
+  assert.equal(z.doUsuniecia.n, 5, 'z kontrahentami dochodzi faktura');
 
-  const k = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', proba: false, oczekiwane: 2 });
-  assert.equal(k.usunieto, 2);
-  assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [3, 4, 5, 6, 7, 8]);
+  const domyslnie = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
+  assert.equal(domyslnie.doUsuniecia.n, 0, 'domyślnie tylko mailing (temat do ≥ 3 osób)');
+  assert.equal(domyslnie.zostaja.jednorazowe, 4);
+
+  const k = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1, proba: false, oczekiwane: 4 });
+  assert.equal(k.usunieto, 4);
+  assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [3, 6, 7, 8]);
   assert.equal(FakeImap.skrzynka.INBOX.length, 1, 'odpowiedź klienta zostaje');
 });
 
-test('tryb pierwsze: mailing = temat powtarzany (zmienia się tylko kraj); pojedyncze zostają przy minPowtorzen 3', async () => {
+test('tryb pierwsze: mailing = temat do ≥ 3 osób (też jako Fwd:), pojedyncze i dalsze w wątku zostają', async () => {
   nowySerwer();
-  const m = (uid, to, temat, mbow) => ({ uid, size: mbow * MB, date: d('2025-02-01'), h: { to, subject: temat } });
+  const m = (uid, to, temat, mbow, data = '2025-02-01') => ({ uid, size: mbow * MB, date: d(data), h: { to, subject: temat } });
   FakeImap.skrzynka.Sent = [
     m(1, 'a@de1.de', 'Surf Stick Bell — Deutschland', 7), m(2, 'b@de2.de', 'Surf Stick Bell — Deutschland', 7),
     m(3, 'c@de3.de', 'Surf Stick Bell — Deutschland', 7), m(4, 'd@de4.de', 'Surf Stick Bell — Deutschland', 7),
-    m(5, 'a@fr1.fr', 'Surf Stick Bell — France', 5), m(6, 'b@fr2.fr', 'Surf Stick Bell — France', 5), m(7, 'c@fr3.fr', 'Surf Stick Bell — France', 5),
-    m(8, 'partner@jeden.es', 'Umowa dystrybucyjna', 9),
+    m(5, 'a@fr1.fr', 'Surf Stick Bell — France', 5), m(6, 'b@fr2.fr', 'Surf Stick Bell — France', 5),
+    m(7, 'c@fr3.fr', 'Fwd: Surf Stick Bell — France', 5),                     // mailing wysłany jako przekazanie
+    m(8, 'partner@jeden.es', 'Umowa dystrybucyjna', 9),                      // pojedynczy — zostaje
+    m(9, 'a@de1.de', 'Re: Surf Stick Bell — Deutschland', 3, '2025-03-01'),   // dalej w wątku (np. faktura) — zostaje
   ];
-  const wszystkie = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
+  const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
+  assert.equal(r.doUsuniecia.n, 7, JSON.stringify(r));
+  assert.deepEqual(r.podzial, { powtarzalne: { n: 7, mb: 43, tematow: 2 }, jednorazowe: { n: 1, mb: 9 } });
+  assert.equal(r.zostaja.jednorazowe, 1);
+  assert.equal(r.zostaja.kolejneWWatku, 1);
+  assert.deepEqual(r.tematy.map(t => [t.temat, t.n]), [['Surf Stick Bell — Deutschland', 4], ['Surf Stick Bell — France', 3]]);
+  assert.deepEqual(r.rodzajeUsuwanych, { nowe: 6, odpowiedzi: 0, przekazane: 1 });
+  const wszystkie = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 1 });
   assert.equal(wszystkie.doUsuniecia.n, 8);
-  assert.deepEqual(wszystkie.podzial, { powtarzalne: { n: 7, mb: 43, tematow: 2 }, jednorazowe: { n: 1, mb: 9 } });
-
-  const mailing = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', minPowtorzen: 3 });
-  assert.equal(mailing.doUsuniecia.n, 7);
-  assert.equal(mailing.zostaja.jednorazowe, 1);
-  assert.equal(mailing.zostajaMB.jednorazowe, 9);
-  assert.deepEqual(mailing.tematy.map(t => [t.temat, t.n]), [['Surf Stick Bell — Deutschland', 4], ['Surf Stick Bell — France', 3]]);
 });
 
 test('wybierz: temat do mniej niż minOdbiorcow adresów to nie mailing', () => {
