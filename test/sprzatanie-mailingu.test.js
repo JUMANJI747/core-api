@@ -176,6 +176,36 @@ test('tryb duze — kasowanie usuwa dokładnie te 3 maile', async () => {
   assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [2, 3, 5, 6, 7]);
 });
 
+// ── tryb „pierwsze": nasz mail otwierający wątek z dużym załącznikiem ──
+test('tryb pierwsze: kasuje pierwszy mail z załącznikiem także przy odpowiedzi, wątek zostaje', async () => {
+  nowySerwer();
+  FakeImap.skrzynka.Sent = [
+    { uid: 1, size: 7 * MB, date: d('2025-03-01'), h: { to: 'shop@surfshop.de', subject: KAMPANIA } },                       // odpisał — i tak do usunięcia
+    { uid: 2, size: 7 * MB, date: d('2025-03-02'), h: { to: 'contact@nobody1.es', subject: 'Catalogue for you' } },          // do usunięcia
+    { uid: 3, size: 6 * MB, date: d('2025-03-05'), h: { to: 'shop@surfshop.de', subject: 'Re: ' + KAMPANIA, 'in-reply-to': '<a@b>' } }, // nasza odpowiedź w wątku — zostaje
+    { uid: 4, size: 5 * MB, date: d('2025-03-06'), h: { to: 'x@y.com', subject: 'Fwd: zdjęcia' } },                          // przekazanie — zostaje
+    { uid: 5, size: 5 * MB, date: d('2025-03-07'), h: { to: 'a@b.com', subject: 'Oferta', references: '<q@w>' } },           // w wątku (References) — zostaje
+    { uid: 6, size: 9 * MB, date: d('2025-04-01'), h: { to: 'office@kontrahent.pl', subject: 'Faktura 12/2025' } },          // kontrahent — zostaje domyślnie
+    { uid: 7, size: 0.2 * MB, date: d('2025-04-02'), h: { to: 'q@q.com', subject: 'Krótki mail' } },                         // mały — zostaje
+    { uid: 8, size: 4 * MB, date: d('2025-04-03'), h: { to: 'info@surfstickbell.com', subject: 'Do nas' } },                 // wewnętrzny — zostaje
+  ];
+  const r = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze' });
+  assert.equal(r.doUsuniecia.n, 2, JSON.stringify(r));
+  assert.equal(r.doUsuniecia.mb, 14);
+  assert.equal(r.wsrodUsuwanychZOdpowiedzia, 1);
+  assert.deepEqual(r.zostaja, { male: 1, odpowiedzi: 3, wewnetrzne: 1, bezOdbiorcy: 0, kontrahenci: 1 });
+  assert.deepEqual(r.zostajaMB, { odpowiedzi: 16, kontrahenci: 9 });
+  assert.deepEqual(r.tematy.map(t => t.n), [1, 1]);
+
+  const z = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', zKontrahentami: true });
+  assert.equal(z.doUsuniecia.n, 3, 'z kontrahentami dochodzi faktura');
+
+  const k = await sprzatnijMailing(prisma, KONTO, { tryb: 'pierwsze', proba: false, oczekiwane: 2 });
+  assert.equal(k.usunieto, 2);
+  assert.deepEqual(FakeImap.skrzynka.Sent.map(m => m.uid), [3, 4, 5, 6, 7, 8]);
+  assert.equal(FakeImap.skrzynka.INBOX.length, 1, 'odpowiedź klienta zostaje');
+});
+
 test('wybierz: temat do mniej niż minOdbiorcow adresów to nie mailing', () => {
   const wyslane = ['a@x1.com', 'b@x2.com', 'c@x3.com'].map((to, i) => ({ uid: i, size: 1, h: { to, subject: 'Mała akcja' } }));
   const pisali = { adresy: new Set(), domeny: new Set() };
