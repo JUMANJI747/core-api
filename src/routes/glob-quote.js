@@ -6,6 +6,7 @@ const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPi
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
 const { findBestContractors } = require('../services/contractor-match');
 const { KIERUNKOWE, normalizujTelefon, telefonZTekstu } = require('../services/telefon');
+const { gkName, gkStreet, gkCity, rozbijNumerDomu, numerGk } = require('../services/adres-gk');
 const {
   upsertContact: upsertCrmContact,
   upsertAddress: upsertCrmAddress,
@@ -1296,22 +1297,8 @@ router.post('/glob/order', async (req, res) => {
      * a „Nuevo Portil, Cartaya, Huelva" wszystkie przecinki — adresy jechały
      * do kuriera zubożone bez żadnego powodu. Zostawiamy tę funkcję (używa jej
      * jeszcze reszta trasy), ale do payloadu czyścimy już per pole. */
-    function oczyscGk(s, dozwolone) {
-      if (!s) return s;
-      // \p{L}\p{N} zostawia polskie i hiszpańskie znaki diakrytyczne.
-      const poza = new RegExp(`[^\\p{L}\\p{N}\\s${dozwolone}]`, 'gu');
-      return String(s).replace(poza, ' ').replace(/\s+/g, ' ').trim();
-    }
-    // Ukośnik w nazwie jest częsty („Surfstylefever / Stefan"), a GK go tam nie
-    // przyjmuje — zamieniamy na myślnik, którego przyjmuje, zamiast gubić słowo.
-    const gkName = (s) => oczyscGk(String(s || '').replace(/\s*\/\s*/g, ' - '), "\\.,'()\\-@");
-    /* 9.11.2026: GK odrzucił adres „Via dell'Industria", „Rosignano Marittimo
-     * (LI)" („Wpisano nieprawidłowy znak … ” ” ( ) …") — wbrew temu, co
-     * wynikało z dokumentacji. Miasto: włoski skrót prowincji w nawiasie
-     * wylatuje razem z nawiasami; ulica: apostrof zamieniamy na spację
-     * („Via dell Industria" kurier i tak znajdzie). */
-    const gkStreet = (s) => oczyscGk(String(s || '').replace(/['’`]/g, ' '), "\\.\\-&/,");
-    const gkCity = (s) => oczyscGk(String(s || '').replace(/\s*\([A-Za-z]{1,3}\)\s*$/, '').replace(/['’`]/g, ' '), "\\.\\-&/");
+    // oczyscGk / gkName / gkStreet / gkCity: services/adres-gk.js (9.11.2026 — te same reguły
+    // sprawdzają adres już przy składaniu zamówienia magazynu).
 
     /* NUMER DOMU I LOKALU — osobne pola, tak jak chce GlobKurier.
      *
@@ -1325,19 +1312,7 @@ router.post('/glob/order', async (req, res) => {
      *
      * Dlatego: numer rozbijamy PRZED sanitizacją, dom i lokal lecą w swoich
      * polach, a do GK trafiają tylko znaki, które on w numerze dopuszcza. */
-    function rozbijNumerDomu(surowy) {
-      const s = String(surowy || '').trim();
-      if (!s) return { dom: '', lokal: '' };
-      // "4A/10", "4A / 10"
-      const ukosnik = s.match(/^([^/\s]+)\s*\/\s*([^/\s]+)$/);
-      if (ukosnik) return { dom: ukosnik[1], lokal: ukosnik[2] };
-      // "12 m. 5", "12 m5", "12 lok. 5", "12 mieszkanie 5"
-      const lokal = s.match(/^(\S+)\s*(?:m|lok|mieszk\w*)\.?\s*([\w-]+)$/i);
-      if (lokal) return { dom: lokal[1], lokal: lokal[2] };
-      return { dom: s, lokal: '' };
-    }
-    // W numerze GK przyjmuje cyfry, litery i ukośnik. Spacja i kropka — nie.
-    const numerGk = (s) => String(s || '').replace(/[^0-9A-Za-zĄąĆćĘꣳŃńÓóŚśŹźŻż/-]/g, '').trim();
+    // rozbijNumerDomu / numerGk: services/adres-gk.js
 
     const DEFAULT_SENDER_PHONE = '+48502189886';
     const DEFAULT_SENDER_EMAIL = 'delivery@surfstickbell.com';

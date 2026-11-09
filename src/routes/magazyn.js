@@ -26,6 +26,19 @@ const { selfCall } = require('../services/agent-runtime');
 const { getOrderLabels } = require('../glob-client');
 const { PRODUCT_WEIGHTS } = require('./glob-helpers');
 const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
+const { sprawdzOdbiorce } = require('../services/adres-gk');
+
+/* Alarm do właściciela, gdy auto-list nie zamówi kuriera (9.11.2026: #5
+ * spakowane o 11:18, błąd widać było tylko w panelu — właściciel trafił na
+ * niego przypadkiem). Telegram jak alarmy poczty; błąd wysyłki nie blokuje. */
+async function alarmWlasciciela(prisma, tekst) {
+  try {
+    const { resolveTelegram } = require('../services/telegram-helper');
+    const { sendTelegram } = require('../telegram-utils');
+    const { token, chatId } = await resolveTelegram(prisma, { scope: 'pl' });
+    if (token && chatId) await sendTelegram(token, chatId, tekst);
+  } catch (e) { console.error('[magazyn] alarm do właściciela nieudany:', e.message); }
+}
 
 const EKSPOZYTOR = { ean: 'EKSPOZYTOR', name: 'Ekspozytor (pusty)' };
 const STATUSY = ['NOWE', 'GOTOWE', 'KURIER', 'WYSLANE', 'ANULOWANE'];
@@ -62,6 +75,10 @@ function toPublic(o, rola = 'owner') {
       wagaKg: o.wagaKg != null ? Number(o.wagaKg) : null,
     } : null,
     autoList: !!o.autoList, kurierBlad: o.kurierBlad || null,
+    // Weryfikacja adresu pod GlobKurier (9.11.2026) — widoczna, zanim magazyn spakuje.
+    adresUwagi: !obcy && o.autoList && ['NOWE', 'GOTOWE'].includes(o.status) && odb.name
+      ? (() => { const w = sprawdzOdbiorce(odb); return [...w.bledy, ...w.ostrzezenia]; })()
+      : [],
     gkHash: o.gkHash, gkNumber: o.gkNumber, carrier: o.carrier,
     utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto && o.zatwierdzilKto !== 'auto-list' ? 'Surf Stick' : o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
@@ -176,8 +193,12 @@ async function nadawcaMagazynu(prisma) {
 }
 
 async function zamowKuriera(o, prisma) {
+  // Najpierw nasze sprawdzenie (te same reguły co zamówienie w GK) — czytelny
+  // powód zamiast odrzucenia z GK, i bez zbędnego wywołania.
+  const spr = sprawdzOdbiorce(o.odbiorca);
+  if (spr.bledy.length) throw new Error(`adres nie przejdzie w GlobKurier: ${spr.bledy.join('; ')} — popraw odbiorcę i ponów`);
   const nadawca = await nadawcaMagazynu(prisma);
-  const od = o.odbiorca || {};
+  const od = spr.adres;
   const q = await selfCall('POST', '/api/glob/quote', {
     ...(nadawca.senderId ? { senderId: nadawca.senderId } : { senderSearch: nadawca.senderSearch }),
     receiverSearch: od.name,
@@ -241,9 +262,14 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
   // numerem). Ale auto-list bez pełnego adresu nie ma sensu — blokujemy tutaj,
   // nie dopiero przy „gotowe", żeby magazyn nie czekał na etykietę.
   const autoList = !!b.autoList;
-  if (autoList) {
-    const braki = brakiOdbiorcy(od);
-    if (braki.length) return res.status(400).json({ ok: false, error: `auto-list wymaga pełnego odbiorcy — brakuje: ${braki.join(', ')}` });
+  /* WERYFIKACJA ADRESU (9.11.2026): przy auto-liście adres musi przejść reguły
+   * GlobKuriera JUŻ TERAZ — wcześniej błąd wychodził dopiero przy pakowaniu,
+   * gdy kurier miał przyjechać. Poprawki (apostrof, „(LI)", kod, telefon)
+   * robimy sami i zapisujemy adres już poprawiony. */
+  const podanyAdres = Object.values(od).some(v => String(v || '').trim());
+  const weryfikacja = (podanyAdres || autoList) ? sprawdzOdbiorce(od) : null;
+  if (autoList && weryfikacja.bledy.length) {
+    return res.status(400).json({ ok: false, error: `Adres nie przejdzie w GlobKurier — popraw przed złożeniem: ${weryfikacja.bledy.join('; ')}`, bledy: weryfikacja.bledy, poprawki: weryfikacja.poprawki, ostrzezenia: weryfikacja.ostrzezenia });
   }
 
   const catalog = await getActiveCatalog(prisma);
@@ -258,9 +284,8 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
   const o = await prisma.warehouseOrder.create({
     data: {
       contractorId,
-      odbiorca: {
-        name: od.name || '', street: od.street || '', houseNumber: od.houseNumber || '', apartmentNumber: od.apartmentNumber || '',
-        postCode: od.postCode || '', city: od.city || '', country: od.country || 'PL', phone: od.phone || '', email: od.email || '',
+      odbiorca: weryfikacja ? weryfikacja.adres : {
+        name: '', street: '', houseNumber: '', apartmentNumber: '', postCode: '', city: '', country: 'PL', phone: '', email: '',
       },
       autoList,
       uwagiNasze: b.uwagiNasze ? String(b.uwagiNasze).slice(0, 2000) : null,
@@ -271,7 +296,16 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
     },
     include: ORDER_INCLUDE,
   });
-  res.json({ ok: true, zamowienie: toPublic(o, rola(req)) });
+  res.json({
+    ok: true, zamowienie: toPublic(o, rola(req)),
+    adres: weryfikacja ? { poprawki: weryfikacja.poprawki, ostrzezenia: weryfikacja.ostrzezenia, bledy: weryfikacja.bledy } : null,
+  });
+}));
+
+/* Sprawdzenie adresu bez składania zamówienia (formularz, Claude). */
+router.post('/sprawdz-adres', asyncHandler(async (req, res) => {
+  const w = sprawdzOdbiorce((req.body && req.body.odbiorca) || {});
+  res.json({ ok: !w.bledy.length, ...w });
 }));
 
 // Właściciel: uwagi, anulowanie. Anulowanie po GOTOWE cofa wydanie ze stanu.
@@ -283,6 +317,17 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
   const data = {};
   if ('uwagiNasze' in b) data.uwagiNasze = b.uwagiNasze ? String(b.uwagiNasze).slice(0, 2000) : null;
+  /* POPRAWA ODBIORCY (9.11.2026) — wcześniej „odbiorcy nie da się zmienić po
+   * złożeniu" i adres #5 trzeba było poprawiać w bazie. Wolno do chwili
+   * zamówienia kuriera (NOWE / GOTOWE); przy auto-liście adres musi przejść
+   * weryfikację GlobKuriera. Kuriera ponawia się potem „Ponów auto-list". */
+  let weryfikacja = null;
+  if (b.odbiorca && typeof b.odbiorca === 'object') {
+    if (!['NOWE', 'GOTOWE'].includes(o.status)) return res.status(400).json({ ok: false, error: `odbiorcę można poprawić tylko przed zamówieniem kuriera (jest ${o.status})` });
+    weryfikacja = sprawdzOdbiorce({ ...(o.odbiorca || {}), ...b.odbiorca });
+    if (o.autoList && weryfikacja.bledy.length) return res.status(400).json({ ok: false, error: `Adres nie przejdzie w GlobKurier: ${weryfikacja.bledy.join('; ')}`, ...weryfikacja });
+    data.odbiorca = weryfikacja.adres;
+  }
   /* Przejścia statusów (audyt 14.10.2026): ANULOWANE z NOWE/GOTOWE/KURIER
    * (z GOTOWE i KURIER = COFNIECIE na stan; przy KURIER przesyłkę w GlobKurier
    * właściciel odwołuje sam, tu czyścimy jej numer), WYSLANE z KURIER,
@@ -320,7 +365,7 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
     throw e;
   }
   const u = await prisma.warehouseOrder.findUnique({ where: { id: o.id }, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)), ...(weryfikacja ? { adres: { poprawki: weryfikacja.poprawki, ostrzezenia: weryfikacja.ostrzezenia, bledy: weryfikacja.bledy } } : {}) });
 }));
 
 // Magazyn (i właściciel): paczka gotowa + karton + uwaga. Wydanie ze stanu.
@@ -395,6 +440,10 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
     } catch (e) {
       console.error(`[magazyn] auto-list #${u.numer} padł:`, e.message);
       wynik = await prisma.warehouseOrder.update({ where: { id: u.id }, data: { kurierBlad: String(e.message).slice(0, 500) }, include: ORDER_INCLUDE });
+      const od = u.odbiorca || {};
+      await alarmWlasciciela(prisma, `⚠️ Magazyn #${u.numer} spakowane, ale kurier NIE zamówił się sam (${[od.name, od.city].filter(Boolean).join(', ')}).\n`
+        + `Powód: ${String(e.message).slice(0, 400)}\n`
+        + 'Popraw adres w panelu Magazyn (albo napisz do Claude) i kliknij „Ponów auto-list".');
     }
   }
   res.json({ ok: true, zamowienie: toPublic(wynik, rola(req)), ostrzezenia });
