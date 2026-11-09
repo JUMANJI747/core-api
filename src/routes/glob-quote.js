@@ -1305,8 +1305,13 @@ router.post('/glob/order', async (req, res) => {
     // Ukośnik w nazwie jest częsty („Surfstylefever / Stefan"), a GK go tam nie
     // przyjmuje — zamieniamy na myślnik, którego przyjmuje, zamiast gubić słowo.
     const gkName = (s) => oczyscGk(String(s || '').replace(/\s*\/\s*/g, ' - '), "\\.,'()\\-@");
-    const gkStreet = (s) => oczyscGk(s, "\\.'\\-&/,");
-    const gkCity = (s) => oczyscGk(s, "\\.'()\\-&/");
+    /* 9.11.2026: GK odrzucił adres „Via dell'Industria", „Rosignano Marittimo
+     * (LI)" („Wpisano nieprawidłowy znak … ” ” ( ) …") — wbrew temu, co
+     * wynikało z dokumentacji. Miasto: włoski skrót prowincji w nawiasie
+     * wylatuje razem z nawiasami; ulica: apostrof zamieniamy na spację
+     * („Via dell Industria" kurier i tak znajdzie). */
+    const gkStreet = (s) => oczyscGk(String(s || '').replace(/['’`]/g, ' '), "\\.\\-&/,");
+    const gkCity = (s) => oczyscGk(String(s || '').replace(/\s*\([A-Za-z]{1,3}\)\s*$/, '').replace(/['’`]/g, ' '), "\\.\\-&/");
 
     /* NUMER DOMU I LOKALU — osobne pola, tak jak chce GlobKurier.
      *
