@@ -680,7 +680,16 @@ router.post('/glob/quote', async (req, res) => {
         if (parsed && typeof parsed === 'object') dynamicIds = parsed;
       }
     } catch (_) {}
-    const mergedIds = { ...COUNTRY_IDS, ...dynamicIds };
+    let mergedIds = { ...COUNTRY_IDS, ...dynamicIds };
+    // Skażona mapa (np. IT → numer „Włoch (wysp)") = zawyżona wycena. Naprawiamy
+    // z oficjalnej listy GK, zanim cokolwiek policzymy.
+    if (skazonyKodKraju(mergedIds, receiver.country) || skazonyKodKraju(mergedIds, sender.country)) {
+      console.warn(`[glob/quote] mapa krajów skażona dla ${receiver.country}/${sender.country} — synchronizuję z /v1/countries`);
+      try {
+        const api = await syncCountriesFromApi(prisma);
+        mergedIds = { ...COUNTRY_IDS, ...(api.merged || {}) };
+      } catch (e) { console.error('[glob/quote] naprawa mapy krajów nieudana:', e.message); }
+    }
 
     let senderCountryId = sender.countryId || mergedIds[sender.country] || 1;
     let receiverCountryIdMapped = receiver.countryId || mergedIds[receiver.country];
@@ -2122,6 +2131,32 @@ function phoneToIso(phone) {
 // oficjalnej listy GK (zawiera WSZYSTKIE obsługiwane kraje, też nowe jak BG,
 // bez potrzeby wcześniejszej wysyłki). Zapisuje do Config 'gk_country_ids'
 // (ten sam klucz co quote). Zwraca też nieobsługiwane (lock != null).
+/* NUMERY KRAJÓW: OFICJALNA LISTA WYGRYWA (10.11.2026).
+ *
+ * GK ma osobne „kraje" dla wysp: Włochy = 33 (kod IT), „Włochy (wyspy)" = 41
+ * (kod IT2) — oba z prefiksem telefonu +39. Heurystyka po telefonie
+ * (runCountryDiscovery) głosowała więc „IT" dla OBU numerów i wygrywał
+ * ostatni: 29.06.2026 zapisała IT→41 i nadpisała wartość z oficjalnej listy.
+ * Skutek: paczka do Toskanii (9.11, Rosignano Marittimo) została wyceniona
+ * jak na wyspy — jedna oferta, FedEx 138,94 zł zamiast 46,70 zł.
+ *
+ * Zasady: (1) oficjalna lista /v1/countries nadpisuje wszystko, (2) heurystyka
+ * tylko DOPISUJE kraje, których w mapie nie ma, (3) wycena sama wykrywa
+ * skażoną mapę (kod kraju wskazuje ten sam numer co jego wariant IT2/ES3…)
+ * i synchronizuje ją od nowa. Wysp NIE wybieramy sami po kodzie pocztowym:
+ * DPD wozi na Sycylię i Sardynię w cenie „Włoch" (Marsala 54,58 zł), a jako
+ * „wyspy" GK daje tylko FedEx za 130–300 zł. */
+function scalMapeKrajow(previous, discovered, official) {
+  return { ...(discovered || {}), ...(previous || {}), ...(official || {}) };
+}
+/** Czy numer kraju `iso` w mapie to w rzeczywistości numer jego wariantu
+ *  (np. IT → 41, a 41 to IT2 „Włochy (wyspy)"). */
+function skazonyKodKraju(mapa, iso) {
+  const kod = String(iso || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(kod) || !mapa || mapa[kod] == null) return false;
+  return Object.keys(mapa).some(k => k !== kod && new RegExp(`^${kod}\\d+$`).test(k) && mapa[k] === mapa[kod]);
+}
+
 async function syncCountriesFromApi(prisma) {
   const list = await getCountries('pl');
   if (!Array.isArray(list)) {
@@ -2203,7 +2238,11 @@ async function runCountryDiscovery(prisma) {
       if (parsed && typeof parsed === 'object') previous = parsed;
     } catch (_) {}
   }
-  const merged = { ...previous, ...discovered };
+  // Oficjalna lista GK ma ostatnie słowo (patrz scalMapeKrajow).
+  let official = null;
+  try { official = (await syncCountriesFromApi(prisma)).isoToId; }
+  catch (e) { console.warn('[glob/discover-countries] /v1/countries niedostępne, heurystyka tylko dopisuje brakujące kraje:', e.message); }
+  const merged = scalMapeKrajow(previous, discovered, official);
   await prisma.config.upsert({
     where: { key: 'gk_country_ids' },
     update: { value: JSON.stringify(merged) },
@@ -2411,3 +2450,4 @@ ${text}
 module.exports = router;
 // Eksport pomocniczy do startowego self-heal w index.js.
 module.exports.syncCountriesFromApi = syncCountriesFromApi;
+module.exports._test = { scalMapeKrajow, skazonyKodKraju };

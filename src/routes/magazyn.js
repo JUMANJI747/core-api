@@ -27,6 +27,8 @@ const { getOrderLabels } = require('../glob-client');
 const { PRODUCT_WEIGHTS } = require('./glob-helpers');
 const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
 const { sprawdzOdbiorce } = require('../services/adres-gk');
+const { szacujPaczke, limitCeny, zaDrogo, opisSzacunku, zl } = require('../services/kurier-szacunek');
+const crypto = require('crypto');
 
 /* Alarm do właściciela, gdy auto-list nie zamówi kuriera (9.11.2026: #5
  * spakowane o 11:18, błąd widać było tylko w panelu — właściciel trafił na
@@ -75,6 +77,10 @@ function toPublic(o, rola = 'owner') {
       wagaKg: o.wagaKg != null ? Number(o.wagaKg) : null,
     } : null,
     autoList: !!o.autoList, kurierBlad: o.kurierBlad || null,
+    // Cena kuriera: szacunek pokazany przy składaniu i cena zamówionego listu
+    // (10.11.2026). Tylko dla właściciela — magazyn nie widzi naszych kosztów.
+    kurierSzacunek: obcy ? null : (o.kurierSzacunek || null),
+    kurierCena: obcy || o.kurierCena == null ? null : Number(o.kurierCena),
     // Weryfikacja adresu pod GlobKurier (9.11.2026) — widoczna, zanim magazyn spakuje.
     adresUwagi: !obcy && o.autoList && ['NOWE', 'GOTOWE'].includes(o.status) && odb.name
       ? (() => { const w = sprawdzOdbiorce(odb); return [...w.bledy, ...w.ostrzezenia]; })()
@@ -192,29 +198,86 @@ async function nadawcaMagazynu(prisma) {
   throw new Error('brak nadawcy magazynu: ustaw Config magazyn_sender_id (PUT /api/config/magazyn_sender_id) albo env MAGAZYN_SENDER_SEARCH — kurier nie zamówiony');
 }
 
-async function zamowKuriera(o, prisma) {
+/* Wycena kuriera z adresu magazynu na adres odbiorcy (GK, przez własny
+   endpoint — jak agent). Zwraca oferty od najtańszej. Bez chatId, więc nic
+   nie idzie na Telegram. */
+async function wycenKuriera(prisma, adres, paczka, extra = {}) {
+  const nadawca = await nadawcaMagazynu(prisma);
+  const q = await selfCall('POST', '/api/glob/quote', {
+    ...(nadawca.senderId ? { senderId: nadawca.senderId } : { senderSearch: nadawca.senderSearch }),
+    receiverSearch: adres.name,
+    deliveryAddress: {
+      street: adres.street, houseNumber: adres.houseNumber || null, apartmentNumber: adres.apartmentNumber || null,
+      postCode: adres.postCode, city: adres.city, country: adres.country || 'PL', phone: adres.phone || null, email: adres.email || null,
+    },
+    weight: Number(paczka.wagaKg), length: paczka.dlugoscCm, width: paczka.szerokoscCm, height: paczka.wysokoscCm,
+    ...extra,
+  });
+  if (!q.body || !q.body.ok) throw new Error(`wycena: ${(q.body && (q.body.error || q.body.message)) || `HTTP ${q.status}`}`);
+  const offers = q.body.offers || [];
+  if (!offers.length) throw new Error('wycena bez ofert');
+  return { quoteId: String(q.body.quoteId), offers };
+}
+
+/* SZACUNEK CENY KURIERA PRZY SKŁADANIU ZAMÓWIENIA (10.11.2026). Paczka #5 do
+   Włoch poszła za 138,94 zł zamiast ~47 zł i nikt tego nie widział, bo auto-list
+   wyceniał dopiero po spakowaniu. Teraz wycena idzie już przy składaniu, na
+   kartonie, jaki magazyn zwykle bierze (szacujPaczke), a właściciel widzi cenę,
+   przewoźnika i liczbę ofert. Wynik trzymamy 30 min w pamięci, żeby „sprawdź
+   cenę" w formularzu i samo złożenie zamówienia nie pytały GK dwa razy. */
+const _szacunki = new Map(); // klucz → { o: szacunek, t }
+async function szacunekKuriera(prisma, adres, linie) {
+  const paczka = szacujPaczke(linie, wagaZPozycji(linie, 0));
+  const klucz = crypto.createHash('sha1').update(JSON.stringify([adres.street, adres.houseNumber, adres.postCode, adres.city, adres.country, paczka])).digest('hex');
+  const teraz = Date.now();
+  for (const [k, v] of _szacunki) if (teraz - v.t > 30 * 60 * 1000) _szacunki.delete(k);
+  const zapamietany = _szacunki.get(klucz);
+  if (zapamietany) return zapamietany.o;
+  let wynik;
+  try {
+    // Limit czasu: selfCall go nie ma, a składanie zamówienia nie może wisieć na GK.
+    let budzik;
+    const { offers } = await Promise.race([
+      wycenKuriera(prisma, adres, paczka),
+      new Promise((_, rej) => { budzik = setTimeout(() => rej(new Error('GlobKurier nie odpowiedział w 25 s')), 25000); }),
+    ]).finally(() => clearTimeout(budzik));
+    const o = offers[0];
+    wynik = {
+      cena: Number(o.price), waluta: o.currency || 'PLN', przewoznik: o.carrier || null, usluga: o.name || null,
+      ofert: offers.length,
+      inne: offers.slice(1, 3).map(x => ({ przewoznik: x.carrier || null, usluga: x.name || null, cena: Number(x.price) })),
+      paczka, kiedy: new Date().toISOString(),
+    };
+    _szacunki.set(klucz, { o: wynik, t: teraz });
+  } catch (e) {
+    // GK nie odpowiada — zamówienie do magazynu i tak można złożyć, ale bez
+    // punktu odniesienia dla bezpiecznika ceny. Nie zapamiętujemy błędu.
+    wynik = { blad: String(e.message).slice(0, 300), paczka, kiedy: new Date().toISOString() };
+  }
+  return wynik;
+}
+
+/* AUTO-LIST + BEZPIECZNIK CENY: gdy najtańsza oferta przy pakowaniu jest
+   wyraźnie droższa niż szacunek pokazany właścicielowi (limitCeny: 1,5× albo
+   +25 zł), kuriera NIE zamawiamy — błąd trafia do kurierBlad i na Telegram,
+   a właściciel decyduje („Zamów mimo to" = bezLimitu). */
+async function zamowKuriera(o, prisma, { bezLimitu = false } = {}) {
   // Najpierw nasze sprawdzenie (te same reguły co zamówienie w GK) — czytelny
   // powód zamiast odrzucenia z GK, i bez zbędnego wywołania.
   const spr = sprawdzOdbiorce(o.odbiorca);
   if (spr.bledy.length) throw new Error(`adres nie przejdzie w GlobKurier: ${spr.bledy.join('; ')} — popraw odbiorcę i ponów`);
-  const nadawca = await nadawcaMagazynu(prisma);
-  const od = spr.adres;
-  const q = await selfCall('POST', '/api/glob/quote', {
-    ...(nadawca.senderId ? { senderId: nadawca.senderId } : { senderSearch: nadawca.senderSearch }),
-    receiverSearch: od.name,
-    deliveryAddress: {
-      street: od.street, houseNumber: od.houseNumber || null, apartmentNumber: od.apartmentNumber || null,
-      postCode: od.postCode, city: od.city, country: od.country || 'PL', phone: od.phone || null, email: od.email || null,
-    },
-    weight: Number(o.wagaKg), length: o.dlugoscCm, width: o.szerokoscCm, height: o.wysokoscCm,
-    invoiceNumber: o.invoiceNumber || undefined,
-  });
-  if (!q.body || !q.body.ok) throw new Error(`wycena: ${(q.body && (q.body.error || q.body.message)) || `HTTP ${q.status}`}`);
-  const oferta = (q.body.offers || [])[0];
-  if (!oferta) throw new Error('wycena bez ofert');
-  const r = await selfCall('POST', '/api/glob/order', { quoteId: q.body.quoteId, productId: oferta.productId });
+  const { quoteId, offers } = await wycenKuriera(prisma, spr.adres,
+    { wagaKg: o.wagaKg, dlugoscCm: o.dlugoscCm, szerokoscCm: o.szerokoscCm, wysokoscCm: o.wysokoscCm },
+    { invoiceNumber: o.invoiceNumber || undefined });
+  const oferta = offers[0];
+  const cena = oferta.price != null ? Number(oferta.price) : null;
+  const szac = o.kurierSzacunek && Number(o.kurierSzacunek.cena);
+  if (!bezLimitu && cena != null && szac > 0 && zaDrogo(cena, szac)) {
+    throw new Error(`Cena kuriera za wysoka: ${zl(cena)} (${[oferta.carrier, oferta.name].filter(Boolean).join(' ')}), a przy składaniu zamówienia szacunek był ${zl(szac)} (limit ${zl(limitCeny(szac))}). Kurier NIE został zamówiony — sprawdź adres i karton; jeśli cena jest w porządku, kliknij „Zamów mimo to”.`);
+  }
+  const r = await selfCall('POST', '/api/glob/order', { quoteId, productId: oferta.productId });
   if (!r.body || !r.body.ok) throw new Error(`zamówienie: ${(r.body && (r.body.error || r.body.message)) || `HTTP ${r.status}`}`);
-  return { gkHash: r.body.hash || null, gkNumber: r.body.orderNumber || null, carrier: r.body.carrier || oferta.carrier || null, quoteId: String(q.body.quoteId), cena: oferta.price != null ? Number(oferta.price) : null };
+  return { gkHash: r.body.hash || null, gkNumber: r.body.orderNumber || null, carrier: r.body.carrier || oferta.carrier || null, quoteId, cena };
 }
 
 /** Linie, które realnie schodzą ze stanu: bez nagłówków boxów. */
@@ -281,9 +344,12 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
     const c = await prisma.contractor.findUnique({ where: { id: contractorId }, select: { id: true } }).catch(() => null);
     if (!c) contractorId = null;
   }
+  // Cena kuriera już teraz (auto-list) — właściciel widzi ją przy składaniu.
+  const szacunek = autoList ? await szacunekKuriera(prisma, weryfikacja.adres, linie) : null;
   const o = await prisma.warehouseOrder.create({
     data: {
       contractorId,
+      kurierSzacunek: szacunek || undefined,
       odbiorca: weryfikacja ? weryfikacja.adres : {
         name: '', street: '', houseNumber: '', apartmentNumber: '', postCode: '', city: '', country: 'PL', phone: '', email: '',
       },
@@ -299,7 +365,24 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
   res.json({
     ok: true, zamowienie: toPublic(o, rola(req)),
     adres: weryfikacja ? { poprawki: weryfikacja.poprawki, ostrzezenia: weryfikacja.ostrzezenia, bledy: weryfikacja.bledy } : null,
+    kurier: szacunek ? { szacunek, opis: opisSzacunku(szacunek) } : null,
   });
+}));
+
+/* Cena kuriera PRZED złożeniem zamówienia (formularz, Claude): ten sam
+   szacunek, który potem zapisze się przy zamówieniu. Nic nie zamawia. */
+router.post('/wycena', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const b = req.body || {};
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) return res.status(400).json({ ok: false, error: 'brak pozycji' });
+  const w = sprawdzOdbiorce((b.odbiorca && typeof b.odbiorca === 'object') ? b.odbiorca : {});
+  if (w.bledy.length) return res.status(400).json({ ok: false, error: `Adres nie przejdzie w GlobKurier: ${w.bledy.join('; ')}`, bledy: w.bledy });
+  const { linie, bledy } = rozbijPozycje(items, await getActiveCatalog(prisma));
+  if (bledy.length) return res.status(400).json({ ok: false, error: bledy.join('; ') });
+  const szacunek = await szacunekKuriera(prisma, w.adres, linie);
+  res.json({ ok: !szacunek.blad, szacunek, opis: opisSzacunku(szacunek), adres: { poprawki: w.poprawki, ostrzezenia: w.ostrzezenia } });
 }));
 
 /* Sprawdzenie adresu bez składania zamówienia (formularz, Claude). */
@@ -434,7 +517,7 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
       const k = await zamowKuriera(u, prisma);
       wynik = await prisma.warehouseOrder.update({
         where: { id: u.id },
-        data: { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierBlad: null, zatwierdzilKto: 'auto-list', zatwierdzonoAt: new Date() },
+        data: { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierCena: k.cena, kurierBlad: null, zatwierdzilKto: 'auto-list', zatwierdzonoAt: new Date() },
         include: ORDER_INCLUDE,
       });
     } catch (e) {
@@ -463,8 +546,9 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
     const braki = brakiOdbiorcy(o.odbiorca);
     if (braki.length) return res.status(400).json({ ok: false, error: `brak danych odbiorcy: ${braki.join(', ')}` });
     try {
-      const k = await zamowKuriera(o, prisma);
-      data = { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
+      // bezLimitu: właściciel widział cenę wyższą od szacunku i potwierdził.
+      const k = await zamowKuriera(o, prisma, { bezLimitu: b.bezLimitu === true });
+      data = { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierCena: k.cena, kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
     } catch (e) {
       await prisma.warehouseOrder.update({ where: { id: o.id }, data: { kurierBlad: String(e.message).slice(0, 500) } });
       return res.status(502).json({ ok: false, error: e.message });

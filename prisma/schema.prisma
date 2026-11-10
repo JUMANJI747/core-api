@@ -326,6 +326,8 @@ model WarehouseOrder {
   gkNumber      String?
   carrier       String?
   kurierBlad    String?  // ostatni błąd auto-listu — widoczny obu stronom, żeby nikt nie czekał na etykietę, której nie będzie
+  kurierSzacunek Json?   // {cena, waluta, przewoznik, usluga, ofert, inne[], paczka{…}, kiedy} albo {blad} — wycena pokazana właścicielowi przy składaniu (10.11.2026); punkt odniesienia bezpiecznika ceny
+  kurierCena    Decimal? @db.Decimal(8, 2) // cena brutto kuriera zamówionego auto-listem
   utworzyl      String?  // login z x-crm-user
   gotoweKto     String?
   zatwierdzilKto String?

@@ -278,10 +278,11 @@ const server = app.listen(PORT, () => {
         if (parsed && typeof parsed === 'object') count = Object.keys(parsed).length;
       } catch (_) {}
     }
-    if (count >= 50) {
-      console.log(`[startup] GK country map OK (${count} krajów)`);
-      return;
-    }
+    // Zawsze synchronizujemy z oficjalnej listy (jedno zapytanie): 29.06.2026
+    // heurystyka telefonowa zapisała IT→41 („Włochy (wyspy)"), a start pomijał
+    // synchronizację, bo mapa „miała dość krajów" — błąd siedział 4 miesiące
+    // i 9.11 kosztował 92 zł na jednej paczce.
+    console.log(`[startup] GK country map: ${count} krajów w Config — odświeżam z /v1/countries`);
     const { syncCountriesFromApi } = require('./routes/glob-quote');
     const r = await syncCountriesFromApi(prisma);
     console.log(`[startup] GK country map zsynchronizowana: ${r.count} krajów z /v1/countries`);
