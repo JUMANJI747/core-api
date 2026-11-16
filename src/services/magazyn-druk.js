@@ -192,7 +192,10 @@ function trescMaila(z) {
   });
   const kurier = z.autoList
     ? 'Kurier zamówi się sam po kliknięciu „Paczka gotowa” w panelu, list przewozowy pojawi się przy zamówieniu.'
-    : 'Kuriera zamawia Surf Stick, list przewozowy pojawi się przy zamówieniu w panelu.';
+    : (z.gkNumber || z.gkHash)
+      // 16.11.2026: kurier zamówiony z góry (np. pod awizację Super-Pharm)
+      ? `Kurier jest już zamówiony${z.carrier ? ` (${z.carrier})` : ''} — list przewozowy${z.gkNumber ? ` ${z.gkNumber}` : ''} jest przy zamówieniu w panelu${z.listWZalaczniku ? ' i w załączniku' : ''}. Naklej go na paczkę.`
+      : 'Kuriera zamawia Surf Stick, list przewozowy pojawi się przy zamówieniu w panelu.';
   const docs = z.dokumenty || [];
   const subject = `Nowe zamówienie #${z.numer} do spakowania (${razem} szt.) — Surf Stick Bell`;
   const text = [

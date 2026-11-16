@@ -193,3 +193,58 @@ test('lista dla magazynu: widać, że powiadomiono, ale bez loginu i adresu (dan
   assert.equal(wl.powiadomilKto, 'michal');
   assert.equal(wl.powiadomionoDo, 'm.urbaniak@bell.com.pl');
 });
+
+// ── gotowy list przewozowy podpięty PRZED spakowaniem (16.11.2026, Super-Pharm) ──
+function bazaPakowania(z) {
+  const db = baza(z);
+  db.warehouseOrder.updateMany = async ({ where, data }) => {
+    if (where.status && db.stan.z.status !== where.status) return { count: 0 };
+    db.stan.aktualizacje.push(data); db.stan.z = { ...db.stan.z, ...data }; return { count: 1 };
+  };
+  db.stockMovement = { groupBy: async () => [], createMany: async () => ({ count: 0 }) };
+  db.warehouseBox = { findFirst: async () => null };
+  db.$transaction = async (fn) => fn(db);
+  return db;
+}
+const LIST = { gkNumber: 'GK261110952189', gkHash: 'fa575e17', carrier: 'inPost-Kurier' };
+
+test('gotowy list: podpina się do NOWEGO zamówienia bez zmiany statusu; nie przy auto-liście; nie magazyn', async () => {
+  const db = baza(zamowienie({ autoList: false }));
+  assert.equal((await zapytaj(db, 'POST', '/zamowienia/z7/kurier', { rola: 'magazyn', body: LIST })).status, 403);
+  const r = await zapytaj(db, 'POST', '/zamowienia/z7/kurier', { body: LIST });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.zamowienie.status, 'NOWE', 'status zmieni dopiero „Paczka gotowa"');
+  assert.equal(r.json.zamowienie.gkNumber, 'GK261110952189');
+  assert.equal(r.json.zamowienie.gkHash, 'fa575e17');
+  assert.equal(r.json.zamowienie.carrier, 'inPost-Kurier');
+  assert.ok(!('status' in db.stan.aktualizacje[0]));
+
+  const auto = baza(zamowienie({ autoList: true }));
+  const odm = await zapytaj(auto, 'POST', '/zamowienia/z7/kurier', { body: LIST });
+  assert.equal(odm.status, 400);
+  assert.match(odm.json.error, /auto-list/);
+  // auto-list na żądanie nadal tylko dla spakowanej paczki
+  assert.equal((await zapytaj(baza(zamowienie({ autoList: false })), 'POST', '/zamowienia/z7/kurier', { body: { autoList: true } })).status, 400);
+});
+
+test('gotowy list: „Paczka gotowa" przechodzi prosto do KURIER; bez listu zostaje GOTOWE', async () => {
+  const zListem = bazaPakowania(zamowienie({ autoList: false, ...LIST }));
+  const r = await zapytaj(zListem, 'POST', '/zamowienia/z7/gotowe', { rola: 'magazyn', body: { dlugoscCm: 40, szerokoscCm: 40, wysokoscCm: 30 } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.zamowienie.status, 'KURIER');
+  assert.equal(r.json.zamowienie.gkNumber, 'GK261110952189');
+
+  const bezListu = bazaPakowania(zamowienie({ autoList: false }));
+  const g = await zapytaj(bezListu, 'POST', '/zamowienia/z7/gotowe', { rola: 'magazyn', body: { dlugoscCm: 40, szerokoscCm: 40, wysokoscCm: 30 } });
+  assert.equal(g.status, 200, JSON.stringify(g.json));
+  assert.equal(g.json.zamowienie.status, 'GOTOWE');
+});
+
+test('mail do magazynu: przy gotowym liście mówi, że kurier jest zamówiony', () => {
+  const { toPublicMagazyn } = pomocnicze();
+  const m = trescMaila({ ...toPublicMagazyn(zamowienie({ autoList: false, ...LIST })), listWZalaczniku: true });
+  assert.match(m.text, /Kurier jest już zamówiony \(inPost-Kurier\) — list przewozowy GK261110952189 jest przy zamówieniu w panelu i w załączniku\. Naklej go na paczkę\./);
+  assert.ok(!m.text.includes('Kuriera zamawia Surf Stick'));
+  const bez = trescMaila(toPublicMagazyn(zamowienie({ autoList: false })));
+  assert.match(bez.text, /Kuriera zamawia Surf Stick/);
+});

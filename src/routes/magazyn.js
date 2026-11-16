@@ -512,6 +512,15 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
      i jest widoczny obu stronom — zamówienie zostaje GOTOWE, właściciel może
      zamówić ręcznie i podpiąć. */
   let wynik = u;
+  // Kurier zamówiony z góry (list podpięty do nowego zamówienia): paczka
+  // spakowana = czeka już tylko na kuriera, niczego nie trzeba zamawiać.
+  if (!u.autoList && (u.gkNumber || u.gkHash)) {
+    wynik = await prisma.warehouseOrder.update({
+      where: { id: u.id },
+      data: { status: 'KURIER', kurierBlad: null, zatwierdzonoAt: new Date() },
+      include: ORDER_INCLUDE,
+    });
+  }
   if (u.autoList) {
     try {
       const k = await zamowKuriera(u, prisma);
@@ -540,7 +549,15 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
   const b = req.body || {};
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
-  if (o.status !== 'GOTOWE') return res.status(400).json({ ok: false, error: `zamówienie jest w stanie ${o.status} — kurier podpina się do spakowanej paczki` });
+  /* LIST PRZEWOZOWY JUŻ JEST (16.11.2026). Super-Pharm: kurier zamówiony
+     z wyprzedzeniem pod awizację, list leży w CRM — a system pozwalał go
+     podpiąć dopiero PO spakowaniu, więc magazyn pakował bez listu i widział
+     „czeka na zamówienie kuriera". Teraz gotowy list podpina się też do
+     zamówienia NOWE: magazyn ma go od razu, a „Paczka gotowa" przechodzi
+     prosto do „kurier zamówiony". Auto-list nadal tylko po spakowaniu. */
+  const przedSpakowaniem = o.status === 'NOWE' && !b.autoList;
+  if (o.status !== 'GOTOWE' && !przedSpakowaniem) return res.status(400).json({ ok: false, error: `zamówienie jest w stanie ${o.status} — kuriera zamawia się do spakowanej paczki (gotowy list można podpiąć też do nowego zamówienia)` });
+  if (przedSpakowaniem && o.autoList) return res.status(400).json({ ok: false, error: 'to zamówienie ma auto-list — kurier zamówi się sam po spakowaniu; gotowego listu nie podpinamy' });
   let data;
   if (b.autoList) {
     const braki = brakiOdbiorcy(o.odbiorca);
@@ -572,6 +589,8 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
       } catch (e) { console.warn(`[magazyn] hash po numerze ${gkNumber} nieznaleziony:`, e.message); }
     }
     data = { status: 'KURIER', gkHash: gkHash || null, gkNumber: gkNumber || null, carrier: b.carrier ? String(b.carrier).slice(0, 60) : (carrierZnaleziony ? String(carrierZnaleziony).slice(0, 60) : null), kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
+    // Przed spakowaniem zapisujemy sam list — status zmieni „Paczka gotowa".
+    if (przedSpakowaniem) { delete data.status; delete data.zatwierdzonoAt; }
   }
   const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data, include: ORDER_INCLUDE });
   res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
@@ -628,8 +647,19 @@ router.post('/zamowienia/:id/powiadom', asyncHandler(async (req, res) => {
     return res.status(409).json({ ok: false, juzPowiadomiono: true, powiadomionoAt: o.powiadomionoAt, error: `Magazyn powiadomiony już ${kiedy} (${o.powiadomionoDo || 'magazyn'}). Wyślij ponownie tylko, jeśli trzeba.` });
   }
   const z = toPublic(o, 'magazyn');
+  // Gotowy list przewozowy (kurier zamówiony z góry) idzie w mailu razem
+  // z zamówieniem — magazyn drukuje wszystko z jednej wiadomości.
+  let list = null;
+  if (o.gkHash) {
+    try {
+      const r = await getOrderLabels(o.gkHash, 'A4');
+      if (r.status === 200 && r.body && r.body.length) list = { filename: `list-przewozowy-${o.gkNumber || o.numer}.pdf`, content: r.body, contentType: 'application/pdf' };
+    } catch (e) { console.warn(`[magazyn] list do maila #${o.numer} niedostępny:`, e.message); }
+  }
+  z.listWZalaczniku = !!list;
   const { subject, text, html } = trescMaila(z);
   const zalaczniki = [{ filename: `zamowienie-${o.numer}.pdf`, content: await pdfZamowienia(z), contentType: 'application/pdf' }];
+  if (list) zalaczniki.push(list);
   const docs = await prisma.warehouseOrderDoc.findMany({ where: { orderId: o.id }, orderBy: { createdAt: 'asc' }, select: { filename: true, contentType: true, data: true } });
   for (const d of docs) zalaczniki.push({ filename: d.filename, content: Buffer.from(d.data), contentType: d.contentType || 'application/pdf' });
   const opisZal = zalaczniki.map(a => ({ filename: a.filename, size: a.content.length }));
