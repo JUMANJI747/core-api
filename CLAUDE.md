@@ -19,4 +19,4 @@ Jeśli zmiana czyni MAPĘ nieaktualną, popraw MAPĘ. Mapa frontu: `../core-crm-
 ## Inne
 - Deploy: `npx prisma db push && node src/index.js` — nowe modele/pola wchodzą same.
 - Idempotencja wystawiania FV/WZ: `src/services/confirm-lock.js`.
-- Modele Anthropic przez env; działające: `claude-opus-4-8`, `claude-sonnet-5-5`, `claude-haiku-4-5-20251001`.
+- Modele Anthropic przez env; działające: `claude-opus-5-5` (potwierdzony na produkcji 18.11.2026 — naprawa auto-listu), `claude-opus-4-8`, `claude-sonnet-5-5`, `claude-haiku-4-5-20251001`.
