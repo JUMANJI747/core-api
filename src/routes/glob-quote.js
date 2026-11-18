@@ -1529,6 +1529,10 @@ router.post('/glob/order', async (req, res) => {
           problems.push(`Kraj ${who || ''} odrzucony: "${msg}". Możliwy brak countryId dla tego kraju w GK — uruchom POST /api/glob/discover-countries.`);
         } else if (fieldLow.includes('addon')) {
           continue;
+        } else if (fieldLow.includes('payment')) {
+          // Brak środków na koncie GK: magazyn.js (rodzajBledu) po tym zdaniu
+          // wysyła właścicielowi alarm OD RAZU, bez próby naprawy.
+          problems.push(`Płatność w GlobKurier odrzucona: "${msg}". Sprawdź saldo konta GlobKurier.`);
         } else {
           problems.push(field + ': ' + msg);
         }

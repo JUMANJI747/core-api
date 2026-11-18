@@ -253,6 +253,12 @@ const server = app.listen(PORT, () => {
   setTimeout(statusyMagazynu, 60 * 1000).unref();
   setInterval(statusyMagazynu, 30 * 60 * 1000).unref();
   straznik.uruchom(prisma);
+  // Automatyczne naprawy auto-listu przerwane restartem (stan „w toku" po
+  // poprzednim procesie): po 3 minutach stary proces na pewno nie żyje —
+  // oznacz jako nieudane i daj znać właścicielowi, że kurier nie jest zamówiony.
+  setTimeout(() => require('./routes/magazyn').posprzatajPrzerwaneNaprawy(prisma)
+    .then(n => { if (n) console.log(`[magazyn] naprawy auto-listu przerwane restartem: ${n}`); })
+    .catch(e => console.error('[magazyn] sprzątanie przerwanych napraw:', e.message)), 3 * 60 * 1000).unref();
   // Raporty kasowe (przeniesione z n8n): śpi, dopóki nie ma RAPORTY_POCZTA_*.
   require('./services/raporty-kasowe-cykl').uruchom(prisma);
   // Maile rozgrzewające (Instantly), które trafiły do CRM przed filtrem albo

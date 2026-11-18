@@ -28,6 +28,8 @@ const { PRODUCT_WEIGHTS } = require('./glob-helpers');
 const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
 const { sprawdzOdbiorce } = require('../services/adres-gk');
 const { szacujPaczke, limitCeny, zaDrogo, opisSzacunku, zl } = require('../services/kurier-szacunek');
+const { naprawKuriera, rodzajBledu, naruszeniaPoprawki } = require('../services/kurier-naprawa');
+const { normalizujTelefon, KIERUNKOWE } = require('../services/telefon');
 const crypto = require('crypto');
 
 /* Alarm do właściciela, gdy auto-list nie zamówi kuriera (9.11.2026: #5
@@ -77,6 +79,20 @@ function toPublic(o, rola = 'owner') {
       wagaKg: o.wagaKg != null ? Number(o.wagaKg) : null,
     } : null,
     autoList: !!o.autoList, kurierBlad: o.kurierBlad || null,
+    // Automatyczna naprawa auto-listu (18.11.2026): magazyn widzi tylko stan,
+    // właściciel także podsumowanie i zmiany, które zrobił model. Stan z
+    // poprzedniego pakowania (cofnięte „gotowe") nie jest pokazywany.
+    kurierNaprawa: (() => {
+      const n = o.kurierNaprawa;
+      if (!n || !n.stan) return null;
+      const bezKuriera = o.status === 'GOTOWE' && !o.gkNumber && !o.gkHash;
+      let stan = null;
+      if (n.stan === 'w-toku' && bezKuriera) stan = naprawaTrwa(o) ? 'w-toku' : 'przerwana';
+      else if (n.stan === 'nieudana' && bezKuriera) stan = 'nieudana';
+      else if (n.stan === 'udana' && ['KURIER', 'WYSLANE'].includes(o.status) && o.zatwierdzilKto === ZATWIERDZIL_NAPRAWA) stan = 'udana';
+      if (!stan) return null;
+      return obcy ? { stan } : { stan, od: n.od || null, do: n.do || null, model: n.model || null, podsumowanie: n.podsumowanie || null, zmiany: Array.isArray(n.zmiany) ? n.zmiany : [], niepewne: !!n.niepewne };
+    })(),
     // Cena kuriera: szacunek pokazany przy składaniu i cena zamówionego listu
     // (10.11.2026). Tylko dla właściciela — magazyn nie widzi naszych kosztów.
     kurierSzacunek: obcy ? null : (o.kurierSzacunek || null),
@@ -86,7 +102,7 @@ function toPublic(o, rola = 'owner') {
       ? (() => { const w = sprawdzOdbiorce(odb); return [...w.bledy, ...w.ostrzezenia]; })()
       : [],
     gkHash: o.gkHash, gkNumber: o.gkNumber, carrier: o.carrier,
-    utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto && o.zatwierdzilKto !== 'auto-list' ? 'Surf Stick' : o.zatwierdzilKto,
+    utworzyl: obcy && o.utworzyl ? 'Surf Stick' : o.utworzyl, gotoweKto: o.gotoweKto, zatwierdzilKto: obcy && o.zatwierdzilKto ? (/^auto-list/.test(o.zatwierdzilKto) ? 'auto-list' : 'Surf Stick') : o.zatwierdzilKto,
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
     gkStatus: o.gkStatus || null, gkStatusAt: o.gkStatusAt || null, wyslanoAt: o.wyslanoAt || null, dostarczonoAt: o.dostarczonoAt || null, ostatnieZdarzenie: o.ostatnieZdarzenie || null,
     powiadomionoAt: o.powiadomionoAt || null, powiadomilKto: obcy ? null : (o.powiadomilKto || null), powiadomionoDo: obcy ? null : (o.powiadomionoDo || null),
@@ -261,23 +277,335 @@ async function szacunekKuriera(prisma, adres, linie) {
    wyraźnie droższa niż szacunek pokazany właścicielowi (limitCeny: 1,5× albo
    +25 zł), kuriera NIE zamawiamy — błąd trafia do kurierBlad i na Telegram,
    a właściciel decyduje („Zamów mimo to" = bezLimitu). */
-async function zamowKuriera(o, prisma, { bezLimitu = false } = {}) {
+async function zamowKuriera(o, prisma, { bezLimitu = false, productId = null } = {}) {
   // Najpierw nasze sprawdzenie (te same reguły co zamówienie w GK) — czytelny
   // powód zamiast odrzucenia z GK, i bez zbędnego wywołania.
   const spr = sprawdzOdbiorce(o.odbiorca);
   if (spr.bledy.length) throw new Error(`adres nie przejdzie w GlobKurier: ${spr.bledy.join('; ')} — popraw odbiorcę i ponów`);
-  const { quoteId, offers } = await wycenKuriera(prisma, spr.adres,
-    { wagaKg: o.wagaKg, dlugoscCm: o.dlugoscCm, szerokoscCm: o.szerokoscCm, wysokoscCm: o.wysokoscCm },
-    { invoiceNumber: o.invoiceNumber || undefined });
-  const oferta = offers[0];
+  const { quoteId, offers } = await wycenKuriera(prisma, spr.adres, kartonZ(o), { invoiceNumber: o.invoiceNumber || undefined });
+  // productId = inny przewoźnik wskazany przy naprawie (najtańszy odrzucił albo nie ma terminu).
+  const oferta = productId == null ? offers[0] : offers.find(x => String(x.productId) === String(productId));
+  if (!oferta) throw new Error(`oferty ${productId} nie ma w aktualnej wycenie — wybierz productId z wycen_kuriera`);
   const cena = oferta.price != null ? Number(oferta.price) : null;
   const szac = o.kurierSzacunek && Number(o.kurierSzacunek.cena);
-  if (!bezLimitu && cena != null && szac > 0 && zaDrogo(cena, szac)) {
-    throw new Error(`Cena kuriera za wysoka: ${zl(cena)} (${[oferta.carrier, oferta.name].filter(Boolean).join(' ')}), a przy składaniu zamówienia szacunek był ${zl(szac)} (limit ${zl(limitCeny(szac))}). Kurier NIE został zamówiony — sprawdź adres i karton; jeśli cena jest w porządku, kliknij „Zamów mimo to”.`);
+  // Odniesienie: szacunek pokazany właścicielowi; bez niego przy droższej
+  // ofercie — najtańsza z bieżącej wyceny (naprawa nie może kupić dowolnie drogo).
+  const odniesienie = szac > 0 ? szac : (oferta !== offers[0] ? Number(offers[0].price) : null);
+  if (!bezLimitu && cena != null && odniesienie > 0 && zaDrogo(cena, odniesienie)) {
+    const wobec = szac > 0 ? `przy składaniu zamówienia szacunek był ${zl(szac)}` : `najtańsza oferta to ${zl(odniesienie)}`;
+    throw new Error(`Cena kuriera za wysoka: ${zl(cena)} (${[oferta.carrier, oferta.name].filter(Boolean).join(' ')}), a ${wobec} (limit ${zl(limitCeny(odniesienie))}). Kurier NIE został zamówiony — sprawdź adres i karton; jeśli cena jest w porządku, kliknij „Zamów mimo to”.`);
   }
-  const r = await selfCall('POST', '/api/glob/order', { quoteId, productId: oferta.productId });
-  if (!r.body || !r.body.ok) throw new Error(`zamówienie: ${(r.body && (r.body.error || r.body.message)) || `HTTP ${r.status}`}`);
+  // `niepewne` = nie wiadomo, czy zlecenie powstało (patrz niepewnyBlad): kto
+  // ponawia, najpierw sprawdza listę zleceń w GK (swiezeZlecenieGk).
+  let r;
+  try { r = await selfCall('POST', '/api/glob/order', { quoteId, productId: oferta.productId }); }
+  catch (e) { throw Object.assign(new Error(`zamówienie: brak odpowiedzi serwera (${e.message})`), { niepewne: true }); }
+  if (!r.body || !r.body.ok) {
+    const tresc = (r.body && (r.body.error || r.body.message)) || `HTTP ${r.status}`;
+    // Odmowa GK wraca jako HTTP 200 + ok:false (nic nie powstało). Inny status
+    // to wyjątek w trakcie zamawiania — np. limit czasu po wysłaniu zlecenia.
+    throw Object.assign(new Error(`zamówienie: ${tresc}`), { niepewne: r.status !== 200 || niepewnyBlad(tresc) });
+  }
   return { gkHash: r.body.hash || null, gkNumber: r.body.orderNumber || null, carrier: r.body.carrier || oferta.carrier || null, quoteId, cena };
+}
+
+/* CZY ZLECENIE JEDNAK POWSTAŁO (18.11.2026). GlobKurier potrafi zawisnąć przy
+ * POST /v1/order na 25 s+ (nasz limit czasu) albo oddać 502 — a zlecenie mimo
+ * to utworzyć. Człowiek po takim błędzie zajrzy do GK; automat, który ponawia,
+ * zamówiłby drugiego kuriera. Dlatego po NIEPEWNYM błędzie każde ponowienie
+ * (naprawa i „Ponów auto-list") najpierw szuka na liście GK zlecenia z ostatnich
+ * minut dla tego odbiorcy i — jeśli jest — podpina je zamiast zamawiać. */
+// Treść błędu z fazy zamawiania (po wycenie): limit czasu, zerwane połączenie,
+// 5xx albo odpowiedź bez numeru — zlecenie mogło powstać.
+const niepewnyBlad = (tresc) => /timeout|limit czasu|brak odpowiedzi|HTTP 5\d\d|ECONN|ETIMEDOUT|EPIPE|socket|hang up|nie potwierdzi[łl] zam[óo]wienia/i.test(String(tresc || ''));
+// To samo dla błędu zapisanego w kurierBlad („zamówienie: …"; błąd wyceny jest bezpieczny).
+const niepewnyZapisany = (blad) => /^zamówienie:/i.test(String(blad || '')) && niepewnyBlad(blad);
+
+// „2026-11-18 13:26:15" z GK to czas warszawski — na milisekundy UTC.
+function czasGkNaMs(s) {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const jakUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  const w = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Warsaw', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+    .format(new Date(jakUtc)).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!w) return jakUtc;
+  const przesuniecie = Date.UTC(+w[1], +w[2] - 1, +w[3], +w[4], +w[5], +w[6]) - jakUtc; // +1 h zimą, +2 h latem
+  return jakUtc - przesuniecie;
+}
+
+const tylkoZnaki = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ß/g, 'ss').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Zlecenie GK utworzone po `odMs` dla odbiorcy tego zamówienia i niepodpięte
+ *  pod inne zamówienie magazynu — albo null. Rzuca, gdy lista GK jest niedostępna
+ *  (wtedy NIE wolno zamawiać ponownie w ciemno). `pobierz` do testów. */
+async function swiezeZlecenieGk(prisma, o, odMs, pobierz = null) {
+  const lista = await (pobierz || (() => require('../glob-client').fetchOrdersPaged(1, 50)))();
+  const adres = sprawdzOdbiorce(o.odbiorca).adres;
+  const nazwa = tylkoZnaki(adres.name);
+  const ulica = tylkoZnaki(`${adres.street}${adres.houseNumber}`);
+  const kod = tylkoZnaki(adres.postCode);
+  if (!kod || (nazwa.length < 4 && ulica.length < 5)) return null;
+  const pasujace = (lista || []).filter((z) => {
+    const r = z.receiverAddress || {};
+    const n = tylkoZnaki(r.name);
+    const kiedy = czasGkNaMs(z.creationDate);
+    // Ten sam odbiorca: początek nazwy (GK ucina ją do 30 znaków) albo ta sama
+    // ulica z numerem — zawsze z tym samym kodem pocztowym.
+    const tenSam = (n.length >= 4 && nazwa.length >= 4 && (nazwa.startsWith(n) || n.startsWith(nazwa)))
+      || (ulica.length >= 5 && tylkoZnaki(`${r.street || ''}${r.houseNumber || ''}`) === ulica);
+    return tenSam && tylkoZnaki(r.postCode) === kod
+      && kiedy != null && kiedy >= odMs - 2 * 60 * 1000
+      && !/CANCEL|ANUL/i.test(String(z.status || ''));
+  });
+  for (const z of pasujace) {
+    const numer = z.number ? String(z.number) : null;
+    const hash = z.hash ? String(z.hash) : null;
+    if (!numer && !hash) continue;
+    const zajete = await prisma.warehouseOrder.findFirst({ where: { id: { not: o.id }, OR: [...(numer ? [{ gkNumber: numer }] : []), ...(hash ? [{ gkHash: hash }] : [])] } });
+    if (zajete) continue;
+    const c = z.carrier;
+    const cena = z.pricing && z.pricing.priceGross != null ? Number(z.pricing.priceGross) : null;
+    return { gkNumber: numer, gkHash: hash, carrier: (c && typeof c === 'object' ? (c.name || c.brandName) : c) || null, cena: Number.isFinite(cena) ? cena : null };
+  }
+  return null;
+}
+
+/** Karton do wyceny: wybrany przez magazyn, a zanim go wybierze — szacowany. */
+function kartonZ(o) {
+  if (o.dlugoscCm && o.szerokoscCm && o.wysokoscCm && o.wagaKg != null) return { wagaKg: o.wagaKg, dlugoscCm: o.dlugoscCm, szerokoscCm: o.szerokoscCm, wysokoscCm: o.wysokoscCm };
+  return szacujPaczke(o.items || [], wagaZPozycji(o.items || [], 0));
+}
+
+/* ---------- AUTOMATYCZNA NAPRAWA AUTO-LISTU (18.11.2026) ----------
+ * Po nieudanym auto-liście: brak środków / bezpiecznik ceny / błąd ustawień →
+ * od razu Telegram do właściciela; reszta → model (services/kurier-naprawa.js)
+ * z narzędziami zdefiniowanymi tutaj. Naprawa biegnie W TLE — „Paczka gotowa"
+ * odpowiada magazynowi od razu, a wynik (list albo alarm) przychodzi po
+ * 1–2 minutach. Stan w WarehouseOrder.kurierNaprawa. */
+const NAPRAWA_NAJDLUZEJ_MS = 10 * 60 * 1000;
+const ZATWIERDZIL_NAPRAWA = 'auto-list (naprawa)';
+const _naprawyWToku = new Set();
+const naprawaWlaczona = () => process.env.KURIER_NAPRAWA !== '0' && !!(process.env.ANTHROPIC_API_KEY || '').trim();
+function naprawaTrwa(o) {
+  const n = o && o.kurierNaprawa;
+  return !!(n && n.stan === 'w-toku' && Date.now() - new Date(n.od || 0).getTime() < NAPRAWA_NAJDLUZEJ_MS);
+}
+const ktoGdzie = (o) => [(o.odbiorca || {}).name, (o.odbiorca || {}).city].filter(Boolean).join(', ') || 'bez odbiorcy';
+
+function daneDlaModelu(o) {
+  const sz = o.kurierSzacunek || null;
+  const k = kartonZ(o);
+  return {
+    numer: o.numer,
+    odbiorca: o.odbiorca || {},
+    paczka: { dlugoscCm: k.dlugoscCm, szerokoscCm: k.szerokoscCm, wysokoscCm: k.wysokoscCm, wagaKg: Number(k.wagaKg) },
+    szacunekCeny: sz && sz.cena != null ? { cena: sz.cena, przewoznik: sz.przewoznik || null, usluga: sz.usluga || null, limit: limitCeny(sz.cena) } : null,
+  };
+}
+
+const POLA_ODBIORCY = { name: 'nazwa', street: 'ulica', houseNumber: 'numer domu', apartmentNumber: 'lokal', postCode: 'kod pocztowy', city: 'miasto', phone: 'telefon' };
+const czystePola = (pola) => Object.fromEntries(Object.entries(pola || {}).filter(([k, v]) => k in POLA_ODBIORCY && typeof v === 'string').map(([k, v]) => [k, v.slice(0, 200)]));
+
+/** Zapis zamówionego (albo odnalezionego) kuriera w zamówieniu magazynu. */
+const daneKuriera = (k, ktoZatwierdzil) => ({ status: 'KURIER', gkHash: k.gkHash || null, gkNumber: k.gkNumber || null, carrier: k.carrier || null, ...(k.quoteId ? { quoteId: k.quoteId } : {}), kurierCena: k.cena != null ? k.cena : null, kurierBlad: null, zatwierdzilKto: ktoZatwierdzil, zatwierdzonoAt: new Date() });
+
+/** Narzędzia modelu dla jednego zamówienia. `proba` = { o, zamow } — praca
+ *  na kopii w pamięci: nic nie zapisuje i niczego nie zamawia w GlobKurier.
+ *  `niepewneOd` (ms) — pierwsza próba auto-listu skończyła się niepewnie
+ *  (limit czasu przy zamawianiu): pierwsze `zamow` najpierw sprawdzi listę GK. */
+function narzedziaNaprawy(prisma, id, { proba = null, niepewneOd = null } = {}) {
+  // `pierwotny` — odbiorca sprzed naprawy: każda poprawka jest porównywana z nim,
+  // nie z poprzednią poprawką (seria drobnych zmian nie może odpłynąć od adresu).
+  const stan = { niepewneOd: niepewneOd || null, pierwotny: null };
+  const wez = async () => {
+    const o = proba ? proba.o : await prisma.warehouseOrder.findUnique({ where: { id }, include: ORDER_INCLUDE });
+    if (o && !stan.pierwotny) stan.pierwotny = { ...(o.odbiorca || {}) };
+    return o;
+  };
+  const stop = (o) => (!o ? 'zamówienia już nie ma'
+    : o.status !== 'GOTOWE' ? `zamówienie jest w stanie ${o.status} — kuriera nie zamawiam`
+      : (o.gkNumber || o.gkHash) ? 'kurier został w międzyczasie zamówiony' : null);
+  const zapisz = async (k) => {
+    // Zlecenie w GK JUŻ JEST — błąd zapisu nie może skończyć się drugim zamówieniem
+    // (naprawWTle domyka zapis jeszcze raz na podstawie wyniku).
+    try { await prisma.warehouseOrder.update({ where: { id }, data: daneKuriera(k, ZATWIERDZIL_NAPRAWA) }); }
+    catch (e) { console.error(`[magazyn] naprawa: kurier ${k.gkNumber} zamówiony, zapis nieudany:`, e.message); }
+  };
+  return {
+    stan,
+    async sprawdzAdres(pola) {
+      const o = await wez();
+      const w = sprawdzOdbiorce({ ...(o.odbiorca || {}), ...czystePola(pola) });
+      return { adres: w.adres, poprawkiAutomatyczne: w.poprawki, ostrzezenia: w.ostrzezenia, bledy: w.bledy, zmianaTresci: naruszeniaPoprawki(stan.pierwotny, w.adres) };
+    },
+    async poprawOdbiorce(pola, powod) {
+      const o = await wez();
+      const s = stop(o);
+      if (s) return { ok: false, blad: s };
+      const w = sprawdzOdbiorce({ ...(o.odbiorca || {}), ...czystePola(pola) });
+      if (w.bledy.length) return { ok: false, blad: `adres po zmianie nie przejdzie: ${w.bledy.join('; ')}` };
+      const zle = naruszeniaPoprawki(stan.pierwotny, w.adres);
+      if (zle.length) return { ok: false, blad: `to zmiana treści, nie zapisu — odrzucona: ${zle.join('; ')}` };
+      const zmiany = Object.keys(POLA_ODBIORCY)
+        .filter(k => String((o.odbiorca || {})[k] || '') !== String(w.adres[k] || ''))
+        .map(k => ({ pole: POLA_ODBIORCY[k], bylo: String((o.odbiorca || {})[k] || ''), jest: String(w.adres[k] || ''), powod }));
+      if (!zmiany.length) return { ok: true, zmiany: [], uwaga: 'nic się nie zmieniło — po czyszczeniu dane są takie same' };
+      if (proba) proba.o = { ...proba.o, odbiorca: w.adres };
+      else await prisma.warehouseOrder.update({ where: { id }, data: { odbiorca: w.adres } });
+      return { ok: true, odbiorca: w.adres, zmiany, ostrzezenia: w.ostrzezenia };
+    },
+    async wycen() {
+      const o = await wez();
+      const spr = sprawdzOdbiorce(o.odbiorca);
+      if (spr.bledy.length) return { ok: false, blad: `adres nie przejdzie w GlobKurier: ${spr.bledy.join('; ')}` };
+      const { offers } = await wycenKuriera(prisma, spr.adres, kartonZ(o));
+      const szac = o.kurierSzacunek && Number(o.kurierSzacunek.cena);
+      return {
+        ok: true,
+        oferty: offers.slice(0, 6).map(x => ({ productId: x.productId, przewoznik: x.carrier, usluga: x.name, cena: Number(x.price), najblizszyOdbior: (x.nearestPickup && x.nearestPickup.date) || null })),
+        limitCeny: limitCeny(szac > 0 ? szac : Number(offers[0].price)),
+        szacunekPrzyZamowieniu: szac > 0 ? szac : null,
+      };
+    },
+    async zamow({ productId }) {
+      const o = await wez();
+      const s = stop(o);
+      if (s) return { ok: false, blad: s };
+      if (proba) return proba.zamow(o, productId);
+      // Poprzednia próba mogła utworzyć zlecenie mimo błędu — najpierw lista GK.
+      if (stan.niepewneOd) {
+        let z;
+        try { z = await swiezeZlecenieGk(prisma, o, stan.niepewneOd); }
+        catch (e) { return { ok: false, blad: `nie zamawiam ponownie: nie da się sprawdzić w GlobKurier, czy poprzednia próba utworzyła zlecenie (${String(e.message).slice(0, 200)}). Zakończ — właściciel sprawdzi listę zleceń.` }; }
+        if (z) {
+          await zapisz(z);
+          stan.niepewneOd = null;
+          return { ok: true, gkNumber: z.gkNumber, gkHash: z.gkHash, przewoznik: z.carrier, cena: z.cena, podpiete: true, uwaga: 'Zlecenie powstało już przy poprzedniej próbie (GlobKurier nie odpowiedział na czas) — podpiąłem je, drugiego nie zamawiam.' };
+        }
+        stan.niepewneOd = null; // nic nie powstało — można zamawiać
+      }
+      const start = Date.now();
+      let k;
+      try { k = await zamowKuriera(o, prisma, { productId }); }
+      catch (e) {
+        if (e.niepewne) stan.niepewneOd = start;
+        return { ok: false, blad: String(e.message).slice(0, 500), ...(e.niepewne ? { uwaga: 'Nie wiadomo, czy zlecenie powstało. Następne zamow_kuriera najpierw sprawdzi listę zleceń w GlobKurier i podepnie zlecenie, jeśli jest.' } : {}) };
+      }
+      await zapisz(k);
+      return { ok: true, gkNumber: k.gkNumber, gkHash: k.gkHash, przewoznik: k.carrier, cena: k.cena, quoteId: k.quoteId };
+    },
+  };
+}
+
+/* Atrapa GlobKuriera do PRÓBY: odrzuca to, co odrzuca prawdziwy (znaki spoza
+   bezpiecznych w nazwie/ulicy/mieście, telefon spoza kraju), resztę „zamawia"
+   na niby. Pozwala sprawdzić model i pętlę na produkcji bez płatnego zlecenia. */
+function atrapaGk(bladPoczatkowy) {
+  return (o) => {
+    const od = o.odbiorca || {};
+    const brudne = ['name', 'street', 'city'].filter(k => /[^\p{L}\p{N}\s.\-]/u.test(String(od[k] || '')));
+    if (brudne.length) return { ok: false, blad: bladPoczatkowy };
+    const tel = normalizujTelefon(od.phone, od.country);
+    const dial = KIERUNKOWE[String(od.country || '').toUpperCase()];
+    if (!tel || (dial && !tel.startsWith(`+${dial}`))) return { ok: false, blad: `zamówienie: Telefon odbiorcy (${od.phone || 'brak'}) odrzucony przez GK: "To nie jest prawidłowy numer telefonu dla kraju odbiorcy".` };
+    return { ok: true, proba: true, gkNumber: 'PROBA-NIC-NIE-ZAMOWIONO', przewoznik: 'próba', cena: null };
+  };
+}
+
+const tekstBrakuSrodkow = (o, blad) => `🛑 Magazyn #${o.numer} (${ktoGdzie(o)}): paczka spakowana, kurier NIE zamówiony — GlobKurier odrzucił płatność (brak środków na koncie).\n`
+  + `Komunikat: ${String(blad).slice(0, 300)}\n`
+  + 'Doładuj konto GlobKurier i kliknij „Ponów auto-list” przy zamówieniu w panelu Magazyn.';
+const tekstNieudanego = (o, blad, dopisek) => `⚠️ Magazyn #${o.numer} (${ktoGdzie(o)}): paczka spakowana, ale NIE udało się zamówić kuriera.\n`
+  + `Błąd: ${String(blad).slice(0, 350)}\n`
+  + (dopisek ? `${dopisek}\n` : '')
+  + 'Zamów kuriera ręcznie w panelu Magazyn (albo napisz do Claude).';
+const UWAGA_NIEPEWNE = 'UWAGA: GlobKurier nie odpowiedział przy zamawianiu — zlecenie mogło powstać. Zajrzyj do listy zleceń w GlobKurier, zanim zamówisz ponownie.';
+
+/** Co wysłać właścicielowi od razu (bez modelu) po nieudanym auto-liście. */
+function tekstBezNaprawy(o, blad, rodzaj) {
+  if (rodzaj === 'brak-srodkow') return tekstBrakuSrodkow(o, blad);
+  return tekstNieudanego(o, blad, rodzaj === 'cena' ? 'Jeśli cena jest w porządku, kliknij „Zamów mimo to” przy zamówieniu.' : null);
+}
+
+async function powiadomONaprawie(prisma, o, blad, w, niepewne) {
+  if (w.ok) {
+    const z = w.zamowiono || {};
+    return alarmWlasciciela(prisma, `🔧 Magazyn #${o.numer} (${ktoGdzie(o)}): auto-list się nie udał, kurier zamówiony po automatycznej naprawie.\n`
+      + `${w.podsumowanie}\n`
+      + `Kurier: ${[z.przewoznik, z.cena != null ? zl(z.cena) : null, z.gkNumber].filter(Boolean).join(', ')}.`);
+  }
+  if (w.brakSrodkow) return alarmWlasciciela(prisma, tekstBrakuSrodkow(o, w.ostatniBlad || blad));
+  return alarmWlasciciela(prisma, tekstNieudanego(o, w.ostatniBlad || blad,
+    [`Automatyczna naprawa (${w.model}) nie pomogła: ${w.podsumowanie}`, niepewne ? UWAGA_NIEPEWNE : null].filter(Boolean).join('\n')));
+}
+
+/** Naprawa w tle: stan „w-toku" → model → zapis wyniku → Telegram.
+ *  `napraw` do testów (domyślnie prawdziwy model). */
+async function naprawWTle(prisma, id, blad, { niepewneOd = null, napraw = naprawKuriera } = {}) {
+  if (_naprawyWToku.has(id)) return null;
+  _naprawyWToku.add(id);
+  const od = new Date().toISOString();
+  let o = null;
+  try {
+    o = await prisma.warehouseOrder.findUnique({ where: { id }, include: ORDER_INCLUDE });
+    if (!o) return null;
+    if (o.status !== 'GOTOWE' || o.gkNumber || o.gkHash) {
+      // Zamówienie zmieniło się, zanim naprawa ruszyła — nie zostawiamy „w toku".
+      await prisma.warehouseOrder.update({ where: { id }, data: { kurierNaprawa: { stan: 'pominieta', od, do: od } } });
+      return null;
+    }
+    await prisma.warehouseOrder.update({ where: { id }, data: { kurierNaprawa: { stan: 'w-toku', od } } });
+    const narz = narzedziaNaprawy(prisma, id, { niepewneOd });
+    const w = await napraw({ zamowienie: daneDlaModelu(o), blad, narzedzia: narz });
+    const niepewne = !w.ok && !!narz.stan.niepewneOd;
+    console.log(`[magazyn] naprawa auto-listu #${o.numer}: ${w.ok ? 'UDANA' : 'nieudana'} (${w.model}, ${w.zuzycie.wywolan} wywołań, ${w.proby} prób zamówienia, ${Math.round(w.trwaloMs / 1000)} s)`);
+    const po = await prisma.warehouseOrder.findUnique({ where: { id }, include: ORDER_INCLUDE });
+    const data = {
+      kurierNaprawa: {
+        stan: w.ok ? 'udana' : 'nieudana', od, do: new Date().toISOString(), model: w.model,
+        podsumowanie: w.podsumowanie, zmiany: w.zmiany, proby: w.proby, powodKonca: w.powodKonca || null,
+        ...(niepewne ? { niepewne: true } : {}),
+        kroki: w.kroki.slice(0, 20), zuzycie: w.zuzycie,
+      },
+    };
+    // Domknięcie, gdy zapis w narzędziu się nie udał, a zlecenie w GK powstało.
+    if (w.ok && po && po.status === 'GOTOWE' && (w.zamowiono.gkNumber || w.zamowiono.gkHash)) {
+      Object.assign(data, daneKuriera({ gkHash: w.zamowiono.gkHash, gkNumber: w.zamowiono.gkNumber, carrier: w.zamowiono.przewoznik, quoteId: w.zamowiono.quoteId, cena: w.zamowiono.cena }, ZATWIERDZIL_NAPRAWA));
+    }
+    if (!w.ok && po && po.status === 'GOTOWE') data.kurierBlad = String(w.ostatniBlad || blad).slice(0, 500);
+    await prisma.warehouseOrder.update({ where: { id }, data });
+    await powiadomONaprawie(prisma, po || o, blad, w, niepewne);
+    return w;
+  } catch (e) {
+    console.error(`[magazyn] naprawa auto-listu ${id} przerwana:`, e.message);
+    try { await prisma.warehouseOrder.update({ where: { id }, data: { kurierNaprawa: { stan: 'nieudana', od, do: new Date().toISOString(), podsumowanie: `Naprawa przerwana: ${String(e.message).slice(0, 300)}` } } }); } catch (_) { /* baza leży — alarm niżej i tak pójdzie */ }
+    if (o) await alarmWlasciciela(prisma, tekstNieudanego(o, blad, `Automatyczna naprawa przerwana: ${String(e.message).slice(0, 200)}`));
+    return null;
+  } finally {
+    _naprawyWToku.delete(id);
+  }
+}
+
+/** Uruchamia naprawę w tle (odpowiedź HTTP nie czeka na model). */
+function uruchomNaprawe(prisma, id, blad, opcje) {
+  setImmediate(() => { naprawWTle(prisma, id, blad, opcje).catch(err => console.error('[magazyn] naprawa w tle:', err.message)); });
+}
+
+/** Po restarcie serwera: naprawy urwane w połowie nie mogą wisieć jako
+ *  „w toku" bez słowa — oznaczamy i zgłaszamy właścicielowi. index.js woła to
+ *  3 minuty po starcie: wtedy poprzedni proces na pewno już nie żyje, więc
+ *  każda naprawa zaczęta przed startem tego procesu jest osierocona. */
+async function posprzatajPrzerwaneNaprawy(prisma, { startProcesu = Date.now() - process.uptime() * 1000 } = {}) {
+  const wiszace = await prisma.warehouseOrder.findMany({ where: { status: 'GOTOWE', kurierNaprawa: { path: ['stan'], equals: 'w-toku' } }, include: ORDER_INCLUDE });
+  let ile = 0;
+  for (const o of wiszace) {
+    const od = new Date((o.kurierNaprawa || {}).od || 0).getTime();
+    if (_naprawyWToku.has(o.id) || od >= startProcesu) continue; // biegnie w tym procesie
+    await prisma.warehouseOrder.update({ where: { id: o.id }, data: { kurierNaprawa: { ...(o.kurierNaprawa || {}), stan: 'nieudana', do: new Date().toISOString(), podsumowanie: 'Naprawa przerwana restartem serwera.', niepewne: true } } });
+    await alarmWlasciciela(prisma, tekstNieudanego(o, o.kurierBlad || 'kurier niezamówiony', `Automatyczna naprawa została przerwana restartem serwera.\n${UWAGA_NIEPEWNE}`));
+    ile++;
+  }
+  return ile;
 }
 
 /** Linie, które realnie schodzą ze stanu: bez nagłówków boxów. */
@@ -398,6 +726,9 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
   const b = req.body || {};
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  // Naprawa auto-listu może właśnie zamawiać kuriera na ten adres — zmiana
+  // odbiorcy albo statusu w tej chwili rozjechałaby zamówienie ze zleceniem.
+  if ((b.odbiorca || b.status) && (naprawaTrwa(o) || _naprawyWToku.has(o.id))) return res.status(409).json({ ok: false, error: 'Trwa automatyczne zamawianie kuriera — poczekaj minutę i odśwież.' });
   const data = {};
   if ('uwagiNasze' in b) data.uwagiNasze = b.uwagiNasze ? String(b.uwagiNasze).slice(0, 2000) : null;
   /* POPRAWA ODBIORCY (9.11.2026) — wcześniej „odbiorcy nie da się zmienić po
@@ -522,20 +853,26 @@ router.post('/zamowienia/:id/gotowe', asyncHandler(async (req, res) => {
     });
   }
   if (u.autoList) {
+    const startAutoListu = Date.now();
     try {
       const k = await zamowKuriera(u, prisma);
-      wynik = await prisma.warehouseOrder.update({
-        where: { id: u.id },
-        data: { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierCena: k.cena, kurierBlad: null, zatwierdzilKto: 'auto-list', zatwierdzonoAt: new Date() },
-        include: ORDER_INCLUDE,
-      });
+      wynik = await prisma.warehouseOrder.update({ where: { id: u.id }, data: daneKuriera(k, 'auto-list'), include: ORDER_INCLUDE });
     } catch (e) {
       console.error(`[magazyn] auto-list #${u.numer} padł:`, e.message);
-      wynik = await prisma.warehouseOrder.update({ where: { id: u.id }, data: { kurierBlad: String(e.message).slice(0, 500) }, include: ORDER_INCLUDE });
-      const od = u.odbiorca || {};
-      await alarmWlasciciela(prisma, `⚠️ Magazyn #${u.numer} spakowane, ale kurier NIE zamówił się sam (${[od.name, od.city].filter(Boolean).join(', ')}).\n`
-        + `Powód: ${String(e.message).slice(0, 400)}\n`
-        + 'Popraw adres w panelu Magazyn (albo napisz do Claude) i kliknij „Ponów auto-list".');
+      const blad = String(e.message).slice(0, 500);
+      const rodzaj = rodzajBledu(blad);
+      // Brak środków, bezpiecznik ceny i błędy ustawień: od razu do właściciela.
+      // Reszta: model próbuje naprawić i zamówić; Telegram dopiero z wynikiem.
+      const naprawiam = rodzaj === 'naprawialny' && naprawaWlaczona();
+      wynik = await prisma.warehouseOrder.update({
+        where: { id: u.id },
+        data: { kurierBlad: blad, ...(naprawiam ? { kurierNaprawa: { stan: 'w-toku', od: new Date().toISOString() } } : {}) },
+        include: ORDER_INCLUDE,
+      });
+      // e.niepewne: GK nie odpowiedział przy zamawianiu — naprawa najpierw
+      // sprawdzi, czy zlecenie nie powstało, zanim zamówi ponownie.
+      if (naprawiam) uruchomNaprawe(prisma, u.id, blad, { niepewneOd: e.niepewne ? startAutoListu : null });
+      else await alarmWlasciciela(prisma, [tekstBezNaprawy(u, blad, rodzaj), e.niepewne ? UWAGA_NIEPEWNE : null].filter(Boolean).join('\n'));
     }
   }
   res.json({ ok: true, zamowienie: toPublic(wynik, rola(req)), ostrzezenia });
@@ -555,17 +892,28 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
      „czeka na zamówienie kuriera". Teraz gotowy list podpina się też do
      zamówienia NOWE: magazyn ma go od razu, a „Paczka gotowa" przechodzi
      prosto do „kurier zamówiony". Auto-list nadal tylko po spakowaniu. */
+  if (naprawaTrwa(o) || _naprawyWToku.has(o.id)) return res.status(409).json({ ok: false, error: 'Trwa automatyczna naprawa zamówienia kuriera — poczekaj minutę i odśwież, żeby nie zamówić dwóch kurierów.' });
   const przedSpakowaniem = o.status === 'NOWE' && !b.autoList;
   if (o.status !== 'GOTOWE' && !przedSpakowaniem) return res.status(400).json({ ok: false, error: `zamówienie jest w stanie ${o.status} — kuriera zamawia się do spakowanej paczki (gotowy list można podpiąć też do nowego zamówienia)` });
   if (przedSpakowaniem && o.autoList) return res.status(400).json({ ok: false, error: 'to zamówienie ma auto-list — kurier zamówi się sam po spakowaniu; gotowego listu nie podpinamy' });
   let data;
+  let podpieteZListy = false;
   if (b.autoList) {
     const braki = brakiOdbiorcy(o.odbiorca);
     if (braki.length) return res.status(400).json({ ok: false, error: `brak danych odbiorcy: ${braki.join(', ')}` });
     try {
+      // Poprzednia próba skończyła się niepewnie (GK nie odpowiedział przy
+      // zamawianiu)? Zanim zamówimy drugi raz — czy zlecenie nie powstało.
+      let k = null;
+      if (niepewnyZapisany(o.kurierBlad) || (o.kurierNaprawa && o.kurierNaprawa.niepewne)) {
+        const odKiedy = new Date(o.gotoweAt || Date.now() - 24 * 3600 * 1000).getTime();
+        try { k = await swiezeZlecenieGk(prisma, o, odKiedy); }
+        catch (e) { return res.status(502).json({ ok: false, error: `Poprzednia próba mogła utworzyć zlecenie, a listy zleceń GlobKurier nie da się teraz sprawdzić (${e.message}). Spróbuj za chwilę albo podepnij numer GK ręcznie — nie zamawiam w ciemno drugiego kuriera.` }); }
+        if (k) podpieteZListy = true;
+      }
       // bezLimitu: właściciel widział cenę wyższą od szacunku i potwierdził.
-      const k = await zamowKuriera(o, prisma, { bezLimitu: b.bezLimitu === true });
-      data = { status: 'KURIER', gkHash: k.gkHash, gkNumber: k.gkNumber, carrier: k.carrier, quoteId: k.quoteId, kurierCena: k.cena, kurierBlad: null, zatwierdzilKto: kto(req), zatwierdzonoAt: new Date() };
+      if (!k) k = await zamowKuriera(o, prisma, { bezLimitu: b.bezLimitu === true });
+      data = daneKuriera(k, kto(req));
     } catch (e) {
       await prisma.warehouseOrder.update({ where: { id: o.id }, data: { kurierBlad: String(e.message).slice(0, 500) } });
       return res.status(502).json({ ok: false, error: e.message });
@@ -593,7 +941,40 @@ router.post('/zamowienia/:id/kurier', asyncHandler(async (req, res) => {
     if (przedSpakowaniem) { delete data.status; delete data.zatwierdzonoAt; }
   }
   const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data, include: ORDER_INCLUDE });
-  res.json({ ok: true, zamowienie: toPublic(u, rola(req)) });
+  res.json({ ok: true, zamowienie: toPublic(u, rola(req)), ...(podpieteZListy ? { uwaga: `Zlecenie ${u.gkNumber || ''} powstało już przy poprzedniej próbie — podpięte, drugiego kuriera nie zamawiałem.` } : {}) });
+}));
+
+/* Ręczne uruchomienie naprawy (właściciel) i PRÓBA.
+ * {proba:true, blad?, odbiorca?} — prawdziwy model, ale narzędzia pracują na
+ * kopii zamówienia w pamięci i z atrapą GlobKuriera: nic się nie zapisuje i
+ * żaden kurier nie jest zamawiany. Do sprawdzenia modelu po wdrożeniu. */
+router.post('/zamowienia/:id/napraw-kuriera', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const b = req.body || {};
+  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
+  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  if (b.proba) {
+    const kopia = { ...o, status: 'GOTOWE', gkNumber: null, gkHash: null, odbiorca: { ...(o.odbiorca || {}), ...czystePola(b.odbiorca) } };
+    const blad = String(b.blad || o.kurierBlad || 'zamówienie: Pole „nazwa” odbiorcy odrzucone przez GK: "Wpisano nieprawidłowy znak proszę o weryfikację np.: . , ” ” % & + ( ) / [] ;!".').slice(0, 500);
+    const rodzaj = rodzajBledu(blad);
+    // Błąd, którego model nie dostaje: pokazujemy, co poszłoby na Telegram (nic nie wysyłamy).
+    if (rodzaj !== 'naprawialny') return res.json({ ok: true, proba: true, rodzajBledu: rodzaj, model: null, telegram: tekstBezNaprawy(kopia, blad, rodzaj) });
+    if (!naprawaWlaczona()) return res.status(503).json({ ok: false, error: 'automatyczna naprawa jest wyłączona (brak ANTHROPIC_API_KEY albo KURIER_NAPRAWA=0)' });
+    const proba = { o: kopia, zamow: atrapaGk(blad) };
+    const w = await naprawKuriera({ zamowienie: daneDlaModelu(kopia), blad, narzedzia: narzedziaNaprawy(prisma, o.id, { proba }) });
+    return res.json({ ok: true, proba: true, rodzajBledu: rodzaj, odbiorcaPrzed: kopia.odbiorca, odbiorcaPo: proba.o.odbiorca, wynik: w });
+  }
+  if (!naprawaWlaczona()) return res.status(503).json({ ok: false, error: 'automatyczna naprawa jest wyłączona (brak ANTHROPIC_API_KEY albo KURIER_NAPRAWA=0)' });
+  if (o.status !== 'GOTOWE' || o.gkNumber || o.gkHash) return res.status(400).json({ ok: false, error: `naprawa dotyczy spakowanej paczki bez kuriera (jest ${o.status}${o.gkNumber ? `, kurier ${o.gkNumber}` : ''})` });
+  if (naprawaTrwa(o) || _naprawyWToku.has(o.id)) return res.status(409).json({ ok: false, error: 'naprawa już trwa — odśwież za chwilę' });
+  const blad = String(o.kurierBlad || 'kurier nie został zamówiony').slice(0, 500);
+  const rodzaj = rodzajBledu(blad);
+  if (rodzaj !== 'naprawialny') return res.status(400).json({ ok: false, error: rodzaj === 'brak-srodkow' ? 'to brak środków w GlobKurier — doładuj konto i ponów auto-list' : rodzaj === 'cena' ? 'to bezpiecznik ceny — zdecyduj sam („Zamów mimo to”)' : 'to błąd ustawień, nie adresu — naprawa automatyczna tu nie pomoże' });
+  const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data: { kurierNaprawa: { stan: 'w-toku', od: new Date().toISOString() } }, include: ORDER_INCLUDE });
+  const niepewne = niepewnyZapisany(o.kurierBlad) || !!(o.kurierNaprawa && o.kurierNaprawa.niepewne);
+  uruchomNaprawe(prisma, o.id, blad, { niepewneOd: niepewne ? new Date(o.gotoweAt || Date.now() - 24 * 3600 * 1000).getTime() : null });
+  res.json({ ok: true, uruchomiono: true, zamowienie: toPublic(u, rola(req)) });
 }));
 
 // Etykieta dla OBU stron — ale tylko przez zamówienie, do którego należy.
@@ -741,6 +1122,8 @@ router.post('/zamowienia/:id/cofnij-gotowe', asyncHandler(async (req, res) => {
   const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
   if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
   if (o.status !== 'GOTOWE') return res.status(400).json({ ok: false, error: `zamówienie jest w stanie ${o.status}` });
+  // Naprawa może właśnie zamawiać kuriera — cofnięcie w tej chwili zostawiłoby zlecenie bez paczki.
+  if (naprawaTrwa(o) || _naprawyWToku.has(o.id)) return res.status(409).json({ ok: false, error: 'Trwa automatyczne zamawianie kuriera — poczekaj minutę i odśwież.' });
   let u;
   try {
     u = await prisma.$transaction(async (tx) => {
@@ -851,3 +1234,5 @@ router.get('/katalog', asyncHandler(async (req, res) => {
 }));
 
 module.exports = router;
+module.exports.posprzatajPrzerwaneNaprawy = posprzatajPrzerwaneNaprawy;
+module.exports._test = { naprawWTle, narzedziaNaprawy, swiezeZlecenieGk, czasGkNaMs, niepewnyBlad, niepewnyZapisany, atrapaGk, _naprawyWToku };
