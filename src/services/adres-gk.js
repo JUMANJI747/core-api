@@ -24,14 +24,27 @@ function oczyscGk(s, dozwolone) {
   const poza = new RegExp(`[^\\p{L}\\p{N}\\s${dozwolone}]`, 'gu');
   return String(s).replace(poza, ' ').replace(/\s+/g, ' ').trim();
 }
-// Ukośnik w nazwie („Surfstylefever / Stefan") GK odrzuca — zamieniamy na myślnik.
-const gkName = (s) => oczyscGk(String(s || '').replace(/\s*\/\s*/g, ' - '), "\\.,'()\\-@");
-/* 9.11.2026: GK w praktyce odrzucił apostrof w ulicy i nawias w mieście,
- * choć z dokumentacji wynikało inaczej. Apostrof → spacja („Via dell
- * Industria" kurier znajdzie), skrót prowincji w nawiasie na końcu miasta
- * („Rosignano Marittimo (LI)") wylatuje. */
-const gkStreet = (s) => oczyscGk(String(s || '').replace(/['’`]/g, ' '), '\\.\\-&/,');
-const gkCity = (s) => oczyscGk(String(s || '').replace(/\s*\([A-Za-z]{1,3}\)\s*$/, '').replace(/['’`]/g, ' '), '\\.\\-&/');
+/* ZNAKI, KTÓRE GK PRZYJMUJE — Z PRAKTYKI, NIE Z DOKUMENTACJI (18.11.2026).
+ *
+ * GK odrzuca zamówienie jednym komunikatem: „Wpisano nieprawidłowy znak proszę
+ * o weryfikację np.: . , ” ” % & + ( ) / [] ;!" — i nie mówi, w którym polu.
+ * Lista „dozwolonych znaków per pole" z dokumentacji (17.09.2026) okazała się
+ * nieprawdziwa trzy razy:
+ *   - 9.11  miasto „Rosignano Marittimo (LI)"  → nawiasy odrzucone,
+ *   - 9.11  ulica „Via dell'Industria"         → apostrof zdjęty przy okazji,
+ *   - 18.11 nazwa „EBENHOLZ skincare, Katja Miller" → przecinek odrzucony
+ *     (zamówienie #9: paczka spakowana, kurier się nie zamówił).
+ * Dlatego w nazwie, ulicy i mieście zostają WYŁĄCZNIE znaki, które na pewno
+ * przechodzą (setki wysłanych paczek): litery, cyfry, spacja, kropka
+ * („Sp. z o.o.") i myślnik („Super-Pharm", „20-lecia"). Reszta zamienia się
+ * w spację — etykieta traci przecinek, ale paczka wychodzi. */
+const BEZPIECZNE = '\\.\\-';
+// Ukośnik w nazwie („Surfstylefever / Stefan") zamieniamy na myślnik, żeby
+// nie zlepić dwóch nazw w jedną.
+const gkName = (s) => oczyscGk(String(s || '').replace(/\s*\/\s*/g, ' - '), BEZPIECZNE);
+const gkStreet = (s) => oczyscGk(s, BEZPIECZNE);
+// Skrót prowincji w nawiasie na końcu miasta („Rosignano Marittimo (LI)") wylatuje w całości.
+const gkCity = (s) => oczyscGk(String(s || '').replace(/\s*\([A-Za-z]{1,3}\)\s*$/, ''), BEZPIECZNE);
 
 /* Numer domu i lokalu osobno (zgłoszenie 17.09.2026, „MORSKA 4A/10"). */
 function rozbijNumerDomu(surowy) {
@@ -43,8 +56,9 @@ function rozbijNumerDomu(surowy) {
   if (lokal) return { dom: lokal[1], lokal: lokal[2] };
   return { dom: s, lokal: '' };
 }
-// W numerze GK przyjmuje cyfry, litery i ukośnik. Spacja i kropka — nie.
-const numerGk = (s) => String(s || '').replace(/[^0-9A-Za-zĄąĆćĘꣳŃńÓóŚśŹźŻż/-]/g, '').trim();
+// W numerze zostają cyfry, litery i myślnik. Ukośnik (jest na liście znaków
+// odrzucanych przez GK) zamieniamy na myślnik: „12/14” → „12-14”.
+const numerGk = (s) => String(s || '').replace(/\//g, '-').replace(/[^0-9A-Za-zĄąĆćĘꣳŃńÓóŚśŹźŻż-]/g, '').replace(/^-+|-+$/g, '').trim();
 
 const MAX_NAZWA = 30; // tyle GK zostawia z nazwy odbiorcy na liście przewozowym
 

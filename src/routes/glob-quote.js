@@ -1497,23 +1497,35 @@ router.post('/glob/order', async (req, res) => {
     function humanizeGkErrors(errResult) {
       const errFields = (errResult && (errResult.fields || (errResult.errors && errResult.errors.fields) || errResult.errors)) || {};
       const problems = [];
+      /* KTÓRE POLE (18.11.2026). Pola GK nazywają się „receiverAddress[name]",
+         „receiverAddress[city]"… — WSZYSTKIE zawierają słowo „address", więc
+         stary warunek `includes('address')` wrzucał każdą odmowę do „Adres
+         odrzucony, sprawdź ulicę/numer domu". Przy przecinku w NAZWIE (#9)
+         i nawiasie w MIEŚCIE (#5) komunikat kierował więc w złe miejsce.
+         Teraz liczy się ostatni człon nazwy pola, a komunikat podaje pole
+         i wartość, którą wysłaliśmy. */
+      const POLA = { name: 'nazwa', contactperson: 'osoba kontaktowa', street: 'ulica', housenumber: 'numer domu', apartmentnumber: 'numer lokalu', city: 'miasto', postcode: 'kod pocztowy', email: 'e-mail', phone: 'telefon', countryid: 'kraj' };
       for (const [field, raw] of Object.entries(errFields)) {
         const msg = String(raw || '');
         const fieldLow = field.toLowerCase();
         const who = field.includes('receiver') ? 'odbiorcy' : (field.includes('sender') ? 'nadawcy' : '');
+        const czlon = (fieldLow.match(/\[(\w+)\]\s*$/) || fieldLow.match(/\.(\w+)\s*$/) || [null, fieldLow])[1];
+        const blok = who === 'nadawcy' ? orderPayload.senderAddress : (who === 'odbiorcy' ? orderPayload.receiverAddress : null);
+        const klucz = blok ? Object.keys(blok).find(k => k.toLowerCase() === czlon) : null;
+        const wyslano = klucz && blok[klucz] != null && blok[klucz] !== '' ? ` Wysłaliśmy: „${blok[klucz]}”.` : '';
         if (field.includes('pickup') && /nie jest możliwe|niemożliw/i.test(msg)) {
           problems.push('Brak dostępnych terminów odbioru dla tego kuriera. Spróbuj innego (np. DPD zamiast InPost).');
-        } else if (fieldLow.includes('phone')) {
+        } else if (czlon === 'phone' || fieldLow.includes('phone')) {
           problems.push(`Telefon ${who || 'odbiorcy'} (${who === 'nadawcy' ? cleanSenderPhone : cleanReceiverPhone}) odrzucony przez GK: "${msg}". DE/FR/IT wymagają E.164 (+49.../+33...). Sprawdź lub podaj prawidłowy numer.`);
-        } else if (fieldLow.includes('street') || fieldLow.includes('housenumber') || fieldLow.includes('address')) {
-          problems.push(`Adres ${who || 'odbiorcy'} odrzucony: "${msg}". Sprawdź ulicę/numer domu (bez znaków specjalnych jak / , ; & % + ( ) [ ]).`);
-        } else if (fieldLow.includes('email')) {
-          problems.push(`Email ${who || 'odbiorcy'}: "${msg}".`);
-        } else if (fieldLow.includes('postcode')) {
-          problems.push(`Kod pocztowy ${who || 'odbiorcy'}: "${msg}".`);
-        } else if (fieldLow.includes('name')) {
-          problems.push(`Nazwa ${who || 'odbiorcy'} odrzucona: "${msg}". GK nie pozwala na znaki: / , ; & % + ( ) [ ] " ”. Backend usuwa je automatycznie — jeśli błąd persistuje, zmień nazwę kontrahenta w bazie.`);
-        } else if (fieldLow.includes('countryid')) {
+        } else if (['name', 'contactperson', 'street', 'housenumber', 'apartmentnumber', 'city'].includes(czlon)) {
+          problems.push(`Pole „${POLA[czlon]}” ${who || 'odbiorcy'} odrzucone przez GK: "${msg}".${wyslano} Popraw to pole (same litery, cyfry, kropka, myślnik) i ponów.`);
+        } else if (czlon === 'email' || fieldLow.includes('email')) {
+          problems.push(`Email ${who || 'odbiorcy'}: "${msg}".${wyslano}`);
+        } else if (czlon === 'postcode' || fieldLow.includes('postcode')) {
+          problems.push(`Kod pocztowy ${who || 'odbiorcy'}: "${msg}".${wyslano}`);
+        } else if (fieldLow.includes('street') || fieldLow.includes('housenumber')) {
+          problems.push(`Adres ${who || 'odbiorcy'} odrzucony (${field}): "${msg}".`);
+        } else if (czlon === 'countryid' || fieldLow.includes('countryid')) {
           problems.push(`Kraj ${who || ''} odrzucony: "${msg}". Możliwy brak countryId dla tego kraju w GK — uruchom POST /api/glob/discover-countries.`);
         } else if (fieldLow.includes('addon')) {
           continue;

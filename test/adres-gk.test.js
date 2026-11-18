@@ -17,13 +17,28 @@ test('przypadek #5: apostrof i skrót prowincji poprawione, adres przechodzi', (
   assert.match(w.ostrzezenia[0], /„Cantiere Navale Faccenda SRL -”/, 'ostrzega, że GK utnie nazwę');
 });
 
-test('pola GK: znaki spoza listy znikają, ukośnik w nazwie → myślnik, numer bez spacji', () => {
-  assert.equal(gkStreet('C/ Mayor, 12'), 'C/ Mayor, 12');
+test('pola GK: zostają tylko litery, cyfry, kropka i myślnik; ukośnik w nazwie → myślnik', () => {
+  assert.equal(gkStreet('C/ Mayor, 12'), 'C Mayor 12');
   assert.equal(gkStreet('Rua D’Ouro "Velha" (fundos)'), 'Rua D Ouro Velha fundos');
+  assert.equal(gkStreet('Aleja 20-lecia'), 'Aleja 20-lecia');
+  assert.equal(gkStreet('ul. Hłaski'), 'ul. Hłaski');
   assert.equal(gkCity("L'Aquila (AQ)"), 'L Aquila');
   assert.equal(gkCity('Józefów'), 'Józefów');
   assert.equal(gkName('Surfstylefever / Stefan'), 'Surfstylefever - Stefan');
+  assert.equal(gkName('Wewave Sp. z o.o.'), 'Wewave Sp. z o.o.');
+  assert.equal(gkName('Super-Pharm Holding Sp. z o.o.'), 'Super-Pharm Holding Sp. z o.o.');
+  assert.equal(gkName('Schwarzenbacher GmbH (INTERSPORT Sport am Jet)'), 'Schwarzenbacher GmbH INTERSPORT Sport am Jet');
   assert.equal(numerGk('12 A.'), '12A');
+  assert.equal(numerGk('12/14'), '12-14');
+});
+
+test('przypadek #9 (18.11): przecinek w nazwie odbiorcy znika już przy składaniu zamówienia', () => {
+  assert.equal(gkName('EBENHOLZ skincare, Katja Miller'), 'EBENHOLZ skincare Katja Miller');
+  const w = sprawdzOdbiorce({ name: 'EBENHOLZ skincare, Katja Miller', street: 'Auf dem Gesetz', houseNumber: '7a', postCode: '56075', city: 'Koblenz', country: 'DE', phone: '+492611349740' });
+  assert.deepEqual(w.bledy, []);
+  assert.equal(w.adres.name, 'EBENHOLZ skincare Katja Miller');
+  assert.deepEqual(w.poprawki, ['nazwa: „EBENHOLZ skincare, Katja Miller” → „EBENHOLZ skincare Katja Miller”']);
+  assert.deepEqual(w.ostrzezenia, [], '30 znaków mieści się na liście w całości');
 });
 
 test('poprawki: numer z ulicy, lokal osobno, kod PL z myślnikiem, telefon z kierunkowym', () => {
