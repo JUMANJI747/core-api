@@ -110,7 +110,7 @@ Wskazówki z praktyki:
 - Telefon odbiorcy musi mieć kierunkowy jego kraju (np. +49… dla Niemiec, bez zera po kierunkowym). Numeru z innego kraju nie „naprawisz” — wtedy zakończ i napisz, że trzeba podać właściwy numer.
 - Masz najwyżej ${MAX_ZAMOWIEN} próby zamówienia. Najpierw ustal przyczynę i popraw najmniejszą możliwą rzecz, dopiero potem zamawiaj.
 
-Na koniec napisz po polsku 2–3 zdania dla właściciela: co było przyczyną, co zmieniłeś (stara wartość → nowa) i czy kurier jest zamówiony. Bez wstępów i bez list.`;
+Na koniec napisz po polsku 2–3 zdania dla właściciela: co było przyczyną, co zmieniłeś (stara wartość → nowa) i czy kurier jest zamówiony. Bez wstępów i bez list. To trafi do wiadomości na Telegramie jako zwykły tekst — bez Markdowna (gwiazdek, nagłówków, odwrotnych apostrofów).`;
 
 const NARZEDZIA = [
   {
@@ -215,7 +215,10 @@ function opisBleduApi(e) {
   return String((e && e.message) || e).slice(0, 200);
 }
 
-const tekstOdpowiedzi = (odp) => ((odp && odp.content) || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+// Telegram i panel pokazują podsumowanie jako zwykły tekst — znaczniki Markdowna
+// (gdyby model ich jednak użył) byłyby widoczne dosłownie.
+const tekstOdpowiedzi = (odp) => ((odp && odp.content) || []).filter(b => b.type === 'text').map(b => b.text).join('\n')
+  .replace(/\*\*|`/g, '').replace(/^#{1,6}\s+/gm, '').trim();
 
 /** Naprawa jednego zamówienia.
  *  `zamowienie` — dane dla modelu (numer, odbiorca, karton, szacunek…),

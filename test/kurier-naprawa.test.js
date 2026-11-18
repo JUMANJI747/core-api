@@ -242,6 +242,12 @@ test('model niedostępny dla klucza → zapasowy; API nie zna `fallbacks` → to
   assert.deepEqual(api2.wywolania.map(x => [x.kanal, x.p.model]), [['beta', 'claude-opus-5-5'], ['zwykly', 'claude-opus-5-5'], ['zwykly', 'claude-opus-5-5']]);
 });
 
+test('podsumowanie idzie na Telegram jako zwykły tekst: znaczniki Markdowna są zdejmowane', async () => {
+  const api = atrapaApi([koniec('## Wynik\n**Kurier nie jest zamówiony:** brakuje `numeru domu` w adresie.')]);
+  const w = await naprawKuriera({ zamowienie: ZAM, blad: 'adres nie przejdzie w GlobKurier: brakuje: numer domu', narzedzia: atrapaNarzedzi(), klient: api });
+  assert.equal(w.podsumowanie, 'Wynik\nKurier nie jest zamówiony: brakuje numeru domu w adresie.');
+});
+
 test('limit czasu naprawy: po 4 minutach nie pyta modelu dalej', async () => {
   let t = 1_000_000;
   const api = atrapaApi([tura(uzyj('wycen_kuriera')), koniec('za późno')]);
