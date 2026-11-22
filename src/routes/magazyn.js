@@ -29,6 +29,7 @@ const { pdfZamowienia, trescMaila } = require('../services/magazyn-druk');
 const { sprawdzOdbiorce } = require('../services/adres-gk');
 const { szacujPaczke, limitCeny, zaDrogo, opisSzacunku, zl } = require('../services/kurier-szacunek');
 const { naprawKuriera, rodzajBledu, naruszeniaPoprawki } = require('../services/kurier-naprawa');
+const { kiedyPowiadomic, opisTerminu } = require('../services/godziny-magazynu');
 const { normalizujTelefon, KIERUNKOWE } = require('../services/telefon');
 const crypto = require('crypto');
 
@@ -106,6 +107,8 @@ function toPublic(o, rola = 'owner') {
     createdAt: o.createdAt, gotoweAt: o.gotoweAt, zatwierdzonoAt: o.zatwierdzonoAt,
     gkStatus: o.gkStatus || null, gkStatusAt: o.gkStatusAt || null, wyslanoAt: o.wyslanoAt || null, dostarczonoAt: o.dostarczonoAt || null, ostatnieZdarzenie: o.ostatnieZdarzenie || null,
     powiadomionoAt: o.powiadomionoAt || null, powiadomilKto: obcy ? null : (o.powiadomilKto || null), powiadomionoDo: obcy ? null : (o.powiadomionoDo || null),
+    // Mail do magazynu zaplanowany na rano (kliknięto poza godzinami pracy) — sprawa właściciela.
+    powiadomNa: obcy ? null : (o.powiadomNa || null), powiadomBlad: obcy ? null : (o.powiadomBlad || null),
     items: (o.items || []).map(i => ({
       id: i.id, ean: i.ean, name: i.name, variant: i.variant, symbol: i.symbol || null, qty: i.qty, parentEan: i.parentEan, packaging: i.packaging,
     })),
@@ -608,6 +611,49 @@ async function posprzatajPrzerwaneNaprawy(prisma, { startProcesu = Date.now() - 
   return ile;
 }
 
+/* ZA MAŁO TOWARU (22.11.2026). Zamówienie #10 poszło do magazynu z 74 żelami
+ * przy 72 na stanie i z 74 Daily przy 71 — wyszło dopiero przy ręcznym
+ * sprawdzeniu, już po mailu do magazynu. Teraz złożenie zamówienia jest
+ * BLOKOWANE, gdy wg CRM towaru nie wystarczy. Dostępne = stan (suma ruchów)
+ * minus to, co czeka w innych zamówieniach do spakowania: towar schodzi ze
+ * stanu dopiero przy „Paczka gotowa", więc zamówienia NOWE go rezerwują.
+ * Ekspozytorów nie liczymy — ich stan nie jest prowadzony (bywa ujemny). */
+const krotkaNazwa = (n) => ((String(n || '').match(/^[\p{Lu}\d]+(?:\s+[\p{Lu}\d]+)*(?=\s|$)/u) || [String(n || '')])[0]).trim();
+const etykietaTowaru = (x) => `${krotkaNazwa(x.name)}${x.variant && /^\p{L}+$/u.test(x.variant) ? ` ${x.variant}` : ''}${x.symbol ? ` (${x.symbol})` : ''}`;
+async function brakiTowaru(prisma, linie) {
+  const potrzeba = new Map();
+  for (const l of linie) {
+    if (l.packaging || l.ean === EKSPOZYTOR.ean) continue;
+    const p = potrzeba.get(l.ean) || { ean: l.ean, symbol: null, name: l.name, variant: null, potrzeba: 0 };
+    p.potrzeba += l.qty;
+    p.symbol = p.symbol || l.symbol || null;
+    p.variant = p.variant || l.variant || null;
+    potrzeba.set(l.ean, p);
+  }
+  const eany = [...potrzeba.keys()];
+  if (!eany.length) return [];
+  const [ruchy, czekajace] = await Promise.all([
+    prisma.stockMovement.groupBy({ by: ['ean'], where: { ean: { in: eany } }, _sum: { delta: true } }),
+    prisma.warehouseOrderItem.groupBy({ by: ['ean'], where: { ean: { in: eany }, packaging: null, order: { status: 'NOWE' } }, _sum: { qty: true } }),
+  ]);
+  const stan = new Map(ruchy.map(g => [g.ean, g._sum.delta || 0]));
+  const rezerwa = new Map(czekajace.map(g => [g.ean, g._sum.qty || 0]));
+  const braki = [];
+  for (const p of potrzeba.values()) {
+    const naStanie = stan.get(p.ean) || 0;
+    const zarezerwowane = rezerwa.get(p.ean) || 0;
+    const dostepne = naStanie - zarezerwowane;
+    if (dostepne < p.potrzeba) braki.push({ ean: p.ean, symbol: p.symbol, nazwa: etykietaTowaru(p), potrzeba: p.potrzeba, naStanie, zarezerwowane, dostepne, brakuje: p.potrzeba - dostepne });
+  }
+  return braki;
+}
+function tekstBrakowTowaru(braki) {
+  const linie = braki.map(b => `• ${b.nazwa}: potrzeba ${b.potrzeba}, dostępne ${Math.max(0, b.dostepne)}`
+    + (b.zarezerwowane > 0 ? ` (na stanie ${b.naStanie}, a ${b.zarezerwowane} czeka w innych zamówieniach do spakowania)` : '')
+    + ` — brakuje ${b.brakuje}`);
+  return `Za mało towaru w magazynie — zamówienie NIE zostało złożone.\n${linie.join('\n')}\nZmniejsz ilości albo wpisz przyjęcie towaru (Paczki → Stan w magazynie → Przyjęcie / korekta).`;
+}
+
 /** Linie, które realnie schodzą ze stanu: bez nagłówków boxów. */
 const linieDoStocku = (items) => items.filter(i => !i.packaging);
 
@@ -666,6 +712,9 @@ router.post('/zamowienia', asyncHandler(async (req, res) => {
   const catalog = await getActiveCatalog(prisma);
   const { linie, bledy } = rozbijPozycje(items, catalog);
   if (bledy.length) return res.status(400).json({ ok: false, error: bledy.join('; ') });
+  // Blokada: wg CRM nie ma tyle towaru (stan minus zamówienia czekające na spakowanie).
+  const braki = await brakiTowaru(prisma, linie);
+  if (braki.length) return res.status(400).json({ ok: false, zaMaloTowaru: true, error: tekstBrakowTowaru(braki), braki });
 
   let contractorId = b.contractorId ? String(b.contractorId) : null;
   if (contractorId) {
@@ -752,6 +801,8 @@ router.patch('/zamowienia/:id', asyncHandler(async (req, res) => {
   if (b.status === 'ANULOWANE' && o.status !== 'ANULOWANE') {
     if (o.status === 'WYSLANE') return res.status(400).json({ ok: false, error: 'paczka już wysłana — nie da się anulować' });
     data.status = 'ANULOWANE';
+    // Mail do magazynu zaplanowany na rano nie może wyjść o anulowanym zamówieniu.
+    if (o.powiadomNa) Object.assign(data, { powiadomNa: null, powiadomNaKto: null, powiadomNaDo: null });
     zwrotNaStan = o.status === 'GOTOWE' || o.status === 'KURIER';
     if (o.status === 'KURIER') Object.assign(data, { gkHash: null, gkNumber: null, carrier: null, quoteId: null, kurierBlad: null });
   }
@@ -1014,19 +1065,8 @@ router.get('/zamowienia/:id/pdf', asyncHandler(async (req, res) => {
  * pierwszej wysyłki. {podglad:true} = temat, treść i załączniki BEZ wysyłki. */
 const MAGAZYN_MAIL_OD = () => (process.env.MAGAZYN_MAIL_OD || 'delivery@surfstickbell.com').trim();
 const MAGAZYN_MAIL_DO = () => (process.env.MAGAZYN_MAIL_DO || 'm.urbaniak@bell.com.pl').trim();
-router.post('/zamowienia/:id/powiadom', asyncHandler(async (req, res) => {
-  if (!tylkoWlasciciel(req, res)) return;
-  const prisma = req.app.locals.prisma;
-  const b = req.body || {};
-  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
-  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
-  if (o.status === 'ANULOWANE') return res.status(400).json({ ok: false, error: `zamówienie #${o.numer} jest anulowane — nie powiadamiam magazynu` });
-  const doKogo = b.do ? String(b.do).trim() : MAGAZYN_MAIL_DO();
-  if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(doKogo)) return res.status(400).json({ ok: false, error: `zły adres e-mail: ${doKogo}` });
-  if (o.powiadomionoAt && !b.ponownie && !b.podglad) {
-    const kiedy = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', dateStyle: 'short', timeStyle: 'short' }).format(o.powiadomionoAt);
-    return res.status(409).json({ ok: false, juzPowiadomiono: true, powiadomionoAt: o.powiadomionoAt, error: `Magazyn powiadomiony już ${kiedy} (${o.powiadomionoDo || 'magazyn'}). Wyślij ponownie tylko, jeśli trzeba.` });
-  }
+/** Temat, treść i załączniki maila do magazynu dla zamówienia `o`. */
+async function trescPowiadomienia(prisma, o) {
   const z = toPublic(o, 'magazyn');
   // Gotowy list przewozowy (kurier zamówiony z góry) idzie w mailu razem
   // z zamówieniem — magazyn drukuje wszystko z jednej wiadomości.
@@ -1043,19 +1083,110 @@ router.post('/zamowienia/:id/powiadom', asyncHandler(async (req, res) => {
   if (list) zalaczniki.push(list);
   const docs = await prisma.warehouseOrderDoc.findMany({ where: { orderId: o.id }, orderBy: { createdAt: 'asc' }, select: { filename: true, contentType: true, data: true } });
   for (const d of docs) zalaczniki.push({ filename: d.filename, content: Buffer.from(d.data), contentType: d.contentType || 'application/pdf' });
-  const opisZal = zalaczniki.map(a => ({ filename: a.filename, size: a.content.length }));
-  const od = MAGAZYN_MAIL_OD();
-  if (b.podglad) return res.json({ ok: true, podglad: true, od, do: doKogo, temat: subject, tresc: text, zalaczniki: opisZal });
-  try {
-    await require('../mail-sender').sendMail({ from: od, to: doKogo, subject, body: text, html, attachments: zalaczniki });
-  } catch (e) {
+  return { od: MAGAZYN_MAIL_OD(), subject, text, html, zalaczniki, opisZal: zalaczniki.map(a => ({ filename: a.filename, size: a.content.length })) };
+}
+
+/** Wysyła mail do magazynu i zapisuje kiedy/kto/dokąd (kasuje też plan, jeśli był).
+ *  Rzuca, gdy mail nie wyjdzie — wtedy w bazie nic się nie zmienia. */
+async function wyslijPowiadomienie(prisma, o, { doKogo, kto: ktoWyslal }) {
+  const m = await trescPowiadomienia(prisma, o);
+  await require('../mail-sender').sendMail({ from: m.od, to: doKogo, subject: m.subject, body: m.text, html: m.html, attachments: m.zalaczniki });
+  const u = await prisma.warehouseOrder.update({
+    where: { id: o.id },
+    data: { powiadomionoAt: new Date(), powiadomilKto: ktoWyslal, powiadomionoDo: doKogo, powiadomNa: null, powiadomNaKto: null, powiadomNaDo: null, powiadomProby: 0, powiadomBlad: null },
+    include: ORDER_INCLUDE,
+  });
+  console.log(`[magazyn] powiadomiono magazyn o #${o.numer} (${m.zalaczniki.length} zał.)`);
+  return { zamowienie: u, od: m.od, opisZal: m.opisZal };
+}
+
+// Zegar do podmiany w testach (reguła godzin zależy od pory dnia i dnia tygodnia).
+let _zegar = () => new Date();
+
+/* POZA GODZINAMI PRACY MAGAZYNU (22.11.2026): kliknięcie w weekend, po 16:00
+ * albo przed 8:00 nie wysyła maila — zapisuje plan (`powiadomNa`), a cykl
+ * `wyslijZaplanowanePowiadomienia` wysyła go o 8:00 najbliższego dnia roboczego
+ * z treścią aktualną w chwili wysyłki. {teraz:true} wysyła od razu (świadoma
+ * decyzja właściciela), {anulujPlan:true} kasuje plan. */
+router.post('/zamowienia/:id/powiadom', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const prisma = req.app.locals.prisma;
+  const b = req.body || {};
+  const o = await prisma.warehouseOrder.findUnique({ where: { id: req.params.id }, include: ORDER_INCLUDE });
+  if (!o) return res.status(404).json({ ok: false, error: 'brak zamówienia' });
+  if (b.anulujPlan) {
+    if (!o.powiadomNa) return res.status(400).json({ ok: false, error: 'dla tego zamówienia nie ma zaplanowanego maila do magazynu' });
+    const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomNa: null, powiadomNaKto: null, powiadomNaDo: null }, include: ORDER_INCLUDE });
+    return res.json({ ok: true, planAnulowany: true, zamowienie: toPublic(u, rola(req)) });
+  }
+  if (o.status === 'ANULOWANE') return res.status(400).json({ ok: false, error: `zamówienie #${o.numer} jest anulowane — nie powiadamiam magazynu` });
+  const doKogo = b.do ? String(b.do).trim() : MAGAZYN_MAIL_DO();
+  if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(doKogo)) return res.status(400).json({ ok: false, error: `zły adres e-mail: ${doKogo}` });
+  if (o.powiadomionoAt && !b.ponownie && !b.podglad) {
+    const kiedy = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', dateStyle: 'short', timeStyle: 'short' }).format(o.powiadomionoAt);
+    return res.status(409).json({ ok: false, juzPowiadomiono: true, powiadomionoAt: o.powiadomionoAt, error: `Magazyn powiadomiony już ${kiedy} (${o.powiadomionoDo || 'magazyn'}). Wyślij ponownie tylko, jeśli trzeba.` });
+  }
+  const termin = b.teraz === true ? { odRazu: true } : kiedyPowiadomic(_zegar());
+  if (b.podglad) {
+    const m = await trescPowiadomienia(prisma, o);
+    return res.json({ ok: true, podglad: true, od: m.od, do: doKogo, temat: m.subject, tresc: m.text, zalaczniki: m.opisZal, wysylka: termin.odRazu ? 'od razu' : termin.opis });
+  }
+  if (!termin.odRazu) {
+    const u = await prisma.warehouseOrder.update({
+      where: { id: o.id },
+      data: { powiadomNa: termin.kiedy, powiadomNaKto: kto(req), powiadomNaDo: doKogo, powiadomProby: 0, powiadomBlad: null },
+      include: ORDER_INCLUDE,
+    });
+    console.log(`[magazyn] powiadomienie o #${o.numer} zaplanowane na ${termin.kiedy.toISOString()} (${termin.powod})`);
+    return res.json({
+      ok: true, zaplanowano: true, kiedy: termin.kiedy, opis: termin.opis, powod: termin.powod, do: doKogo, zamowienie: toPublic(u, rola(req)),
+      komunikat: `Magazyn dostanie maila ${termin.opis} — teraz jest poza godzinami pracy magazynu (${termin.powod}).`,
+    });
+  }
+  let w;
+  try { w = await wyslijPowiadomienie(prisma, o, { doKogo, kto: kto(req) }); }
+  catch (e) {
     console.error(`[magazyn] powiadomienie #${o.numer} nieudane:`, e.message);
     return res.status(502).json({ ok: false, error: `Mail do magazynu nie wyszedł: ${e.message}` });
   }
-  const u = await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomionoAt: new Date(), powiadomilKto: kto(req), powiadomionoDo: doKogo }, include: ORDER_INCLUDE });
-  console.log(`[magazyn] powiadomiono magazyn o #${o.numer} (${zalaczniki.length} zał.)`);
-  res.json({ ok: true, zamowienie: toPublic(u, rola(req)), wyslano: { od, do: doKogo, zalaczniki: opisZal } });
+  res.json({ ok: true, zamowienie: toPublic(w.zamowienie, rola(req)), wyslano: { od: w.od, do: doKogo, zalaczniki: w.opisZal } });
 }));
+
+/** Cykl (index.js, co minutę): wysyła maile do magazynu zaplanowane na teraz
+ *  lub wcześniej. Każde zamówienie jest najpierw „zajmowane" warunkowym zapisem,
+ *  żeby dwa przebiegi nie wysłały tego samego maila. Błąd wysyłki → ponowienie
+ *  za 5 minut, po trzech próbach alarm do właściciela. */
+const POWIADOM_PROBY = 3;
+async function wyslijZaplanowanePowiadomienia(prisma, teraz = _zegar()) {
+  const lista = await prisma.warehouseOrder.findMany({ where: { powiadomNa: { lte: teraz } }, include: ORDER_INCLUDE, orderBy: { powiadomNa: 'asc' }, take: 20 });
+  let wyslane = 0;
+  for (const o of lista) {
+    const zajete = await prisma.warehouseOrder.updateMany({ where: { id: o.id, powiadomNa: o.powiadomNa }, data: { powiadomNa: null } });
+    if (zajete.count !== 1) continue; // wziął to inny przebieg albo plan zmieniono
+    // Zamówienie anulowane albo już wysłane do klienta — „nowe zamówienie" nie ma sensu.
+    if (!['NOWE', 'GOTOWE', 'KURIER'].includes(o.status)) {
+      await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomNaKto: null, powiadomNaDo: null } });
+      console.log(`[magazyn] zaplanowane powiadomienie o #${o.numer} pominięte (status ${o.status})`);
+      continue;
+    }
+    const doKogo = o.powiadomNaDo || MAGAZYN_MAIL_DO();
+    try {
+      await wyslijPowiadomienie(prisma, o, { doKogo, kto: o.powiadomNaKto || 'plan' });
+      wyslane++;
+    } catch (e) {
+      const proby = (o.powiadomProby || 0) + 1;
+      const blad = String(e.message).slice(0, 300);
+      console.error(`[magazyn] zaplanowane powiadomienie o #${o.numer} nieudane (próba ${proby}/${POWIADOM_PROBY}):`, blad);
+      if (proby >= POWIADOM_PROBY) {
+        await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomProby: proby, powiadomBlad: blad, powiadomNaKto: null, powiadomNaDo: null } });
+        await alarmWlasciciela(prisma, `✉️ Magazyn #${o.numer} (${ktoGdzie(o)}): zaplanowany mail do magazynu NIE wyszedł (${proby} próby).\nBłąd: ${blad}\nKliknij „Powiadom magazyn” przy zamówieniu jeszcze raz.`);
+      } else {
+        await prisma.warehouseOrder.update({ where: { id: o.id }, data: { powiadomNa: new Date(teraz.getTime() + 5 * 60 * 1000), powiadomProby: proby, powiadomBlad: blad } });
+      }
+    }
+  }
+  return wyslane;
+}
 
 /* DOKUMENTY DO PACZKI (14.10.2026). Super-Pharm (i nie tylko) wymaga WZ/FV
  * w kartonie, a pakuje magazyn zewnętrzny — więc nasz PDF musi być przy
@@ -1235,4 +1366,5 @@ router.get('/katalog', asyncHandler(async (req, res) => {
 
 module.exports = router;
 module.exports.posprzatajPrzerwaneNaprawy = posprzatajPrzerwaneNaprawy;
-module.exports._test = { naprawWTle, narzedziaNaprawy, swiezeZlecenieGk, czasGkNaMs, niepewnyBlad, niepewnyZapisany, atrapaGk, _naprawyWToku };
+module.exports.wyslijZaplanowanePowiadomienia = wyslijZaplanowanePowiadomienia;
+module.exports._test = { naprawWTle, narzedziaNaprawy, swiezeZlecenieGk, czasGkNaMs, niepewnyBlad, niepewnyZapisany, atrapaGk, _naprawyWToku, brakiTowaru, tekstBrakowTowaru, etykietaTowaru, ustawZegar: (f) => { _zegar = f || (() => new Date()); } };

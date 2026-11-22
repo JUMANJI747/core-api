@@ -83,6 +83,9 @@ podstaw('services/agent-runtime.js', { selfCall: async () => ({ status: 500, bod
 podstaw('glob-client.js', { getOrderLabels: async () => ({ status: 404 }) });
 podstaw('services/product-catalog.js', { getActiveCatalog: async () => [] });
 const magazyn = require(path.join(SRC, 'routes', 'magazyn'));
+// Od 22.11.2026 „Powiadom magazyn" poza godzinami pracy magazynu planuje mail
+// na rano — te testy dotyczą wysyłki od razu, więc zegar stoi w poniedziałek o 11:00.
+magazyn._test.ustawZegar(() => new Date('2026-11-23T10:00:00Z'));
 
 function pomocnicze() {
   // Kształt roli magazyn (bez danych CRM) — w trasach sprawdza go prawdziwy toPublic.

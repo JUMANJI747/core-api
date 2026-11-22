@@ -259,6 +259,14 @@ const server = app.listen(PORT, () => {
   setTimeout(() => require('./routes/magazyn').posprzatajPrzerwaneNaprawy(prisma)
     .then(n => { if (n) console.log(`[magazyn] naprawy auto-listu przerwane restartem: ${n}`); })
     .catch(e => console.error('[magazyn] sprzątanie przerwanych napraw:', e.message)), 3 * 60 * 1000).unref();
+  // „Powiadom magazyn" kliknięte poza godzinami pracy magazynu: mail czeka w
+  // bazie (powiadomNa) i wychodzi o 8:00 dnia roboczego. Co minutę, także po
+  // restarcie — zaległe wychodzą przy pierwszym przebiegu.
+  const mailePlanowane = () => require('./routes/magazyn').wyslijZaplanowanePowiadomienia(prisma)
+    .then(n => { if (n) console.log(`[magazyn] wysłano zaplanowane powiadomienia: ${n}`); })
+    .catch(e => console.error('[magazyn] zaplanowane powiadomienia:', e.message));
+  setTimeout(mailePlanowane, 20 * 1000).unref();
+  setInterval(mailePlanowane, 60 * 1000).unref();
   // Raporty kasowe (przeniesione z n8n): śpi, dopóki nie ma RAPORTY_POCZTA_*.
   require('./services/raporty-kasowe-cykl').uruchom(prisma);
   // Maile rozgrzewające (Instantly), które trafiły do CRM przed filtrem albo

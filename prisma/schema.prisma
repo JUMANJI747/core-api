@@ -348,6 +348,14 @@ model WarehouseOrder {
   powiadomionoAt    DateTime?
   powiadomilKto     String?
   powiadomionoDo    String?
+  // „Powiadom magazyn" kliknięte poza godzinami pracy magazynu (22.11.2026,
+  // pn–pt 8–16): mail wyjdzie o `powiadomNa` — 8:00 najbliższego dnia roboczego.
+  // Anulowanie zamówienia przed tą porą kasuje plan (magazyn nie dostaje nic).
+  powiadomNa        DateTime?
+  powiadomNaKto     String?
+  powiadomNaDo      String?
+  powiadomProby     Int       @default(0)
+  powiadomBlad      String?   // ostatni błąd zaplanowanej wysyłki — widzi go właściciel
 
   items         WarehouseOrderItem[]
   dokumenty     WarehouseOrderDoc[] // nasze PDF-y do paczki (WZ, FV) — magazyn drukuje i wkłada
