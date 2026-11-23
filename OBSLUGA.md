@@ -76,6 +76,7 @@ Reguły: klient z PL → krajowa, PLN brutto, VAT 23%; klient z UE z aktywnym VI
    "attachments": [{"filename": "katalog.pdf", "contentType": "application/pdf", "contentBase64": "…"}], "draft": false}
   ```
   Nadawca (ta sama skrzynka), odbiorca, temat „Re:" i nagłówki wątku uzupełniają się same. Bez `"draft": false` powstaje szkic (z tłumaczeniem PL do podglądu); wysłanie szkicu: `POST /api/send-email/confirm {"emailId": "…"}`. Limit 20 maili na godzinę.
+- **Nowy mail (nie odpowiedź):** `POST /api/send-email {"from": "delivery@surfstickbell.com", "to": "…", "subject": "…", "body": "tekst", "html": "<p>…</p>", "draft": false}` — `from` musi być jedną z naszych skrzynek; odpowiedź `{"sent": true, "emailId": "…"}`. Tak idzie np. wiadomość do magazynu spoza „Powiadom magazyn" (anulowanie zamówienia, o którym magazyn dostał już maila): z delivery@ do m.urbaniak@bell.com.pl.
 - **Zawsze najpierw pokaż treść właścicielowi.** Katalog i cennik dla sklepów są w katalogu PDF (ostatnio wysłany jako załącznik z info@ — szukaj w `"EmailAttachment"` po nazwie).
 
 ## 7. Raporty kasowe (Pałac Galiny)
