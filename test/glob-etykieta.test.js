@@ -10,7 +10,10 @@ const b = (x) => Buffer.from(typeof x === 'string' ? x : JSON.stringify(x));
 test('opisOdmowyGk: message, error, errors/fields (obiekt i lista), HTML, pusto', () => {
   assert.equal(opisOdmowyGk(b({ message: 'Etykieta nie jest jeszcze dostępna' })), 'Etykieta nie jest jeszcze dostępna');
   assert.equal(opisOdmowyGk(b({ error: 'Order not found' })), 'Order not found');
-  assert.equal(opisOdmowyGk(b({ message: 'Błąd walidacji', fields: { 'orderHashes[0]': 'Brak etykiety' } })), 'Błąd walidacji; orderHashes[0]: Brak etykiety');
+  assert.equal(opisOdmowyGk(b({ message: 'Błąd walidacji', fields: { 'orderHashes[0]': 'Brak etykiety' } })), 'Błąd walidacji; Brak etykiety', 'nazwa parametru orderHashes to szum');
+  // dokładnie to, co GK oddał 24.11.2026 dla GK261124453398
+  assert.equal(opisOdmowyGk(b({ fields: { 'orderHashes[0]': 'Błąd generowania pliku etykiety paczki.' } })), 'Błąd generowania pliku etykiety paczki.');
+  assert.equal(opisOdmowyGk(b({ fields: { street: 'za długie' } })), 'street: za długie', 'inne pola zostają z nazwą');
   assert.equal(opisOdmowyGk(b({ errors: ['a', { message: 'b' }] })), 'a; b');
   assert.equal(opisOdmowyGk(b({ message: 'x', error: 'x' })), 'x', 'bez powtórzeń');
   assert.equal(opisOdmowyGk(b('<html><body>Bad   Request</body></html>')), 'Bad Request');

@@ -285,7 +285,8 @@ function opisOdmowyGk(body) {
     dodaj(j.message); dodaj(typeof j.error === 'string' ? j.error : null);
     const e = j.errors || j.fields;
     if (Array.isArray(e)) e.forEach(x => dodaj(typeof x === 'string' ? x : (x && (x.message || JSON.stringify(x)))));
-    else if (e && typeof e === 'object') for (const [k, v] of Object.entries(e)) dodaj(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+    // „orderHashes[0]" to nazwa parametru zapytania, nie pole adresu — dla człowieka szum.
+    else if (e && typeof e === 'object') for (const [k, v] of Object.entries(e)) dodaj(`${/^orderHashes/.test(k) ? '' : `${k}: `}${typeof v === 'string' ? v : JSON.stringify(v)}`);
   }
   if (!czesci.length) dodaj(surowy.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300));
   return [...new Set(czesci)].join('; ').slice(0, 400);
@@ -298,7 +299,11 @@ router.get('/glob/labels/:hash', async (req, res) => {
     if (result.status !== 200) {
       const gk = opisOdmowyGk(result.body);
       console.warn(`[glob/labels] GK ${result.status} dla ${req.params.hash.slice(0, 12)}: ${gk || '(pusta odpowiedź)'}`);
-      return res.status(result.status).json({ ok: false, error: gk ? `GlobKurier nie wydał etykiety (HTTP ${result.status}): ${gk}` : `GlobKurier nie wydał etykiety (HTTP ${result.status}, bez opisu)`, gk: gk || null });
+      /* GK261124453398 (24.11.2026, DPD z Galin do Czech): GK nie generuje pliku,
+         bo w tym zleceniu KURIER PRZYWOZI list przewozowy ze sobą — tak stoi w mailu
+         „Dokonano zamówienia" („Sposób nadania"). Podpowiedź, gdzie to sprawdzić. */
+      const wskazowka = /generowania pliku etykiety/i.test(gk) ? ' Bywa tak, gdy kurier przywozi list przewozowy ze sobą — sprawdź „Sposób nadania” w mailu GlobKuriera „Dokonano zamówienia”.' : '';
+      return res.status(result.status).json({ ok: false, error: gk ? `GlobKurier nie wydał etykiety (HTTP ${result.status}): ${gk}${wskazowka}` : `GlobKurier nie wydał etykiety (HTTP ${result.status}, bez opisu)`, gk: gk ? `${gk}${wskazowka}` : null });
     }
     res.setHeader('Content-Type', 'application/pdf');
     // inline (nie attachment) — iOS Safari pokazuje wtedy PDF w wbudowanym
