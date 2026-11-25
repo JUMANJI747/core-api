@@ -203,6 +203,9 @@ app.use('/api/contractors', require('./routes/contractors'));
 app.use('/api/deals', require('./routes/deals'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/magazyn', require('./routes/magazyn'));
+// Pełne API GlobKuriera dla Claude (25.11.2026): odczyt /v1/* i zamówienie z każdym
+// sposobem nadania/odbioru (domyślnie próba). Panel CRM zostaje na /glob/* (zawsze podjazd).
+app.use('/api/gk', require('./routes/gk-pelne'));
 app.use('/api/consignments', require('./routes/consignments'));
 app.use('/api', require('./routes/emails'));
 app.use('/api/mailing', require('./routes/mailing'));

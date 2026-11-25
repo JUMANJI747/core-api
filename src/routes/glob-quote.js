@@ -1490,6 +1490,9 @@ router.post('/glob/order', async (req, res) => {
       declaredValue: quote.declaredValue || 100,
       purpose: 'SOLD',
       paymentId: 9,
+      // Obowiązkowe od 1.01.2027 (GK, mail 17.11.2026): bez pola zlecenie zostanie
+      // odrzucone. Kosmetyki to nie towar niebezpieczny (ADR).
+      containsDangerousGoods: false,
     };
 
     console.log('[glob/order] Creating order:', JSON.stringify(orderPayload));

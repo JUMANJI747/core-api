@@ -50,6 +50,30 @@ Reguły: klient z PL → krajowa, PLN brutto, VAT 23%; klient z UE z aktywnym VI
 3. **Zamówienie:** `POST /api/glob/order {"quoteId": "…", "productId": …, "source": "frontend"}` → `orderNumber` (GK…), `hash`, cena. Bierz najtańszą ofertę od drzwi do drzwi, chyba że właściciel powie inaczej.
 4. **List przewozowy:** `GET /api/glob/labels/<hash>` (PDF) → wyślij właścicielowi. Szukanie zamówień: `GET /api/glob/orders?search=GK…&limit=100&offset=0` (starsze — kolejne `offset`).
 
+### 4b. Kurier — pełne API GlobKuriera (tylko Claude, od 25.11.2026)
+
+Panel CRM zawsze zamawia **podjazd kuriera** (§4). Gdy właściciel chce inaczej — paczkomat / punkt u odbiorcy, nadanie w punkcie zamiast podjazdu, crossborder, ubezpieczenie, pobranie, dostawa na godzinę, paleta — użyj `/api/gk`. Dokumentacja API: https://developer.globkurier.pl (każda strona ma wersję tekstową po dopisaniu `.md`; spis wszystkich stron: `/llms.txt`). Sposoby nadania i odbioru: `PICKUP` (podjazd kuriera), `POINT` (punkt / paczkomat), `CROSSBORDER`.
+
+1. **Odczyt czegokolwiek z API GK:** `GET /api/gk/v1/<zasób>?<parametry jak w dokumentacji>` — zapytanie idzie do GK 1:1, token dokleja serwer. Najczęstsze:
+   - produkty: `GET /api/gk/v1/products?length=29&width=19&height=10&weight=1.2&quantity=1&senderCountryId=1&receiverCountryId=1&senderPostCode=11-200&receiverPostCode=00-001&collectionTypes[]=PICKUP&deliveryTypes[]=POINT&flatList=true` (`collectionTypes[]` / `deliveryTypes[]` można powtarzać; `packageType` DOX / PARCEL / LONG_PARCEL / PALLET; `addonCategories[]`, `carrierName[]`),
+   - dodatki produktu: `GET /api/gk/v1/product/addons?productId=…&length=…&width=…&height=…&weight=…&quantity=1&senderCountryId=…&receiverCountryId=…&senderPostCode=…&receiverPostCode=…` (`isRequired` = obowiązkowy),
+   - punkty / paczkomaty: `GET /api/gk/v1/points?productId=…&addressType=receiver&postCode=00-001` (albo `city=…`, `filter=…`; nadanie w punkcie: `addressType=sender`),
+   - terminy podjazdu: `GET /api/gk/v1/order/pickupTimeRanges?productId=…&senderCountryId=1&senderPostCode=…&receiverCountryId=…&receiverPostCode=…&receiverCity=…&date=RRRR-MM-DD&weight=…&quantity=1`,
+   - zlecenie: `GET /api/gk/v1/order?number=GK…` (albo `?hash=…`), etykieta PDF: `GET /api/gk/v1/order/labels?orderHashes[]=<hash>&format=A4`, kraje: `GET /api/gk/v1/countries`.
+2. **Nadawca:** `GET /api/gk/nadawcy` → `id` i gotowy `senderAddress` (Galiny jest domyślny).
+3. **Próba zamówienia (zawsze najpierw):** `POST /api/gk/zamowienie`
+   ```json
+   {"senderId": "…",
+    "receiverAddress": {"name": "…", "street": "…", "houseNumber": "…", "postCode": "…", "city": "…", "country": "PL", "phone": "+48…", "email": "…", "pointId": "WAW01M"},
+    "shipment": {"productId": 1234, "length": 29, "width": 19, "height": 10, "weight": 1.2, "quantity": 1},
+    "collectionType": "PICKUP",
+    "addons": [{"id": 1578, "value": 300}],
+    "invoiceNumber": "268/2026"}
+   ```
+   Bez `"zamow": true` **nic nie jest zamawiane**: odpowiedź ma `walidacja` (czy GK przyjmie dane), `cena` (`brutto`, `netto`, `wybrane` dodatki z cenami, `wymaganeBrak` — obowiązkowe dodatki, których nie podałeś), `odbior` (termin podjazdu: najbliższy z GK, chyba że podasz `pickup: {date, timeFrom, timeTo}`) i gotowe `zamowienie`. `pointId` w `receiverAddress` = paczkomat/punkt odbioru; `collectionType: "POINT"` wymaga `senderAddress: {"pointId": "…"}` (reszta adresu i tak bierze się z `senderId`). Kraj: `country` (ISO) albo `countryId`. Domyślnie: płatność prepaid (`paymentId` 9), `content` „Cosmetics / Surf Stick Bell”, `purpose` SOLD, `containsDangerousGoods: false`. Dalsze pola GK (cło `customs`, `instructions`, `referenceNumber`, `declaredValue`, `discountCode`…) podaje się wprost, jak w dokumentacji „Create order”. Znaki w nazwie/ulicy/mieście i telefon serwer czyści sam (jak w §4).
+4. **Pokaż właścicielowi** przewoźnika, sposób nadania i odbioru, punkt, termin, dodatki i cenę z próby. **Dopiero po jego zgodzie** wyślij **ten sam body** z `"zamow": true` → `numer` (GK…), `hash`. Ponowienie z tym samym body nie zrobi drugiej paczki (ten sam `orderHash`; odpowiedź `juzZamowione: true`). Świadomie druga, identyczna paczka: `"nowyHash": true`. Odpowiedź 502 z `niepewne: true` = GK nie odpowiedział — najpierw `GET /api/gk/v1/order?hash=<orderHash>`, dopiero potem ponów.
+5. Zlecenie widać od razu w zakładce Wysyłki; z `invoiceNumber` podpina się do faktury. Etykieta: `GET /api/glob/labels/<hash>`. Anulowanie: `POST /api/glob/delete-order` (tylko na polecenie). Kurier nie przyjechał: `POST /api/gk/odbior {"hash": "…", "zamow": true}` zamawia podjazd jeszcze raz (tylko na polecenie).
+
 ## 5. Magazyn zewnętrzny (Bell, Józefów)
 
 - **Stan i katalog:** `GET /api/magazyn/stan`, `GET /api/magazyn/katalog` (EAN-y, kody fabryczne, skład boxów).
