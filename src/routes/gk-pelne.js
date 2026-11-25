@@ -194,8 +194,9 @@ async function zbudujZamowienie(prisma, we) {
   if (!b.content) b.content = 'Cosmetics / Surf Stick Bell';
   if (!b.purpose) b.purpose = 'SOLD';
   if (b.containsDangerousGoods == null) b.containsDangerousGoods = false; // obowiązkowe od 1.01.2027
-  if (!Array.isArray(b.addons)) b.addons = [];
-  b.addons = b.addons.map((a) => (typeof a === 'object' ? { ...a, id: Number(a.id) } : { id: Number(a) }));
+  // GK: pusta lista dodatków to błąd („Pole nie może być puste") — bez dodatków pole znika.
+  if (Array.isArray(b.addons) && b.addons.length) b.addons = b.addons.map((a) => (typeof a === 'object' ? { ...a, id: Number(a.id) } : { id: Number(a) }));
+  else delete b.addons;
 
   // Idempotencja: ten sam body = ten sam orderHash, GK odrzuca powtórkę w 24 h (429).
   if (!b.orderHash || we.nowyHash) {
@@ -239,7 +240,8 @@ async function wycen(b) {
   const poId = new Map(slownik.map((a) => [Number(a.id), a]));
   const cena = new URLSearchParams(wspolne);
   cena.set('paymentId', String(b.paymentId));
-  for (const a of b.addons) {
+  const dodatki = b.addons || [];
+  for (const a of dodatki) {
     cena.append('addonIds[]', String(a.id));
     const kat = String((poId.get(a.id) || {}).category || '');
     if (a.value != null && /INSURANCE/i.test(kat)) cena.set('insuranceValue', String(a.value));
@@ -247,8 +249,8 @@ async function wycen(b) {
   }
   if (b.discountCode) cena.set('discountCode', String(b.discountCode));
   const p = await gk('GET', `/v1/order/price?${cena.toString()}`);
-  const wybrane = b.addons.map((a) => { const d = poId.get(a.id) || {}; return { id: a.id, nazwa: d.addonName || d.name || null, kategoria: d.category || null, cenaBrutto: d.priceGross != null ? Number(d.priceGross) : null }; });
-  const wybraneId = new Set(b.addons.map((a) => a.id));
+  const wybrane = dodatki.map((a) => { const d = poId.get(a.id) || {}; return { id: a.id, nazwa: d.addonName || d.name || null, kategoria: d.category || null, cenaBrutto: d.priceGross != null ? Number(d.priceGross) : null }; });
+  const wybraneId = new Set(dodatki.map((a) => a.id));
   const wymaganeBrak = slownik.filter((a) => (a.isRequired || a.required) && !wybraneId.has(Number(a.id))).map((a) => ({ id: Number(a.id), nazwa: a.addonName || a.name, kategoria: a.category || null }));
   if (p.status >= 400) return { ok: false, blad: bladGk(p), wybrane, wymaganeBrak };
   const j = p.json || {};
@@ -265,7 +267,7 @@ async function poZleceniu(prisma, z, b, invoiceNumber) {
     logActivity(prisma, {
       type: 'shipment.created', summary: `Paczka ${numer || hash} (API Claude, ${b.collectionType}) → ${odb.name || '?'}`, source: 'gk',
       shipmentNumber: numer, actorType: 'user', actorId: 'claude',
-      payload: { orderHash: hash, number: numer, collectionType: b.collectionType, productId: b.shipment.productId, receiverName: odb.name, receiverCity: odb.city, receiverPointId: odb.pointId || null, senderPointId: (b.senderAddress || {}).pointId || null, addons: b.addons.map((a) => a.id), invoiceNumber: invoiceNumber || null, zrodlo: 'api/gk' },
+      payload: { orderHash: hash, number: numer, collectionType: b.collectionType, productId: b.shipment.productId, receiverName: odb.name, receiverCity: odb.city, receiverPointId: odb.pointId || null, senderPointId: (b.senderAddress || {}).pointId || null, addons: (b.addons || []).map((a) => a.id), invoiceNumber: invoiceNumber || null, zrodlo: 'api/gk' },
       tags: ['zrodlo:api-gk', `collection:${String(b.collectionType).toLowerCase()}`],
     });
   } catch (e) { console.error('[gk/zamowienie] zdarzenie:', e.message); }
@@ -293,7 +295,9 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
     // PRÓBA: walidacja GK + wycena. Żadne zlecenie nie powstaje.
     let walidacja;
     try {
-      const v = await gk('POST', '/v1/order/validate', { body: b });
+      // Walidacja nie przyjmuje orderHash („Nadmiarowe pole") — ma go tylko samo zlecenie.
+      const { orderHash: _bezHasha, ...doWalidacji } = b;
+      const v = await gk('POST', '/v1/order/validate', { body: doWalidacji });
       walidacja = v.status < 400 ? { ok: true } : { ok: false, bledy: bladGk(v), surowa: v.json };
     } catch (e) { walidacja = { ok: false, bledy: e.message }; }
     let cena;
@@ -312,9 +316,28 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
       return g.status === 200 && g.json && (g.json.number || g.json.hash) ? g.json : null;
     } catch (_) { return null; }
   };
+  /* Pola nowsze niż część API GK (orderHash, containsDangerousGoods): gdy zlecenie
+     odbije je jako „Nadmiarowe pole", ponawiamy raz bez nich — odbite zlecenie nie
+     powstało, więc ponowienie nie zrobi drugiej paczki. Bez orderHash tracimy tylko
+     sprawdzanie po hashu (patrz bezHasha). */
+  let bezHasha = false;
+  const nadmiarowe = (odp) => {
+    const f = (odp && odp.json && (odp.json.fields || (odp.json.errors && odp.json.errors.fields))) || {};
+    return ['orderHash', 'containsDangerousGoods'].filter((k) => /nadmiarow|extra|not allowed|unexpected/i.test(String(f[k] || '')));
+  };
   let r;
-  try { r = await gk('POST', '/v1/order', { body: b, timeoutMs: 45000 }); }
-  catch (e) {
+  try {
+    r = await gk('POST', '/v1/order', { body: b, timeoutMs: 45000 });
+    const zbedne = r.status === 400 ? nadmiarowe(r) : [];
+    if (zbedne.length) {
+      console.warn(`[gk/zamowienie] GK nie przyjmuje w zleceniu: ${zbedne.join(', ')} — ponawiam bez`);
+      const b2 = { ...b };
+      for (const k of zbedne) delete b2[k];
+      bezHasha = zbedne.includes('orderHash');
+      r = await gk('POST', '/v1/order', { body: b2, timeoutMs: 45000 });
+    }
+  } catch (e) {
+    if (bezHasha) return res.status(502).json({ ok: false, niepewne: true, error: `${e.message}. Nie wiadomo, czy zlecenie powstało — sprawdź najnowsze zlecenia (GET /api/gk/v1/orders?limit=5) zanim ponowisz.` });
     const juz = await sprawdzPoHashu();
     if (juz) { await poZleceniu(prisma, juz, b, we.invoiceNumber); return res.json({ ok: true, numer: juz.number, hash: juz.hash || b.orderHash, uwaga: 'GlobKurier nie odpowiedział na czas, ale zlecenie powstało.', zlecenie: juz }); }
     return res.status(502).json({ ok: false, niepewne: true, orderHash: b.orderHash, error: `${e.message}. Nie wiadomo, czy zlecenie powstało — sprawdź GET /api/gk/v1/order?hash=${b.orderHash} zanim ponowisz.` });
@@ -328,7 +351,7 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
   // Każda odmowa: czy zlecenie z NASZYM orderHashem już istnieje? (429 = identyczne
   // zlecenie w ciągu 24 h; 5xx = nie wiadomo; inna odmowa przy powtórce z innym
   // terminem). Zlecenie o tym hashu mogło powstać tylko z tego samego zamówienia.
-  const juz = await sprawdzPoHashu();
+  const juz = bezHasha ? null : await sprawdzPoHashu();
   if (juz) {
     await poZleceniu(prisma, juz, b, we.invoiceNumber);
     return res.json({ ok: true, numer: juz.number, hash: juz.hash || b.orderHash, juzZamowione: true, uwaga: 'To zlecenie zostało już złożone wcześniej (ten sam orderHash) — drugiego nie ma.', zlecenie: juz });

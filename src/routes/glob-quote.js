@@ -1233,6 +1233,14 @@ router.post('/glob/order', async (req, res) => {
 
     async function createOrderWithAddonRetry(payload) {
       let r = await createOrder(payload);
+      // containsDangerousGoods (obowiązkowe od 1.01.2027): gdyby API odbiło je jako
+      // „Nadmiarowe pole", zlecenie nie powstało — ponawiamy raz bez tego pola.
+      const polaOdmowy = (r && (r.fields || (r.errors && r.errors.fields))) || {};
+      if (polaOdmowy.containsDangerousGoods && /nadmiarow|extra/i.test(String(polaOdmowy.containsDangerousGoods))) {
+        console.warn('[glob/order] GK nie przyjmuje containsDangerousGoods — ponawiam bez tego pola');
+        delete payload.containsDangerousGoods;
+        r = await createOrder(payload);
+      }
       for (let i = 0; i < 2; i++) {
         if (!r || !(r.errors || r.error || r.fields)) break;
         const req = extractAddonRequirements(r);

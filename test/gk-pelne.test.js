@@ -132,7 +132,8 @@ test('próba (domyślnie): walidacja + wycena, ŻADNEGO zlecenia; adres oczyszcz
   assert.deepEqual(r.json.cena.wybrane, [{ id: 1578, nazwa: 'Ubezpieczenie', kategoria: 'INSURANCE', cenaBrutto: 4.92 }]);
   assert.deepEqual(r.json.cena.wymaganeBrak, [{ id: 211, nazwa: 'Doręczenie do osoby prywatnej', kategoria: 'DELIVERY_TO_PERSON' }]);
   const walid = wolania.find(w => w.sciezka === '/v1/order/validate');
-  assert.equal(walid.body.orderHash, b.orderHash);
+  assert.equal(walid.body.orderHash, undefined, 'walidacja GK nie przyjmuje orderHash („Nadmiarowe pole")');
+  assert.equal(walid.body.receiverAddress.pointId, 'DE-PACK-123');
   assert.equal(db.zdarzenia.length, 0);
 });
 
@@ -149,6 +150,20 @@ test('próba: odmowa walidacji GK wraca czytelnie; nadanie z punktu bez pointId 
   const zly = await zapytaj(baza(), 'POST', '/zamowienie', { body: { ...PACZKOMAT, collectionType: 'DRON' } });
   assert.match(zly.json.error, /PICKUP \/ POINT \/ CROSSBORDER/);
   assert.match((await zapytaj(baza(), 'POST', '/zamowienie', { body: { ...PACZKOMAT, senderId: 'nie-ma' } })).json.error, /nie ma nadawcy/);
+});
+
+test('bez dodatków pole addons znika (GK: „Pole nie może być puste"), także w zleceniu', async () => {
+  const wolania = atrapaGk(gkWzorcowe());
+  const { addons, ...bezDodatkow } = PACZKOMAT;
+  const r = await zapytaj(baza(), 'POST', '/zamowienie', { body: { ...bezDodatkow, addons: [] } });
+  assert.equal(r.json.ok, true);
+  assert.equal(r.json.zamowienie.addons, undefined);
+  assert.equal(wolania.find(w => w.sciezka === '/v1/order/validate').body.addons, undefined);
+  assert.ok(!/addonIds/.test(wolania.find(w => w.sciezka.startsWith('/v1/order/price')).sciezka));
+  await zapytaj(baza(), 'POST', '/zamowienie', { body: { ...bezDodatkow, zamow: true } });
+  const zlec = wolania.find(w => w.metoda === 'POST' && w.sciezka === '/v1/order');
+  assert.equal(zlec.body.addons, undefined);
+  assert.match(zlec.body.orderHash, /^[0-9a-f]{64}$/, 'samo zlecenie ma orderHash');
 });
 
 test('nadanie w punkcie (POINT): bez terminu podjazdu, punkt nadawcy w adresie', async () => {
@@ -237,6 +252,32 @@ test('odmowa GK przy zleceniu: 400 z treścią; podjazd do istniejącego zleceni
   const p = await zapytaj(baza(), 'POST', '/odbior', { body: { hash, zamow: true } });
   assert.equal(p.json.ok, true);
   assert.deepEqual(wolania.find(w => w.sciezka === '/v1/order/createPickup').body, { hash });
+});
+
+test('zlecenie odbite przez „Nadmiarowe pole" orderHash: ponowione raz bez niego, jedna paczka', async () => {
+  const wolania = atrapaGk(gkWzorcowe({
+    'POST /v1/order': (sciezka, body) => null,
+  }));
+  // własna atrapa: pierwsze zlecenie z orderHash → 400 Nadmiarowe pole, drugie bez → OK
+  const zlecenia = [];
+  T.ustawGk(async (metoda, sciezka, opcje = {}) => {
+    const p = sciezka.split('?')[0];
+    if (metoda === 'POST' && p === '/v1/order') {
+      zlecenia.push(JSON.parse(JSON.stringify(opcje.body)));
+      if (opcje.body.orderHash) return { status: 400, typ: 'application/json', buf: Buffer.from('{}'), json: { fields: { orderHash: 'Nadmiarowe pole.' } }, naglowki: {} };
+      return { status: 200, typ: 'application/json', buf: Buffer.from('{}'), json: { number: 'GK261125000009', hash: 'z'.repeat(64) }, naglowki: {} };
+    }
+    if (metoda === 'GET' && p === '/v1/order') throw new Error('nie powinno pytać po hashu bez orderHash');
+    return { status: 200, typ: 'application/json', buf: Buffer.from('{}'), json: {}, naglowki: {} };
+  });
+  const db = baza();
+  const r = await zapytaj(db, 'POST', '/zamowienie', { body: { ...PACZKOMAT, zamow: true } });
+  assert.equal(r.json.ok, true, JSON.stringify(r.json));
+  assert.equal(r.json.numer, 'GK261125000009');
+  assert.equal(zlecenia.length, 2);
+  assert.ok(zlecenia[0].orderHash && !zlecenia[1].orderHash);
+  assert.equal(zlecenia[1].containsDangerousGoods, false, 'inne pola zostają');
+  assert.equal(wolania.length, 0);
 });
 
 test.after(() => { T.ustawGk(null); T.ustawToken(null); });
