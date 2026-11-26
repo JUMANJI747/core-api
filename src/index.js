@@ -206,6 +206,9 @@ app.use('/api/magazyn', require('./routes/magazyn'));
 // Pełne API GlobKuriera dla Claude (25.11.2026): odczyt /v1/* i zamówienie z każdym
 // sposobem nadania/odbioru (domyślnie próba). Panel CRM zostaje na /glob/* (zawsze podjazd).
 app.use('/api/gk', require('./routes/gk-pelne'));
+// Pełne API iFirmy dla Claude (26.11.2026): odczyt dowolnego zasobu, zapis domyślnie
+// jako podgląd (wysłanie tylko z "wykonaj": true). Panel CRM zostaje na /ifirma/*.
+app.use('/api/if', require('./routes/ifirma-pelne'));
 app.use('/api/consignments', require('./routes/consignments'));
 app.use('/api', require('./routes/emails'));
 app.use('/api/mailing', require('./routes/mailing'));
