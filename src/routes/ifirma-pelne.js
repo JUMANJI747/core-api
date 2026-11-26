@@ -95,6 +95,33 @@ function ifirmaHttpDomyslny(metoda, sciezkaZParametrami, { tresc = null, timeout
   });
 }
 let ifirmaHttp = ifirmaHttpDomyslny;
+
+/* Kurs NBP (tabela A) z dnia poprzedzającego wystawienie — iFirma wymaga go w polu
+   KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury dla dokumentów w walucie.
+   Cofamy się do 7 dni (weekend, święto). */
+function pobierzJson(url, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { Accept: 'application/json' } }, (res) => {
+      const kawalki = [];
+      res.on('data', (c) => kawalki.push(c));
+      res.on('end', () => { if (res.statusCode !== 200) return resolve(null); try { resolve(JSON.parse(Buffer.concat(kawalki).toString('utf8'))); } catch (e) { resolve(null); } });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('NBP timeout')));
+    req.on('error', reject);
+  });
+}
+async function kursNbpDomyslny(waluta, dataWystawienia) {
+  const start = new Date(`${dataWystawienia}T12:00:00Z`);
+  for (let i = 1; i <= 7; i++) {
+    const dzien = new Date(start.getTime() - i * 86400000).toISOString().slice(0, 10);
+    let r = null;
+    try { r = await pobierzJson(`https://api.nbp.pl/api/exchangerates/rates/A/${encodeURIComponent(waluta)}/${dzien}/?format=json`); } catch (_) { /* następny dzień */ }
+    if (r && r.rates && r.rates[0] && r.rates[0].mid) return { kurs: r.rates[0].mid, dzien, tabela: r.rates[0].no || null };
+  }
+  throw Object.assign(new Error(`brak kursu NBP ${waluta} z 7 dni przed ${dataWystawienia} — podaj KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury ręcznie`), { status: 400 });
+}
+let kursNbp = kursNbpDomyslny;
+const dzisWarszawa = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Warsaw' }).format(new Date());
 let przestawMiesiac = async (m, r) => require('../ifirma-client').setAccountingMonth(m, r);
 
 /** Ścieżka zasobu dokładnie tak, jak przyszła (z kodowaniem %…) — podpis liczy się z wysyłanego URL-a. */
@@ -146,13 +173,23 @@ async function zapis(metoda, req, res) {
   const sciezka = surowaSciezka(req);
   if (!sciezka || sciezka.includes('..')) return res.status(400).json({ ok: false, error: 'podaj zasób iFirmy' });
   if (b.dane !== undefined && (typeof b.dane !== 'object' || b.dane === null)) return res.status(400).json({ ok: false, error: '"dane" to obiekt JSON z dokumentacji iFirmy' });
-  const tresc = b.dane === undefined ? '' : JSON.stringify(b.dane);
   const bezParametrow = sciezka.split('?')[0];
   const klucz = nazwaKlucza(bezParametrow);
+  // Dokument sprzedaży w walucie bez kursu: dopisujemy kurs NBP z dnia poprzedzającego wystawienie.
+  let kurs = null;
+  const dane = b.dane && typeof b.dane === 'object' ? { ...b.dane } : b.dane;
+  const waluta = dane && String(dane.Waluta || '').toUpperCase();
+  if (dane && /^(faktura|rachunek)/i.test(bezParametrow) && waluta && waluta !== 'PLN' && dane.KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury == null) {
+    try { kurs = await kursNbp(waluta, String(dane.DataWystawienia || dzisWarszawa()).slice(0, 10)); }
+    catch (e) { return res.status(e.status || 502).json({ ok: false, error: e.message }); }
+    dane.KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury = kurs.kurs;
+  }
+  const tresc = dane === undefined ? '' : JSON.stringify(dane);
 
   if (b.wykonaj !== true) {
     return res.json({
-      ok: true, podglad: true, metoda, url: BAZA + sciezka, klucz, kluczUstawiony: !!wartoscKlucza(klucz), dane: b.dane === undefined ? null : b.dane,
+      ok: true, podglad: true, metoda, url: BAZA + sciezka, klucz, kluczUstawiony: !!wartoscKlucza(klucz), dane: dane === undefined ? null : dane,
+      ...(kurs ? { kursNbp: { waluta, ...kurs, uwaga: 'dopisany automatycznie (tabela A NBP z dnia poprzedzającego wystawienie)' } } : {}),
       uwaga: 'Nic nie zostało wysłane do iFirmy. Po akceptacji właściciela wyślij to samo z "wykonaj": true.',
     });
   }
@@ -176,7 +213,7 @@ async function zapis(metoda, req, res) {
     r = await ifirmaHttp(metoda, sciezka, { tresc });
     // Miesiąc księgowy iFirmy musi pasować do daty dokumentu — przestawiamy i ponawiamy raz.
     const o = odp(r);
-    const data = b.dane && (b.dane.DataSprzedazy || b.dane.DataWystawienia);
+    const data = dane && (dane.DataSprzedazy || dane.DataWystawienia);
     if (kodIfirmy(r) === 201 && /miesi[aą]c.*ksi[eę]gow|rok.*ksi[eę]gow/i.test(String(o.Informacja || '')) && /^\d{4}-\d{2}/.test(String(data || ''))) {
       const [rok, mies] = String(data).split('-').map(Number);
       console.log(`[if/zapis] miesiąc księgowy → ${rok}-${String(mies).padStart(2, '0')} i ponowienie (${bezParametrow})`);
@@ -207,7 +244,7 @@ async function zapis(metoda, req, res) {
   // Numer w ConfirmLock = dokument „z CRM" dla strażnika (przegląd faktur).
   await completeConfirm(prisma, kluczBlokady, numer || 'wykonano', id != null ? String(id) : null);
   console.log(`[if/zapis] ${metoda} ${bezParametrow} OK${numer ? ` — ${numer}` : ''}${id ? ` (id ${id})` : ''}`);
-  return res.json({ ok: true, numer: numer || null, id: id != null ? String(id) : null, ifirma: odp(r) });
+  return res.json({ ok: true, numer: numer || null, id: id != null ? String(id) : null, ...(kurs ? { kursNbp: { waluta, ...kurs } } : {}), ifirma: odp(r) });
 }
 router.post(/^\/iapi\/(.+)$/, asyncHandler((req, res) => zapis('POST', req, res)));
 router.put(/^\/iapi\/(.+)$/, asyncHandler((req, res) => zapis('PUT', req, res)));
@@ -217,4 +254,5 @@ module.exports._test = {
   nazwaKlucza, podpis, znajdzPole,
   ustawHttp: (f) => { ifirmaHttp = f || ifirmaHttpDomyslny; },
   ustawMiesiac: (f) => { przestawMiesiac = f || (async (m, r) => require('../ifirma-client').setAccountingMonth(m, r)); },
+  ustawKurs: (f) => { kursNbp = f || kursNbpDomyslny; },
 };

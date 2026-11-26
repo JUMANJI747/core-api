@@ -15,6 +15,8 @@ delete process.env.IFIRMA_API_KEY_RACHUNEK;
 delete process.env.IFIRMA_API_KEY_WYDATEK;
 const ifPelne = require(path.join(__dirname, '..', 'src', 'routes', 'ifirma-pelne'));
 const T = ifPelne._test;
+// Bez sieci: kurs NBP podstawiony (test wyżej sprawdza samo dopisywanie).
+T.ustawKurs(async () => ({ kurs: 4.2, dzien: '2026-11-25', tabela: 'X' }));
 
 function atrapa(odpowiedz) {
   const wolania = [];
@@ -86,6 +88,27 @@ test('odczyt: zasób z parametrami 1:1 (z kodowaniem), PDF jako plik; magazyn be
   assert.equal(wolania.length, 3);
 });
 
+test('dokument w walucie bez kursu: kurs NBP z dnia poprzedzającego wystawienie dopisany już w podglądzie; podany kurs zostaje', async () => {
+  const pytania = [];
+  T.ustawKurs(async (waluta, data) => { pytania.push([waluta, data]); return { kurs: 4.2345, dzien: '2026-11-25', tabela: '228/A/NBP/2026' }; });
+  const wolania = atrapa(() => ({ json: { response: { Kod: 0, Identyfikator: 3, Wynik: { PelnyNumer: '3/2026/EXP' } } } }));
+  const db = baza();
+  const p = await zapytaj(db, 'POST', '/api/if/iapi/fakturaeksporttowarow.json', { body: { dane: FAKTURA_EKSPORT } });
+  assert.equal(p.json.dane.KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury, 4.2345);
+  assert.deepEqual(p.json.kursNbp, { waluta: 'EUR', kurs: 4.2345, dzien: '2026-11-25', tabela: '228/A/NBP/2026', uwaga: 'dopisany automatycznie (tabela A NBP z dnia poprzedzającego wystawienie)' });
+  assert.deepEqual(pytania[0], ['EUR', '2026-11-26']);
+  const w = await zapytaj(db, 'POST', '/api/if/iapi/fakturaeksporttowarow.json', { body: { dane: FAKTURA_EKSPORT, wykonaj: true } });
+  assert.equal(w.json.numer, '3/2026/EXP');
+  assert.equal(JSON.parse(wolania[0].tresc).KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury, 4.2345);
+  const wlasny = await zapytaj(baza(), 'POST', '/api/if/iapi/fakturaeksporttowarow.json', { body: { dane: { ...FAKTURA_EKSPORT, KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: 4.1 } } });
+  assert.equal(wlasny.json.dane.KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury, 4.1);
+  assert.equal(wlasny.json.kursNbp, undefined);
+  const pln = await zapytaj(baza(), 'POST', '/api/if/iapi/fakturakraj.json', { body: { dane: { ...FAKTURA_EKSPORT, Waluta: 'PLN' } } });
+  assert.equal(pln.json.dane.KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury, undefined);
+  assert.equal(pytania.length, 2, 'tylko dokumenty w walucie bez kursu');
+  T.ustawKurs(async () => ({ kurs: 4.2, dzien: '2026-11-25', tabela: 'X' }));
+});
+
 test('zapis bez "wykonaj": tylko podgląd — nic nie idzie do iFirmy', async () => {
   const wolania = atrapa(() => ({ json: { response: { Kod: 0 } } }));
   const r = await zapytaj(baza(), 'POST', '/api/if/iapi/fakturaeksporttowarow.json', { body: { dane: FAKTURA_EKSPORT } });
@@ -93,7 +116,7 @@ test('zapis bez "wykonaj": tylko podgląd — nic nie idzie do iFirmy', async ()
   assert.equal(r.json.url, 'https://www.ifirma.pl/iapi/fakturaeksporttowarow.json');
   assert.equal(r.json.klucz, 'faktura');
   assert.equal(r.json.kluczUstawiony, true);
-  assert.deepEqual(r.json.dane, FAKTURA_EKSPORT);
+  assert.deepEqual(r.json.dane, { ...FAKTURA_EKSPORT, KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: 4.2 });
   assert.equal(wolania.length, 0);
 });
 
@@ -107,7 +130,7 @@ test('wystawienie: numer dopytany po identyfikatorze, zapis w ConfirmLock (stra�
   const r = await zapytaj(db, 'POST', '/api/if/iapi/fakturaeksporttowarow.json', { body: { dane: FAKTURA_EKSPORT, wykonaj: true } });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.deepEqual([r.json.ok, r.json.numer, r.json.id], [true, '1/2026/EXP', '98765']);
-  assert.equal(wolania[0].tresc, JSON.stringify(FAKTURA_EKSPORT), 'treść wysłana dokładnie jak podana');
+  assert.equal(wolania[0].tresc, JSON.stringify({ ...FAKTURA_EKSPORT, KursWalutyZDniaPoprzedzajacegoDzienWystawieniaFaktury: 4.2 }), 'treść jak podana + kurs NBP');
   const [blokada] = [...db.blokady.values()];
   assert.equal(blokada.invoiceNumber, '1/2026/EXP');
   assert.match(blokada.key, /^ifapi:[0-9a-f]{64}$/);
@@ -175,4 +198,4 @@ test('PUT (np. edycja kontrahenta) przechodzi tą samą drogą', async () => {
   assert.equal(r.json.numer, null);
 });
 
-test.after(() => { T.ustawHttp(null); T.ustawMiesiac(null); });
+test.after(() => { T.ustawHttp(null); T.ustawMiesiac(null); T.ustawKurs(null); });
