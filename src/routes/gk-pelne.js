@@ -382,7 +382,36 @@ router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
   try { man = await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`); }
   catch (e) { return res.status(502).json({ ok: false, error: e.message }); }
   if (man.status >= 400) return res.status(400).json({ ok: false, error: `manifest dokumentów: ${bladGk(man)}`, gk: man.json });
-  if (b.wykonaj !== true) return res.json({ ok: true, podglad: true, manifest: man.json, uwaga: 'Nic nie wgrane. Wgranie: {hash, plikBase64, nazwa, opis, typ, numer, "wykonaj": true}.' });
+  if (b.wykonaj !== true && b.wyslij !== true) return res.json({ ok: true, podglad: true, manifest: man.json, uwaga: 'Nic nie wgrane. Wgranie: {hash, plikBase64, nazwa, opis, typ, numer, "wykonaj": true}; wysłanie wgranych do przewoźnika: {hash, "wyslij": true}.' });
+  let wgrane = null;
+  if (b.wykonaj === true) {
+    const w = await wgrajDokument(hash, b);
+    if (!w.ok) return res.status(w.status).json({ ok: false, error: w.error, ...(w.gk ? { gk: w.gk } : {}) });
+    wgrane = w.gk;
+  }
+  /* GK: wgrany plik czeka, aż ktoś wyśle go do przewoźnika (manifest: isSendToCarrier false).
+     /v1/order/tradeDocument/sync wysyła wszystkie niewysłane; 400 = przewoźnik odrzucił dokument
+     albo minęła jego godzina graniczna (wtedy dokumenty drukuje się do paczki). */
+  let wyslanie = null;
+  if (b.wyslij === true) {
+    let s;
+    try { s = await gk('POST', '/v1/order/tradeDocument/sync', { body: { hash } }); }
+    catch (e) { return res.status(502).json({ ok: false, wgrane, error: `wysłanie dokumentów do przewoźnika: ${e.message}` }); }
+    wyslanie = { status: s.status, ...(s.json && typeof s.json === 'object' ? s.json : {}) };
+    console.log(`[gk/dokument] wysłanie do przewoźnika → zlecenie ${hash.slice(0, 12)}: HTTP ${s.status}`);
+    if (s.status >= 400) {
+      let poBl = null;
+      try { poBl = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
+      return res.status(400).json({ ok: false, wgrane, error: `przewoźnik nie przyjął dokumentów (HTTP ${s.status}): ${bladGk(s)}`, wyslanie, manifest: poBl });
+    }
+  }
+  let po = null;
+  try { po = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
+  return res.json({ ok: true, gk: wgrane, ...(wyslanie ? { wyslanie } : {}), manifest: po });
+}));
+
+/** Wgranie jednego PDF do zlecenia GK (multipart, base64 ≤ 1 MiB). */
+async function wgrajDokument(hash, b) {
   const nazwa = String(b.nazwa || '').trim();
   const opis = String(b.opis || '').trim().slice(0, 256);
   const typ = String(b.typ || 'COMMERCIAL_INVOICE').trim();
@@ -395,16 +424,14 @@ router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
   if (!numer || numer.length > 15) bledy.push('numer: 1–15 znaków');
   if (!rozmiar) bledy.push('plikBase64: pusty');
   if (rozmiar > 1048576) bledy.push(`plik ma ${rozmiar} B — GK przyjmuje do 1 MiB`);
-  if (bledy.length) return res.status(400).json({ ok: false, error: bledy.join('; ') });
+  if (bledy.length) return { ok: false, status: 400, error: bledy.join('; ') };
   let r;
   try { r = await gk('POST', '/v1/order/tradeDocument', { surowe: multipart({ hash, content: plik, name: nazwa, description: opis, type: typ, referenceNumber: numer }) }); }
-  catch (e) { return res.status(502).json({ ok: false, error: e.message }); }
-  if (r.status >= 400) return res.status(400).json({ ok: false, error: `GlobKurier nie przyjął dokumentu (HTTP ${r.status}): ${bladGk(r)}`, gk: r.json });
-  let po = null;
-  try { po = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
+  catch (e) { return { ok: false, status: 502, error: e.message }; }
+  if (r.status >= 400) return { ok: false, status: 400, error: `GlobKurier nie przyjął dokumentu (HTTP ${r.status}): ${bladGk(r)}`, gk: r.json };
   console.log(`[gk/dokument] ${typ} ${numer} → zlecenie ${hash.slice(0, 12)} (${rozmiar} B)`);
-  return res.json({ ok: true, gk: r.json, manifest: po });
-}));
+  return { ok: true, gk: r.json };
+}
 
 /* ---------- POST /api/gk/odbior — podjazd do istniejącego zlecenia ---------- */
 router.post('/odbior', asyncHandler(async (req, res) => {

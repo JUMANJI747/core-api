@@ -308,4 +308,46 @@ test('dokument handlowy (ETD, poza UE): bez "wykonaj" tylko manifest; wgranie mu
   assert.equal(wolania.filter(w => w.metoda === 'POST').length, 1);
 });
 
+test('dokument handlowy: "wyslij" wysyła wgrane dokumenty do przewoźnika (sync), także razem z wgraniem; odmowa przewoźnika = 400 z powodem', async () => {
+  const H = 'e'.repeat(64);
+  const wolania = [];
+  let odpowiedzSync = { status: 200, json: { documents: [{ name: 'FV-268-2026.pdf', status: 'SUCCESS' }] } };
+  T.ustawGk(async (metoda, sciezka, opcje = {}) => {
+    wolania.push({ metoda, sciezka: sciezka.split('?')[0], body: opcje.body || null, multipart: !!opcje.surowe });
+    const p = sciezka.split('?')[0];
+    const odp = (status, json) => ({ status, typ: 'application/json', buf: Buffer.from(JSON.stringify(json)), json, naglowki: {} });
+    if (metoda === 'GET' && p === '/v1/order/tradeDocument/manifest') return odp(200, { typeList: ['COMMERCIAL_INVOICE', 'OTHER'], documentList: {} });
+    if (metoda === 'POST' && p === '/v1/order/tradeDocument') return odp(201, {});
+    if (metoda === 'POST' && p === '/v1/order/tradeDocument/sync') return odp(odpowiedzSync.status, odpowiedzSync.json);
+    return odp(404, {});
+  });
+  const samo = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H, wyslij: true } });
+  assert.equal(samo.status, 200, JSON.stringify(samo.json));
+  assert.equal(samo.json.ok, true);
+  assert.equal(samo.json.wyslanie.status, 200);
+  const sync = wolania.filter(w => w.metoda === 'POST');
+  assert.equal(sync.length, 1, 'samo wysłanie — bez wgrywania');
+  assert.equal(sync[0].sciezka, '/v1/order/tradeDocument/sync');
+  assert.deepEqual(sync[0].body, { hash: H });
+
+  wolania.length = 0;
+  const pdf = Buffer.from('%PDF-1.4 oswiadczenie').toString('base64');
+  const oba = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H, plikBase64: pdf, nazwa: 'Oswiadczenie-eksportera.pdf', opis: 'Oswiadczenie eksportera', typ: 'OTHER', numer: '268/2026', wykonaj: true, wyslij: true } });
+  assert.equal(oba.status, 200, JSON.stringify(oba.json));
+  assert.deepEqual(wolania.filter(w => w.metoda === 'POST').map(w => w.sciezka), ['/v1/order/tradeDocument', '/v1/order/tradeDocument/sync'], 'najpierw wgranie, potem wysłanie');
+
+  wolania.length = 0;
+  odpowiedzSync = { status: 400, json: { fields: { hash: 'Przewoźnik odrzucił dokument: zły format' }, documents: [{ name: 'x.pdf', status: 'ERROR' }] } };
+  const zle = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H, wyslij: true } });
+  assert.equal(zle.status, 400);
+  assert.equal(zle.json.ok, false);
+  assert.match(zle.json.error, /przewoźnik nie przyjął dokumentów \(HTTP 400\)/);
+  assert.equal(zle.json.wyslanie.documents[0].status, 'ERROR');
+
+  wolania.length = 0;
+  const podglad = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H } });
+  assert.equal(podglad.json.podglad, true);
+  assert.ok(!wolania.some(w => w.metoda === 'POST'), 'bez "wykonaj" i "wyslij" nic nie idzie do GK');
+});
+
 test.after(() => { T.ustawGk(null); T.ustawToken(null); });
