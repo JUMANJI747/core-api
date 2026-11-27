@@ -46,15 +46,17 @@ const tylkoWlasciciel = (req, res) => {
 };
 
 /* ---------- jedno wywołanie API GK (JSON albo plik) ---------- */
-function gkHttpDomyslny(metoda, sciezka, { body = null, token = null, timeoutMs = 30000 } = {}) {
+function gkHttpDomyslny(metoda, sciezka, { body = null, token = null, timeoutMs = 30000, surowe = null } = {}) {
   return new Promise((resolve, reject) => {
-    const dane = body ? JSON.stringify(body) : null;
+    // surowe = { typ, buf } — treść inna niż JSON (np. multipart z dokumentem handlowym).
+    const dane = surowe ? surowe.buf : (body ? JSON.stringify(body) : null);
+    const typTresci = surowe ? surowe.typ : 'application/json';
     const req = https.request({
       hostname: GK_HOST, path: sciezka, method: metoda,
       headers: {
         Accept: 'application/json, application/pdf, */*', 'Accept-Language': 'pl',
         ...(token ? { 'X-Auth-Token': token } : {}),
-        ...(dane ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(dane) } : {}),
+        ...(dane ? { 'Content-Type': typTresci, 'Content-Length': Buffer.byteLength(dane) } : {}),
       },
     }, (res) => {
       const kawalki = [];
@@ -360,6 +362,50 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
   return res.status(400).json({ ok: false, error: `GlobKurier odrzucił zlecenie (HTTP ${r.status}): ${bladGk(r)}`, gk: r.json, orderHash: b.orderHash });
 }));
 
+/* ---------- POST /api/gk/dokument-handlowy — dokumenty do odprawy (ETD) ----------
+ * 27.11.2026, #12 do Szwajcarii: FedEx nadaje poza UE w trybie ETD — faktura musi
+ * trafić elektronicznie do GlobKuriera (inaczej odprawa stoi). GK: najpierw manifest
+ * (inicjuje listę dokumentów przewoźnika), potem POST multipart z plikiem w base64.
+ * Bez "wykonaj": true tylko manifest (jakie typy dokumentów, co już wgrane). */
+const NAZWA_PLIKU_GK = /^[A-Za-z0-9_.\-() ]{1,128}$/;
+function multipart(pola) {
+  const granica = `----gk${crypto.randomBytes(12).toString('hex')}`;
+  const czesci = Object.entries(pola).map(([k, v]) => `--${granica}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`);
+  return { typ: `multipart/form-data; boundary=${granica}`, buf: Buffer.from(`${czesci.join('')}--${granica}--\r\n`, 'utf8') };
+}
+router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
+  if (!tylkoWlasciciel(req, res)) return;
+  const b = req.body || {};
+  const hash = String(b.hash || '').trim();
+  if (!/^[0-9a-f]{64}$/i.test(hash)) return res.status(400).json({ ok: false, error: 'podaj hash zlecenia (64 znaki)' });
+  let man;
+  try { man = await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`); }
+  catch (e) { return res.status(502).json({ ok: false, error: e.message }); }
+  if (man.status >= 400) return res.status(400).json({ ok: false, error: `manifest dokumentów: ${bladGk(man)}`, gk: man.json });
+  if (b.wykonaj !== true) return res.json({ ok: true, podglad: true, manifest: man.json, uwaga: 'Nic nie wgrane. Wgranie: {hash, plikBase64, nazwa, opis, typ, numer, "wykonaj": true}.' });
+  const nazwa = String(b.nazwa || '').trim();
+  const opis = String(b.opis || '').trim().slice(0, 256);
+  const typ = String(b.typ || 'COMMERCIAL_INVOICE').trim();
+  const numer = String(b.numer || '').trim();
+  const plik = String(b.plikBase64 || '').replace(/\s+/g, '');
+  const rozmiar = Buffer.from(plik, 'base64').length;
+  const bledy = [];
+  if (!NAZWA_PLIKU_GK.test(nazwa)) bledy.push('nazwa: 1–128 znaków, tylko A–Z a–z 0–9 _ . - ( ) spacja');
+  if (!opis) bledy.push('opis: wymagany');
+  if (!numer || numer.length > 15) bledy.push('numer: 1–15 znaków');
+  if (!rozmiar) bledy.push('plikBase64: pusty');
+  if (rozmiar > 1048576) bledy.push(`plik ma ${rozmiar} B — GK przyjmuje do 1 MiB`);
+  if (bledy.length) return res.status(400).json({ ok: false, error: bledy.join('; ') });
+  let r;
+  try { r = await gk('POST', '/v1/order/tradeDocument', { surowe: multipart({ hash, content: plik, name: nazwa, description: opis, type: typ, referenceNumber: numer }) }); }
+  catch (e) { return res.status(502).json({ ok: false, error: e.message }); }
+  if (r.status >= 400) return res.status(400).json({ ok: false, error: `GlobKurier nie przyjął dokumentu (HTTP ${r.status}): ${bladGk(r)}`, gk: r.json });
+  let po = null;
+  try { po = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
+  console.log(`[gk/dokument] ${typ} ${numer} → zlecenie ${hash.slice(0, 12)} (${rozmiar} B)`);
+  return res.json({ ok: true, gk: r.json, manifest: po });
+}));
+
 /* ---------- POST /api/gk/odbior — podjazd do istniejącego zlecenia ---------- */
 router.post('/odbior', asyncHandler(async (req, res) => {
   if (!tylkoWlasciciel(req, res)) return;
@@ -375,7 +421,7 @@ router.post('/odbior', asyncHandler(async (req, res) => {
 
 module.exports = router;
 module.exports._test = {
-  zbudujZamowienie, adresNadawcy, oczyscAdres, wycen,
+  zbudujZamowienie, adresNadawcy, oczyscAdres, wycen, multipart,
   ustawGk: (f) => { gkHttp = f || gkHttpDomyslny; },
   ustawToken: (f) => { pobierzToken = f || (async () => require('../glob-client').getToken()); },
 };

@@ -48,7 +48,7 @@ function baza() {
 }
 async function zapytaj(db, metoda, sciezka, { rola = 'owner', body } = {}) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '5mb' })); // jak w index.js — dokumenty idą w base64
   app.locals.prisma = db;
   app.use((req, _res, next) => { req.crm = rola === 'magazyn' ? { user: 'm', role: 'magazyn' } : { user: 'claude', role: 'owner' }; next(); });
   app.use('/', gkPelne);
@@ -278,6 +278,34 @@ test('zlecenie odbite przez „Nadmiarowe pole" orderHash: ponowione raz bez nie
   assert.ok(zlecenia[0].orderHash && !zlecenia[1].orderHash);
   assert.equal(zlecenia[1].containsDangerousGoods, false, 'inne pola zostają');
   assert.equal(wolania.length, 0);
+});
+
+test('dokument handlowy (ETD, poza UE): bez "wykonaj" tylko manifest; wgranie multipart z base64; walidacja nazwy i rozmiaru', async () => {
+  const H = 'd'.repeat(64);
+  const wolania = [];
+  T.ustawGk(async (metoda, sciezka, opcje = {}) => {
+    wolania.push({ metoda, sciezka, surowe: opcje.surowe ? { typ: opcje.surowe.typ, tekst: opcje.surowe.buf.toString('utf8') } : null });
+    const p = sciezka.split('?')[0];
+    if (metoda === 'GET' && p === '/v1/order/tradeDocument/manifest') return { status: 200, typ: 'application/json', buf: Buffer.from('{}'), json: { typeList: ['COMMERCIAL_INVOICE', 'PROFORMA_INVOICE'], documents: [] }, naglowki: {} };
+    if (metoda === 'POST' && p === '/v1/order/tradeDocument') return { status: 201, typ: 'application/json', buf: Buffer.from('{}'), json: {}, naglowki: {} };
+    return { status: 404, typ: 'application/json', buf: Buffer.from('{}'), json: {}, naglowki: {} };
+  });
+  const podglad = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H } });
+  assert.equal(podglad.json.podglad, true);
+  assert.deepEqual(podglad.json.manifest.typeList, ['COMMERCIAL_INVOICE', 'PROFORMA_INVOICE']);
+  assert.ok(!wolania.some(w => w.metoda === 'POST'));
+  const pdf = Buffer.from('%PDF-1.4 faktura').toString('base64');
+  const r = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H, plikBase64: pdf, nazwa: 'FV-268-2026.pdf', opis: 'Commercial invoice 268/2026', numer: '268/2026', wykonaj: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const post = wolania.find(w => w.metoda === 'POST');
+  assert.match(post.surowe.typ, /^multipart\/form-data; boundary=/);
+  for (const [k, v] of [['hash', H], ['content', pdf], ['name', 'FV-268-2026.pdf'], ['description', 'Commercial invoice 268/2026'], ['type', 'COMMERCIAL_INVOICE'], ['referenceNumber', '268/2026']]) {
+    assert.ok(post.surowe.tekst.includes(`name="${k}"\r\n\r\n${v}\r\n`), k);
+  }
+  const zle = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { hash: H, plikBase64: Buffer.alloc(1048577).toString('base64'), nazwa: 'faktura,268.pdf', opis: 'x', numer: '1234567890123456', wykonaj: true } });
+  assert.equal(zle.status, 400);
+  assert.match(zle.json.error, /nazwa: .*numer: 1–15 znaków.*GK przyjmuje do 1 MiB/);
+  assert.equal(wolania.filter(w => w.metoda === 'POST').length, 1);
 });
 
 test.after(() => { T.ustawGk(null); T.ustawToken(null); });
