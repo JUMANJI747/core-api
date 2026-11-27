@@ -29,6 +29,10 @@
 const router = require('express').Router();
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const { execFile } = require('child_process');
 const asyncHandler = require('../asyncHandler');
 const { gkName, gkStreet, gkCity, numerGk, rozbijNumerDomu } = require('../services/adres-gk');
 const { normalizujTelefon } = require('../services/telefon');
@@ -365,14 +369,65 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
 /* ---------- POST /api/gk/dokument-handlowy — dokumenty do odprawy (ETD) ----------
  * 27.11.2026, #12 do Szwajcarii: FedEx nadaje poza UE w trybie ETD — faktura musi
  * trafić elektronicznie do GlobKuriera (inaczej odprawa stoi). GK: najpierw manifest
- * (inicjuje listę dokumentów przewoźnika), potem POST multipart z plikiem w base64.
- * Bez "wykonaj": true tylko manifest (jakie typy dokumentów, co już wgrane). */
+ * (inicjuje listę dokumentów przewoźnika), potem POST multipart z plikiem w base64,
+ * na końcu sync ("wyslij") — dopiero on przekazuje pliki przewoźnikowi i zamawia podjazd.
+ * Bez "wykonaj" / "wyslij" tylko manifest (jakie typy dokumentów, co już wgrane). */
 const NAZWA_PLIKU_GK = /^[A-Za-z0-9_.\-() ]{1,128}$/;
 function multipart(pola) {
   const granica = `----gk${crypto.randomBytes(12).toString('hex')}`;
   const czesci = Object.entries(pola).map(([k, v]) => `--${granica}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`);
   return { typ: `multipart/form-data; boundary=${granica}`, buf: Buffer.from(`${czesci.join('')}--${granica}--\r\n`, 'utf8') };
 }
+
+/* PDF z API iFirmy jest zaszyfrowany (AES, blokada zmian) i podpisany elektronicznie.
+ * FedEx odrzuca taki plik: „Invalid request: invalid input : JSON/IO Exception"
+ * (27.11.2026, #12), a ta sama faktura bez szyfrowania przeszła. Dlatego zaszyfrowany
+ * PDF przed wgraniem zamieniamy na kopię bez szyfrowania: pdftocairo (poppler-utils
+ * w obrazie), awaryjnie ghostscript. Treść i wygląd te same, podpis w kopii znika. */
+function pdfZaszyfrowany(buf) {
+  return buf.subarray(0, 1024).includes('%PDF') && buf.includes('/Encrypt');
+}
+function uruchom(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`${cmd}: ${String(stderr || err.message).trim().split('\n')[0].slice(0, 200)}`));
+      resolve(String(stdout || ''));
+    });
+  });
+}
+async function liczbaStron(plik) {
+  try { const m = /^Pages:\s+(\d+)/m.exec(await uruchom('pdfinfo', [plik])); return m ? Number(m[1]) : null; }
+  catch (_) { return null; }
+}
+async function odszyfrujPdfDomyslnie(buf) {
+  const katalog = await fs.mkdtemp(path.join(os.tmpdir(), 'gk-pdf-'));
+  const we = path.join(katalog, 'we.pdf');
+  const wy = path.join(katalog, 'wy.pdf');
+  try {
+    await fs.writeFile(we, buf);
+    const stronPrzed = await liczbaStron(we);
+    const bledy = [];
+    for (const [cmd, args] of [
+      ['pdftocairo', ['-pdf', we, wy]],
+      ['gs', ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', `-sOutputFile=${wy}`, we]],
+    ]) {
+      try {
+        await fs.rm(wy, { force: true });
+        await uruchom(cmd, args);
+        const kopia = await fs.readFile(wy);
+        if (!kopia.subarray(0, 1024).includes('%PDF')) throw new Error(`${cmd}: wynik nie jest PDF-em`);
+        if (kopia.includes('/Encrypt')) throw new Error(`${cmd}: wynik nadal zaszyfrowany`);
+        const stronPo = await liczbaStron(wy);
+        if (stronPrzed && stronPo && stronPrzed !== stronPo) throw new Error(`${cmd}: ${stronPo} stron zamiast ${stronPrzed}`);
+        return { buf: kopia, narzedzie: cmd, strony: stronPo || stronPrzed || null };
+      } catch (e) { bledy.push(e.message); }
+    }
+    throw new Error(bledy.join('; '));
+  } finally {
+    await fs.rm(katalog, { recursive: true, force: true }).catch(() => {});
+  }
+}
+let odszyfrujPdf = odszyfrujPdfDomyslnie;
 router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
   if (!tylkoWlasciciel(req, res)) return;
   const b = req.body || {};
@@ -384,10 +439,12 @@ router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
   if (man.status >= 400) return res.status(400).json({ ok: false, error: `manifest dokumentów: ${bladGk(man)}`, gk: man.json });
   if (b.wykonaj !== true && b.wyslij !== true) return res.json({ ok: true, podglad: true, manifest: man.json, uwaga: 'Nic nie wgrane. Wgranie: {hash, plikBase64, nazwa, opis, typ, numer, "wykonaj": true}; wysłanie wgranych do przewoźnika: {hash, "wyslij": true}.' });
   let wgrane = null;
+  let kopia = {};
   if (b.wykonaj === true) {
     const w = await wgrajDokument(hash, b);
     if (!w.ok) return res.status(w.status).json({ ok: false, error: w.error, ...(w.gk ? { gk: w.gk } : {}) });
     wgrane = w.gk;
+    if (w.odszyfrowano) kopia = { odszyfrowano: w.odszyfrowano };
   }
   /* GK: wgrany plik czeka, aż ktoś wyśle go do przewoźnika (manifest: isSendToCarrier false).
      /v1/order/tradeDocument/sync wysyła wszystkie niewysłane; 400 = przewoźnik odrzucił dokument
@@ -396,18 +453,18 @@ router.post('/dokument-handlowy', asyncHandler(async (req, res) => {
   if (b.wyslij === true) {
     let s;
     try { s = await gk('POST', '/v1/order/tradeDocument/sync', { body: { hash } }); }
-    catch (e) { return res.status(502).json({ ok: false, wgrane, error: `wysłanie dokumentów do przewoźnika: ${e.message}` }); }
+    catch (e) { return res.status(502).json({ ok: false, wgrane, ...kopia, error: `wysłanie dokumentów do przewoźnika: ${e.message}` }); }
     wyslanie = { status: s.status, ...(s.json && typeof s.json === 'object' ? s.json : {}) };
     console.log(`[gk/dokument] wysłanie do przewoźnika → zlecenie ${hash.slice(0, 12)}: HTTP ${s.status}`);
     if (s.status >= 400) {
       let poBl = null;
       try { poBl = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
-      return res.status(400).json({ ok: false, wgrane, error: `przewoźnik nie przyjął dokumentów (HTTP ${s.status}): ${bladGk(s)}`, wyslanie, manifest: poBl });
+      return res.status(400).json({ ok: false, wgrane, ...kopia, error: `przewoźnik nie przyjął dokumentów (HTTP ${s.status}): ${bladGk(s)}`, wyslanie, manifest: poBl });
     }
   }
   let po = null;
   try { po = (await gk('GET', `/v1/order/tradeDocument/manifest?hash=${hash}`)).json; } catch (_) { /* informacyjnie */ }
-  return res.json({ ok: true, gk: wgrane, ...(wyslanie ? { wyslanie } : {}), manifest: po });
+  return res.json({ ok: true, gk: wgrane, ...kopia, ...(wyslanie ? { wyslanie } : {}), manifest: po });
 }));
 
 /** Wgranie jednego PDF do zlecenia GK (multipart, base64 ≤ 1 MiB). */
@@ -417,7 +474,8 @@ async function wgrajDokument(hash, b) {
   const typ = String(b.typ || 'COMMERCIAL_INVOICE').trim();
   const numer = String(b.numer || '').trim();
   const plik = String(b.plikBase64 || '').replace(/\s+/g, '');
-  const rozmiar = Buffer.from(plik, 'base64').length;
+  const surowy = Buffer.from(plik, 'base64');
+  const rozmiar = surowy.length;
   const bledy = [];
   if (!NAZWA_PLIKU_GK.test(nazwa)) bledy.push('nazwa: 1–128 znaków, tylko A–Z a–z 0–9 _ . - ( ) spacja');
   if (!opis) bledy.push('opis: wymagany');
@@ -425,12 +483,23 @@ async function wgrajDokument(hash, b) {
   if (!rozmiar) bledy.push('plikBase64: pusty');
   if (rozmiar > 1048576) bledy.push(`plik ma ${rozmiar} B — GK przyjmuje do 1 MiB`);
   if (bledy.length) return { ok: false, status: 400, error: bledy.join('; ') };
+  let tresc = plik;
+  let odszyfrowano = null;
+  if (pdfZaszyfrowany(surowy)) {
+    let k;
+    try { k = await odszyfrujPdf(surowy); }
+    catch (e) { return { ok: false, status: 400, error: `PDF jest zaszyfrowany (np. faktura z API iFirmy) — przewoźnik (FedEx) takich nie przyjmuje, a kopii bez szyfrowania nie udało się zrobić: ${e.message}. Wgraj PDF bez szyfrowania.` }; }
+    if (k.buf.length > 1048576) return { ok: false, status: 400, error: `kopia bez szyfrowania ma ${k.buf.length} B — GK przyjmuje do 1 MiB` };
+    tresc = k.buf.toString('base64');
+    odszyfrowano = { narzedzie: k.narzedzie, bajtyPrzed: rozmiar, bajtyPo: k.buf.length, strony: k.strony };
+    console.log(`[gk/dokument] ${nazwa}: PDF zaszyfrowany → kopia bez szyfrowania (${k.narzedzie}, ${rozmiar} → ${k.buf.length} B)`);
+  }
   let r;
-  try { r = await gk('POST', '/v1/order/tradeDocument', { surowe: multipart({ hash, content: plik, name: nazwa, description: opis, type: typ, referenceNumber: numer }) }); }
+  try { r = await gk('POST', '/v1/order/tradeDocument', { surowe: multipart({ hash, content: tresc, name: nazwa, description: opis, type: typ, referenceNumber: numer }) }); }
   catch (e) { return { ok: false, status: 502, error: e.message }; }
   if (r.status >= 400) return { ok: false, status: 400, error: `GlobKurier nie przyjął dokumentu (HTTP ${r.status}): ${bladGk(r)}`, gk: r.json };
-  console.log(`[gk/dokument] ${typ} ${numer} → zlecenie ${hash.slice(0, 12)} (${rozmiar} B)`);
-  return { ok: true, gk: r.json };
+  console.log(`[gk/dokument] ${typ} ${numer} → zlecenie ${hash.slice(0, 12)} (${odszyfrowano ? odszyfrowano.bajtyPo : rozmiar} B)`);
+  return { ok: true, gk: r.json, ...(odszyfrowano ? { odszyfrowano } : {}) };
 }
 
 /* ---------- POST /api/gk/odbior — podjazd do istniejącego zlecenia ---------- */
@@ -448,7 +517,8 @@ router.post('/odbior', asyncHandler(async (req, res) => {
 
 module.exports = router;
 module.exports._test = {
-  zbudujZamowienie, adresNadawcy, oczyscAdres, wycen, multipart,
+  zbudujZamowienie, adresNadawcy, oczyscAdres, wycen, multipart, pdfZaszyfrowany, odszyfrujPdfDomyslnie,
+  ustawOdszyfrowanie: (f) => { odszyfrujPdf = f || odszyfrujPdfDomyslnie; },
   ustawGk: (f) => { gkHttp = f || gkHttpDomyslny; },
   ustawToken: (f) => { pobierzToken = f || (async () => require('../glob-client').getToken()); },
 };

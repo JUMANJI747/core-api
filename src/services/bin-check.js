@@ -18,6 +18,8 @@ const BINARIA = [
     do: 'liczba stron PDF (karta-pracy, karty-pracy-odczyt)' },
   { nazwa: 'pdftoppm', args: ['-v'], pakiet: 'poppler-utils', wymagane: true,
     do: 'render stron PDF do obrazu (karta-pracy, preprocess-scan)' },
+  { nazwa: 'pdftocairo', args: ['-v'], pakiet: 'poppler-utils', wymagane: false,
+    do: 'kopia PDF bez szyfrowania przed wgraniem do GK (gk-pelne /dokument-handlowy; zapas: gs)' },
   { nazwa: 'convert', args: ['-version'], pakiet: 'imagemagick', wymagane: true,
     do: 'prostowanie skanu (-deskew)' },
   { nazwa: 'tesseract', args: ['--version'], pakiet: 'tesseract-ocr', wymagane: false,

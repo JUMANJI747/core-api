@@ -350,4 +350,72 @@ test('dokument handlowy: "wyslij" wysyła wgrane dokumenty do przewoźnika (sync
   assert.ok(!wolania.some(w => w.metoda === 'POST'), 'bez "wykonaj" i "wyslij" nic nie idzie do GK');
 });
 
-test.after(() => { T.ustawGk(null); T.ustawToken(null); });
+test('dokument handlowy: zaszyfrowany PDF (np. z API iFirmy) → przed wgraniem kopia bez szyfrowania; gdy się nie da — 400 i nic nie idzie do GK', async () => {
+  const H = 'f'.repeat(64);
+  const wolania = [];
+  T.ustawGk(async (metoda, sciezka, opcje = {}) => {
+    wolania.push({ metoda, sciezka: sciezka.split('?')[0], tekst: opcje.surowe ? opcje.surowe.buf.toString('utf8') : null });
+    const p = sciezka.split('?')[0];
+    const odp = (status, json) => ({ status, typ: 'application/json', buf: Buffer.from(JSON.stringify(json)), json, naglowki: {} });
+    if (metoda === 'GET' && p === '/v1/order/tradeDocument/manifest') return odp(200, { typeList: ['COMMERCIAL_INVOICE'], documentList: {} });
+    if (metoda === 'POST' && p === '/v1/order/tradeDocument') return odp(201, {});
+    return odp(404, {});
+  });
+  const zaszyfrowany = Buffer.from('%PDF-1.4\n1 0 obj <<>> endobj\ntrailer << /Root 1 0 R /Encrypt 5 0 R >>\n%%EOF');
+  const kopia = Buffer.from('%PDF-1.7 kopia bez szyfrowania');
+  const dostal = [];
+  T.ustawOdszyfrowanie(async (buf) => { dostal.push(buf); return { buf: kopia, narzedzie: 'pdftocairo', strony: 2 }; });
+  const body = { hash: H, plikBase64: zaszyfrowany.toString('base64'), nazwa: 'FV-268-2026.pdf', opis: 'Commercial invoice 268/2026', typ: 'COMMERCIAL_INVOICE', numer: '268/2026', wykonaj: true };
+  try {
+    const r = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(dostal.length, 1);
+    assert.ok(dostal[0].equals(zaszyfrowany), 'zamiana dostaje oryginał');
+    assert.equal(r.json.odszyfrowano.narzedzie, 'pdftocairo');
+    const post = wolania.find(w => w.metoda === 'POST');
+    assert.ok(post.tekst.includes(`name="content"\r\n\r\n${kopia.toString('base64')}\r\n`), 'do GK idzie kopia');
+    assert.ok(!post.tekst.includes(zaszyfrowany.toString('base64')), 'oryginał nie idzie do GK');
+
+    wolania.length = 0; dostal.length = 0;
+    const zwykly = Buffer.from('%PDF-1.4 zwykla faktura').toString('base64');
+    const r2 = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { ...body, plikBase64: zwykly } });
+    assert.equal(r2.status, 200, JSON.stringify(r2.json));
+    assert.equal(dostal.length, 0, 'zwykły PDF bez zamiany');
+    assert.equal(r2.json.odszyfrowano, undefined);
+    assert.ok(wolania.find(w => w.metoda === 'POST').tekst.includes(`name="content"\r\n\r\n${zwykly}\r\n`));
+
+    wolania.length = 0;
+    T.ustawOdszyfrowanie(async () => { throw new Error('pdftocairo: brak'); });
+    const r3 = await zapytaj(baza(), 'POST', '/dokument-handlowy', { body: { ...body, wyslij: true } });
+    assert.equal(r3.status, 400);
+    assert.match(r3.json.error, /zaszyfrowany.*pdftocairo: brak/);
+    assert.ok(!wolania.some(w => w.metoda === 'POST'), 'ani wgrania, ani wysłania');
+  } finally {
+    T.ustawOdszyfrowanie(null);
+  }
+});
+
+test('kopia bez szyfrowania naprawdę zdejmuje szyfrowanie AES (pdftocairo, zapas gs; bez nich test pominięty)', async (t) => {
+  const { execFileSync } = require('child_process');
+  const jest = (cmd, arg) => { try { execFileSync(cmd, [arg], { stdio: 'ignore' }); return true; } catch (e) { return e.code !== 'ENOENT'; } };
+  if (!jest('pdftocairo', '-v') && !jest('gs', '--version')) { t.skip('brak pdftocairo i gs'); return; }
+  const PDFDocument = require('pdfkit');
+  // pdfVersion 1.7 + hasło właściciela = AES-128, otwiera się bez hasła — jak PDF z API iFirmy.
+  const zaszyfrowany = await new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ pdfVersion: '1.7', ownerPassword: 'tylko-wlasciciel', permissions: { printing: 'highResolution', modifying: false } });
+    const kawalki = [];
+    doc.on('data', (c) => kawalki.push(c));
+    doc.on('end', () => resolve(Buffer.concat(kawalki)));
+    doc.on('error', reject);
+    doc.text('Faktura 268/2026 - test');
+    doc.addPage().text('Strona 2');
+    doc.end();
+  });
+  assert.ok(T.pdfZaszyfrowany(zaszyfrowany), 'atrapa jest zaszyfrowana');
+  const k = await T.odszyfrujPdfDomyslnie(zaszyfrowany);
+  assert.ok(k.buf.subarray(0, 8).toString('latin1').startsWith('%PDF'));
+  assert.ok(!T.pdfZaszyfrowany(k.buf), 'kopia bez szyfrowania');
+  if (k.strony !== null) assert.equal(k.strony, 2);
+});
+
+test.after(() => { T.ustawGk(null); T.ustawToken(null); T.ustawOdszyfrowanie(null); });
