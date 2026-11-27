@@ -37,6 +37,7 @@ const asyncHandler = require('../asyncHandler');
 const { gkName, gkStreet, gkCity, numerGk, rozbijNumerDomu } = require('../services/adres-gk');
 const { normalizujTelefon } = require('../services/telefon');
 const { opisOdmowyGk } = require('../services/gk-odmowa');
+const { wymogDeklaracji, maDeklaracje } = require('../services/kraje-ue');
 
 const GK_HOST = 'api.globkurier.pl';
 const DOMYSLNY_TELEFON = '+48502189886';
@@ -168,7 +169,7 @@ function oczyscAdres(a, krajNaId, idNaKraj) {
 }
 
 // Pola wejścia, które są nasze (nie idą do GK).
-const NASZE_POLA = ['senderId', 'zamow', 'invoiceNumber', 'nowyHash', 'country'];
+const NASZE_POLA = ['senderId', 'zamow', 'invoiceNumber', 'nowyHash', 'country', 'bezDeklaracjiCelnej'];
 
 /** Z wejścia robi body dla POST /v1/order. Rzuca przy brakach, których GK i tak nie przyjmie. */
 async function zbudujZamowienie(prisma, we) {
@@ -187,6 +188,20 @@ async function zbudujZamowienie(prisma, we) {
   b.senderAddress = oczyscAdres(b.senderAddress, krajNaId, idNaKraj);
   b.receiverAddress = oczyscAdres(b.receiverAddress, krajNaId, idNaKraj);
   if (!b.receiverAddress.countryId) throw Object.assign(new Error('receiverAddress: podaj countryId albo country (ISO, np. DE)'), { status: 400 });
+
+  // WYMÓG DEKLARACJI CELNEJ (27.11.2026, services/kraje-ue.js): poza obszar celny UE
+  // tylko z sekcją customs — po złożeniu zlecenia nie da się jej dopisać.
+  const isoAdresu = (wejscie, adres) => String((wejscie && wejscie.country) || idNaKraj[String(adres.countryId)] || '').toUpperCase();
+  const wymog = wymogDeklaracji(
+    { iso: isoAdresu(we.senderAddress, b.senderAddress) || 'PL', kod: b.senderAddress.postCode },
+    { iso: isoAdresu(we.receiverAddress, b.receiverAddress), kod: b.receiverAddress.postCode },
+  );
+  if (wymog && !maDeklaracje(b.customs) && we.bezDeklaracjiCelnej !== true) {
+    throw Object.assign(new Error(wymog.nieznany
+      ? `nie wiem, do jakiego kraju jedzie paczka (countryId ${b.receiverAddress.countryId}) — podaj receiverAddress.country (ISO), żeby sprawdzić wymóg deklaracji celnej`
+      : `wysyłka poza UE (${wymog.powod}) wymaga deklaracji celnej: dodaj sekcję "customs" (pola: GET /api/gk/v1/customs/config?senderCountry=${b.senderAddress.countryId}&receiverCountry=${b.receiverAddress.countryId}&name=<przewoźnik, np. FedEX>; stałe dane: Config eksport_dane_celne). Po złożeniu zlecenia deklaracji nie da się już dopisać. Bez deklaracji tylko na wyraźne życzenie właściciela: "bezDeklaracjiCelnej": true`),
+    { status: 400, wymagaDeklaracjiCelnej: true });
+  }
 
   const sh = b.shipment || {};
   if (!sh.productId) throw Object.assign(new Error('shipment.productId — wybierz produkt z GET /api/gk/v1/products'), { status: 400 });
@@ -294,7 +309,7 @@ router.post('/zamowienie', asyncHandler(async (req, res) => {
   const we = req.body || {};
   let b;
   try { b = await zbudujZamowienie(prisma, we); }
-  catch (e) { return res.status(e.status || 500).json({ ok: false, error: e.message }); }
+  catch (e) { return res.status(e.status || 500).json({ ok: false, error: e.message, ...(e.wymagaDeklaracjiCelnej ? { wymagaDeklaracjiCelnej: true } : {}) }); }
   const odbior = await uzupelnijOdbior(b);
 
   if (we.zamow !== true) {

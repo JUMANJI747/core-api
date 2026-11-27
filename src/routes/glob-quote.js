@@ -4,6 +4,7 @@ const router = require('express').Router();
 const https = require('https');
 const { getReceivers, getQuote, getPickupTimes, findNearestPickupDate, extractPickupSlots, getAddons, getOrderLabels, createOrder, getOrders, getCountries } = require('../glob-client');
 const { PACKAGE_PRESETS, calculatePackageFromItems, PACZKOMAT_SIZES, COUNTRY_IDS, normalizeCountry } = require('./glob-helpers');
+const { wymogDeklaracji } = require('../services/kraje-ue');
 const { findBestContractors } = require('../services/contractor-match');
 const { KIERUNKOWE, normalizujTelefon, telefonZTekstu } = require('../services/telefon');
 const { gkName, gkStreet, gkCity, rozbijNumerDomu, numerGk } = require('../services/adres-gk');
@@ -1069,6 +1070,29 @@ router.post('/glob/order', async (req, res) => {
     }
 
     console.log(`[glob/order] Quote resolved: id=${quoteId}, offers=${(quote.offers || []).length}, productIdRequested=${JSON.stringify(productId)}`);
+
+    // WYMÓG DEKLARACJI CELNEJ (27.11.2026, services/kraje-ue.js): poza obszar celny UE
+    // tylko z deklaracją, a to zamówienie (panel CRM, magazyn, auto-list) jej nie wysyła.
+    // Wyjątek wyłącznie na wyraźne życzenie właściciela: "bezDeklaracjiCelnej": true.
+    {
+      const s = quote.sender || {};
+      const r = quote.receiver || {};
+      const qp = quote.quoteParams || {};
+      const wymog = wymogDeklaracji(
+        { iso: s.country || 'PL', kod: s.postCode || qp.senderPostCode },
+        { iso: r.country || (Number(qp.receiverCountryId) === 1 ? 'PL' : ''), kod: r.postCode || qp.receiverPostCode },
+      );
+      if (wymog && !(req.body && req.body.bezDeklaracjiCelnej === true)) {
+        console.log(`[glob/order] wymóg deklaracji celnej (${wymog.powod}) — kurier niezamówiony, quote ${quoteId}`);
+        return res.status(200).json({
+          ok: false,
+          wymagaDeklaracjiCelnej: true,
+          error: wymog.nieznany
+            ? 'Nie wiem, do jakiego kraju jedzie paczka, więc nie sprawdzę wymogu deklaracji celnej — kurier NIE został zamówiony. Uzupełnij kraj odbiorcy i ponów.'
+            : `Wysyłka poza UE (${wymog.powod}) wymaga deklaracji celnej, a zamówienie z CRM jej nie wysyła — kurier NIE został zamówiony. Poproś Claude o zlecenie z deklaracją (dane celne są w systemie). Bez deklaracji tylko na wyraźne życzenie właściciela.`,
+        });
+      }
+    }
 
     // DEDUP (anty potrojne zamowienie): ta sama wycena juz zamowiona / w toku.
     // Sprawdzenie + zajecie zamka SYNCHRONICZNIE (przed jakimkolwiek await na

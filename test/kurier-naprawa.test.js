@@ -25,6 +25,7 @@ test('rodzajBledu: brak środków i płatność → od razu właściciel; cena i
   ]) assert.equal(rodzajBledu(t), 'brak-srodkow', t);
   assert.equal(rodzajBledu('Cena kuriera za wysoka: 138,94 zł (FedEx), a przy składaniu zamówienia szacunek był 47,00 zł'), 'cena');
   assert.equal(rodzajBledu('brak nadawcy magazynu: ustaw Config magazyn_sender_id'), 'konfiguracja');
+  assert.equal(rodzajBledu('zamówienie: Wysyłka poza UE (CH — poza obszarem celnym UE) wymaga deklaracji celnej, a zamówienie z CRM jej nie wysyła — kurier NIE został zamówiony.'), 'konfiguracja', 'wymóg deklaracji — bez naprawy adresu');
   assert.equal(rodzajBledu('wycena: GlobKurier HTTP 401: token wygasł'), 'konfiguracja');
   for (const t of [
     'zamówienie: Pole „nazwa” odbiorcy odrzucone przez GK: "Wpisano nieprawidłowy znak proszę o weryfikację np.: . , ” ” % & + ( ) / [] ;!". Wysłaliśmy: „EBENHOLZ skincare, Katja Miller”.',

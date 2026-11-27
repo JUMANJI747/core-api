@@ -280,6 +280,44 @@ test('zlecenie odbite przez „Nadmiarowe pole" orderHash: ponowione raz bez nie
   assert.equal(wolania.length, 0);
 });
 
+test('wymóg deklaracji celnej: zlecenie poza UE bez sekcji customs odrzucone przed GK; z deklaracją albo z "bezDeklaracjiCelnej" przechodzi', async () => {
+  const wolania = atrapaGk(gkWzorcowe());
+  const db = baza();
+  db.config = { findUnique: async () => ({ value: JSON.stringify({ PL: 1, DE: 23, CH: 261 }) }) };
+  const DO_CH = {
+    senderId: 'galiny',
+    receiverAddress: { name: 'unlimited options GmbH', street: 'Mattenstrasse', houseNumber: '6', postCode: '4532', city: 'Feldbrunnen', country: 'CH', phone: '+41793219281', email: 'alex@machski.ch' },
+    shipment: { productId: 3563, length: 37, width: 27, height: 18, weight: 1.9 },
+  };
+  const bez = await zapytaj(db, 'POST', '/zamowienie', { body: DO_CH });
+  assert.equal(bez.status, 400);
+  assert.equal(bez.json.wymagaDeklaracjiCelnej, true);
+  assert.match(bez.json.error, /poza UE \(CH — poza obszarem celnym UE\) wymaga deklaracji celnej.*customs\/config\?senderCountry=1&receiverCountry=261.*eksport_dane_celne.*"bezDeklaracjiCelnej": true/);
+  assert.equal(wolania.length, 0, 'nic nie poszło do GK');
+
+  // Sam countryId (bez ISO) też jest rozpoznany z mapy krajów.
+  const poId = await zapytaj(db, 'POST', '/zamowienie', { body: { ...DO_CH, receiverAddress: { ...DO_CH.receiverAddress, country: undefined, countryId: 261 } } });
+  assert.equal(poId.status, 400);
+  assert.match(poId.json.error, /wymaga deklaracji celnej/);
+
+  const customs = { sender: { eori: 'PL952221846400000' }, commodities: [{ description: 'Pomadka ;; Lip balm', quantity: 24, unitValue: 4.5 }], currency: 'EUR', invoiceNumber: '268/2026' };
+  const z = await zapytaj(db, 'POST', '/zamowienie', { body: { ...DO_CH, customs } });
+  assert.equal(z.status, 200, JSON.stringify(z.json));
+  assert.equal(z.json.proba, true);
+  const walid = wolania.find(w => w.metoda === 'POST' && w.sciezka === '/v1/order/validate');
+  assert.equal(walid.body.customs.sender.eori, 'PL952221846400000', 'customs idzie do GK');
+
+  wolania.length = 0;
+  const wyjatek = await zapytaj(db, 'POST', '/zamowienie', { body: { ...DO_CH, bezDeklaracjiCelnej: true } });
+  assert.equal(wyjatek.status, 200, JSON.stringify(wyjatek.json));
+  const walid2 = wolania.find(w => w.metoda === 'POST' && w.sciezka === '/v1/order/validate');
+  assert.equal(walid2.body.bezDeklaracjiCelnej, undefined, 'nasza flaga nie idzie do GK');
+
+  // Po UE bez zmian (Niemcy bez customs).
+  const ue = await zapytaj(db, 'POST', '/zamowienie', { body: PACZKOMAT });
+  assert.equal(ue.status, 200, JSON.stringify(ue.json));
+});
+
 test('dokument handlowy (ETD, poza UE): bez "wykonaj" tylko manifest; wgranie multipart z base64; walidacja nazwy i rozmiaru', async () => {
   const H = 'd'.repeat(64);
   const wolania = [];

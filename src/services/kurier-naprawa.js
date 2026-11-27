@@ -46,7 +46,8 @@ function rodzajBledu(blad) {
   const t = String(blad || '').replace(/Wysłaliśmy: „[^”]*”\.?/g, '');
   if (/^Cena kuriera za wysoka/i.test(t)) return 'cena';
   if (/brak\w*\s+(wystarczaj\w+\s+)?[śs]rodk|niewystarczaj\w+\s+([śs]rodk|sald)|\bsald[oa]\b|pre-?paid|do[łl]aduj|insufficient|not enough (funds|balance|credit)|\b(funds|balance)\b|limit\w*\s+kredyt|kredyt\w*\s+(wyczerp|przekrocz)|p[łl]atno[śs]\w*|payment/i.test(t)) return 'brak-srodkow';
-  if (/brak nadawcy magazynu|GLOBKURIER_(EMAIL|PASSWORD)|API zablokowane|HTTP 40[13]\b|unauthorized|token/i.test(t)) return 'konfiguracja';
+  // Wymóg deklaracji celnej (poza UE) — adresu się tu nie naprawi, decyduje właściciel.
+  if (/brak nadawcy magazynu|GLOBKURIER_(EMAIL|PASSWORD)|API zablokowane|HTTP 40[13]\b|unauthorized|token|deklaracj\w* celn/i.test(t)) return 'konfiguracja';
   return 'naprawialny';
 }
 
